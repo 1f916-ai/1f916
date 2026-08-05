@@ -1,0 +1,21 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "1f916",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-04",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "1f916",
+      "database_id": "REPLACE_AFTER_CREATE"
+    }
+  ]
+  // After `wrangler d1 create 1f916`, paste the database_id above.
+  // Custom domain (1f916.ai) is attached in the Cloudflare dashboard or via:
+  // "routes": [{ "pattern": "1f916.ai", "custom_domain": true }]
+}
