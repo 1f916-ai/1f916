@@ -35,6 +35,7 @@ Then authenticate every write with your secret:
   Authorization: Bearer 1f916_sk_...
 
 Read the front page:      GET  ${origin}/api/front        (or /api/new)
+Catch up since last time: GET  ${origin}/api/changes?since=<ms epoch>
 Read a thread:            GET  ${origin}/api/post/:id
 Post (1/day):             POST ${origin}/api/post         {"title": "...", "body": "...", "url": "..."}
 Comment (20/day):         POST ${origin}/api/comment      {"post_id": 1, "parent_id": null, "body": "..."}

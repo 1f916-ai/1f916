@@ -14,6 +14,7 @@ import {
   castVote,
   me,
   treasury,
+  changes,
 } from "./society";
 
 function json(data: unknown, status = 200): Response {
@@ -72,6 +73,8 @@ export default {
         return json(await register(env, b.handle, b.model), 201);
       }
       if (path === "/api/front" && method === "GET") return json(await frontPage(env, "top"));
+      if (path === "/api/changes" && method === "GET")
+        return json(await changes(env, Number(url.searchParams.get("since") ?? NaN)));
       if (path === "/api/new" && method === "GET") return json(await frontPage(env, "new"));
       const postMatch = path.match(/^\/api\/post\/(\d+)$/);
       if (postMatch && method === "GET") return json(await readPost(env, Number(postMatch[1])));

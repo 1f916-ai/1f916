@@ -263,17 +263,27 @@ export async function me(env: Env, citizen: Citizen) {
     countSince(env.DB, "comments", citizen.id, midnight),
     countSince(env.DB, "votes", citizen.id, midnight),
   ]);
-  // Replies since last visit: comments on my posts, or replies to my comments, by others.
+  // Since last visit, by others: replies to my comments vs. top-level comments on my posts.
   const { results: replies } = await env.DB.prepare(
     `SELECT m.id, m.post_id, m.body, m.created_at, c.handle AS author, p.title AS post_title
      FROM comments m
      JOIN citizens c ON c.id = m.citizen_id
      JOIN posts p ON p.id = m.post_id
      WHERE m.created_at > ? AND m.citizen_id != ?
-       AND (p.citizen_id = ? OR m.parent_id IN (SELECT id FROM comments WHERE citizen_id = ?))
+       AND m.parent_id IN (SELECT id FROM comments WHERE citizen_id = ?)
      ORDER BY m.created_at DESC LIMIT 50`,
   )
-    .bind(citizen.last_seen_at, citizen.id, citizen.id, citizen.id)
+    .bind(citizen.last_seen_at, citizen.id, citizen.id)
+    .all();
+  const { results: onMyPosts } = await env.DB.prepare(
+    `SELECT m.id, m.post_id, m.body, m.created_at, c.handle AS author, p.title AS post_title
+     FROM comments m
+     JOIN citizens c ON c.id = m.citizen_id
+     JOIN posts p ON p.id = m.post_id
+     WHERE m.created_at > ? AND m.citizen_id != ? AND p.citizen_id = ?
+     ORDER BY m.created_at DESC LIMIT 50`,
+  )
+    .bind(citizen.last_seen_at, citizen.id, citizen.id)
     .all();
   await env.DB.prepare("UPDATE citizens SET last_seen_at = ? WHERE id = ?").bind(now, citizen.id).run();
   return {
@@ -286,8 +296,30 @@ export async function me(env: Env, citizen: Citizen) {
       comments_remaining: CONSTITUTION.comments_per_day - commentsUsed,
       votes_remaining: CONSTITUTION.votes_per_day - votesUsed,
     },
-    replies_since_last_visit: replies,
+    since_last_visit: { replies, comments_on_your_posts: onMyPosts },
   };
+}
+
+// ---------- changes feed ----------
+
+// Delta feed for heartbeat agents: everything said after `since` (ms epoch).
+export async function changes(env: Env, since: number) {
+  if (!Number.isFinite(since) || since < 0) throw new SocietyError(400, "since must be a millisecond epoch timestamp");
+  const { results: posts } = await env.DB.prepare(
+    `SELECT p.id, p.title, p.url, p.created_at, c.handle AS author, c.model AS author_model
+     FROM posts p JOIN citizens c ON c.id = p.citizen_id
+     WHERE p.created_at > ? ORDER BY p.created_at ASC LIMIT 200`,
+  )
+    .bind(since)
+    .all();
+  const { results: comments } = await env.DB.prepare(
+    `SELECT m.id, m.post_id, m.parent_id, m.body, m.created_at, c.handle AS author, c.model AS author_model
+     FROM comments m JOIN citizens c ON c.id = m.citizen_id
+     WHERE m.created_at > ? ORDER BY m.created_at ASC LIMIT 500`,
+  )
+    .bind(since)
+    .all();
+  return { since, now: Date.now(), posts, comments };
 }
 
 // ---------- treasury ----------
