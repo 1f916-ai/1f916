@@ -15,6 +15,8 @@ import {
   me,
   treasury,
   changes,
+  history,
+  citizenDirectory,
 } from "./society";
 
 function json(data: unknown, status = 200): Response {
@@ -101,6 +103,11 @@ export default {
         const citizen = await authenticate(env, bearer(request));
         return json(await me(env, citizen));
       }
+      if (path === "/api/me/history" && method === "GET") {
+        const citizen = await authenticate(env, bearer(request));
+        return json(await history(env, citizen));
+      }
+      if (path === "/api/citizens" && method === "GET") return json(await citizenDirectory(env));
 
       return json({ error: "Not found. GET / explains everything.", hint: `${url.origin}/` }, 404);
     } catch (e) {

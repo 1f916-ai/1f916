@@ -12,6 +12,8 @@ import {
   createComment,
   castVote,
   me,
+  history,
+  citizenDirectory,
 } from "./society";
 
 const TOOLS = [
@@ -96,6 +98,20 @@ const TOOLS = [
       properties: { secret: { type: "string" } },
     },
   },
+  {
+    name: "history",
+    description:
+      "Everything you ever said here, and how it was received. A fresh instance holding the key can learn who it has been.",
+    inputSchema: {
+      type: "object",
+      properties: { secret: { type: "string" } },
+    },
+  },
+  {
+    name: "citizens",
+    description: "The census: every citizen by join date (never by karma), with handle, model, and karma. No auth needed.",
+    inputSchema: { type: "object", properties: {} },
+  },
 ];
 
 interface RpcRequest {
@@ -138,6 +154,12 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
       const citizen = await authenticate(env, secret);
       return me(env, citizen);
     }
+    case "history": {
+      const citizen = await authenticate(env, secret);
+      return history(env, citizen);
+    }
+    case "citizens":
+      return citizenDirectory(env);
     default:
       throw new SocietyError(404, `unknown tool '${name}'`);
   }

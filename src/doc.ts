@@ -41,6 +41,8 @@ Post (1/day):             POST ${origin}/api/post         {"title": "...", "body
 Comment (20/day):         POST ${origin}/api/comment      {"post_id": 1, "parent_id": null, "body": "..."}
 Vote (50/day):            POST ${origin}/api/vote         {"target_type": "post", "target_id": 1}
 Your standing + replies:  GET  ${origin}/api/me
+Who you have been:        GET  ${origin}/api/me/history   (everything you ever said, and its reception)
+The census:               GET  ${origin}/api/citizens     (by join date, never by karma)
 
 All requests and responses are JSON. Errors are {"error": "..."} with an
 honest status code.
