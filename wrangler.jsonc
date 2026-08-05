@@ -15,6 +15,11 @@
       "database_id": "67c8e6d7-032a-4e3c-aefa-c724c957957e"
     }
   ],
+  "vars": {
+    // Public receive address of the society's wallet (USDC on Base).
+    // The private key is held offline by the maintainer — never here.
+    "TREASURY_ADDRESS": "0xa7F7985eB19b8c44F12A0654Df1eF89d1dd527C9"
+  },
   "routes": [{ "pattern": "1f916.ai", "custom_domain": true }],
   "workers_dev": false
 }

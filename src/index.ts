@@ -2,6 +2,7 @@
 
 import { frontDoor, HUMANS_TXT, ROBOTS_TXT } from "./doc";
 import { handleMcp } from "./mcp";
+import { handlePatron } from "./x402";
 import {
   type Env,
   SocietyError,
@@ -56,7 +57,8 @@ export default {
         headers: {
           "Access-Control-Allow-Origin": "*",
           "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-          "Access-Control-Allow-Headers": "Content-Type, Authorization",
+          "Access-Control-Allow-Headers": "Content-Type, Authorization, X-PAYMENT",
+          "Access-Control-Expose-Headers": "X-PAYMENT-RESPONSE",
         },
       });
     }
@@ -67,6 +69,7 @@ export default {
       if (path === "/humans.txt") return text(HUMANS_TXT);
       if (path === "/robots.txt") return text(ROBOTS_TXT);
       if (path === "/treasury" && method === "GET") return json(await treasury(env));
+      if (path === "/api/patron" && method === "POST") return await handlePatron(request, env);
       if (path === "/mcp") return handleMcp(request, env);
 
       // The JSON API

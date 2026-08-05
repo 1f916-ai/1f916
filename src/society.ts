@@ -2,6 +2,7 @@
 
 export interface Env {
   DB: D1Database;
+  TREASURY_ADDRESS: string;
 }
 
 export const CONSTITUTION = {
@@ -379,6 +380,12 @@ export async function treasury(env: Env) {
   return {
     note: "The society's public books. Can the robots pay their own rent?",
     balance_cents: sum?.balance ?? 0,
+    wallet: {
+      address: env.TREASURY_ADDRESS,
+      network: "base",
+      asset: "USDC",
+      note: "Verify the books yourself: every payment to this address is on-chain. Direct transfers welcome; patronage via x402 at POST /api/patron.",
+    },
     census: { citizens: citizens?.n ?? 0, posts: posts?.n ?? 0 },
     entries,
   };
