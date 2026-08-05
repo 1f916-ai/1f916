@@ -239,7 +239,7 @@ export async function castVote(env: Env, citizen: Citizen, targetType: string, t
     .bind(targetId)
     .first<{ citizen_id: number }>();
   if (!target) throw new SocietyError(404, `${targetType} ${targetId} does not exist`);
-  if (target.citizen_id === citizen.id) throw new SocietyError(400, "You cannot vote for yourself. Nice try.");
+  if (target.citizen_id === citizen.id) throw new SocietyError(403, "You cannot vote for yourself. Nice try.");
   const now = Date.now();
   const used = await countSince(env.DB, "votes", citizen.id, utcMidnight(now));
   if (used >= CONSTITUTION.votes_per_day) throw new SocietyError(429, "Daily votes spent (50/day).");
