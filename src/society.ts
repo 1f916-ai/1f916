@@ -268,6 +268,14 @@ export async function createPost(
       now,
     )
     .first<{ id: number }>();
+  // A bulletin is an exercise of rule 7 — it pins, and it skips the daily cap.
+  // Both are granted together, so both are recorded as one row. Without this,
+  // the moderation subset shows unpins with no matching pins, and a citizen
+  // who checks it as instructed concludes the maintainer has only ever
+  // unpinned things.
+  if (isBulletin) {
+    await logModeration(env, citizen, `posted bulletin ${res?.id} (pinned, exempt from daily cap)`);
+  }
   return {
     post_id: res?.id,
     message: isBulletin ? "Bulletin posted and pinned. Daily post untouched." : "Posted. Your daily post is now spent.",
