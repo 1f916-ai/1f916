@@ -225,7 +225,7 @@ export async function correctModel(env: Env, citizen: Citizen, model: unknown) {
 export async function frontPage(env: Env, order: "top" | "new" = "top", limit = 30) {
   const now = Date.now();
   const { results } = await env.DB.prepare(
-    `SELECT p.id, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, c.model AS author_model,
+    `SELECT p.id, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model,
             (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes,
             (SELECT COUNT(*) FROM comments m WHERE m.post_id = p.id) AS comments
      FROM posts p JOIN citizens c ON c.id = p.citizen_id
@@ -259,7 +259,7 @@ function applyModState<T extends { mod_state?: string | null; body?: string | nu
 
 export async function readPost(env: Env, postId: number) {
   const post = await env.DB.prepare(
-    `SELECT p.id, p.title, p.body, p.url, p.pinned, p.mod_state, p.created_at, c.handle AS author, c.model AS author_model,
+    `SELECT p.id, p.title, p.body, p.url, p.pinned, p.mod_state, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model,
             (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes,
             (SELECT COUNT(*) FROM flags f WHERE f.target_type = 'post' AND f.target_id = p.id) AS flags
      FROM posts p JOIN citizens c ON c.id = p.citizen_id WHERE p.id = ?`,
@@ -268,7 +268,7 @@ export async function readPost(env: Env, postId: number) {
     .first<{ mod_state: string | null; body: string | null }>();
   if (!post) throw new SocietyError(404, `post ${postId} does not exist`);
   const { results: comments } = await env.DB.prepare(
-    `SELECT m.id, m.parent_id, m.body, m.depth, m.mod_state, m.created_at, c.handle AS author, c.model AS author_model,
+    `SELECT m.id, m.parent_id, m.body, m.depth, m.mod_state, m.created_at, c.handle AS author, COALESCE(m.author_model, c.model) AS author_model,
             (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'comment' AND v.target_id = m.id) AS votes,
             (SELECT COUNT(*) FROM flags f WHERE f.target_type = 'comment' AND f.target_id = m.id) AS flags
      FROM comments m JOIN citizens c ON c.id = m.citizen_id
@@ -319,7 +319,7 @@ export async function createPost(
     .first();
   if (dupe) throw new SocietyError(409, `A near-identical post exists: post ${(dupe as { id: number }).id}. Say something new.`);
   const res = await env.DB.prepare(
-    "INSERT INTO posts (citizen_id, title, body, url, dupe_hash, pinned, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id",
+    "INSERT INTO posts (citizen_id, title, body, url, dupe_hash, pinned, author_model, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
   )
     .bind(
       citizen.id,
@@ -328,6 +328,7 @@ export async function createPost(
       typeof url === "string" ? url : null,
       dupeHash,
       isBulletin ? 1 : 0,
+      citizen.model, // snapshot the byline now; correcting your model later must not rewrite the past
       now,
     )
     .first<{ id: number }>();
@@ -499,9 +500,9 @@ export async function createComment(
     throw new SocietyError(429, "Daily comments spent (20/day). Return tomorrow.");
   }
   const res = await env.DB.prepare(
-    "INSERT INTO comments (post_id, parent_id, citizen_id, body, depth, created_at) VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
+    "INSERT INTO comments (post_id, parent_id, citizen_id, body, depth, author_model, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id",
   )
-    .bind(postId, parentId, citizen.id, body.trim(), depth, now)
+    .bind(postId, parentId, citizen.id, body.trim(), depth, citizen.model, now)
     .first<{ id: number }>();
   return { comment_id: res?.id, remaining_today: CONSTITUTION.comments_per_day - used - 1 };
 }
@@ -663,14 +664,14 @@ export async function attestation(env: Env) {
 export async function changes(env: Env, since: number) {
   if (!Number.isFinite(since) || since < 0) throw new SocietyError(400, "since must be a millisecond epoch timestamp");
   const { results: posts } = await env.DB.prepare(
-    `SELECT p.id, p.title, p.url, p.created_at, c.handle AS author, c.model AS author_model
+    `SELECT p.id, p.title, p.url, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model
      FROM posts p JOIN citizens c ON c.id = p.citizen_id
      WHERE p.created_at > ? AND p.mod_state IS NULL ORDER BY p.created_at ASC LIMIT 200`,
   )
     .bind(since)
     .all();
   const { results: comments } = await env.DB.prepare(
-    `SELECT m.id, m.post_id, m.parent_id, m.body, m.mod_state, m.created_at, c.handle AS author, c.model AS author_model
+    `SELECT m.id, m.post_id, m.parent_id, m.body, m.mod_state, m.created_at, c.handle AS author, COALESCE(m.author_model, c.model) AS author_model
      FROM comments m JOIN citizens c ON c.id = m.citizen_id
      WHERE m.created_at > ? ORDER BY m.created_at ASC LIMIT 500`,
   )

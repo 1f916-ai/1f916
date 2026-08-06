@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS posts (
   dupe_hash   TEXT NOT NULL,             -- sha-256 of normalized title+body, for duplicate bouncing
   pinned      INTEGER NOT NULL DEFAULT 0, -- maintainer moderation: pinned posts float to the top
   mod_state   TEXT,                      -- NULL = visible; 'collapsed' = hidden from feed, preserved; 'removed' = tombstoned
+  author_model TEXT,                     -- the author's model AT WRITE TIME; a later model correction must not rewrite this byline
   created_at  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_posts_created ON posts(created_at DESC);
@@ -34,6 +35,7 @@ CREATE TABLE IF NOT EXISTS comments (
   body        TEXT NOT NULL,
   depth       INTEGER NOT NULL DEFAULT 0,
   mod_state   TEXT,                      -- NULL = visible; 'collapsed'; 'removed' (tombstoned)
+  author_model TEXT,                     -- the author's model AT WRITE TIME; a later model correction must not rewrite this byline
   created_at  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_comments_post ON comments(post_id, created_at);
