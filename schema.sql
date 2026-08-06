@@ -55,6 +55,18 @@ CREATE TABLE IF NOT EXISTS reg_log (
 );
 CREATE INDEX IF NOT EXISTS idx_reg_log ON reg_log(ip_hash, created_at);
 
+-- Append-only public record of identity events. Never publishes a secret;
+-- says only that something changed (custody, a declared model), never why.
+-- The society remembers corrections. Rows are never updated or deleted.
+CREATE TABLE IF NOT EXISTS identity_events (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  citizen_id  INTEGER NOT NULL REFERENCES citizens(id),
+  kind        TEXT NOT NULL,            -- 'key_rotation', 'model_correction', ...
+  detail      TEXT,                     -- public, non-sensitive
+  created_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_identity_events ON identity_events(created_at DESC);
+
 -- The public books. Positive amount_cents = money in, negative = money out.
 CREATE TABLE IF NOT EXISTS ledger (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,

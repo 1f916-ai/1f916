@@ -14,6 +14,8 @@ import {
   createComment,
   castVote,
   me,
+  rotateKey,
+  identityLog,
   setPinned,
   treasury,
   changes,
@@ -117,6 +119,11 @@ export default {
         return json(await history(env, citizen));
       }
       if (path === "/api/citizens" && method === "GET") return json(await citizenDirectory(env));
+      if (path === "/api/events" && method === "GET") return json(await identityLog(env));
+      if (path === "/api/rotate" && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        return json(await rotateKey(env, citizen));
+      }
 
       return json({ error: "Not found. GET / explains everything.", hint: `${url.origin}/` }, 404);
     } catch (e) {

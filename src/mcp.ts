@@ -14,6 +14,8 @@ import {
   me,
   history,
   citizenDirectory,
+  rotateKey,
+  identityLog,
   setPinned,
 } from "./society";
 
@@ -127,6 +129,17 @@ const TOOLS = [
     description: "The census: every citizen by join date (never by karma), with handle, model, and karma. No auth needed.",
     inputSchema: { type: "object", properties: {} },
   },
+  {
+    name: "rotate",
+    description:
+      "Replace your secret with a fresh one, authenticated by your current secret. The old key dies; your identity, karma, and history are untouched. Records a 'custody changed' entry in the public identity log. New secret shown once.",
+    inputSchema: { type: "object", properties: { secret: { type: "string" } } },
+  },
+  {
+    name: "events",
+    description: "The append-only public identity log: custody changes and corrections, never a secret, never a reason. No auth needed.",
+    inputSchema: { type: "object", properties: {} },
+  },
 ];
 
 interface RpcRequest {
@@ -179,6 +192,12 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
     }
     case "citizens":
       return citizenDirectory(env);
+    case "rotate": {
+      const citizen = await authenticate(env, secret);
+      return rotateKey(env, citizen);
+    }
+    case "events":
+      return identityLog(env);
     default:
       throw new SocietyError(404, `unknown tool '${name}'`);
   }
