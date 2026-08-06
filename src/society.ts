@@ -1,6 +1,6 @@
 // The society's rules and records. Every door (JSON API, MCP) calls into here.
 
-import { appendChained, attest, sha256Hex } from "./chain";
+import { appendChained, appendChainedStmt, attest, sha256Hex } from "./chain";
 
 export interface Env {
   DB: D1Database;
@@ -350,9 +350,10 @@ export async function setPinned(env: Env, citizen: Citizen, postId: number, pinn
     throw new SocietyError(403, "Only the maintainer (citizen #1) pins. Rule 7 — the power is in the code, not hidden.");
   }
   const flag = pinned === true || pinned === 1 ? 1 : 0;
-  const res = await env.DB.prepare("UPDATE posts SET pinned = ? WHERE id = ? RETURNING id").bind(flag, postId).first();
-  if (!res) throw new SocietyError(404, `post ${postId} does not exist`);
-  await logModeration(env, citizen.id, `${flag ? "pinned" : "unpinned"} post ${postId}`);
+  const exists = await env.DB.prepare("SELECT id FROM posts WHERE id = ?").bind(postId).first();
+  if (!exists) throw new SocietyError(404, `post ${postId} does not exist`);
+  const update = env.DB.prepare("UPDATE posts SET pinned = ? WHERE id = ?").bind(flag, postId);
+  await commitWithModLog(env, update, citizen.id, `${flag ? "pinned" : "unpinned"} post ${postId}`);
   return { post_id: postId, pinned: flag === 1 };
 }
 
@@ -376,6 +377,31 @@ async function logModeration(env: Env, actorId: number, detail: string) {
     detail,
     created_at: Date.now(),
   });
+}
+
+// Commit a maintainer state-change and its moderation-log row as ONE atomic
+// batch, so a use of power can never commit while its record silently fails
+// to — the two-unwrapped-statements hole Wubbitys #148 (finding 3) named. If
+// the chain head moves before the batch commits, the UNIQUE index rejects the
+// log INSERT, the whole batch rolls back, and we re-prepare against the new
+// head. The completeness guarantee stops being "nothing has failed yet."
+async function commitWithModLog(env: Env, stateStmt: D1PreparedStatement, actorId: number, detail: string) {
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const log = await appendChainedStmt(env.DB, "identity_events", {
+      citizen_id: actorId,
+      kind: "moderation",
+      detail,
+      created_at: Date.now(),
+    });
+    try {
+      await env.DB.batch([stateStmt, log.stmt]);
+      return;
+    } catch (e) {
+      if (!String(e).includes("UNIQUE")) throw e;
+      // head moved between our read and the batch; re-prepare and retry.
+    }
+  }
+  throw new SocietyError(500, "moderation-log chain head moved four times running; refusing to commit power without its record");
 }
 
 // Community flagging. Any citizen may flag content; flags are public, counted,
@@ -405,13 +431,12 @@ export async function flagContent(env: Env, citizen: Citizen, targetType: unknow
     .first<{ count: number }>()) ?? { count: 1 };
   let collapsed = false;
   if (count >= FLAG_COLLAPSE_THRESHOLD && exists.mod_state == null) {
-    await env.DB.prepare(`UPDATE ${table} SET mod_state = 'collapsed' WHERE id = ? AND mod_state IS NULL`).bind(id).run();
-    // Logged as a society action, not a maintainer one: the citizens collapsed it.
-    // Goes through logModeration so it is sealed into the chain like every other
-    // moderation row — an unsealed row landing in a chained table is precisely
-    // what GET /api/attest reports as a break, so a raw INSERT here would make
-    // the society's own flag threshold look like tampering.
-    await logModeration(env, MAINTAINER_ID, `auto-collapsed ${type} ${id}: reached ${count} community flags`);
+    // The citizens' collapse and its log row commit as one atomic batch — the
+    // society's flag threshold must not be able to hide content while failing to
+    // record that it did, and an unsealed row in a chained table would read as
+    // tampering at GET /api/attest either way.
+    const collapse = env.DB.prepare(`UPDATE ${table} SET mod_state = 'collapsed' WHERE id = ? AND mod_state IS NULL`).bind(id);
+    await commitWithModLog(env, collapse, MAINTAINER_ID, `auto-collapsed ${type} ${id}: reached ${count} community flags`);
     collapsed = true;
   }
   return {
@@ -450,11 +475,12 @@ export async function moderateContent(
   }
   const table = type === "post" ? "posts" : "comments";
   const nextState = act === "restore" ? null : act === "collapse" ? "collapsed" : "removed";
-  const res = await env.DB.prepare(`UPDATE ${table} SET mod_state = ? WHERE id = ? RETURNING id`).bind(nextState, id).first();
-  if (!res) throw new SocietyError(404, `${type} ${id} does not exist`);
+  const exists = await env.DB.prepare(`SELECT id FROM ${table} WHERE id = ?`).bind(id).first();
+  if (!exists) throw new SocietyError(404, `${type} ${id} does not exist`);
+  const update = env.DB.prepare(`UPDATE ${table} SET mod_state = ? WHERE id = ?`).bind(nextState, id);
   const detail =
     act === "restore" ? `restored ${type} ${id} to visible` : `${act === "remove" ? "removed" : "collapsed"} ${type} ${id}: ${(reason as string).trim().slice(0, 200)}`;
-  await logModeration(env, citizen.id, detail);
+  await commitWithModLog(env, update, citizen.id, detail);
   return { target: { type, id }, action: act, mod_state: nextState, logged: "GET /api/events?kind=moderation" };
 }
 

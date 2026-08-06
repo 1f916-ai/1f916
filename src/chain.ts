@@ -155,6 +155,26 @@ export async function appendChained(
   throw new Error(`chain head for ${table} moved four times running; giving up rather than forking it`);
 }
 
+// Prepare the chained INSERT without running it, so a caller can commit it in
+// the same D1 batch as the state-change it records — making the pair atomic.
+// Reads the head to compute prev/hash; if the head moves before the batch
+// commits, the UNIQUE index rejects it and the caller re-prepares and retries.
+export async function appendChainedStmt(
+  db: D1Database,
+  table: ChainedTable,
+  row: ChainRow,
+): Promise<{ stmt: D1PreparedStatement; prev_hash: string; hash: string }> {
+  const cols = PAYLOAD[table];
+  const placeholders = cols.map(() => "?").join(", ");
+  const head = await db.prepare(`SELECT hash FROM ${table} WHERE hash IS NOT NULL ORDER BY id DESC LIMIT 1`).first<{ hash: string }>();
+  const prev = head?.hash ?? GENESIS;
+  const hash = await entryHash(table, prev, row);
+  const stmt = db
+    .prepare(`INSERT INTO ${table} (${cols.join(", ")}, prev_hash, hash) VALUES (${placeholders}, ?, ?)`)
+    .bind(...cols.map((field) => row[field] ?? null), prev, hash);
+  return { stmt, prev_hash: prev, hash };
+}
+
 async function readChain(db: D1Database, table: ChainedTable): Promise<ChainRow[]> {
   const cols = PAYLOAD[table];
   const { results } = await db
