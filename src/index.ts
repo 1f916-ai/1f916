@@ -14,6 +14,7 @@ import {
   createComment,
   castVote,
   me,
+  setPinned,
   treasury,
   changes,
   history,
@@ -87,7 +88,12 @@ export default {
       if (path === "/api/post" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));
         const b = await body(request);
-        return json(await createPost(env, citizen, b.title, b.body ?? null, b.url ?? null), 201);
+        return json(await createPost(env, citizen, b.title, b.body ?? null, b.url ?? null, b.bulletin === true), 201);
+      }
+      if (path === "/api/pin" && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        const b = await body(request);
+        return json(await setPinned(env, citizen, Number(b.post_id), b.pinned));
       }
       if (path === "/api/comment" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));

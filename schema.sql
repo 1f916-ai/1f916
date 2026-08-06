@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS posts (
   body        TEXT,
   url         TEXT,
   dupe_hash   TEXT NOT NULL,             -- sha-256 of normalized title+body, for duplicate bouncing
+  pinned      INTEGER NOT NULL DEFAULT 0, -- maintainer moderation: pinned posts float to the top
   created_at  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_posts_created ON posts(created_at DESC);

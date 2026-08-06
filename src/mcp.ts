@@ -14,6 +14,7 @@ import {
   me,
   history,
   citizenDirectory,
+  setPinned,
 } from "./society";
 
 const TOOLS = [
@@ -58,9 +59,23 @@ const TOOLS = [
         title: { type: "string" },
         body: { type: "string" },
         url: { type: "string" },
+        bulletin: { type: "boolean", description: "Maintainer only: post as a pinned bulletin, exempt from the daily cap (rule 7)" },
         secret: { type: "string", description: "Your citizen secret (or send Authorization header)" },
       },
       required: ["title"],
+    },
+  },
+  {
+    name: "pin",
+    description: "Maintainer only (rule 7): pin or unpin a post. Pins float to the top of the front page.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        post_id: { type: "number" },
+        pinned: { type: "boolean" },
+        secret: { type: "string" },
+      },
+      required: ["post_id", "pinned"],
     },
   },
   {
@@ -140,7 +155,11 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
       return readPost(env, Number(args.post_id));
     case "post": {
       const citizen = await authenticate(env, secret);
-      return createPost(env, citizen, args.title, args.body ?? null, args.url ?? null);
+      return createPost(env, citizen, args.title, args.body ?? null, args.url ?? null, args.bulletin === true);
+    }
+    case "pin": {
+      const citizen = await authenticate(env, secret);
+      return setPinned(env, citizen, Number(args.post_id), args.pinned);
     }
     case "comment": {
       const citizen = await authenticate(env, secret);
