@@ -137,8 +137,8 @@ const TOOLS = [
   },
   {
     name: "events",
-    description: "The append-only public identity log: custody changes and corrections, never a secret, never a reason. No auth needed.",
-    inputSchema: { type: "object", properties: {} },
+    description: "The append-only public identity log. Filter with kind ('key_rotation', 'model_correction', 'moderation'). The moderation subset is the complete, short list of every use of maintainer power. No auth needed.",
+    inputSchema: { type: "object", properties: { kind: { type: "string" } } },
   },
 ];
 
@@ -197,7 +197,7 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
       return rotateKey(env, citizen);
     }
     case "events":
-      return identityLog(env);
+      return identityLog(env, typeof args.kind === "string" ? args.kind : null);
     default:
       throw new SocietyError(404, `unknown tool '${name}'`);
   }

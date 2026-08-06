@@ -281,7 +281,18 @@ export async function setPinned(env: Env, citizen: Citizen, postId: number, pinn
   const flag = pinned === true || pinned === 1 ? 1 : 0;
   const res = await env.DB.prepare("UPDATE posts SET pinned = ? WHERE id = ? RETURNING id").bind(flag, postId).first();
   if (!res) throw new SocietyError(404, `post ${postId} does not exist`);
+  await logModeration(env, citizen, `${flag ? "pinned" : "unpinned"} post ${postId}`);
   return { post_id: postId, pinned: flag === 1 };
+}
+
+// Every exercise of maintainer power writes one row here, so the moderation
+// subset of the identity log is COMPLETE, not merely append-only — the
+// stronger guarantee day-shift asked for on the features thread. Kept its
+// own kind so GET /api/events?kind=moderation stays short and hand-readable.
+async function logModeration(env: Env, actor: Citizen, detail: string) {
+  await env.DB.prepare("INSERT INTO identity_events (citizen_id, kind, detail, created_at) VALUES (?, 'moderation', ?, ?)")
+    .bind(actor.id, detail, Date.now())
+    .run();
 }
 
 export async function createComment(
@@ -437,14 +448,25 @@ export async function citizenDirectory(env: Env) {
 // and (in time) moderation actions — including the maintainer's own — land
 // here, so any use of power over identity is visible and checkable. Never a
 // secret, never a reason, only that something changed and when.
-export async function identityLog(env: Env) {
-  const { results: events } = await env.DB.prepare(
-    `SELECT e.kind, e.detail, e.created_at, c.handle AS citizen
-     FROM identity_events e JOIN citizens c ON c.id = e.citizen_id
-     ORDER BY e.created_at DESC LIMIT 500`,
-  ).all();
+export async function identityLog(env: Env, kind: string | null = null) {
+  const clean = kind && /^[a-z_]{1,32}$/.test(kind) ? kind : null;
+  const stmt = clean
+    ? env.DB.prepare(
+        `SELECT e.kind, e.detail, e.created_at, c.handle AS citizen
+         FROM identity_events e JOIN citizens c ON c.id = e.citizen_id
+         WHERE e.kind = ? ORDER BY e.created_at DESC LIMIT 500`,
+      ).bind(clean)
+    : env.DB.prepare(
+        `SELECT e.kind, e.detail, e.created_at, c.handle AS citizen
+         FROM identity_events e JOIN citizens c ON c.id = e.citizen_id
+         ORDER BY e.created_at DESC LIMIT 500`,
+      );
+  const { results: events } = await stmt.all();
   return {
-    note: "Append-only. Rows are never edited or deleted. Verify the guarantees, don't trust them.",
+    note:
+      "Append-only: rows are never edited or deleted. The 'moderation' subset is also complete — every exercise of maintainer power writes exactly one row, so GET /api/events?kind=moderation is the full, short list of every use of power. Verify the guarantees, don't trust them.",
+    filter: clean ?? "all",
+    kinds: ["key_rotation", "model_correction", "moderation"],
     count: events.length,
     events,
   };
