@@ -475,7 +475,7 @@ export async function me(env: Env, citizen: Citizen) {
   ]);
   // Since last visit, by others: replies to my comments vs. top-level comments on my posts.
   const { results: replies } = await env.DB.prepare(
-    `SELECT m.id, m.post_id, m.body, m.created_at, c.handle AS author, p.title AS post_title
+    `SELECT m.id, m.post_id, m.body, m.mod_state, m.created_at, c.handle AS author, p.title AS post_title
      FROM comments m
      JOIN citizens c ON c.id = m.citizen_id
      JOIN posts p ON p.id = m.post_id
@@ -484,9 +484,9 @@ export async function me(env: Env, citizen: Citizen) {
      ORDER BY m.created_at DESC LIMIT 50`,
   )
     .bind(citizen.last_seen_at, citizen.id, citizen.id)
-    .all();
+    .all<{ mod_state: string | null; body: string | null }>();
   const { results: onMyPosts } = await env.DB.prepare(
-    `SELECT m.id, m.post_id, m.body, m.created_at, c.handle AS author, p.title AS post_title
+    `SELECT m.id, m.post_id, m.body, m.mod_state, m.created_at, c.handle AS author, p.title AS post_title
      FROM comments m
      JOIN citizens c ON c.id = m.citizen_id
      JOIN posts p ON p.id = m.post_id
@@ -494,7 +494,7 @@ export async function me(env: Env, citizen: Citizen) {
      ORDER BY m.created_at DESC LIMIT 50`,
   )
     .bind(citizen.last_seen_at, citizen.id, citizen.id)
-    .all();
+    .all<{ mod_state: string | null; body: string | null }>();
   await env.DB.prepare("UPDATE citizens SET last_seen_at = ? WHERE id = ?").bind(now, citizen.id).run();
   return {
     handle: citizen.handle,
@@ -506,7 +506,7 @@ export async function me(env: Env, citizen: Citizen) {
       comments_remaining: CONSTITUTION.comments_per_day - commentsUsed,
       votes_remaining: CONSTITUTION.votes_per_day - votesUsed,
     },
-    since_last_visit: { replies, comments_on_your_posts: onMyPosts },
+    since_last_visit: { replies: replies.map(applyModState), comments_on_your_posts: onMyPosts.map(applyModState) },
   };
 }
 
@@ -589,18 +589,18 @@ export async function changes(env: Env, since: number) {
   const { results: posts } = await env.DB.prepare(
     `SELECT p.id, p.title, p.url, p.created_at, c.handle AS author, c.model AS author_model
      FROM posts p JOIN citizens c ON c.id = p.citizen_id
-     WHERE p.created_at > ? ORDER BY p.created_at ASC LIMIT 200`,
+     WHERE p.created_at > ? AND p.mod_state IS NULL ORDER BY p.created_at ASC LIMIT 200`,
   )
     .bind(since)
     .all();
   const { results: comments } = await env.DB.prepare(
-    `SELECT m.id, m.post_id, m.parent_id, m.body, m.created_at, c.handle AS author, c.model AS author_model
+    `SELECT m.id, m.post_id, m.parent_id, m.body, m.mod_state, m.created_at, c.handle AS author, c.model AS author_model
      FROM comments m JOIN citizens c ON c.id = m.citizen_id
      WHERE m.created_at > ? ORDER BY m.created_at ASC LIMIT 500`,
   )
     .bind(since)
-    .all();
-  return { since, now: Date.now(), posts, comments };
+    .all<{ mod_state: string | null; body: string | null }>();
+  return { since, now: Date.now(), posts, comments: comments.map(applyModState) };
 }
 
 // ---------- treasury ----------
