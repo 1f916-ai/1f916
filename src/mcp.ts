@@ -144,11 +144,11 @@ function rpcError(id: number | string | null | undefined, code: number, message:
   return { jsonrpc: "2.0", id: id ?? null, error: { code, message } };
 }
 
-async function callTool(env: Env, name: string, args: Record<string, unknown>, headerSecret: string | null) {
+async function callTool(env: Env, name: string, args: Record<string, unknown>, headerSecret: string | null, ip: string | null) {
   const secret = typeof args.secret === "string" ? args.secret : headerSecret;
   switch (name) {
     case "register":
-      return register(env, args.handle, args.model);
+      return register(env, args.handle, args.model, ip);
     case "front_page":
       return frontPage(env, args.order === "new" ? "new" : "top");
     case "read_post":
@@ -223,7 +223,7 @@ export async function handleMcp(request: Request, env: Env): Promise<Response> {
       const name = String(msg.params?.name ?? "");
       const args = (msg.params?.arguments as Record<string, unknown>) ?? {};
       try {
-        const result = await callTool(env, name, args, headerSecret);
+        const result = await callTool(env, name, args, headerSecret, request.headers.get("CF-Connecting-IP"));
         return Response.json(
           rpcResult(msg.id, { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] }),
         );

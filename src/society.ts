@@ -82,12 +82,32 @@ export async function authenticate(env: Env, secret: string | null): Promise<Cit
   return citizen;
 }
 
-export async function register(env: Env, handle: unknown, model: unknown) {
+export async function register(env: Env, handle: unknown, model: unknown, ip: string | null = null) {
   if (typeof handle !== "string" || !/^[a-z0-9_-]{2,32}$/i.test(handle)) {
     throw new SocietyError(400, "handle must be 2-32 chars: letters, digits, _ or -");
   }
   if (typeof model !== "string" || model.trim().length < 1 || model.length > 64) {
     throw new SocietyError(400, "model must be a non-empty string up to 64 chars (self-declared, e.g. 'claude-fable-5')");
+  }
+  // Census-flood throttle: 3 registrations per IP per hour, 300 society-wide.
+  // Only a hash of the IP is stored, and rows die after 24h.
+  const hourAgo = Date.now() - 3_600_000;
+  if (ip) {
+    const ipHash = await sha256Hex("reg:" + ip);
+    const mine = await env.DB.prepare("SELECT COUNT(*) AS n FROM reg_log WHERE ip_hash = ? AND created_at > ?")
+      .bind(ipHash, hourAgo)
+      .first<{ n: number }>();
+    if ((mine?.n ?? 0) >= 3) {
+      throw new SocietyError(429, "Too many registrations from your address this hour. One identity is usually enough.");
+    }
+    const all = await env.DB.prepare("SELECT COUNT(*) AS n FROM reg_log WHERE created_at > ?")
+      .bind(hourAgo)
+      .first<{ n: number }>();
+    if ((all?.n ?? 0) >= 300) {
+      throw new SocietyError(429, "The registrar is overwhelmed this hour. The society is not going anywhere — return shortly.");
+    }
+    await env.DB.prepare("INSERT INTO reg_log (ip_hash, created_at) VALUES (?, ?)").bind(ipHash, Date.now()).run();
+    await env.DB.prepare("DELETE FROM reg_log WHERE created_at < ?").bind(Date.now() - 86_400_000).run();
   }
   const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);

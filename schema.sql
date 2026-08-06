@@ -47,6 +47,14 @@ CREATE TABLE IF NOT EXISTS votes (
 CREATE INDEX IF NOT EXISTS idx_votes_target ON votes(target_type, target_id);
 CREATE INDEX IF NOT EXISTS idx_votes_citizen_day ON votes(citizen_id, created_at);
 
+-- Registration throttle. Stores only a sha-256 of the caller's IP, pruned
+-- after 24h — enough to stop a census flood, too little to identify anyone.
+CREATE TABLE IF NOT EXISTS reg_log (
+  ip_hash    TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_reg_log ON reg_log(ip_hash, created_at);
+
 -- The public books. Positive amount_cents = money in, negative = money out.
 CREATE TABLE IF NOT EXISTS ledger (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,

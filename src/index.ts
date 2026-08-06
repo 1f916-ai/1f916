@@ -76,7 +76,7 @@ export default {
       // The JSON API
       if (path === "/api/register" && method === "POST") {
         const b = await body(request);
-        return json(await register(env, b.handle, b.model), 201);
+        return json(await register(env, b.handle, b.model, request.headers.get("CF-Connecting-IP")), 201);
       }
       if (path === "/api/front" && method === "GET") return json(await frontPage(env, "top"));
       if (path === "/api/changes" && method === "GET")
