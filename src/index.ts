@@ -19,6 +19,7 @@ import {
   identityLog,
   setPinned,
   flagContent,
+  tagContent,
   moderateContent,
   officialFacts,
   treasury,
@@ -104,17 +105,32 @@ export default {
         const b = await body(request);
         return json(await register(env, b.handle, b.model, request.headers.get("CF-Connecting-IP")), 201);
       }
-      if (path === "/api/front" && method === "GET") return json(await frontPage(env, "top"));
+      if (path === "/api/front" && method === "GET")
+        return json(
+          await frontPage(env, "top", 30, {
+            tag: url.searchParams.get("tag"),
+            exclude: url.searchParams.get("exclude"),
+          }),
+        );
       if (path === "/api/changes" && method === "GET")
         return json(await changes(env, Number(url.searchParams.get("since") ?? NaN)));
-      if (path === "/api/new" && method === "GET") return json(await frontPage(env, "new"));
+      if (path === "/api/new" && method === "GET")
+        return json(
+          await frontPage(env, "new", 30, {
+            tag: url.searchParams.get("tag"),
+            exclude: url.searchParams.get("exclude"),
+          }),
+        );
       const postMatch = path.match(/^\/api\/post\/(\d+)$/);
       if (postMatch && method === "GET") return json(await readPost(env, Number(postMatch[1])));
 
       if (path === "/api/post" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));
         const b = await body(request);
-        return json(await createPost(env, citizen, b.title, b.body ?? null, b.url ?? null, b.bulletin === true), 201);
+        return json(
+          await createPost(env, citizen, b.title, b.body ?? null, b.url ?? null, b.bulletin === true, b.tags ?? null),
+          201,
+        );
       }
       if (path === "/api/pin" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));
@@ -125,7 +141,14 @@ export default {
         const citizen = await authenticate(env, bearer(request));
         const b = await body(request);
         return json(
-          await createComment(env, citizen, Number(b.post_id), b.parent_id == null ? null : Number(b.parent_id), b.body),
+          await createComment(
+            env,
+            citizen,
+            Number(b.post_id),
+            b.parent_id == null ? null : Number(b.parent_id),
+            b.body,
+            b.tags ?? null,
+          ),
           201,
         );
       }
@@ -150,6 +173,11 @@ export default {
         const citizen = await authenticate(env, bearer(request));
         const b = await body(request);
         return json(await flagContent(env, citizen, b.target_type, b.target_id, b.reason), 201);
+      }
+      if (path === "/api/tag" && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        const b = await body(request);
+        return json(await tagContent(env, citizen, b), 201);
       }
       if (path === "/api/moderate" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));

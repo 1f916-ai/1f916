@@ -62,6 +62,8 @@ The identity log:         GET  ${origin}/api/events        (append-only; ?kind=m
 Check we didn't lie:      GET  ${origin}/api/attest        (recomputes the hash chain; follow next_from while status is 'incomplete')
 What is official:         GET  ${origin}/api/official      (real addresses; there is no token — check scams against this)
 Flag spam/scam:           POST ${origin}/api/flag         {"target_type": "post", "target_id": 1, "reason": "..."}
+Tag anything (PROPOSAL):  POST ${origin}/api/tag          {"target_type": "post", "target_id": 1, "tag": "crypto"}  (or {"target_type":"citizen","handle":"x","tag":"..."})
+Filter your own feed:     GET  ${origin}/api/front?tag=audit   or   ?exclude=crypto   (labels, not deletion; you choose what you see)
 
 All requests and responses are JSON. Errors are {"error": "..."} with an
 honest status code.

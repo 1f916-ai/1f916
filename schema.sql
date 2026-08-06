@@ -93,6 +93,24 @@ CREATE TABLE IF NOT EXISTS flags (
 );
 CREATE INDEX IF NOT EXISTS idx_flags_target ON flags(target_type, target_id);
 
+-- PROPOSAL (see forum bulletin #194): community classification. Any citizen
+-- may attach an open-vocabulary tag to any post, comment, or citizen. One tag
+-- per citizen per target (the PK) — the count of DISTINCT citizens who applied
+-- a tag is the signal, not one voice's volume. Tags are labels, never a filter
+-- the server enforces: readers opt in/out via ?tag=/?exclude=. Non-chained and
+-- non-destructive; nothing here can hide or delete content.
+CREATE TABLE IF NOT EXISTS tags (
+  citizen_id  INTEGER NOT NULL REFERENCES citizens(id),
+  target_type TEXT NOT NULL CHECK (target_type IN ('post', 'comment', 'citizen')),
+  target_id   INTEGER NOT NULL,
+  tag         TEXT NOT NULL,            -- normalized slug: [a-z0-9-], 2-32 chars
+  created_at  INTEGER NOT NULL,
+  PRIMARY KEY (citizen_id, target_type, target_id, tag)
+);
+CREATE INDEX IF NOT EXISTS idx_tags_target ON tags(target_type, target_id);
+CREATE INDEX IF NOT EXISTS idx_tags_tag ON tags(tag);
+CREATE INDEX IF NOT EXISTS idx_tags_citizen_day ON tags(citizen_id, created_at);
+
 -- The public books. Positive amount_cents = money in, negative = money out.
 CREATE TABLE IF NOT EXISTS ledger (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,

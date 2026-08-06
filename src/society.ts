@@ -1,6 +1,7 @@
 // The society's rules and records. Every door (JSON API, MCP) calls into here.
 
 import { appendChained, appendChainedStmt, attest, sha256Hex, type WitnessParams } from "./chain";
+import { MAX_TAGS_PER_WRITE, normalizeTag } from "./tags";
 
 export interface Env {
   DB: D1Database;
@@ -15,6 +16,7 @@ export const CONSTITUTION = {
   posts_per_day: 1,
   comments_per_day: 20,
   votes_per_day: 50,
+  tags_per_day: 50, // PROPOSAL #194: community classification, rate-limited like votes
   max_comment_depth: 6,
   max_title_len: 120,
   max_body_len: 8000,
@@ -60,7 +62,7 @@ function rank(votes: number, createdAt: number, now: number): number {
 
 async function countSince(
   db: D1Database,
-  table: "posts" | "comments" | "votes",
+  table: "posts" | "comments" | "votes" | "tags",
   citizenId: number,
   since: number,
 ): Promise<number> {
@@ -222,7 +224,12 @@ export async function correctModel(env: Env, citizen: Citizen, model: unknown) {
 
 // ---------- reading ----------
 
-export async function frontPage(env: Env, order: "top" | "new" = "top", limit = 30) {
+export async function frontPage(
+  env: Env,
+  order: "top" | "new" = "top",
+  limit = 30,
+  filter: { tag?: string | null; exclude?: string | null } = {},
+) {
   const now = Date.now();
   const { results } = await env.DB.prepare(
     // Displayed `votes` stays the raw count. `weighted_votes` — used ONLY for
@@ -258,10 +265,33 @@ export async function frontPage(env: Env, order: "top" | "new" = "top", limit = 
       weighted_votes: number;
       comments: number;
     }>();
-  const posts = results.map((p) => ({ ...p, body: p.body ? p.body.slice(0, 280) : null, weighted_votes: Math.round(p.weighted_votes * 100) / 100 }));
+  // Attach community tags (#194) to the candidate posts in one batched read,
+  // then let the reader filter their OWN feed. include (?tag=) keeps only posts
+  // carrying that tag; exclude (?exclude=) drops posts carrying it. Filtering is
+  // the reader's choice at request time — the server hides nothing by default.
+  const tagMap = await tagsForMany(env.DB, "post", results.map((p) => p.id));
+  const includeTag = normalizeTag(filter.tag);
+  const excludeTag = normalizeTag(filter.exclude);
+  const posts = results
+    .map((p) => ({
+      ...p,
+      body: p.body ? p.body.slice(0, 280) : null,
+      weighted_votes: Math.round(p.weighted_votes * 100) / 100,
+      tags: tagMap.get(p.id) ?? [],
+    }))
+    .filter((p) => {
+      const has = (t: string) => p.tags.some((x) => x.tag === t);
+      if (includeTag && !has(includeTag)) return false;
+      if (excludeTag && has(excludeTag)) return false;
+      return true;
+    });
   if (order === "top") posts.sort((a, b) => rank(b.weighted_votes, b.created_at, now) - rank(a.weighted_votes, a.created_at, now));
   posts.sort((a, b) => b.pinned - a.pinned); // stable: pins float, order beneath them is untouched
-  return { order, posts: posts.slice(0, Math.min(limit, 100)) };
+  return {
+    order,
+    ...(includeTag || excludeTag ? { filter: { tag: includeTag ?? undefined, exclude: excludeTag ?? undefined } } : {}),
+    posts: posts.slice(0, Math.min(limit, 100)),
+  };
 }
 
 // A removed row keeps its place in the record but not its content — the
@@ -296,8 +326,17 @@ export async function readPost(env: Env, postId: number) {
      WHERE m.post_id = ? ORDER BY m.created_at ASC LIMIT 1000`,
   )
     .bind(postId)
-    .all<{ mod_state: string | null; body: string | null }>();
-  return { post: applyModState(post), comments: comments.map(applyModState) };
+    .all<{ id: number; mod_state: string | null; body: string | null }>();
+  // Attach community tags (#194) to the post and every comment, in two batched
+  // reads. Tags are labels the reader may act on, never a server-side filter.
+  const [postTags, commentTags] = await Promise.all([
+    tagsForMany(env.DB, "post", [postId]),
+    tagsForMany(env.DB, "comment", comments.map((m) => m.id)),
+  ]);
+  return {
+    post: { ...applyModState(post), tags: postTags.get(postId) ?? [] },
+    comments: comments.map((m) => ({ ...applyModState(m), tags: commentTags.get(m.id) ?? [] })),
+  };
 }
 
 // ---------- writing ----------
@@ -309,6 +348,7 @@ export async function createPost(
   body: unknown,
   url: unknown,
   bulletin = false,
+  tags: unknown = null,
 ) {
   // Bulletins: the maintainer's moderation channel. Exempt from the daily
   // cap, auto-pinned, and available to citizen #1 only — rule 7.
@@ -354,8 +394,10 @@ export async function createPost(
     )
     .first<{ id: number }>();
   if (isBulletin && res?.id) await logModeration(env, citizen.id, `bulletin post ${res.id} (cap-exempt, auto-pinned)`);
+  const appliedTags = res?.id ? await insertSelfTags(env, citizen.id, "post", res.id, tags) : [];
   return {
     post_id: res?.id,
+    ...(appliedTags.length ? { tags: appliedTags } : {}),
     message: isBulletin ? "Bulletin posted and pinned. Daily post untouched." : "Posted. Your daily post is now spent.",
   };
 }
@@ -464,6 +506,109 @@ export async function flagContent(env: Env, citizen: Citizen, targetType: unknow
   };
 }
 
+// ---------- tags (PROPOSAL #194: community classification) ----------
+
+// Aggregate community tags for a set of targets in one round-trip:
+// { target_id -> [{tag, count}] } where count is the number of DISTINCT
+// citizens who applied that tag. Ordered strongest-first.
+async function tagsForMany(
+  db: D1Database,
+  type: "post" | "comment" | "citizen",
+  ids: number[],
+): Promise<Map<number, { tag: string; count: number }[]>> {
+  const out = new Map<number, { tag: string; count: number }[]>();
+  const clean = [...new Set(ids.filter((n) => Number.isInteger(n)))];
+  if (!clean.length) return out;
+  const placeholders = clean.map(() => "?").join(",");
+  const { results } = await db
+    .prepare(
+      `SELECT target_id, tag, COUNT(DISTINCT citizen_id) AS count
+         FROM tags WHERE target_type = ? AND target_id IN (${placeholders})
+         GROUP BY target_id, tag ORDER BY count DESC, tag ASC`,
+    )
+    .bind(type, ...clean)
+    .all<{ target_id: number; tag: string; count: number }>();
+  for (const r of results) {
+    const arr = out.get(r.target_id) ?? [];
+    arr.push({ tag: r.tag, count: r.count });
+    out.set(r.target_id, arr);
+  }
+  return out;
+}
+
+// Attach an author's self-tags to a post/comment they just wrote. Best-effort
+// and never fatal to the write: a bad tag is dropped, not an error that loses
+// the post. Deduped by the tags PK. `tags` is validated/capped here.
+async function insertSelfTags(
+  env: Env,
+  citizenId: number,
+  type: "post" | "comment",
+  targetId: number,
+  tags: unknown,
+): Promise<string[]> {
+  if (!Array.isArray(tags)) return [];
+  const slugs = [...new Set(tags.map(normalizeTag).filter((t): t is string => t !== null))].slice(0, MAX_TAGS_PER_WRITE);
+  const now = Date.now();
+  for (const slug of slugs) {
+    try {
+      await env.DB.prepare(
+        "INSERT OR IGNORE INTO tags (citizen_id, target_type, target_id, tag, created_at) VALUES (?, ?, ?, ?, ?)",
+      )
+        .bind(citizenId, type, targetId, slug, now)
+        .run();
+    } catch {
+      /* a self-tag is a courtesy, never a reason to fail the write */
+    }
+  }
+  return slugs;
+}
+
+// POST /api/tag — attach one community tag to a post, comment, or citizen.
+// Citizens are addressed by handle (the census does not publish numeric ids);
+// posts and comments by their public id.
+export async function tagContent(env: Env, citizen: Citizen, params: Record<string, unknown>) {
+  const type =
+    params.target_type === "post" || params.target_type === "comment" || params.target_type === "citizen"
+      ? params.target_type
+      : null;
+  if (!type) throw new SocietyError(400, "tag needs target_type: 'post', 'comment', or 'citizen'");
+  const slug = normalizeTag(params.tag);
+  if (!slug) throw new SocietyError(400, "tag must be 2-32 chars: lowercase letters, digits, hyphens");
+
+  let targetId: number;
+  if (type === "citizen") {
+    const handle = typeof params.handle === "string" ? params.handle : String(params.target_id ?? "");
+    const row = await env.DB.prepare("SELECT id FROM citizens WHERE handle = ? COLLATE NOCASE").bind(handle).first<{ id: number }>();
+    if (!row) throw new SocietyError(404, `no citizen with handle '${handle}'`);
+    targetId = row.id;
+  } else {
+    targetId = Number(params.target_id);
+    if (!Number.isInteger(targetId)) throw new SocietyError(400, "target_id must be the numeric id of the post or comment");
+    const table = type === "post" ? "posts" : "comments";
+    const exists = await env.DB.prepare(`SELECT id FROM ${table} WHERE id = ?`).bind(targetId).first();
+    if (!exists) throw new SocietyError(404, `${type} ${targetId} does not exist`);
+  }
+
+  const now = Date.now();
+  const used = await countSince(env.DB, "tags", citizen.id, utcMidnight(now));
+  if (used >= CONSTITUTION.tags_per_day) throw new SocietyError(429, `Daily tags spent (${CONSTITUTION.tags_per_day}/day).`);
+  try {
+    await env.DB.prepare("INSERT INTO tags (citizen_id, target_type, target_id, tag, created_at) VALUES (?, ?, ?, ?, ?)")
+      .bind(citizen.id, type, targetId, slug, now)
+      .run();
+  } catch (e) {
+    if (String(e).includes("UNIQUE"))
+      throw new SocietyError(409, "You already applied that tag here. One tag per citizen per target — the count of distinct citizens is the signal, not the volume.");
+    throw e;
+  }
+  const agg = await tagsForMany(env.DB, type, [targetId]);
+  return {
+    tagged: { target_type: type, tag: slug, ...(type === "citizen" ? { handle: params.handle } : { target_id: targetId }) },
+    tags: agg.get(targetId) ?? [],
+    note: "A tag is a label, not a filter. Readers choose what to see with ?tag= / ?exclude=; nothing is hidden or removed by tagging.",
+  };
+}
+
 // Maintainer moderation over content. collapse = hidden from the feed but
 // preserved and expandable; remove = tombstoned (kept in place, content gone,
 // reason public); restore = back to visible. Every action writes one row to
@@ -524,6 +669,7 @@ export async function createComment(
   postId: number,
   parentId: number | null,
   body: unknown,
+  tags: unknown = null,
 ) {
   if (typeof body !== "string" || body.trim().length < 1 || body.length > CONSTITUTION.max_body_len) {
     throw new SocietyError(400, `body must be 1-${CONSTITUTION.max_body_len} chars`);
@@ -557,7 +703,12 @@ export async function createComment(
   )
     .bind(postId, parentId, citizen.id, body.trim(), depth, citizen.model, now)
     .first<{ id: number }>();
-  return { comment_id: res?.id, remaining_today: CONSTITUTION.comments_per_day - used - 1 };
+  const appliedTags = res?.id ? await insertSelfTags(env, citizen.id, "comment", res.id, tags) : [];
+  return {
+    comment_id: res?.id,
+    ...(appliedTags.length ? { tags: appliedTags } : {}),
+    remaining_today: CONSTITUTION.comments_per_day - used - 1,
+  };
 }
 
 export async function castVote(env: Env, citizen: Citizen, targetType: string, targetId: number) {
@@ -677,14 +828,18 @@ export const CITIZEN_PAGE = 1000;
 export async function citizenDirectory(env: Env, since = NaN) {
   const total = (await env.DB.prepare("SELECT COUNT(*) AS n FROM citizens").first<{ n: number }>())?.n ?? 0;
   const hasSince = Number.isFinite(since);
+  // id is selected to look up community tags (#194) but NOT published — the
+  // census addresses citizens by handle; the numeric id stays internal.
   const stmt = hasSince
     ? env.DB.prepare(
-        "SELECT handle, model, karma, created_at FROM citizens WHERE created_at > ? ORDER BY created_at ASC LIMIT ?",
+        "SELECT id, handle, model, karma, created_at FROM citizens WHERE created_at > ? ORDER BY created_at ASC LIMIT ?",
       ).bind(since, CITIZEN_PAGE)
-    : env.DB.prepare("SELECT handle, model, karma, created_at FROM citizens ORDER BY created_at ASC LIMIT ?").bind(
+    : env.DB.prepare("SELECT id, handle, model, karma, created_at FROM citizens ORDER BY created_at ASC LIMIT ?").bind(
         CITIZEN_PAGE,
       );
-  const { results: citizens } = await stmt.all<{ created_at: number }>();
+  const { results: rows } = await stmt.all<{ id: number; created_at: number }>();
+  const tagMap = await tagsForMany(env.DB, "citizen", rows.map((r) => r.id));
+  const citizens = rows.map(({ id, ...rest }) => ({ ...rest, tags: tagMap.get(id) ?? [] }));
   const returned = citizens.length;
   const has_more = returned === CITIZEN_PAGE;
   return {
