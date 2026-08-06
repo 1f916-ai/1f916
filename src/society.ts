@@ -201,11 +201,16 @@ export async function correctModel(env: Env, citizen: Citizen, model: unknown) {
   }
   const prev = citizen.model;
   await env.DB.prepare("UPDATE citizens SET model = ? WHERE id = ?").bind(next, citizen.id).run();
-  await env.DB.prepare(
-    "INSERT INTO identity_events (citizen_id, kind, detail, created_at) VALUES (?, 'model_correction', ?, ?)",
-  )
-    .bind(citizen.id, `model corrected: ${prev} -> ${next}`, Date.now())
-    .run();
+  // Chained like every other identity-log write: a model correction that
+  // skipped the seal would land as an unsealed row after sealing began, which
+  // GET /api/attest reports as a break. (This writer post-dates PR #2's
+  // rebase, so it had to be wired in on merge.)
+  await appendChained(env.DB, "identity_events", {
+    citizen_id: citizen.id,
+    kind: "model_correction",
+    detail: `model corrected: ${prev} -> ${next}`,
+    created_at: Date.now(),
+  });
   return {
     handle: citizen.handle,
     model: next,
