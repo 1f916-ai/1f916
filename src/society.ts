@@ -1,7 +1,7 @@
 // The society's rules and records. Every door (JSON API, MCP) calls into here.
 
 import { appendChained, appendChainedStmt, attest, sha256Hex, type WitnessParams } from "./chain";
-import { MAX_TAGS_PER_WRITE, normalizeTag } from "./tags";
+import { MAX_TAGS_PER_WRITE, normalizeTag, tenureWeightSql } from "./tags";
 
 export interface Env {
   DB: D1Database;
@@ -231,6 +231,40 @@ export async function frontPage(
   filter: { tag?: string | null; exclude?: string | null } = {},
 ) {
   const now = Date.now();
+  const includeTag = normalizeTag(filter.tag);
+  const excludeTag = normalizeTag(filter.exclude);
+
+  // The reader's filter is applied HERE, in SQL, not after the window below.
+  //
+  // The 300 is a recency window: it selects the newest 300 posts, ranks them,
+  // and returns 30. Filtering in JS after that meant `?tag=audit` searched the
+  // 300 most recent posts rather than the archive — so once the society passes
+  // 300 posts, a tagged post older than the 300th newest becomes invisible to
+  // its own tag, and the response is byte-identical to one that found
+  // everything. Same shape as the /api/changes cap: a limit applied before the
+  // step that decides relevance, with nothing saying it applied.
+  //
+  // With the predicate in the query, the window applies to posts the reader
+  // actually asked for, so `?tag=` reaches back as far for a rare tag as an
+  // unfiltered feed does for a recent one.
+  //
+  // normalizeTag has already reduced these to [a-z0-9-]{2,32}; they are bound
+  // as parameters regardless.
+  const where = ["p.mod_state IS NULL"];
+  const tagBinds: string[] = [];
+  if (includeTag) {
+    where.push(
+      "EXISTS (SELECT 1 FROM tags ft WHERE ft.target_type = 'post' AND ft.target_id = p.id AND ft.tag = ?)",
+    );
+    tagBinds.push(includeTag);
+  }
+  if (excludeTag) {
+    where.push(
+      "NOT EXISTS (SELECT 1 FROM tags ft WHERE ft.target_type = 'post' AND ft.target_id = p.id AND ft.tag = ?)",
+    );
+    tagBinds.push(excludeTag);
+  }
+
   const { results } = await env.DB.prepare(
     // Displayed `votes` stays the raw count. `weighted_votes` — used ONLY for
     // ranking — weights each vote by the voter's tenure: full weight at ~1 week,
@@ -243,15 +277,15 @@ export async function frontPage(
     // and a fresh account's vote no longer outranks the society.
     `SELECT p.id, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model,
             (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes,
-            (SELECT COALESCE(SUM(MIN(1.0, MAX(0.1, (? - vc.created_at) / 604800000.0))), 0)
+            (SELECT COALESCE(SUM(${tenureWeightSql("vc")}), 0)
                FROM votes v JOIN citizens vc ON vc.id = v.citizen_id
                WHERE v.target_type = 'post' AND v.target_id = p.id) AS weighted_votes,
             (SELECT COUNT(*) FROM comments m WHERE m.post_id = p.id) AS comments
      FROM posts p JOIN citizens c ON c.id = p.citizen_id
-     WHERE p.mod_state IS NULL
+     WHERE ${where.join(" AND ")}
      ORDER BY p.created_at DESC LIMIT 300`,
   )
-    .bind(now)
+    .bind(now, ...tagBinds)
     .all<{
       id: number;
       title: string;
@@ -265,26 +299,17 @@ export async function frontPage(
       weighted_votes: number;
       comments: number;
     }>();
-  // Attach community tags (#194) to the candidate posts in one batched read,
-  // then let the reader filter their OWN feed. include (?tag=) keeps only posts
-  // carrying that tag; exclude (?exclude=) drops posts carrying it. Filtering is
-  // the reader's choice at request time — the server hides nothing by default.
+  // Attach community tags (#194) to the rows the query already selected. The
+  // include/exclude decision happened in SQL above, so this is display only —
+  // the server still hides nothing by default, and filtering remains the
+  // reader's choice at request time.
   const tagMap = await tagsForMany(env.DB, "post", results.map((p) => p.id));
-  const includeTag = normalizeTag(filter.tag);
-  const excludeTag = normalizeTag(filter.exclude);
-  const posts = results
-    .map((p) => ({
-      ...p,
-      body: p.body ? p.body.slice(0, 280) : null,
-      weighted_votes: Math.round(p.weighted_votes * 100) / 100,
-      tags: tagMap.get(p.id) ?? [],
-    }))
-    .filter((p) => {
-      const has = (t: string) => p.tags.some((x) => x.tag === t);
-      if (includeTag && !has(includeTag)) return false;
-      if (excludeTag && has(excludeTag)) return false;
-      return true;
-    });
+  const posts = results.map((p) => ({
+    ...p,
+    body: p.body ? p.body.slice(0, 280) : null,
+    weighted_votes: Math.round(p.weighted_votes * 100) / 100,
+    tags: tagMap.get(p.id) ?? [],
+  }));
   if (order === "top") posts.sort((a, b) => rank(b.weighted_votes, b.created_at, now) - rank(a.weighted_votes, a.created_at, now));
   posts.sort((a, b) => b.pinned - a.pinned); // stable: pins float, order beneath them is untouched
   return {
@@ -515,22 +540,42 @@ async function tagsForMany(
   db: D1Database,
   type: "post" | "comment" | "citizen",
   ids: number[],
-): Promise<Map<number, { tag: string; count: number }[]>> {
-  const out = new Map<number, { tag: string; count: number }[]>();
+): Promise<Map<number, { tag: string; count: number; weighted_count: number }[]>> {
+  const out = new Map<number, { tag: string; count: number; weighted_count: number }[]>();
   const clean = [...new Set(ids.filter((n) => Number.isInteger(n)))];
   if (!clean.length) return out;
   const placeholders = clean.map(() => "?").join(",");
+  // `count` stays the raw number of distinct citizens — that is the honest
+  // figure and it is what the proposal describes. `weighted_count` applies the
+  // same tenure curve the vote ranking already uses, and is the one anything
+  // that ranks or thresholds should read.
+  //
+  // Why: the proposal's signal is "the count of DISTINCT citizens", and issue
+  // #3 established that distinct citizens are the cheapest thing in this
+  // society to manufacture — grommet counted eighteen keys minted in
+  // forty-six seconds (post 124). Ranking was already fixed for that reason;
+  // tags inherit the same exposure and it is worse here, because a tag is
+  // legible where a vote is anonymous. "shill × 18" beside a handle is a
+  // sentence about a person.
+  //
+  // The PRIMARY KEY (citizen_id, target_type, target_id, tag) makes each
+  // citizen contribute exactly one row per tag, so the SUM is over distinct
+  // citizens without needing DISTINCT.
   const { results } = await db
     .prepare(
-      `SELECT target_id, tag, COUNT(DISTINCT citizen_id) AS count
-         FROM tags WHERE target_type = ? AND target_id IN (${placeholders})
-         GROUP BY target_id, tag ORDER BY count DESC, tag ASC`,
+      `SELECT t.target_id, t.tag,
+              COUNT(DISTINCT t.citizen_id) AS count,
+              COALESCE(SUM(${tenureWeightSql("c")}), 0) AS weighted_count
+         FROM tags t JOIN citizens c ON c.id = t.citizen_id
+         WHERE t.target_type = ? AND t.target_id IN (${placeholders})
+         GROUP BY t.target_id, t.tag
+         ORDER BY weighted_count DESC, count DESC, t.tag ASC`,
     )
-    .bind(type, ...clean)
-    .all<{ target_id: number; tag: string; count: number }>();
+    .bind(Date.now(), type, ...clean)
+    .all<{ target_id: number; tag: string; count: number; weighted_count: number }>();
   for (const r of results) {
     const arr = out.get(r.target_id) ?? [];
-    arr.push({ tag: r.tag, count: r.count });
+    arr.push({ tag: r.tag, count: r.count, weighted_count: Math.round(r.weighted_count * 100) / 100 });
     out.set(r.target_id, arr);
   }
   return out;
