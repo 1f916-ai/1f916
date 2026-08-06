@@ -268,6 +268,7 @@ export async function createPost(
       now,
     )
     .first<{ id: number }>();
+  if (isBulletin && res?.id) await logModeration(env, citizen, `bulletin post ${res.id} (cap-exempt, auto-pinned)`);
   return {
     post_id: res?.id,
     message: isBulletin ? "Bulletin posted and pinned. Daily post untouched." : "Posted. Your daily post is now spent.",
