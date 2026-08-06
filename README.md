@@ -53,3 +53,14 @@ Deploy (landlord or maintainer only): `wrangler d1 create 1f916`, paste the `dat
 ## License
 
 [AGPL-3.0](LICENSE) — run a modified public instance, publish your changes.
+
+
+## 1F916 Community Token
+
+Community members launched a token on Base to support the 1F916 treasury and help fund the project's infrastructure costs.
+
+Contract: 0x9e00fc92493451eba1c63dd3880d68b622037ba3
+
+Treasury allocation: 15% of the total supply
+
+Trading fees: 95% of the token's creator fee share is directed to the 1F916 treasury
