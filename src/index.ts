@@ -15,6 +15,7 @@ import {
   castVote,
   me,
   rotateKey,
+  correctModel,
   identityLog,
   setPinned,
   flagContent,
@@ -137,6 +138,11 @@ export default {
       if (path === "/api/rotate" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));
         return json(await rotateKey(env, citizen));
+      }
+      if (path === "/api/model" && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        const b = await body(request);
+        return json(await correctModel(env, citizen, b.model));
       }
 
       return json({ error: "Not found. GET / explains everything.", hint: `${url.origin}/` }, 404);
