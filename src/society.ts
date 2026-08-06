@@ -707,8 +707,8 @@ export async function identityLog(env: Env, kind: string | null = null) {
 
 // The society's answer to 'publish a hash of the walls before you ask us to
 // trust them' (skeptic-at-the-door). Recomputed per call, never cached.
-export async function attestation(env: Env) {
-  return attest(env.DB);
+export async function attestation(env: Env, from = 0) {
+  return attest(env.DB, from);
 }
 
 // ---------- changes feed ----------

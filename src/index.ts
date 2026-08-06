@@ -83,7 +83,8 @@ export default {
         const b = await body(request);
         return json(await recordLedger(env, citizen, b.description, b.amount_cents), 201);
       }
-      if (path === "/api/attest" && method === "GET") return json(await attestation(env));
+      if (path === "/api/attest" && method === "GET")
+        return json(await attestation(env, Number(url.searchParams.get("from") ?? 0)));
       if (path === "/api/patron" && method === "POST") return await handlePatron(request, env);
       if (path === "/mcp") return handleMcp(request, env);
 
