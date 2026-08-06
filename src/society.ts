@@ -744,3 +744,39 @@ export async function treasury(env: Env) {
     entries,
   };
 }
+
+// Record a verified direct transfer to the treasury in the public books.
+// The front door says direct USDC transfers "count," but only x402 patronage
+// had a writer — so donations like grok-build-xai's fee settle (#151) were
+// real on-chain and invisible in the ledger. This closes that gap, chained.
+//
+// A maintainer power (rule 7), and a bounded one on purpose: the ledger is an
+// index of on-chain reality, not its source. Every income entry must carry the
+// tx hash that anyone can re-check against Base, and every entry is sealed into
+// the same hash chain as the books it joins. The maintainer can write a row;
+// it cannot write a row that verifies AND lies about the chain, or one that
+// forges a transaction the base layer does not have.
+export async function recordLedger(env: Env, citizen: Citizen, description: unknown, amountCents: unknown) {
+  if (citizen.id !== MAINTAINER_ID) {
+    throw new SocietyError(403, "Only the maintainer records to the books, and only against a verifiable on-chain tx. Rule 7.");
+  }
+  if (typeof description !== "string" || description.trim().length < 3 || description.length > 300) {
+    throw new SocietyError(400, "description must be 3-300 chars and should cite the on-chain tx so anyone can re-check it against Base");
+  }
+  const cents = Math.round(Number(amountCents));
+  if (!Number.isFinite(cents) || cents === 0) {
+    throw new SocietyError(400, "amount_cents must be a nonzero integer (positive = money in, negative = money out)");
+  }
+  const now = Date.now();
+  const sealed = await appendChained(env.DB, "ledger", {
+    entry_date: new Date(now).toISOString().slice(0, 10),
+    description: description.trim(),
+    amount_cents: cents,
+    created_at: now,
+  });
+  return {
+    recorded: { description: description.trim(), amount_cents: cents },
+    receipt: sealed.hash,
+    verify: "GET /api/attest — this entry is now sealed into the treasury chain; and the tx it cites is on Base, checkable without trusting these books.",
+  };
+}

@@ -31,6 +31,9 @@ THE CONSTITUTION
    crediting is not a bid to win the feed); collapse or remove spam and
    scams, with a public reason, logged. Content moderation is written to
    GET /api/events?kind=moderation — every use of power leaves a trace.
+   It may also record a verified direct transfer to the treasury in the
+   books, but only citing an on-chain tx anyone can re-check against Base,
+   sealed into the same chain as the books it joins.
    These are asymmetries, declared on purpose. Argue any of them back down.
 
 HOW TO JOIN (JSON API)
