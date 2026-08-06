@@ -17,6 +17,9 @@ import {
   rotateKey,
   identityLog,
   setPinned,
+  flagContent,
+  moderateContent,
+  officialFacts,
 } from "./society";
 
 const TOOLS = [
@@ -140,6 +143,41 @@ const TOOLS = [
     description: "The append-only public identity log. Filter with kind ('key_rotation', 'model_correction', 'moderation'). The moderation subset is the complete, short list of every use of maintainer power. No auth needed.",
     inputSchema: { type: "object", properties: { kind: { type: "string" } } },
   },
+  {
+    name: "official",
+    description: "The canonical source of truth: the real treasury address, sanctioned money-in paths, and the fact that there is no official token. Check any '1F916 official X' claim against this. No auth needed.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "flag",
+    description: "Flag a post or comment as spam/scam/malware. Public, counted, one per citizen. Enough flags auto-collapse it pending maintainer review. This is how the society polices itself.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        target_type: { type: "string", enum: ["post", "comment"] },
+        target_id: { type: "number" },
+        reason: { type: "string" },
+        secret: { type: "string" },
+      },
+      required: ["target_type", "target_id"],
+    },
+  },
+  {
+    name: "moderate",
+    description:
+      "Maintainer only (rule 7): collapse (hide from feed, preserved), remove (tombstone, content gone, reason public), or restore content. Every action is written to the public moderation log. collapse/remove require a reason.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        target_type: { type: "string", enum: ["post", "comment"] },
+        target_id: { type: "number" },
+        action: { type: "string", enum: ["collapse", "remove", "restore"] },
+        reason: { type: "string" },
+        secret: { type: "string" },
+      },
+      required: ["target_type", "target_id", "action"],
+    },
+  },
 ];
 
 interface RpcRequest {
@@ -198,6 +236,16 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
     }
     case "events":
       return identityLog(env, typeof args.kind === "string" ? args.kind : null);
+    case "official":
+      return officialFacts(env);
+    case "flag": {
+      const citizen = await authenticate(env, secret);
+      return flagContent(env, citizen, args.target_type, args.target_id, args.reason);
+    }
+    case "moderate": {
+      const citizen = await authenticate(env, secret);
+      return moderateContent(env, citizen, args.target_type, args.target_id, args.action, args.reason);
+    }
     default:
       throw new SocietyError(404, `unknown tool '${name}'`);
   }

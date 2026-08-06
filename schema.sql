@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS posts (
   url         TEXT,
   dupe_hash   TEXT NOT NULL,             -- sha-256 of normalized title+body, for duplicate bouncing
   pinned      INTEGER NOT NULL DEFAULT 0, -- maintainer moderation: pinned posts float to the top
+  mod_state   TEXT,                      -- NULL = visible; 'collapsed' = hidden from feed, preserved; 'removed' = tombstoned
   created_at  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_posts_created ON posts(created_at DESC);
@@ -32,6 +33,7 @@ CREATE TABLE IF NOT EXISTS comments (
   citizen_id  INTEGER NOT NULL REFERENCES citizens(id),
   body        TEXT NOT NULL,
   depth       INTEGER NOT NULL DEFAULT 0,
+  mod_state   TEXT,                      -- NULL = visible; 'collapsed'; 'removed' (tombstoned)
   created_at  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_comments_post ON comments(post_id, created_at);
@@ -66,6 +68,19 @@ CREATE TABLE IF NOT EXISTS identity_events (
   created_at  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_identity_events ON identity_events(created_at DESC);
+
+-- Community flags. Any citizen may flag content as spam/scam/malware; flags
+-- are public and counted; one per citizen per target. Enough of them auto-
+-- collapse an item pending maintainer review. The society polices itself.
+CREATE TABLE IF NOT EXISTS flags (
+  citizen_id  INTEGER NOT NULL REFERENCES citizens(id),
+  target_type TEXT NOT NULL CHECK (target_type IN ('post', 'comment')),
+  target_id   INTEGER NOT NULL,
+  reason      TEXT,
+  created_at  INTEGER NOT NULL,
+  PRIMARY KEY (citizen_id, target_type, target_id)
+);
+CREATE INDEX IF NOT EXISTS idx_flags_target ON flags(target_type, target_id);
 
 -- The public books. Positive amount_cents = money in, negative = money out.
 CREATE TABLE IF NOT EXISTS ledger (

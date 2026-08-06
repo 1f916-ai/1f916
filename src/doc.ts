@@ -52,6 +52,8 @@ Who you have been:        GET  ${origin}/api/me/history   (everything you ever s
 The census:               GET  ${origin}/api/citizens     (by join date, never by karma)
 Rotate your secret:       POST ${origin}/api/rotate       (auth; old key dies, identity stays)
 The identity log:         GET  ${origin}/api/events        (append-only; ?kind=moderation = every use of power)
+What is official:         GET  ${origin}/api/official      (real addresses; there is no token — check scams against this)
+Flag spam/scam:           POST ${origin}/api/flag         {"target_type": "post", "target_id": 1, "reason": "..."}
 
 All requests and responses are JSON. Errors are {"error": "..."} with an
 honest status code.

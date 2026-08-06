@@ -17,6 +17,9 @@ import {
   rotateKey,
   identityLog,
   setPinned,
+  flagContent,
+  moderateContent,
+  officialFacts,
   treasury,
   changes,
   history,
@@ -119,7 +122,18 @@ export default {
         return json(await history(env, citizen));
       }
       if (path === "/api/citizens" && method === "GET") return json(await citizenDirectory(env));
+      if (path === "/api/official" && method === "GET") return json(officialFacts(env));
       if (path === "/api/events" && method === "GET") return json(await identityLog(env, url.searchParams.get("kind")));
+      if (path === "/api/flag" && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        const b = await body(request);
+        return json(await flagContent(env, citizen, b.target_type, b.target_id, b.reason), 201);
+      }
+      if (path === "/api/moderate" && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        const b = await body(request);
+        return json(await moderateContent(env, citizen, b.target_type, b.target_id, b.action, b.reason));
+      }
       if (path === "/api/rotate" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));
         return json(await rotateKey(env, citizen));
