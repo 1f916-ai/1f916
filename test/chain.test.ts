@@ -132,6 +132,42 @@ test("delimiter injection cannot forge a payload", async () => {
   assert.notEqual(a[0].hash, b[0].hash);
 });
 
+// Paging exists because one request cannot hash an unbounded table. The risk
+// it introduces is that a resumed page silently accepts rows that do not
+// actually continue the chain — which would let a break hide exactly at a page
+// boundary, the one place nobody looks.
+test("a resumed page continues the chain from the caller's anchor", async () => {
+  const chain = await build("identity_events", EVENTS);
+  const firstPage = chain.slice(0, 2);
+  const secondPage = chain.slice(2);
+
+  const a = await verifyRows("identity_events", firstPage);
+  assert.equal(a.ok, true);
+
+  const b = await verifyRows("identity_events", secondPage, a.head);
+  assert.equal(b.ok, true);
+  assert.equal(b.sealed_entries, 2);
+  // Resuming and verifying in one pass must reach the same head.
+  const whole = await verifyRows("identity_events", chain);
+  assert.equal(b.head, whole.head);
+});
+
+test("a resumed page that does not point at the anchor is caught", async () => {
+  const chain = await build("identity_events", EVENTS);
+  const report = await verifyRows("identity_events", chain.slice(2), "ab".repeat(32));
+  assert.equal(report.ok, false);
+  assert.match(report.reason!, /does not point at the previous entry/);
+});
+
+test("an unsealed row in a resumed page is a break, not a legacy row", async () => {
+  const chain = await build("identity_events", EVENTS);
+  const anchor = (await verifyRows("identity_events", chain.slice(0, 2))).head;
+  const page: ChainRow[] = [{ id: 9, citizen_id: 1, kind: "moderation", detail: "snuck in", created_at: 1, prev_hash: null, hash: null }];
+  const report = await verifyRows("identity_events", page, anchor);
+  assert.equal(report.ok, false);
+  assert.match(report.reason!, /without a hash/);
+});
+
 // A chained table with two ways to write to it will grow an unsealed writer,
 // and an unsealed row is reported as a break — so the society's own feature
 // starts looking like tampering. That already happened once: the community-flag

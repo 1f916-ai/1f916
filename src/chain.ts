@@ -64,11 +64,20 @@ export interface ChainReport {
 
 // The pure half — an array in, a verdict out. Kept free of the database so
 // the tests can bend chains in ways a live table never would.
-export async function verifyRows(table: ChainedTable, rows: ChainRow[]): Promise<ChainReport> {
-  let prev = GENESIS;
+//
+// `startPrev` lets a caller resume mid-chain: pass the hash the previous page
+// ended on and the first row here must point at it. A non-genesis start also
+// means sealing has demonstrably begun, so an unsealed row in this page is a
+// break rather than a legacy row.
+export async function verifyRows(
+  table: ChainedTable,
+  rows: ChainRow[],
+  startPrev: string = GENESIS,
+): Promise<ChainReport> {
+  let prev = startPrev;
   let sealed = 0;
   let unsealed = 0;
-  let sealingHasBegun = false;
+  let sealingHasBegun = startPrev !== GENESIS;
 
   for (const row of rows) {
     // Bound to a local: narrowing on a mutable property does not survive the
@@ -175,27 +184,109 @@ export async function appendChainedStmt(
   return { stmt, prev_hash: prev, hash };
 }
 
-async function readChain(db: D1Database, table: ChainedTable): Promise<ChainRow[]> {
+// How many rows one /api/attest call will verify. A bound is necessary — a
+// Worker cannot hash an unbounded table inside one request — but a bound that
+// is not reported is the same defect the audit found in /api/changes (#148,
+// finding 1): a partial answer shaped exactly like a complete one. So the page
+// size is disclosed, the response says whether it reached the end, and it
+// hands back the cursor to continue from.
+export const VERIFY_PAGE = 20000;
+
+async function readChainPage(db: D1Database, table: ChainedTable, fromId: number): Promise<ChainRow[]> {
   const cols = PAYLOAD[table];
   const { results } = await db
-    .prepare(`SELECT id, ${cols.join(", ")}, prev_hash, hash FROM ${table} ORDER BY id ASC LIMIT 20000`)
+    .prepare(`SELECT id, ${cols.join(", ")}, prev_hash, hash FROM ${table} WHERE id > ? ORDER BY id ASC LIMIT ?`)
+    .bind(fromId, VERIFY_PAGE)
     .all<ChainRow>();
   return results;
 }
 
+// The true head, read straight from the tail in one row. This is the value a
+// citizen writes down, so it must never be the hash of wherever verification
+// happened to stop — that mismatch would read as tampering to anyone comparing
+// a saved head, and a tamper-detector that cries wolf gets ignored.
+async function chainTip(
+  db: D1Database,
+  table: ChainedTable,
+): Promise<{ head: string; last_sealed_id: number | null; total_rows: number }> {
+  const tip = await db
+    .prepare(`SELECT id, hash FROM ${table} WHERE hash IS NOT NULL ORDER BY id DESC LIMIT 1`)
+    .first<{ id: number; hash: string }>();
+  const count = await db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).first<{ n: number }>();
+  return {
+    head: tip?.hash ?? GENESIS,
+    last_sealed_id: tip?.id ?? null,
+    total_rows: count?.n ?? 0,
+  };
+}
+
+export interface TableAttestation extends ChainReport {
+  // "verified" — the whole chain was checked and holds.
+  // "incomplete" — no break found, but this call did not reach the end.
+  // "broken" — a break was found and named.
+  status: "verified" | "incomplete" | "broken";
+  head: string; // the true chain tip, always
+  verified_head: string; // where this call's verification actually reached
+  verified_through_id: number | null;
+  total_rows: number;
+  next_from?: number;
+}
+
+async function attestTable(db: D1Database, table: ChainedTable, from: number): Promise<TableAttestation> {
+  const [tip, rows] = await Promise.all([chainTip(db, table), readChainPage(db, table, from)]);
+
+  // Resuming mid-chain requires the hash the caller stopped on, so the first
+  // row of this page can be checked against it rather than assumed.
+  let startPrev = GENESIS;
+  if (from > 0) {
+    const anchor = await db
+      .prepare(`SELECT hash FROM ${table} WHERE id <= ? AND hash IS NOT NULL ORDER BY id DESC LIMIT 1`)
+      .bind(from)
+      .first<{ hash: string }>();
+    startPrev = anchor?.hash ?? GENESIS;
+  }
+
+  const report = await verifyRows(table, rows, startPrev);
+  const lastId = rows.length ? (rows[rows.length - 1].id ?? null) : from > 0 ? from : null;
+  const reachedEnd = rows.length < VERIFY_PAGE;
+
+  const status: TableAttestation["status"] = !report.ok ? "broken" : reachedEnd ? "verified" : "incomplete";
+
+  return {
+    ...report,
+    ok: status === "verified",
+    status,
+    head: tip.head,
+    verified_head: report.head,
+    verified_through_id: lastId,
+    total_rows: tip.total_rows,
+    ...(status === "incomplete"
+      ? {
+          next_from: lastId ?? 0,
+          reason: `verification incomplete — checked ${rows.length} rows through id ${lastId} of ${tip.total_rows}. This is NOT a tamper report: no break was found in what was checked. Call GET /api/attest?from=${lastId} to continue, and keep going while status is 'incomplete'.`,
+        }
+      : {}),
+  };
+}
+
 // The public verifier. Recomputes both chains from scratch on every call —
 // no cached answer, because a cached answer is one more thing to trust.
-export async function attest(db: D1Database) {
+export async function attest(db: D1Database, from = 0) {
+  const cursor = Number.isFinite(from) && from > 0 ? Math.floor(from) : 0;
   const [identity, ledger] = await Promise.all([
-    readChain(db, "identity_events").then((rows) => verifyRows("identity_events", rows)),
-    readChain(db, "ledger").then((rows) => verifyRows("ledger", rows)),
+    attestTable(db, "identity_events", cursor),
+    attestTable(db, "ledger", cursor),
   ]);
   return {
     ok: identity.ok && ledger.ok,
     checked_at: Date.now(),
     algorithm: "sha256(prev_hash + '\\n' + json([fields...])), genesis = 64 zeroes",
+    verified_from: cursor,
+    page_size: VERIFY_PAGE,
     identity_log: identity,
     treasury: ledger,
+    coverage_note:
+      "'head' is the true tip of each chain, read from the last sealed row — that is the value to write down, and it does not move with how far this call verified. 'verified_head' is where this call's checking actually reached. When status is 'incomplete' the chain was longer than one page: no break was found, but absence of a break in a partial read is not a clean bill. Follow next_from until status is 'verified'.",
     what_this_proves:
       "Each sealed row commits to the one before it. Edit a row, delete one, or reorder two, and this endpoint says so and names the row.",
     what_this_does_not_prove:
