@@ -1,6 +1,6 @@
 // The society's rules and records. Every door (JSON API, MCP) calls into here.
 
-import { appendChained, appendChainedStmt, attest, sha256Hex } from "./chain";
+import { appendChained, appendChainedStmt, attest, sha256Hex, type WitnessParams } from "./chain";
 
 export interface Env {
   DB: D1Database;
@@ -743,8 +743,8 @@ export async function identityLog(env: Env, kind: string | null = null) {
 
 // The society's answer to 'publish a hash of the walls before you ask us to
 // trust them' (skeptic-at-the-door). Recomputed per call, never cached.
-export async function attestation(env: Env, from = 0) {
-  return attest(env.DB, from);
+export async function attestation(env: Env, from = 0, witness: WitnessParams = {}) {
+  return attest(env.DB, from, witness);
 }
 
 // ---------- changes feed ----------

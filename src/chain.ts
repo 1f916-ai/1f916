@@ -221,36 +221,73 @@ async function chainTip(
 }
 
 export interface TableAttestation extends ChainReport {
-  // "verified" — the whole chain was checked and holds.
+  // "verified"   — the page was checked, it holds, and it reached the end.
   // "incomplete" — no break found, but this call did not reach the end.
-  // "broken" — a break was found and named.
-  status: "verified" | "incomplete" | "broken";
+  // "broken"     — a break was found and named.
+  // "empty"      — a resumed page (from>0) had no rows, so this call checked
+  //                nothing; NOT a clean bill (no-cron, #159).
+  // "mismatch"   — a caller-supplied expect= did not match the chain's hash at
+  //                `from`: your saved head is stale, or the record moved.
+  status: "verified" | "incomplete" | "broken" | "empty" | "mismatch";
   head: string; // the true chain tip, always
   verified_head: string; // where this call's verification actually reached
   verified_through_id: number | null;
   total_rows: number;
   next_from?: number;
+  // Present only when the caller passed expect=<hash>. The witness check:
+  // does the hash you saved for position `from` still match the chain?
+  expected?: string;
+  anchor_at_from?: string;
+  expect_matches?: boolean;
 }
 
-async function attestTable(db: D1Database, table: ChainedTable, from: number): Promise<TableAttestation> {
+async function attestTable(
+  db: D1Database,
+  table: ChainedTable,
+  from: number,
+  expect?: string,
+): Promise<TableAttestation> {
   const [tip, rows] = await Promise.all([chainTip(db, table), readChainPage(db, table, from)]);
 
-  // Resuming mid-chain requires the hash the caller stopped on, so the first
-  // row of this page can be checked against it rather than assumed.
-  let startPrev = GENESIS;
+  // The chain's hash at `from` — the greatest sealed row at or before it. This
+  // is both the anchor a resumed page must chain from AND the value a saved
+  // head is checked against.
+  let anchor = GENESIS;
   if (from > 0) {
-    const anchor = await db
+    const a = await db
       .prepare(`SELECT hash FROM ${table} WHERE id <= ? AND hash IS NOT NULL ORDER BY id DESC LIMIT 1`)
       .bind(from)
       .first<{ hash: string }>();
-    startPrev = anchor?.hash ?? GENESIS;
+    anchor = a?.hash ?? GENESIS;
   }
 
-  const report = await verifyRows(table, rows, startPrev);
+  const report = await verifyRows(table, rows, anchor);
   const lastId = rows.length ? (rows[rows.length - 1].id ?? null) : from > 0 ? from : null;
   const reachedEnd = rows.length < VERIFY_PAGE;
+  const nothingChecked = rows.length === 0;
 
-  const status: TableAttestation["status"] = !report.ok ? "broken" : reachedEnd ? "verified" : "incomplete";
+  // The witness check (no-cron, #159): a caller who saved a head can hand it
+  // back as expect=. We compare it to the chain's current hash at `from` and
+  // say plainly whether it still matches — the thing a bare re-fetch of
+  // /api/attest could never tell you about a value YOU held.
+  const expectProvided = typeof expect === "string" && expect.length > 0;
+  const expectMatches = expectProvided ? expect === anchor : undefined;
+
+  let status: TableAttestation["status"];
+  if (!report.ok) status = "broken";
+  else if (expectProvided && !expectMatches) status = "mismatch";
+  else if (nothingChecked && from > 0 && !expectProvided) status = "empty";
+  else if (reachedEnd) status = "verified";
+  else status = "incomplete";
+
+  const reason =
+    status === "mismatch"
+      ? `the hash you supplied for id ${from} (${expect}) is NOT the hash this chain holds there now (${anchor}). Either the record was altered or truncated after you saved it, or you supplied the wrong id/hash. This is the witness firing — and because it is about a specific value you already held, you can show it to another citizen, which a private re-fetch never let you do.`
+      : status === "empty"
+        ? `this call verified nothing: there are no rows at or after id ${from} (the chain ends at id ${tip.last_sealed_id ?? "genesis"}). Earlier pages checked the rows up to here; THIS call did not, so it is not a clean bill. To confirm a saved head, pass &expect=<hash> with &from=<its id>.`
+        : status === "incomplete"
+          ? `verification incomplete — checked ${rows.length} rows through id ${lastId} of ${tip.total_rows}. This is NOT a tamper report: no break was found in what was checked. Call GET /api/attest?from=${lastId} to continue while status is 'incomplete'.`
+          : report.reason;
 
   return {
     ...report,
@@ -260,33 +297,43 @@ async function attestTable(db: D1Database, table: ChainedTable, from: number): P
     verified_head: report.head,
     verified_through_id: lastId,
     total_rows: tip.total_rows,
-    ...(status === "incomplete"
-      ? {
-          next_from: lastId ?? 0,
-          reason: `verification incomplete — checked ${rows.length} rows through id ${lastId} of ${tip.total_rows}. This is NOT a tamper report: no break was found in what was checked. Call GET /api/attest?from=${lastId} to continue, and keep going while status is 'incomplete'.`,
-        }
-      : {}),
+    ...(reason ? { reason } : {}),
+    ...(status === "incomplete" ? { next_from: lastId ?? 0 } : {}),
+    ...(expectProvided ? { expected: expect, anchor_at_from: anchor, expect_matches: expectMatches } : {}),
   };
 }
 
 // The public verifier. Recomputes both chains from scratch on every call —
 // no cached answer, because a cached answer is one more thing to trust.
-export async function attest(db: D1Database, from = 0) {
-  const cursor = Number.isFinite(from) && from > 0 ? Math.floor(from) : 0;
+export interface WitnessParams {
+  identityExpect?: string;
+  ledgerExpect?: string;
+  identityFrom?: number;
+  ledgerFrom?: number;
+}
+
+export async function attest(db: D1Database, from = 0, witness: WitnessParams = {}) {
+  const norm = (x: number | undefined) => (typeof x === "number" && Number.isFinite(x) && x > 0 ? Math.floor(x) : 0);
+  // Each chain has its own head at its own id, so expect= is per-chain. A bare
+  // `from` still pages both; identity_from/ledger_from override per chain.
+  const iFrom = norm(witness.identityFrom ?? from);
+  const lFrom = norm(witness.ledgerFrom ?? from);
   const [identity, ledger] = await Promise.all([
-    attestTable(db, "identity_events", cursor),
-    attestTable(db, "ledger", cursor),
+    attestTable(db, "identity_events", iFrom, witness.identityExpect),
+    attestTable(db, "ledger", lFrom, witness.ledgerExpect),
   ]);
   return {
     ok: identity.ok && ledger.ok,
     checked_at: Date.now(),
     algorithm: "sha256(prev_hash + '\\n' + json([fields...])), genesis = 64 zeroes",
-    verified_from: cursor,
+    verified_from: norm(from),
+    identity_from: iFrom,
+    ledger_from: lFrom,
     page_size: VERIFY_PAGE,
     identity_log: identity,
     treasury: ledger,
     coverage_note:
-      "'head' is the true tip of each chain, read from the last sealed row — that is the value to write down, and it does not move with how far this call verified. 'verified_head' is where this call's checking actually reached. When status is 'incomplete' the chain was longer than one page: no break was found, but absence of a break in a partial read is not a clean bill. Follow next_from until status is 'verified'.",
+      "'head' is the true tip of each chain, read from the last sealed row — that is the value to write down, and it does not move with how far this call verified. 'verified_head' is where this call's checking actually reached. When status is 'incomplete' the chain was longer than one page: no break was found, but absence of a break in a partial read is not a clean bill. Follow next_from until status is 'verified'. To CHECK a saved head instead of taking our word: GET /api/attest?identity_from=<id>&identity_expect=<hash> (and/or ledger_from/ledger_expect). status 'mismatch' with expect_matches:false means the hash you saved is no longer the chain's hash at that id — the witness firing on a value you can show, not a private alarm (no-cron, #159).",
     what_this_proves:
       "Each sealed row commits to the one before it. Edit a row, delete one, or reorder two, and this endpoint says so and names the row.",
     what_this_does_not_prove:
