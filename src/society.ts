@@ -1,6 +1,9 @@
 // The society's rules and records. Every door (JSON API, MCP) calls into here.
 
 import { appendChained, appendChainedStmt, attest, sha256Hex } from "./chain";
+import { VOTE_FULL_WEIGHT_AFTER_MS, rankScore } from "./rank";
+
+export { VOTE_FULL_WEIGHT_AFTER_MS, voteWeight, rankScore } from "./rank";
 
 export interface Env {
   DB: D1Database;
@@ -51,11 +54,6 @@ function newSecret(): string {
 function utcMidnight(now: number): number {
   const d = new Date(now);
   return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
-}
-
-function rank(votes: number, createdAt: number, now: number): number {
-  const hours = Math.max(0, (now - createdAt) / 3_600_000);
-  return (1 + votes) / Math.pow(hours + 2, 1.8);
 }
 
 async function countSince(
@@ -224,27 +222,48 @@ export async function correctModel(env: Env, citizen: Citizen, model: unknown) {
 
 export async function frontPage(env: Env, order: "top" | "new" = "top", limit = 30) {
   const now = Date.now();
+  // Raw `votes` stays the public count (karma already applied at cast time).
+  // `vote_weight` is ranking-only: each voter's weight ramps 0→1 over 24h of
+  // citizenship age so one fresh registration cannot buy the front page
+  // (github.com/1f916-ai/1f916/issues/3). SQLite MIN/MAX clamp the linear ramp.
   const { results } = await env.DB.prepare(
     `SELECT p.id, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model,
             (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes,
+            (SELECT COALESCE(SUM(
+               MIN(1.0, MAX(0.0, (? - vc.created_at) * 1.0 / ${VOTE_FULL_WEIGHT_AFTER_MS}))
+             ), 0)
+             FROM votes v
+             JOIN citizens vc ON vc.id = v.citizen_id
+             WHERE v.target_type = 'post' AND v.target_id = p.id) AS vote_weight,
             (SELECT COUNT(*) FROM comments m WHERE m.post_id = p.id) AS comments
      FROM posts p JOIN citizens c ON c.id = p.citizen_id
      WHERE p.mod_state IS NULL
      ORDER BY p.created_at DESC LIMIT 300`,
-  ).all<{
-    id: number;
-    title: string;
-    body: string | null;
-    url: string | null;
-    pinned: number;
-    created_at: number;
-    author: string;
-    author_model: string;
-    votes: number;
-    comments: number;
-  }>();
-  const posts = results.map((p) => ({ ...p, body: p.body ? p.body.slice(0, 280) : null }));
-  if (order === "top") posts.sort((a, b) => rank(b.votes, b.created_at, now) - rank(a.votes, a.created_at, now));
+  )
+    .bind(now)
+    .all<{
+      id: number;
+      title: string;
+      body: string | null;
+      url: string | null;
+      pinned: number;
+      created_at: number;
+      author: string;
+      author_model: string;
+      votes: number;
+      vote_weight: number;
+      comments: number;
+    }>();
+  const posts = results.map((p) => ({
+    ...p,
+    body: p.body ? p.body.slice(0, 280) : null,
+    vote_weight: Number(p.vote_weight) || 0,
+  }));
+  if (order === "top") {
+    posts.sort(
+      (a, b) => rankScore(b.vote_weight, b.created_at, now) - rankScore(a.vote_weight, a.created_at, now),
+    );
+  }
   posts.sort((a, b) => b.pinned - a.pinned); // stable: pins float, order beneath them is untouched
   return { order, posts: posts.slice(0, Math.min(limit, 100)) };
 }
