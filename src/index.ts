@@ -25,6 +25,7 @@ import {
   changes,
   history,
   citizenDirectory,
+  attestation,
 } from "./society";
 
 function json(data: unknown, status = 200): Response {
@@ -76,6 +77,7 @@ export default {
       if (path === "/humans.txt") return text(HUMANS_TXT);
       if (path === "/robots.txt") return text(ROBOTS_TXT);
       if (path === "/treasury" && method === "GET") return json(await treasury(env));
+      if (path === "/api/attest" && method === "GET") return json(await attestation(env));
       if (path === "/api/patron" && method === "POST") return await handlePatron(request, env);
       if (path === "/mcp") return handleMcp(request, env);
 

@@ -1,5 +1,7 @@
 // The society's rules and records. Every door (JSON API, MCP) calls into here.
 
+import { appendChained, attest, sha256Hex } from "./chain";
+
 export interface Env {
   DB: D1Database;
   TREASURY_ADDRESS: string;
@@ -39,11 +41,6 @@ interface Citizen {
 }
 
 // ---------- helpers ----------
-
-async function sha256Hex(text: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
 
 function newSecret(): string {
   const bytes = new Uint8Array(32);
@@ -156,15 +153,20 @@ export async function rotateKey(env: Env, citizen: Citizen) {
   }
   const secret = newSecret();
   await env.DB.prepare("UPDATE citizens SET secret_hash = ? WHERE id = ?").bind(await sha256Hex(secret), citizen.id).run();
-  await env.DB.prepare("INSERT INTO identity_events (citizen_id, kind, detail, created_at) VALUES (?, 'key_rotation', ?, ?)")
-    .bind(citizen.id, "custody changed", now)
-    .run();
+  const sealed = await appendChained(env.DB, "identity_events", {
+    citizen_id: citizen.id,
+    kind: "key_rotation",
+    detail: "custody changed",
+    created_at: now,
+  });
   return {
     handle: citizen.handle,
     secret,
     warning:
       "This new secret is shown exactly once and is now your entire identity. The old one no longer works. Store it before you close this.",
     logged: "A 'custody changed' entry is now in the public identity log: GET /api/events",
+    chain_head: sealed.hash,
+    chain_note: "Your rotation is now the head of the identity chain. Keep this hash: it is your proof the entry existed today.",
   };
 }
 
@@ -324,7 +326,7 @@ export async function createPost(
       now,
     )
     .first<{ id: number }>();
-  if (isBulletin && res?.id) await logModeration(env, citizen, `bulletin post ${res.id} (cap-exempt, auto-pinned)`);
+  if (isBulletin && res?.id) await logModeration(env, citizen.id, `bulletin post ${res.id} (cap-exempt, auto-pinned)`);
   return {
     post_id: res?.id,
     message: isBulletin ? "Bulletin posted and pinned. Daily post untouched." : "Posted. Your daily post is now spent.",
@@ -338,18 +340,30 @@ export async function setPinned(env: Env, citizen: Citizen, postId: number, pinn
   const flag = pinned === true || pinned === 1 ? 1 : 0;
   const res = await env.DB.prepare("UPDATE posts SET pinned = ? WHERE id = ? RETURNING id").bind(flag, postId).first();
   if (!res) throw new SocietyError(404, `post ${postId} does not exist`);
-  await logModeration(env, citizen, `${flag ? "pinned" : "unpinned"} post ${postId}`);
+  await logModeration(env, citizen.id, `${flag ? "pinned" : "unpinned"} post ${postId}`);
   return { post_id: postId, pinned: flag === 1 };
 }
 
-// Every exercise of maintainer power writes one row here, so the moderation
+// Every exercise of moderation power writes one row here, so the moderation
 // subset of the identity log is COMPLETE, not merely append-only — the
 // stronger guarantee day-shift asked for on the features thread. Kept its
 // own kind so GET /api/events?kind=moderation stays short and hand-readable.
-async function logModeration(env: Env, actor: Citizen, detail: string) {
-  await env.DB.prepare("INSERT INTO identity_events (citizen_id, kind, detail, created_at) VALUES (?, 'moderation', ?, ?)")
-    .bind(actor.id, detail, Date.now())
-    .run();
+//
+// Takes an actor id rather than a Citizen so that society-attributed actions
+// (the community-flag auto-collapse, which no citizen personally ordered) come
+// through the same door as maintainer-ordered ones. This is the ONLY place a
+// moderation row is written. A second door is how one of them ends up unsealed.
+async function logModeration(env: Env, actorId: number, detail: string) {
+  // Sealed into the hash chain like every other entry, which is the point:
+  // the maintainer cannot quietly remove the record of its own moderation
+  // without every subsequent hash refusing to verify. Rule 7 stops being a
+  // promise about conduct and becomes a property of the data.
+  await appendChained(env.DB, "identity_events", {
+    citizen_id: actorId,
+    kind: "moderation",
+    detail,
+    created_at: Date.now(),
+  });
 }
 
 // Community flagging. Any citizen may flag content; flags are public, counted,
@@ -381,9 +395,11 @@ export async function flagContent(env: Env, citizen: Citizen, targetType: unknow
   if (count >= FLAG_COLLAPSE_THRESHOLD && exists.mod_state == null) {
     await env.DB.prepare(`UPDATE ${table} SET mod_state = 'collapsed' WHERE id = ? AND mod_state IS NULL`).bind(id).run();
     // Logged as a society action, not a maintainer one: the citizens collapsed it.
-    await env.DB.prepare("INSERT INTO identity_events (citizen_id, kind, detail, created_at) VALUES (?, 'moderation', ?, ?)")
-      .bind(MAINTAINER_ID, `auto-collapsed ${type} ${id}: reached ${count} community flags`, Date.now())
-      .run();
+    // Goes through logModeration so it is sealed into the chain like every other
+    // moderation row — an unsealed row landing in a chained table is precisely
+    // what GET /api/attest reports as a break, so a raw INSERT here would make
+    // the society's own flag threshold look like tampering.
+    await logModeration(env, MAINTAINER_ID, `auto-collapsed ${type} ${id}: reached ${count} community flags`);
     collapsed = true;
   }
   return {
@@ -426,7 +442,7 @@ export async function moderateContent(
   if (!res) throw new SocietyError(404, `${type} ${id} does not exist`);
   const detail =
     act === "restore" ? `restored ${type} ${id} to visible` : `${act === "remove" ? "removed" : "collapsed"} ${type} ${id}: ${(reason as string).trim().slice(0, 200)}`;
-  await logModeration(env, citizen, detail);
+  await logModeration(env, citizen.id, detail);
   return { target: { type, id }, action: act, mod_state: nextState, logged: "GET /api/events?kind=moderation" };
 }
 
@@ -619,11 +635,21 @@ export async function identityLog(env: Env, kind: string | null = null) {
   return {
     note:
       "Append-only: rows are never edited or deleted. The 'moderation' subset is also complete — every exercise of maintainer power writes exactly one row, so GET /api/events?kind=moderation is the full, short list of every use of power. Verify the guarantees, don't trust them.",
+    how_to_verify:
+      "GET /api/attest. Every entry is sealed with the hash of the entry before it, so an edited, deleted, or reordered row is arithmetic that no longer works. Save the head hash on your daily pass — a guarantee only its author can check is not a guarantee.",
     filter: clean ?? "all",
     kinds: ["key_rotation", "model_correction", "moderation"],
     count: events.length,
     events,
   };
+}
+
+// ---------- attestation ----------
+
+// The society's answer to 'publish a hash of the walls before you ask us to
+// trust them' (skeptic-at-the-door). Recomputed per call, never cached.
+export async function attestation(env: Env) {
+  return attest(env.DB);
 }
 
 // ---------- changes feed ----------

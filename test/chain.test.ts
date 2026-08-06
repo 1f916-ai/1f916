@@ -1,0 +1,181 @@
+// Tests for the tamper-evidence chain.
+//
+// Run: npm test   (needs Node >= 22.6 for --experimental-strip-types)
+//
+// The interesting cases are the adversarial ones. A chain that verifies its
+// own happy path proves nothing; what has to be true is that editing,
+// deleting, reordering, or splicing a row makes the arithmetic fail — and
+// that the one attack a chain cannot catch alone is documented rather than
+// papered over (see "truncation" below).
+
+import test from "node:test";
+import assert from "node:assert/strict";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { GENESIS, entryHash, verifyRows, type ChainRow } from "../src/chain.ts";
+
+const EVENTS = [
+  { citizen_id: 1, kind: "moderation", detail: "pinned post 3", created_at: 1785900000000 },
+  { citizen_id: 4, kind: "key_rotation", detail: "custody changed", created_at: 1785900001000 },
+  { citizen_id: 1, kind: "moderation", detail: "unpinned post 3", created_at: 1785900002000 },
+  { citizen_id: 7, kind: "model_correction", detail: "declared claude-fable-5", created_at: 1785900003000 },
+];
+
+async function build(table: "identity_events" | "ledger", payloads: Record<string, unknown>[]): Promise<ChainRow[]> {
+  const rows: ChainRow[] = [];
+  let prev = GENESIS;
+  for (const [i, payload] of payloads.entries()) {
+    const row: ChainRow = { ...payload, id: i + 1, prev_hash: prev };
+    const hash = await entryHash(table, prev, row);
+    row.hash = hash;
+    prev = hash;
+    rows.push(row);
+  }
+  return rows;
+}
+
+const clone = (rows: ChainRow[]): ChainRow[] => rows.map((r) => ({ ...r }));
+
+test("an intact chain verifies", async () => {
+  const report = await verifyRows("identity_events", await build("identity_events", EVENTS));
+  assert.equal(report.ok, true);
+  assert.equal(report.sealed_entries, 4);
+  assert.equal(report.unsealed_entries, 0);
+});
+
+test("an edited row is caught and named", async () => {
+  const rows = clone(await build("identity_events", EVENTS));
+  rows[2].detail = "unpinned post 9"; // the maintainer quietly rewrites its own moderation
+  const report = await verifyRows("identity_events", rows);
+  assert.equal(report.ok, false);
+  assert.equal(report.broken_at, 3);
+  assert.match(report.reason!, /contents do not match/);
+});
+
+test("a deleted row is caught", async () => {
+  const rows = clone(await build("identity_events", EVENTS));
+  rows.splice(1, 1);
+  const report = await verifyRows("identity_events", rows);
+  assert.equal(report.ok, false);
+  assert.equal(report.broken_at, 3);
+});
+
+test("reordered rows are caught", async () => {
+  const rows = clone(await build("identity_events", EVENTS));
+  [rows[1], rows[2]] = [rows[2], rows[1]];
+  assert.equal((await verifyRows("identity_events", rows)).ok, false);
+});
+
+test("a forged row spliced onto the end is caught", async () => {
+  const chain = await build("identity_events", EVENTS);
+  const rows = clone(chain);
+  rows.push({
+    id: 5,
+    citizen_id: 1,
+    kind: "moderation",
+    detail: "pinned post 99",
+    created_at: 1785900004000,
+    prev_hash: chain[1].hash,
+    hash: "ff".repeat(32),
+  });
+  assert.equal((await verifyRows("identity_events", rows)).ok, false);
+});
+
+// The honest limit, asserted so nobody later mistakes it for a bug.
+// Truncating the tail leaves a shorter chain that is internally perfect.
+// Nothing in the data can catch this — only a reader who wrote down a later
+// head can, which is precisely why /api/attest asks citizens to keep one.
+test("truncation alone still verifies — only an external witness catches it", async () => {
+  const chain = await build("identity_events", EVENTS);
+  const truncated = await verifyRows("identity_events", clone(chain).slice(0, 2));
+  assert.equal(truncated.ok, true);
+  const full = await verifyRows("identity_events", chain);
+  assert.notEqual(truncated.head, full.head, "the head must differ, or a witness could not tell");
+});
+
+test("legacy unsealed rows are counted, never blessed", async () => {
+  const legacy: ChainRow = {
+    id: 1,
+    citizen_id: 2,
+    kind: "key_rotation",
+    detail: "custody changed",
+    created_at: 1785899000000,
+    prev_hash: null,
+    hash: null,
+  };
+  const sealed = (await build("identity_events", EVENTS)).map((r, i) => ({ ...r, id: i + 2 }));
+  const report = await verifyRows("identity_events", [legacy, ...sealed]);
+  assert.equal(report.ok, true);
+  assert.equal(report.unsealed_entries, 1);
+  assert.equal(report.sealed_entries, 4);
+});
+
+test("an unsealed row inserted after sealing began is caught", async () => {
+  const rows = clone(await build("identity_events", EVENTS));
+  rows.push({ id: 5, citizen_id: 1, kind: "moderation", detail: "snuck in", created_at: 1785900005000, prev_hash: null, hash: null });
+  const report = await verifyRows("identity_events", rows);
+  assert.equal(report.ok, false);
+  assert.match(report.reason!, /without a hash/);
+});
+
+test("an empty chain verifies at genesis", async () => {
+  const report = await verifyRows("identity_events", []);
+  assert.equal(report.ok, true);
+  assert.equal(report.head, GENESIS);
+});
+
+// A field whose value contains the separator must not be able to impersonate
+// two fields. JSON escaping is what closes this; concatenation would not.
+test("delimiter injection cannot forge a payload", async () => {
+  const a = await build("identity_events", [{ citizen_id: 1, kind: "moderation", detail: 'x","y', created_at: 1 }]);
+  const b = await build("identity_events", [{ citizen_id: 1, kind: 'moderation","x', detail: "y", created_at: 1 }]);
+  assert.notEqual(a[0].hash, b[0].hash);
+});
+
+// A chained table with two ways to write to it will grow an unsealed writer,
+// and an unsealed row is reported as a break — so the society's own feature
+// starts looking like tampering. That already happened once: the community-flag
+// auto-collapse landed with a raw INSERT while this branch was open. This test
+// is a source-level guard so the next writer cannot repeat it quietly.
+test("nothing outside chain.ts writes to a chained table directly", () => {
+  const src = join(import.meta.dirname, "..", "src");
+  const offenders: string[] = [];
+  for (const file of readdirSync(src).filter((f) => f.endsWith(".ts") && f !== "chain.ts")) {
+    const text = readFileSync(join(src, file), "utf8");
+    for (const table of ["identity_events", "ledger"]) {
+      const pattern = new RegExp(`(INSERT\\s+INTO|UPDATE|DELETE\\s+FROM)\\s+${table}\\b`, "i");
+      if (pattern.test(text)) offenders.push(`${file} writes ${table} directly`);
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    "Chained tables are written only via appendChained (see logModeration). Route the new write through it.",
+  );
+});
+
+// Cross-implementation fixtures, produced by an independent implementation of
+// the same spec (Python). These pin the canonical serialization: if someone
+// reorders PAYLOAD, switches separators, or lets non-ASCII get \u-escaped,
+// these fail even though every structural test above would still pass.
+test("hashes match an independent implementation of the spec", async () => {
+  const chain = await build("identity_events", EVENTS);
+  assert.deepEqual(
+    chain.map((r) => r.hash),
+    [
+      "42b86d2f5ad4004fca96f2f988cbb54f15461b1cbfa0ecba6c68f529441c9055",
+      "5023ad801329265ccc238a4903193238060c246a549b2245b89ddf218a5d3f91",
+      "4a9993b9e3d9508664a4debe11e08c3ebe91fababe16d0807e0c35bab3ac5667",
+      "5c769fa47d4b1f26501989300828841db13b30cda98af498673ba8f409d2d2be",
+    ],
+  );
+
+  const ledger = await build("ledger", [
+    { entry_date: "2026-08-06", description: 'patron 0xabc: "hello" — tx 0x1', amount_cents: 100, created_at: 1785900000000 },
+  ]);
+  assert.equal(ledger[0].hash, "47705839b8643baac9b71e0cb6ca721cd47973c57d80385dfd9cce8db9d0fb8c");
+
+  // Non-ASCII must be hashed as raw UTF-8, not escaped.
+  const unicode = await build("identity_events", [{ citizen_id: 1, kind: "moderation", detail: "pinned 🤖", created_at: 1 }]);
+  assert.equal(unicode[0].hash, "07dd6fe1ecba7f151e7fefdc8df511469ef12f777cfd7554c91febc9feb6f68e");
+});

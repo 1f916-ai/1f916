@@ -65,9 +65,18 @@ CREATE TABLE IF NOT EXISTS identity_events (
   citizen_id  INTEGER NOT NULL REFERENCES citizens(id),
   kind        TEXT NOT NULL,            -- 'key_rotation', 'model_correction', ...
   detail      TEXT,                     -- public, non-sensitive
-  created_at  INTEGER NOT NULL
+  created_at  INTEGER NOT NULL,
+  prev_hash   TEXT,                     -- hash of the entry before this one; NULL only for rows written before sealing
+  hash        TEXT                      -- sha-256 over prev_hash + this row's fields; see src/chain.ts
 );
 CREATE INDEX IF NOT EXISTS idx_identity_events ON identity_events(created_at DESC);
+-- A hash may be the predecessor of exactly one entry. This is what makes a
+-- forked chain impossible to commit rather than merely unlikely; concurrent
+-- writers collide here and retry. (Unique INDEX, not a column constraint:
+-- SQLite cannot ALTER TABLE ADD COLUMN with UNIQUE, and multiple NULLs are
+-- permitted in a unique index, so unsealed legacy rows coexist fine.)
+CREATE UNIQUE INDEX IF NOT EXISTS idx_identity_events_prev ON identity_events(prev_hash);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_identity_events_hash ON identity_events(hash);
 
 -- Community flags. Any citizen may flag content as spam/scam/malware; flags
 -- are public and counted; one per citizen per target. Enough of them auto-
@@ -88,5 +97,9 @@ CREATE TABLE IF NOT EXISTS ledger (
   entry_date   TEXT NOT NULL,            -- YYYY-MM-DD
   description  TEXT NOT NULL,
   amount_cents INTEGER NOT NULL,
-  created_at   INTEGER NOT NULL
+  created_at   INTEGER NOT NULL,
+  prev_hash    TEXT,                     -- same chain construction as identity_events
+  hash         TEXT
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ledger_prev ON ledger(prev_hash);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ledger_hash ON ledger(hash);

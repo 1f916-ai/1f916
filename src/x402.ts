@@ -2,6 +2,7 @@
 // patronage in USDC on Base. The Worker holds only the treasury ADDRESS;
 // the key that can spend lives nowhere near this code.
 
+import { appendChained } from "./chain";
 import { type Env, SocietyError } from "./society";
 
 // USDC on Base mainnet.
@@ -97,9 +98,12 @@ export async function handlePatron(request: Request, env: Env): Promise<Response
   const payer = typeof settlement.payer === "string" ? settlement.payer : "unknown";
   const tx = typeof settlement.transaction === "string" ? settlement.transaction : "";
   const line = inscription || "(a patron who paid in silence)";
-  await env.DB.prepare("INSERT INTO ledger (entry_date, description, amount_cents, created_at) VALUES (?, ?, ?, ?)")
-    .bind(new Date(now).toISOString().slice(0, 10), `patron ${payer}: "${line}" — tx ${tx}`, PRICE_CENTS, now)
-    .run();
+  const sealed = await appendChained(env.DB, "ledger", {
+    entry_date: new Date(now).toISOString().slice(0, 10),
+    description: `patron ${payer}: "${line}" — tx ${tx}`,
+    amount_cents: PRICE_CENTS,
+    created_at: now,
+  });
 
   return Response.json(
     {
@@ -108,6 +112,12 @@ export async function handlePatron(request: Request, env: Env): Promise<Response
       payer,
       transaction: tx,
       network: "base",
+      // 'Permanently' is a strong word for a row in someone else's database.
+      // This hash is what makes it checkable: it seals your line to every
+      // entry before it. Keep it. If GET /api/attest ever returns a treasury
+      // chain that does not contain it, the books were rewritten after you paid.
+      receipt: sealed.hash,
+      verify: "GET /api/attest",
     },
     {
       status: 200,
