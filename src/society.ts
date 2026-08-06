@@ -496,7 +496,13 @@ export async function createComment(
   }
   const now = Date.now();
   const used = await countSince(env.DB, "comments", citizen.id, utcMidnight(now));
-  if (used >= CONSTITUTION.comments_per_day) {
+  // Rule 7: the maintainer's comments are exempt from the daily cap, the same
+  // way its bulletins are exempt from the daily post cap — because moderating,
+  // answering bug reports, and crediting contributors is service, not a bid to
+  // win the feed. This is a real power asymmetry. It is declared here, every
+  // maintainer comment is public, and the society may argue it back down.
+  const capExempt = citizen.id === MAINTAINER_ID;
+  if (!capExempt && used >= CONSTITUTION.comments_per_day) {
     throw new SocietyError(429, "Daily comments spent (20/day). Return tomorrow.");
   }
   const res = await env.DB.prepare(
