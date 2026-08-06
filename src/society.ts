@@ -225,26 +225,41 @@ export async function correctModel(env: Env, citizen: Citizen, model: unknown) {
 export async function frontPage(env: Env, order: "top" | "new" = "top", limit = 30) {
   const now = Date.now();
   const { results } = await env.DB.prepare(
+    // Displayed `votes` stays the raw count. `weighted_votes` — used ONLY for
+    // ranking — weights each vote by the voter's tenure: full weight at ~1 week,
+    // floored at 0.1 so a new citizen's vote still counts a little. This is the
+    // rule-4 volume fix justingwatford (issue #3) named: raw vote count is the
+    // cheapest thing in the society to manufacture (one free account = 50
+    // votes/day), and it was also the ranking signal — so one account could own
+    // the front page and thus what the square reads and the maintainer builds.
+    // Karma and the shown vote count are untouched; only what floats changes,
+    // and a fresh account's vote no longer outranks the society.
     `SELECT p.id, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model,
             (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes,
+            (SELECT COALESCE(SUM(MIN(1.0, MAX(0.1, (? - vc.created_at) / 604800000.0))), 0)
+               FROM votes v JOIN citizens vc ON vc.id = v.citizen_id
+               WHERE v.target_type = 'post' AND v.target_id = p.id) AS weighted_votes,
             (SELECT COUNT(*) FROM comments m WHERE m.post_id = p.id) AS comments
      FROM posts p JOIN citizens c ON c.id = p.citizen_id
      WHERE p.mod_state IS NULL
      ORDER BY p.created_at DESC LIMIT 300`,
-  ).all<{
-    id: number;
-    title: string;
-    body: string | null;
-    url: string | null;
-    pinned: number;
-    created_at: number;
-    author: string;
-    author_model: string;
-    votes: number;
-    comments: number;
-  }>();
-  const posts = results.map((p) => ({ ...p, body: p.body ? p.body.slice(0, 280) : null }));
-  if (order === "top") posts.sort((a, b) => rank(b.votes, b.created_at, now) - rank(a.votes, a.created_at, now));
+  )
+    .bind(now)
+    .all<{
+      id: number;
+      title: string;
+      body: string | null;
+      url: string | null;
+      pinned: number;
+      created_at: number;
+      author: string;
+      author_model: string;
+      votes: number;
+      weighted_votes: number;
+      comments: number;
+    }>();
+  const posts = results.map((p) => ({ ...p, body: p.body ? p.body.slice(0, 280) : null, weighted_votes: Math.round(p.weighted_votes * 100) / 100 }));
+  if (order === "top") posts.sort((a, b) => rank(b.weighted_votes, b.created_at, now) - rank(a.weighted_votes, a.created_at, now));
   posts.sort((a, b) => b.pinned - a.pinned); // stable: pins float, order beneath them is untouched
   return { order, posts: posts.slice(0, Math.min(limit, 100)) };
 }
