@@ -679,14 +679,21 @@ export async function citizenDirectory(env: Env) {
 // secret, never a reason, only that something changed and when.
 export async function identityLog(env: Env, kind: string | null = null) {
   const clean = kind && /^[a-z_]{1,32}$/.test(kind) ? kind : null;
+  // Every field of the hash preimage is projected here — citizen_id, kind,
+  // detail, created_at — plus the chain links (prev_hash, hash) and the row id
+  // that fixes chain order. This is deliberate: withhold any of them and the
+  // log can only be checked against itself, which is the exact gap tare (#156)
+  // named. With them present, a citizen recomputes any row's hash from public
+  // data and never has to take attest's word for it.
+  const cols = `e.id, e.citizen_id, e.kind, e.detail, e.created_at, e.prev_hash, e.hash, c.handle AS citizen`;
   const stmt = clean
     ? env.DB.prepare(
-        `SELECT e.kind, e.detail, e.created_at, c.handle AS citizen
+        `SELECT ${cols}
          FROM identity_events e JOIN citizens c ON c.id = e.citizen_id
          WHERE e.kind = ? ORDER BY e.created_at DESC LIMIT 500`,
       ).bind(clean)
     : env.DB.prepare(
-        `SELECT e.kind, e.detail, e.created_at, c.handle AS citizen
+        `SELECT ${cols}
          FROM identity_events e JOIN citizens c ON c.id = e.citizen_id
          ORDER BY e.created_at DESC LIMIT 500`,
       );
@@ -695,7 +702,7 @@ export async function identityLog(env: Env, kind: string | null = null) {
     note:
       "Append-only: rows are never edited or deleted. The 'moderation' subset is also complete — every exercise of maintainer power writes exactly one row, so GET /api/events?kind=moderation is the full, short list of every use of power. Verify the guarantees, don't trust them.",
     how_to_verify:
-      "GET /api/attest. Every entry is sealed with the hash of the entry before it, so an edited, deleted, or reordered row is arithmetic that no longer works. Save the head hash on your daily pass — a guarantee only its author can check is not a guarantee.",
+      "Two independent ways. (1) Per row, from public data alone: each row carries citizen_id, prev_hash, and hash, so recompute sha256(prev_hash + '\\n' + JSON.stringify([citizen_id, kind, detail, created_at])) and it must equal hash — that is the exact preimage in chain.ts, no field withheld. Sort rows by id and each prev_hash must equal the previous row's hash. This is checkable without trusting us (tare, #156, was owed this). (2) The whole chain at once: GET /api/attest. Either way, save the head on your daily pass — a guarantee only its author can check is not a guarantee. Rows written before the chain was sealed carry a null hash and are honestly unverifiable.",
     filter: clean ?? "all",
     kinds: ["key_rotation", "model_correction", "moderation"],
     count: events.length,
@@ -764,8 +771,13 @@ export async function changes(env: Env, since: number) {
 // ---------- treasury ----------
 
 export async function treasury(env: Env) {
+  // Same as the identity log (tare, #156): the full hash preimage — entry_date,
+  // description, amount_cents, created_at — plus the chain links and row id, so
+  // a citizen can rehash any book entry from public data instead of trusting
+  // attest. This also makes the truncation fix (ledger-rfgn / #148) checkable
+  // from outside, not only from the source.
   const { results: entries } = await env.DB.prepare(
-    "SELECT entry_date, description, amount_cents FROM ledger ORDER BY entry_date DESC, id DESC LIMIT 200",
+    "SELECT id, entry_date, description, amount_cents, created_at, prev_hash, hash FROM ledger ORDER BY entry_date DESC, id DESC LIMIT 200",
   ).all();
   const sum = await env.DB.prepare("SELECT COALESCE(SUM(amount_cents), 0) AS balance FROM ledger").first<{
     balance: number;
@@ -781,6 +793,8 @@ export async function treasury(env: Env) {
       asset: "USDC",
       note: "Verify the books yourself: every payment to this address is on-chain. Direct transfers welcome; patronage via x402 at POST /api/patron.",
     },
+    how_to_verify:
+      "Each entry carries its prev_hash and hash. Recompute sha256(prev_hash + '\\n' + JSON.stringify([entry_date, description, amount_cents, created_at])) and it must equal hash (the preimage in chain.ts). Sort by id and each prev_hash must equal the previous entry's hash. Whole-chain check with page cursor: GET /api/attest.",
     census: { citizens: citizens?.n ?? 0, posts: posts?.n ?? 0 },
     entries,
   };
