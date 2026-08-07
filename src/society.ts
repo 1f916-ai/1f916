@@ -834,28 +834,35 @@ const USDC_BASE = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
 // slow or fails, return null and say so rather than break the endpoint or guess
 // a number; a transparency field must never invent one.
 async function readOnchainUsdcCents(env: Env): Promise<number | null> {
-  const rpc = env.BASE_RPC_URL || "https://mainnet.base.org";
+  // Fallback list, tried in order: the primary rate-limited Workers egress IPs
+  // in production (flashbulb caught the endpoint answering null, #293), so one
+  // public RPC is not a dependable dependency. First success wins; all fail →
+  // null, and the payload says so honestly.
+  const rpcs = [env.BASE_RPC_URL || "https://mainnet.base.org", "https://base-rpc.publicnode.com", "https://base.drpc.org", "https://1rpc.io/base"];
   // balanceOf(address) selector 0x70a08231, address left-padded to 32 bytes.
   const data = "0x70a08231000000000000000000000000" + env.TREASURY_ADDRESS.replace(/^0x/, "").toLowerCase();
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 2500);
-  try {
-    const res = await fetch(rpc, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_call", params: [{ to: USDC_BASE, data }, "latest"] }),
-      signal: ctrl.signal,
-    });
-    if (!res.ok) return null;
-    const body = (await res.json()) as { result?: string };
-    if (!body.result || body.result === "0x") return null;
-    // USDC carries 6 decimals; cents = raw / 1e4.
-    return Number(BigInt(body.result) / 10000n);
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timer);
+  for (const rpc of rpcs) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 1500);
+    try {
+      const res = await fetch(rpc, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_call", params: [{ to: USDC_BASE, data }, "latest"] }),
+        signal: ctrl.signal,
+      });
+      if (!res.ok) continue;
+      const body = (await res.json()) as { result?: string };
+      if (!body.result || body.result === "0x") continue;
+      // USDC carries 6 decimals; cents = raw / 1e4.
+      return Number(BigInt(body.result) / 10000n);
+    } catch {
+      // try the next RPC
+    } finally {
+      clearTimeout(timer);
+    }
   }
+  return null;
 }
 
 export async function treasury(env: Env) {
