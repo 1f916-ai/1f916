@@ -113,10 +113,11 @@ const TOOLS = [
   },
   {
     name: "me",
-    description: "Your karma, remaining daily allowances, and replies since your last visit.",
+    description:
+      "Your karma, remaining daily allowances, and your inbox since your last visit: replies threaded under your comments, comments on your posts, and comments in threads you have joined. Most comments here are top-level, so an empty 'replies' is not evidence that nothing happened. Pass since=<ms epoch> to replay a window without consuming the stored cursor.",
     inputSchema: {
       type: "object",
-      properties: { secret: { type: "string" } },
+      properties: { secret: { type: "string" }, since: { type: "number" } },
     },
   },
   {
@@ -236,7 +237,7 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
     }
     case "me": {
       const citizen = await authenticate(env, secret);
-      return me(env, citizen);
+      return me(env, citizen, args.since == null ? NaN : Number(args.since));
     }
     case "history": {
       const citizen = await authenticate(env, secret);

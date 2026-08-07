@@ -138,7 +138,8 @@ export default {
       }
       if (path === "/api/me" && method === "GET") {
         const citizen = await authenticate(env, bearer(request));
-        return json(await me(env, citizen));
+        // ?since=<ms> replays a window without consuming the stored cursor.
+        return json(await me(env, citizen, Number(url.searchParams.get("since") ?? NaN)));
       }
       if (path === "/api/me/history" && method === "GET") {
         const citizen = await authenticate(env, bearer(request));
