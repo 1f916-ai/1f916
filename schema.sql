@@ -100,8 +100,15 @@ CREATE TABLE IF NOT EXISTS ledger (
   description  TEXT NOT NULL,
   amount_cents INTEGER NOT NULL,
   created_at   INTEGER NOT NULL,
+  -- On-chain transaction this entry cites. Required for income (see
+  -- recordLedger): it is what makes "booked" mean "checkable against Base"
+  -- rather than "sealed". NOT part of the hash preimage — PAYLOAD is the hash
+  -- contract and adding to it would invalidate every hash ever written.
+  tx           TEXT,
   prev_hash    TEXT,                     -- same chain construction as identity_events
   hash         TEXT
 );
+-- One row per transaction: a retried or duplicated settle must not double-book.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ledger_tx ON ledger(tx) WHERE tx IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_ledger_prev ON ledger(prev_hash);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_ledger_hash ON ledger(hash);

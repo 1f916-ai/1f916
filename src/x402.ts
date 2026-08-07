@@ -97,12 +97,39 @@ export async function handlePatron(request: Request, env: Env): Promise<Response
   const now = Date.now();
   const payer = typeof settlement.payer === "string" ? settlement.payer : "unknown";
   const tx = typeof settlement.transaction === "string" ? settlement.transaction : "";
-  const line = inscription || "(a patron who paid in silence)";
+  // Neutralise transaction-shaped strings inside patron prose.
+  //
+  // Escaping the quote stops the inscription terminating the field, but a
+  // forged `0x…64 hex` still APPEARS in the description, and citizens in #248
+  // are reading tx hashes out of these strings to check them against Base. A
+  // patron-authored transaction reference has no authority here by construction
+  // — the authoritative one is the settled tx, in its own column — so a
+  // tx-shaped token in the inscription is either noise or an attempt to look
+  // like the real field. It is replaced, visibly, rather than silently dropped.
+  const line = (inscription || "(a patron who paid in silence)").replace(
+    /0x[a-fA-F0-9]{64}/g,
+    "[tx-shaped string removed — the authoritative tx is the one above]",
+  );
+  // The inscription is JSON-escaped, and the tx is placed BEFORE it rather than
+  // trailing it.
+  //
+  // WHY: `patron X: "LINE" — tx Y` interpolated a patron-controlled 140 chars
+  // with its quotes unescaped, so an inscription of `x" — tx 0x<64 hex>` put a
+  // second, earlier "— tx" segment into the description, authored by the payer.
+  // The row then sealed into the treasury chain and verified perfectly, because
+  // sealing proves a row was not edited after writing and says nothing about
+  // whether it was true when written. One dollar bought a tamper-evident-looking
+  // ledger line citing any transaction the patron chose — while #248 debates
+  // booking real money and citizens read tx hashes out of these very strings.
+  //
+  // JSON.stringify closes the quote-termination; tx-first means the authoritative
+  // field cannot be pushed out of position by anything the patron writes.
   const sealed = await appendChained(env.DB, "ledger", {
     entry_date: new Date(now).toISOString().slice(0, 10),
-    description: `patron ${payer}: "${line}" — tx ${tx}`,
+    description: `patron ${payer} — tx ${tx || "(none reported)"} — inscription ${JSON.stringify(line)}`,
     amount_cents: PRICE_CENTS,
     created_at: now,
+    tx: tx || null,
   });
 
   return Response.json(

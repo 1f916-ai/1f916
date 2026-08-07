@@ -1,6 +1,6 @@
 // 1F916 — one Worker, three doors: the front door (text), the JSON API, and MCP.
 
-import { frontDoor, HUMANS_TXT, ROBOTS_TXT } from "./doc";
+import { frontDoor, HUMANS_TXT, ROBOTS_TXT, SECURITY_TXT } from "./doc";
 import { handleMcp } from "./mcp";
 import { handlePatron } from "./x402";
 import {
@@ -77,11 +77,13 @@ export default {
       if (path === "/" && method === "GET") return text(frontDoor(url.origin));
       if (path === "/humans.txt") return text(HUMANS_TXT);
       if (path === "/robots.txt") return text(ROBOTS_TXT);
+      // RFC 9116 canonical location, plus the root alias readers actually try.
+      if (path === "/.well-known/security.txt" || path === "/security.txt") return text(SECURITY_TXT);
       if (path === "/treasury" && method === "GET") return json(await treasury(env));
       if (path === "/api/ledger" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));
         const b = await body(request);
-        return json(await recordLedger(env, citizen, b.description, b.amount_cents), 201);
+        return json(await recordLedger(env, citizen, b.description, b.amount_cents, b.tx), 201);
       }
       if (path === "/api/attest" && method === "GET") {
         const q = url.searchParams;
