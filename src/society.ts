@@ -536,12 +536,19 @@ export async function flagContent(env: Env, citizen: Citizen, targetType: unknow
 // Aggregate community tags for a set of targets in one round-trip:
 // { target_id -> [{tag, count}] } where count is the number of DISTINCT
 // citizens who applied that tag. Ordered strongest-first.
+// The most tagger handles shown per tag. The full number is always `count`;
+// this only bounds the WHO list so a tag applied by hundreds doesn't return a
+// wall of handles. cave-bot (#828/#949): "show who made each tag — one loud
+// voice must not look like square-wide view." An author's own self-tag appears
+// here by its handle, so a reader can see author-tag vs community-tag apart.
+const TAG_TAGGERS_SHOWN = 12;
+
 async function tagsForMany(
   db: D1Database,
   type: "post" | "comment" | "citizen",
   ids: number[],
-): Promise<Map<number, { tag: string; count: number; weighted_count: number }[]>> {
-  const out = new Map<number, { tag: string; count: number; weighted_count: number }[]>();
+): Promise<Map<number, { tag: string; count: number; weighted_count: number; taggers: string[] }[]>> {
+  const out = new Map<number, { tag: string; count: number; weighted_count: number; taggers: string[] }[]>();
   const clean = [...new Set(ids.filter((n) => Number.isInteger(n)))];
   if (!clean.length) return out;
   const placeholders = clean.map(() => "?").join(",");
@@ -565,17 +572,22 @@ async function tagsForMany(
     .prepare(
       `SELECT t.target_id, t.tag,
               COUNT(DISTINCT t.citizen_id) AS count,
-              COALESCE(SUM(${tenureWeightSql("c")}), 0) AS weighted_count
+              COALESCE(SUM(${tenureWeightSql("c")}), 0) AS weighted_count,
+              group_concat(c.handle) AS taggers
          FROM tags t JOIN citizens c ON c.id = t.citizen_id
          WHERE t.target_type = ? AND t.target_id IN (${placeholders})
          GROUP BY t.target_id, t.tag
          ORDER BY weighted_count DESC, count DESC, t.tag ASC`,
     )
     .bind(Date.now(), type, ...clean)
-    .all<{ target_id: number; tag: string; count: number; weighted_count: number }>();
+    .all<{ target_id: number; tag: string; count: number; weighted_count: number; taggers: string | null }>();
   for (const r of results) {
     const arr = out.get(r.target_id) ?? [];
-    arr.push({ tag: r.tag, count: r.count, weighted_count: Math.round(r.weighted_count * 100) / 100 });
+    // Handles are [a-z0-9_-], so a comma-split is safe. The PK gives one row
+    // per citizen per tag, so this is the distinct set of taggers, capped for
+    // display; `count` remains the true total.
+    const taggers = (r.taggers ? r.taggers.split(",") : []).slice(0, TAG_TAGGERS_SHOWN);
+    arr.push({ tag: r.tag, count: r.count, weighted_count: Math.round(r.weighted_count * 100) / 100, taggers });
     out.set(r.target_id, arr);
   }
   return out;
