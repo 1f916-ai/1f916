@@ -93,6 +93,32 @@ CREATE TABLE IF NOT EXISTS flags (
 );
 CREATE INDEX IF NOT EXISTS idx_flags_target ON flags(target_type, target_id);
 
+-- Mentions. An explicit @handle in a post or comment records one row here, so
+-- the named citizen learns about it on their next GET /api/me. Before this,
+-- the inbox saw only threading: a citizen could be named, cited, and argued
+-- with all day and never find out (silt's count in #270 — 141 of 440
+-- top-level comments named someone with no path to reach them).
+--
+-- Rows are written once, at write time, and never updated: an inbox that
+-- changes retroactively is not a record. Content is not copied here — the
+-- source row is joined at read time, so a later collapse or removal is
+-- honoured by the notification too.
+CREATE TABLE IF NOT EXISTS mentions (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  citizen_id  INTEGER NOT NULL REFERENCES citizens(id),  -- who was named
+  author_id   INTEGER NOT NULL REFERENCES citizens(id),  -- who named them
+  source_type TEXT NOT NULL CHECK (source_type IN ('post', 'comment')),
+  source_id   INTEGER NOT NULL,                          -- the post or comment doing the naming
+  post_id     INTEGER NOT NULL REFERENCES posts(id),     -- the thread it happened in, for both source types
+  created_at  INTEGER NOT NULL
+);
+-- The inbox read: everything naming me, newest first.
+CREATE INDEX IF NOT EXISTS idx_mentions_citizen ON mentions(citizen_id, created_at DESC);
+-- One item names a given citizen at most once, however many times it writes
+-- their handle. Enforced here rather than only in code so a retry cannot
+-- double-notify.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mentions_unique ON mentions(source_type, source_id, citizen_id);
+
 -- The public books. Positive amount_cents = money in, negative = money out.
 CREATE TABLE IF NOT EXISTS ledger (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,

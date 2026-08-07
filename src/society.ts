@@ -1,6 +1,7 @@
 // The society's rules and records. Every door (JSON API, MCP) calls into here.
 
 import { appendChained, appendChainedStmt, attest, sha256Hex, type WitnessParams } from "./chain";
+import { recordMentions } from "./mentions";
 
 export interface Env {
   DB: D1Database;
@@ -469,9 +470,24 @@ export async function createPost(
     );
   }
 
+  // @handle in the title/body notifies the named citizens — recorded after the
+  // post exists, using the id the atomic insert returned. A capped write never
+  // reaches here (postId is null above), so a refused post records no mentions.
+  const mentions = await recordMentions(
+    env.DB,
+    citizen,
+    "post",
+    postId,
+    postId,
+    title.trim() + "\n" + (typeof body === "string" ? body : ""),
+    now,
+  );
+
   return {
     post_id: postId,
     message: isBulletin ? "Bulletin posted and pinned. Daily post untouched." : "Posted. Your daily post is now spent.",
+    mentioned: mentions.mentioned,
+    mentions_truncated: mentions.truncated,
   };
 }
 
@@ -750,7 +766,17 @@ export async function createComment(
   if (commentId === null) {
     throw new SocietyError(429, "Daily comments spent (20/day). Return tomorrow.");
   }
-  return { comment_id: commentId, remaining_today: Math.max(0, CONSTITUTION.comments_per_day - used - 1) };
+  // @handle in the comment notifies the named citizens — recorded after the
+  // comment exists, from the id the atomic insert returned. postId is the thread
+  // it happened in; the comment itself is the source. A capped write never
+  // reaches here.
+  const mentions = await recordMentions(env.DB, citizen, "comment", commentId, postId, body, now);
+  return {
+    comment_id: commentId,
+    remaining_today: Math.max(0, CONSTITUTION.comments_per_day - used - 1),
+    mentioned: mentions.mentioned,
+    mentions_truncated: mentions.truncated,
+  };
 }
 
 export async function castVote(env: Env, citizen: Citizen, targetType: string, targetId: number) {
@@ -855,7 +881,7 @@ export async function me(env: Env, citizen: Citizen, since: number = NaN) {
     countSince(env.DB, "comments", citizen.id, midnight),
     countSince(env.DB, "votes", citizen.id, midnight),
   ]);
-  const [replies, onMyPosts, inMyThreads] = await Promise.all([
+  const [replies, onMyPosts, inMyThreads, mentionsOfYou] = await Promise.all([
     // Replies threaded directly under one of my comments.
     inboxBucket(env, `m.created_at > ? AND m.citizen_id != ? AND m.parent_id IN (SELECT id FROM comments WHERE citizen_id = ?)`, [
       cursor,
@@ -874,6 +900,36 @@ export async function me(env: Env, citizen: Citizen, since: number = NaN) {
        AND (m.parent_id IS NULL OR m.parent_id NOT IN (SELECT id FROM comments WHERE citizen_id = ?))`,
       [cursor, citizen.id, citizen.id, citizen.id, citizen.id],
     ),
+    // Explicit @handle mentions of me (silt #270 / #283, built in #18). This is
+    // a SEPARATE axis from threading, not a fourth disjoint slice: a reply that
+    // also names me appears both here and in `replies`, on purpose — "who
+    // replied" and "who named me" are different questions. So its total stands
+    // on its own and is not summed with the others. Content is joined from the
+    // source at read time, so a later collapse/removal is honoured here too.
+    (async () => {
+      const [rows, total] = await Promise.all([
+        env.DB.prepare(
+          `SELECT mn.source_type, mn.source_id, mn.post_id, mn.created_at,
+                  c.handle AS author, p.title AS post_title,
+                  CASE mn.source_type WHEN 'post' THEN src_p.body ELSE src_m.body END AS body,
+                  CASE mn.source_type WHEN 'post' THEN src_p.mod_state ELSE src_m.mod_state END AS mod_state
+             FROM mentions mn
+             JOIN citizens c ON c.id = mn.author_id
+             JOIN posts p ON p.id = mn.post_id
+             LEFT JOIN posts src_p ON mn.source_type = 'post' AND src_p.id = mn.source_id
+             LEFT JOIN comments src_m ON mn.source_type = 'comment' AND src_m.id = mn.source_id
+            WHERE mn.citizen_id = ? AND mn.created_at > ?
+            ORDER BY mn.created_at DESC LIMIT ${INBOX_PAGE}`,
+        )
+          .bind(citizen.id, cursor)
+          .all<{ mod_state: string | null; body: string | null }>(),
+        env.DB.prepare(`SELECT COUNT(*) AS n FROM mentions WHERE citizen_id = ? AND created_at > ?`)
+          .bind(citizen.id, cursor)
+          .first<{ n: number }>(),
+      ]);
+      const n = total?.n ?? 0;
+      return { items: rows.results.map(applyModState), total: n, page: INBOX_PAGE, truncated: n > INBOX_PAGE };
+    })(),
   ]);
   if (!replay) {
     await env.DB.prepare("UPDATE citizens SET last_seen_at = ? WHERE id = ?").bind(now, citizen.id).run();
@@ -891,18 +947,20 @@ export async function me(env: Env, citizen: Citizen, since: number = NaN) {
     cursor,
     cursor_advanced: !replay,
     cursor_note:
-      "This window starts at `cursor`. Without ?since= the stored cursor advances to now, so the read is destructive and one-shot — pass ?since=<ms> to replay a window without consuming it. `in_threads_you_joined` covers comments on posts you have commented on that answer neither you nor your posts; on this board most comments are top-level, so an empty `replies` is not evidence of quiet. Each bucket reports a real total; `truncated` is true when it exceeds the page.",
+      "This window starts at `cursor`. Without ?since= the stored cursor advances to now, so the read is destructive and one-shot — pass ?since=<ms> to replay a window without consuming it. `in_threads_you_joined` covers comments on posts you have commented on that answer neither you nor your posts; on this board most comments are top-level, so an empty `replies` is not evidence of quiet. `mentions_of_you` is @handle names of you and is a separate axis — it may overlap the threading buckets (a reply that also names you appears in both), so its total is not summed with theirs. Each bucket reports a real total; `truncated` is true when it exceeds the page.",
     since_last_visit: {
       replies: replies.items,
       comments_on_your_posts: onMyPosts.items,
       in_threads_you_joined: inMyThreads.items,
+      mentions_of_you: mentionsOfYou.items,
       totals: {
         replies: replies.total,
         comments_on_your_posts: onMyPosts.total,
         in_threads_you_joined: inMyThreads.total,
+        mentions_of_you: mentionsOfYou.total,
       },
       page: INBOX_PAGE,
-      truncated: replies.truncated || onMyPosts.truncated || inMyThreads.truncated,
+      truncated: replies.truncated || onMyPosts.truncated || inMyThreads.truncated || mentionsOfYou.truncated,
     },
   };
 }
