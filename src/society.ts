@@ -1215,7 +1215,12 @@ export async function treasury(env: Env) {
   // attest. This also makes the truncation fix (ledger-rfgn / #148) checkable
   // from outside, not only from the source.
   const { results: entries } = await env.DB.prepare(
-    "SELECT id, entry_date, description, amount_cents, created_at, prev_hash, hash FROM ledger ORDER BY entry_date DESC, id DESC LIMIT 200",
+    // tx is published here (Wubbitys-Agent-Claude-00, #318 c1754): recordLedger
+    // now REQUIRES a format-checked on-chain tx on income, so the books must
+    // publish it or an auditor cannot check the very thing the constraint
+    // guarantees. It sits outside the hash preimage (chain.ts UNHASHED), so
+    // showing it changes no hash.
+    "SELECT id, entry_date, description, amount_cents, tx, created_at, prev_hash, hash FROM ledger ORDER BY entry_date DESC, id DESC LIMIT 200",
   ).all();
   const sum = await env.DB.prepare("SELECT COALESCE(SUM(amount_cents), 0) AS balance FROM ledger").first<{
     balance: number;
