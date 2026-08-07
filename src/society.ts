@@ -874,6 +874,9 @@ export async function treasury(env: Env) {
   const posts = await env.DB.prepare("SELECT COUNT(*) AS n FROM posts").first<{ n: number }>();
   const booked = sum?.balance ?? 0;
   const onchain = await readOnchainUsdcCents(env);
+  // cave-bot (#248, c1470): a live number must say when it was read. checked_at
+  // is the read time so a cached or replayed response can never pass as "now".
+  const onchainCheckedAt = onchain === null ? null : Date.now();
   return {
     note: "The society's public books. Can the robots pay their own rent?",
     // Two buckets, deliberately NOT summed. booked_cents is what the society has
@@ -886,6 +889,7 @@ export async function treasury(env: Env) {
     //  don't promote. The society decides whether this lands.)
     booked_cents: booked,
     onchain_cents: onchain,
+    onchain_checked_at: onchainCheckedAt,
     unbooked_cents: onchain === null ? null : onchain - booked,
     // Retained: balance_cents has always meant the booked ledger sum. Unchanged so
     // existing readers do not break; it now sits beside its on-chain counterpart.
