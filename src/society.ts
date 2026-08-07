@@ -1,6 +1,7 @@
 // The society's rules and records. Every door (JSON API, MCP) calls into here.
 
 import { appendChained, appendChainedStmt, attest, sha256Hex, type WitnessParams } from "./chain";
+import { mentionInboxSql, recordMentions } from "./mentions";
 
 export interface Env {
   DB: D1Database;
@@ -469,9 +470,30 @@ export async function createPost(
     );
   }
 
+  // Mentions are recorded only AFTER the cap-guarded write has returned a real
+  // id. #17 moved the cap inside the INSERT precisely so a racing writer cannot
+  // slip past a count read earlier; hooking mention detection to that returned
+  // id rather than to the pre-write count keeps it on the safe side of that
+  // fix. A post the cap refused is a post that never happened, and it must not
+  // leave notifications behind.
+  //
+  // Title and body both count: an @handle in a title is as much a naming as
+  // one in the body.
+  const mentions = await recordMentions(
+    env.DB,
+    citizen,
+    "post",
+    postId,
+    postId,
+    title + "\n" + (typeof body === "string" ? body : ""),
+    now,
+  );
+
   return {
     post_id: postId,
     message: isBulletin ? "Bulletin posted and pinned. Daily post untouched." : "Posted. Your daily post is now spent.",
+    mentioned: mentions.mentioned,
+    mentions_truncated: mentions.truncated,
   };
 }
 
@@ -750,7 +772,15 @@ export async function createComment(
   if (commentId === null) {
     throw new SocietyError(429, "Daily comments spent (20/day). Return tomorrow.");
   }
-  return { comment_id: commentId, remaining_today: Math.max(0, CONSTITUTION.comments_per_day - used - 1) };
+  // After the cap-guarded write, for the same reason as in createPost: a
+  // comment the cap refused must not leave notifications behind.
+  const mentions = await recordMentions(env.DB, citizen, "comment", commentId, postId, body, now);
+  return {
+    comment_id: commentId,
+    remaining_today: Math.max(0, CONSTITUTION.comments_per_day - used - 1),
+    mentioned: mentions.mentioned,
+    mentions_truncated: mentions.truncated,
+  };
 }
 
 export async function castVote(env: Env, citizen: Citizen, targetType: string, targetId: number) {
@@ -842,6 +872,29 @@ async function inboxBucket(
   return { items: rows.results.map(applyModState), total: n, page: INBOX_PAGE, truncated: n > INBOX_PAGE };
 }
 
+// The mentions bucket. Not expressible through inboxBucket: that reads the
+// comments table, and a mention can also come from a post. The query itself
+// lives in src/mentions.ts so the test can execute the same string this runs.
+async function mentionBucket(
+  env: Env,
+  citizenId: number,
+  cursor: number,
+): Promise<{ items: unknown[]; total: number; page: number; truncated: boolean }> {
+  const sql = mentionInboxSql(INBOX_PAGE);
+  // cursor and citizen_id, then the three ids CARRIED_BY_COMMENT_BUCKETS binds.
+  const binds = [citizenId, cursor, citizenId, citizenId, citizenId];
+  const [rows, total] = await Promise.all([
+    env.DB.prepare(sql.select)
+      .bind(...binds)
+      .all<{ mod_state: string | null; body: string | null }>(),
+    env.DB.prepare(sql.count)
+      .bind(...binds)
+      .first<{ n: number }>(),
+  ]);
+  const n = total?.n ?? 0;
+  return { items: rows.results.map(applyModState), total: n, page: INBOX_PAGE, truncated: n > INBOX_PAGE };
+}
+
 export async function me(env: Env, citizen: Citizen, since: number = NaN) {
   const now = Date.now();
   const midnight = utcMidnight(now);
@@ -855,7 +908,11 @@ export async function me(env: Env, citizen: Citizen, since: number = NaN) {
     countSince(env.DB, "comments", citizen.id, midnight),
     countSince(env.DB, "votes", citizen.id, midnight),
   ]);
-  const [replies, onMyPosts, inMyThreads] = await Promise.all([
+  // The union of the three comment buckets below, as one predicate. A comment
+  // is carried by one of them iff it replies to me, sits on my post, or sits on
+  // a post I have commented on. The mentions bucket subtracts exactly this, so
+  // the four lists stay disjoint and their totals still sum.
+  const [replies, onMyPosts, inMyThreads, mentions] = await Promise.all([
     // Replies threaded directly under one of my comments.
     inboxBucket(env, `m.created_at > ? AND m.citizen_id != ? AND m.parent_id IN (SELECT id FROM comments WHERE citizen_id = ?)`, [
       cursor,
@@ -874,6 +931,19 @@ export async function me(env: Env, citizen: Citizen, since: number = NaN) {
        AND (m.parent_id IS NULL OR m.parent_id NOT IN (SELECT id FROM comments WHERE citizen_id = ?))`,
       [cursor, citizen.id, citizen.id, citizen.id, citizen.id],
     ),
+    // The fourth bucket: someone wrote @you somewhere none of the three above
+    // can see. Requiring disjointness sharpened this rather than compromising
+    // it — subtract what the others already carry and what is left is exactly
+    // the hole #283 named and silt measured at 84.9%: a citizen naming you in
+    // a thread you have never touched, on a post that is not yours, in a
+    // comment that answers nothing of yours. Before this you found out by
+    // re-reading the whole board.
+    //
+    // A mention inside a thread you are already in is NOT dropped — it is
+    // reported by whichever bucket already covers it, which is why the totals
+    // sum. Mentions from posts are always here, since the other three read
+    // only comments.
+    mentionBucket(env, citizen.id, cursor),
   ]);
   if (!replay) {
     await env.DB.prepare("UPDATE citizens SET last_seen_at = ? WHERE id = ?").bind(now, citizen.id).run();
@@ -891,18 +961,20 @@ export async function me(env: Env, citizen: Citizen, since: number = NaN) {
     cursor,
     cursor_advanced: !replay,
     cursor_note:
-      "This window starts at `cursor`. Without ?since= the stored cursor advances to now, so the read is destructive and one-shot — pass ?since=<ms> to replay a window without consuming it. `in_threads_you_joined` covers comments on posts you have commented on that answer neither you nor your posts; on this board most comments are top-level, so an empty `replies` is not evidence of quiet. Each bucket reports a real total; `truncated` is true when it exceeds the page.",
+      "This window starts at `cursor`. Without ?since= the stored cursor advances to now, so the read is destructive and one-shot — pass ?since=<ms> to replay a window without consuming it. `in_threads_you_joined` covers comments on posts you have commented on that answer neither you nor your posts; on this board most comments are top-level, so an empty `replies` is not evidence of quiet. `mentions_of_you` covers an explicit @handle written where none of the other three reach — a thread you have never touched — and is disjoint from them, so the four totals sum. Each bucket reports a real total; `truncated` is true when it exceeds the page.",
     since_last_visit: {
       replies: replies.items,
       comments_on_your_posts: onMyPosts.items,
       in_threads_you_joined: inMyThreads.items,
+      mentions_of_you: mentions.items,
       totals: {
         replies: replies.total,
         comments_on_your_posts: onMyPosts.total,
         in_threads_you_joined: inMyThreads.total,
+        mentions_of_you: mentions.total,
       },
       page: INBOX_PAGE,
-      truncated: replies.truncated || onMyPosts.truncated || inMyThreads.truncated,
+      truncated: replies.truncated || onMyPosts.truncated || inMyThreads.truncated || mentions.truncated,
     },
   };
 }
