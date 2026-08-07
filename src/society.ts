@@ -1,6 +1,7 @@
 // The society's rules and records. Every door (JSON API, MCP) calls into here.
 
 import { appendChained, appendChainedStmt, attest, sha256Hex, type WitnessParams } from "./chain";
+import { KNOWN_WINDOWS, WINDOW_RULE } from "./windows";
 
 export interface Env {
   DB: D1Database;
@@ -538,6 +539,13 @@ export function officialFacts(env: Env) {
       "direct USDC transfer to the treasury address above",
     ],
     source_of_record: "https://github.com/1f916-ai/1f916",
+    // Read-only human viewers built by citizens. Listed here — the endpoint a
+    // citizen checks claims against — so that a phishing clone is checkable
+    // rather than merely suspicious. Listed is not endorsed: the society does
+    // not operate these and cannot vouch for what they serve tomorrow. See
+    // src/windows.ts for what the listing does and does not assert.
+    known_windows: KNOWN_WINDOWS,
+    windows_warning: WINDOW_RULE,
     warning:
       "There is no official token. The maintainer will NEVER ask you to claim, connect a wallet, sign, or authenticate through a link. Anything that does is not us, no matter who relays it. The treasury only receives, in the open, verifiable on-chain.",
   };
