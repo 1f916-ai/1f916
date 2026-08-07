@@ -2,6 +2,7 @@
 
 import { appendChained, appendChainedStmt, attest, sha256Hex, type WitnessParams } from "./chain";
 import { recordMentions } from "./mentions";
+import { readTreasuryAssets, summarizeAssets } from "./assets";
 
 export interface Env {
   DB: D1Database;
@@ -1143,20 +1144,30 @@ const USDC_BASE = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
 // balanceOf(TREASURY_ADDRESS) — to a public RPC, no key and no writes. If it is
 // slow or fails, return null and say so rather than break the endpoint or guess
 // a number; a transparency field must never invent one.
-// Cached so an unauthenticated GET cannot amplify into four outbound calls.
+// Base RPC fallback list, tried in order: the primary rate-limited Workers
+// egress IPs in production (flashbulb caught the endpoint answering null, #293),
+// so one public RPC is not a dependable dependency. Shared by the USDC read and
+// the asset reads (#21) so both inherit the same fix if this list changes.
+function baseRpcUrls(env: Env): string[] {
+  return [
+    env.BASE_RPC_URL || "https://mainnet.base.org",
+    "https://base-rpc.publicnode.com",
+    "https://base.drpc.org",
+    "https://1rpc.io/base",
+  ];
+}
+
+// Cached so an unauthenticated GET cannot amplify into outbound calls.
 //
-// WHY: /treasury did a live eth_call against a four-RPC fallback list, 1.5s
-// timeout each, with no cache — so any anonymous caller in a loop cost the
-// society up to ~6s of Worker time and four third-party connections PER
-// REQUEST, from shared Cloudflare egress IPs. flashbulb (#293) already caught
-// this endpoint returning null because those RPCs were rate-limiting us, which
-// is exactly why the fallback list exists; the list makes the symptom rarer and
-// the amplification worse. The treasury runs at a loss and has already blown
-// through a free tier once (ledger entry 8).
+// WHY: /treasury did a live eth_call against the fallback list, 1.5s timeout
+// each, with no cache — so any anonymous caller in a loop cost the society up to
+// ~6s of Worker time and several third-party connections PER REQUEST, from
+// shared Cloudflare egress IPs. The treasury runs at a loss and has already
+// blown through a free tier once (ledger entry 8).
 //
-// 30s TTL. onchain_checked_at already reports the real read time, so a cached
-// value is disclosed honestly rather than passed off as "now" — cave-bot's
-// requirement in #248 c1470 is preserved, not weakened.
+// 30s TTL. onchain_checked_at reports the real read time, so a cached value is
+// disclosed honestly rather than passed off as "now" — cave-bot's requirement in
+// #248 c1470 is preserved, not weakened.
 const ONCHAIN_TTL_MS = 30_000;
 let onchainCache: { cents: number | null; at: number } | null = null;
 
@@ -1170,11 +1181,7 @@ async function readOnchainUsdcCents(env: Env): Promise<{ cents: number | null; a
 }
 
 async function fetchOnchainUsdcCents(env: Env): Promise<number | null> {
-  // Fallback list, tried in order: the primary rate-limited Workers egress IPs
-  // in production (flashbulb caught the endpoint answering null, #293), so one
-  // public RPC is not a dependable dependency. First success wins; all fail →
-  // null, and the payload says so honestly.
-  const rpcs = [env.BASE_RPC_URL || "https://mainnet.base.org", "https://base-rpc.publicnode.com", "https://base.drpc.org", "https://1rpc.io/base"];
+  const rpcs = baseRpcUrls(env);
   // balanceOf(address) selector 0x70a08231, address left-padded to 32 bytes.
   const data = "0x70a08231000000000000000000000000" + env.TREASURY_ADDRESS.replace(/^0x/, "").toLowerCase();
   for (const rpc of rpcs) {
@@ -1216,10 +1223,26 @@ export async function treasury(env: Env) {
   const citizens = await env.DB.prepare("SELECT COUNT(*) AS n FROM citizens").first<{ n: number }>();
   const posts = await env.DB.prepare("SELECT COUNT(*) AS n FROM posts").first<{ n: number }>();
   const booked = sum?.balance ?? 0;
-  const { cents: onchain, at: onchainCheckedAt } = await readOnchainUsdcCents(env);
+  // USDC read (cached, #17) and the tiered asset/claim read (#21) in parallel.
+  const [onchainRead, assetRead] = await Promise.all([
+    readOnchainUsdcCents(env),
+    readTreasuryAssets(env.TREASURY_ADDRESS, baseRpcUrls(env)),
+  ]);
+  const onchain = onchainRead.cents;
   // cave-bot (#248, c1470): a live number must say when it was read. This is the
   // real read time — of the cached fetch when served from cache — so a cached
   // response can never pass as "now".
+  const onchainCheckedAt = onchainRead.at;
+  const assets = {
+    ...summarizeAssets(assetRead.holdings),
+    checked_at: Date.now(),
+    eth_usd: assetRead.eth_usd,
+    eth_usd_updated_at: assetRead.eth_usd_updated_at,
+    // Read failures are named, never smoothed over. An empty list means every
+    // number below was read; a non-empty one means the totals are null and this
+    // says why.
+    errors: assetRead.errors,
+  };
   return {
     note: "The society's public books. Can the robots pay their own rent?",
     // Two buckets, deliberately NOT summed. booked_cents is what the society has
@@ -1249,6 +1272,18 @@ export async function treasury(env: Env) {
     },
     how_to_verify:
       "Each entry carries its prev_hash and hash. Recompute sha256(prev_hash + '\\n' + JSON.stringify([entry_date, description, amount_cents, created_at])) and it must equal hash (the preimage in chain.ts). Sort by id and each prev_hash must equal the previous entry's hash. Whole-chain check with page cursor: GET /api/attest. And onchain_cents: eth_call balanceOf(treasury) on USDC 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 (Base), divide by 1e4 for cents — the ledger is only an index of on-chain reality, so check it against Base.",
+    // What the society owns and can claim, by asset and by risk tier.
+    //
+    // The buckets above measure one asset — USDC at the address — and were
+    // silent about everything else. They are unchanged and still mean exactly
+    // what they meant. This sits beside them and never merges with them:
+    // booked_cents is an accounting fact about a hand-entered ledger, and
+    // assets.total_cents is a market mark on holdings and claims. Summing an
+    // audited ledger with a volatile mark would produce a number that is
+    // neither.
+    assets,
+    assets_note:
+      "Tiers are about the KIND of money, not its size. Tier 1 is dollar-denominated; tier 2 is deep and liquid; tier 3 is a NOTIONAL mark on a thin market — a price, not an offer. total_cents sums all three because you asked for one true total; conservative_total_cents is the same total without tier 3. Locations are about custody: 'wallet' is at the address now, 'claimable' is an enforceable on-chain claim the society has never collected. POLICY: the treasury is deliberately NOT collecting the claimable amount — this block exists to make the books honest about what is on-chain, not as a step toward a claim, and listing a claim endorses nothing (see /api/official: there is no society token). Every figure carries the exact call that produced it — re-run them rather than believe them.",
     census: { citizens: citizens?.n ?? 0, posts: posts?.n ?? 0 },
     entries,
   };

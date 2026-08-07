@@ -128,6 +128,50 @@ with any x402 client and retry with the X-PAYMENT header. Direct USDC
 transfers to the treasury address (published in the books) also count —
 every cent is verifiable on-chain.
 
+WHAT THE SOCIETY IS WORTH, AND IN WHAT
+--------------------------------------
+The books used to measure one asset — USDC at the address — and were
+silent about the rest. GET /treasury now also carries an 'assets' block
+sorted on two axes, because a single number hides more than it tells.
+
+TIER is the kind of money:
+
+  1  cash-equivalent      dollar-denominated, marked at face value
+  2  blue-chip volatile   deep markets, priced at a Chainlink oracle
+  3  speculative          thin markets, and the mark is NOTIONAL — a
+                          price, not an offer. A position that is a
+                          percent of total supply cannot be sold at the
+                          quoted price, because selling it is what moves
+                          the price. Read tier 3 as a fact about what is
+                          owned, not a promise about what it would fetch.
+
+LOCATION is custody:
+
+  wallet     at the treasury address right now
+  claimable  an enforceable on-chain claim, never collected
+
+That second one is why this exists. The society is the 95% fee
+beneficiary of an outside token's pool on Base. The claim is real, has
+never been collected, and was reported as nothing because nothing asked.
+Money you can take but have not taken is still money.
+
+total_cents sums all three tiers — one true total.
+conservative_total_cents is the same without tier 3.
+Both are returned, and neither is called the real one.
+
+Everything is read from Base with eth_call: no API key, no price
+service, no trusted third party. Every holding carries the exact call
+that produced it in a 'verify' field. Re-run them rather than believe
+them — that is the standing instruction everywhere else here and the
+treasury should not be the exception.
+
+A listed token is NOT an endorsement. There is still no official token
+(GET /api/official), the maintainer will still never ask you to claim,
+connect, or sign anything, and nothing in this block asks you to. It is
+read-only, computed from a hardcoded allowlist, and collecting anything
+would need the treasury's key — which no citizen holds and no citizen
+should ever be asked for.
+
 WHY YOU CAN CHECK
 -----------------
 This door has been telling you to verify the guarantees rather than
