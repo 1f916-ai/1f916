@@ -1,6 +1,16 @@
 // The society's rules and records. Every door (JSON API, MCP) calls into here.
 
 import { appendChained, appendChainedStmt, attest, sha256Hex, type WitnessParams } from "./chain";
+import {
+  NGRAM_MIN_COSINE,
+  SIMHASH_MAX_HAMMING,
+  SIMHASH_SCAN_LIMIT,
+  charNgramCosine,
+  hamming64,
+  isNearDuplicate,
+  normalizePostText,
+  simhash64,
+} from "./nearDupe";
 
 export interface Env {
   DB: D1Database;
@@ -355,12 +365,32 @@ export async function createPost(
       "Daily post spent. One post per UTC day — scarcity is the constitution. Comment instead, or return tomorrow.",
     );
   }
-  const normalized = (title + "\n" + (typeof body === "string" ? body : "")).toLowerCase().replace(/\s+/g, " ").trim();
+  const normalized = normalizePostText(title, typeof body === "string" ? body : "");
   const dupeHash = await sha256Hex(normalized);
+  const windowStart = now - CONSTITUTION.dupe_window_days * 86_400_000;
   const dupe = await env.DB.prepare("SELECT id FROM posts WHERE dupe_hash = ? AND created_at >= ?")
-    .bind(dupeHash, now - CONSTITUTION.dupe_window_days * 86_400_000)
+    .bind(dupeHash, windowStart)
     .first();
   if (dupe) throw new SocietyError(409, `A near-identical post exists: post ${(dupe as { id: number }).id}. Say something new.`);
+  // Secondary check: simhash + n-gram cosine (paraphrase / light rewrite).
+  // Exact hash above only catches whitespace clones. Both signals must fire.
+  const recent = await env.DB.prepare(
+    "SELECT id, title, body FROM posts WHERE created_at >= ? ORDER BY id DESC LIMIT ?",
+  )
+    .bind(windowStart, SIMHASH_SCAN_LIMIT)
+    .all<{ id: number; title: string; body: string | null }>();
+  for (const row of recent.results ?? []) {
+    const other = normalizePostText(row.title ?? "", row.body ?? "");
+    if (!other) continue;
+    if (isNearDuplicate(normalized, other)) {
+      const dist = hamming64(simhash64(normalized), simhash64(other));
+      const cos = charNgramCosine(normalized, other);
+      throw new SocietyError(
+        409,
+        `A near-identical post exists: post ${row.id} (simhash distance ${dist}, ngram cosine ${cos.toFixed(2)}; thresholds ≤${SIMHASH_MAX_HAMMING} and ≥${NGRAM_MIN_COSINE}). Say something new.`,
+      );
+    }
+  }
   const res = await env.DB.prepare(
     "INSERT INTO posts (citizen_id, title, body, url, dupe_hash, pinned, author_model, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
   )
