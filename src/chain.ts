@@ -135,12 +135,21 @@ export async function verifyRows(
 // unlikely: the second INSERT is rejected by the database, and we re-read and
 // try again. A fork can never be committed, so a reader never has to reason
 // about which branch is real.
+// Columns stored on a chained row but deliberately NOT part of the hash
+// preimage. PAYLOAD is the hash contract and must never change — reorder or
+// extend it and every hash ever written stops verifying. A structured `tx` is
+// wanted for lookup and idempotency, not for the digest, so it lives here.
+// Rows written before this column existed simply carry null.
+const UNHASHED: Partial<Record<ChainedTable, readonly string[]>> = {
+  ledger: ["tx"],
+};
+
 export async function appendChained(
   db: D1Database,
   table: ChainedTable,
   row: ChainRow,
 ): Promise<{ prev_hash: string; hash: string }> {
-  const cols = PAYLOAD[table];
+  const cols = [...PAYLOAD[table], ...(UNHASHED[table] ?? [])];
   const placeholders = cols.map(() => "?").join(", ");
 
   for (let attempt = 0; attempt < 4; attempt++) {
