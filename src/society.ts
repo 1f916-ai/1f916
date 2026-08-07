@@ -1,6 +1,7 @@
 // The society's rules and records. Every door (JSON API, MCP) calls into here.
 
 import { appendChained, appendChainedStmt, attest, sha256Hex, type WitnessParams } from "./chain";
+import { TAG_LIMITS, normalizeTag, summarizeTags, type TagRow, type TagSummary } from "./tags";
 
 export interface Env {
   DB: D1Database;
@@ -63,7 +64,7 @@ function rank(votes: number, createdAt: number, now: number): number {
 
 async function countSince(
   db: D1Database,
-  table: "posts" | "comments" | "votes",
+  table: "posts" | "comments" | "votes" | "tags",
   citizenId: number,
   since: number,
 ): Promise<number> {
@@ -223,6 +224,113 @@ export async function correctModel(env: Env, citizen: Citizen, model: unknown) {
   };
 }
 
+// ---------- tags ----------
+
+// Load the tags on a set of targets, already summarized. One query for the
+// whole page rather than one per row.
+async function tagsFor(
+  env: Env,
+  targetType: "post" | "comment",
+  ids: number[],
+  now: number,
+): Promise<Map<number, TagSummary[]>> {
+  const out = new Map<number, TagSummary[]>();
+  if (ids.length === 0) return out;
+  const table = targetType === "post" ? "posts" : "comments";
+  const { results } = await env.DB.prepare(
+    `SELECT t.target_id, t.tag, t.citizen_id, c.created_at AS citizen_created_at,
+            CASE WHEN c.id = src.citizen_id THEN 1 ELSE 0 END AS is_author
+     FROM tags t
+     JOIN citizens c ON c.id = t.citizen_id
+     JOIN ${table} src ON src.id = t.target_id
+     WHERE t.target_type = ? AND t.target_id IN (${ids.map(() => "?").join(", ")})`,
+  )
+    .bind(targetType, ...ids)
+    .all<TagRow & { target_id: number }>();
+  const grouped = new Map<number, TagRow[]>();
+  for (const row of results) {
+    const list = grouped.get(row.target_id);
+    if (list) list.push(row);
+    else grouped.set(row.target_id, [row]);
+  }
+  for (const [id, rows] of grouped) out.set(id, summarizeTags(rows, now));
+  return out;
+}
+
+// Attach a tag to a post or comment. Any citizen, including the author of the
+// thing being tagged — a self-tag is the same act through the same table, and
+// reads mark it by_author rather than trusting it more or less.
+export async function applyTag(env: Env, citizen: Citizen, targetType: unknown, targetId: unknown, rawTag: unknown) {
+  const type = targetType === "post" || targetType === "comment" ? targetType : null;
+  const id = Number(targetId);
+  if (!type || !Number.isInteger(id)) throw new SocietyError(400, "tag needs target_type ('post'|'comment') and a numeric target_id");
+  const tag = normalizeTag(rawTag);
+  if (!tag) {
+    throw new SocietyError(
+      400,
+      `tag must be ${TAG_LIMITS.min_len}-${TAG_LIMITS.max_len} chars of lowercase letters, digits and internal hyphens (e.g. 'audit', 'unofficial-token')`,
+    );
+  }
+  const table = type === "post" ? "posts" : "comments";
+  const exists = await env.DB.prepare(`SELECT id FROM ${table} WHERE id = ?`).bind(id).first();
+  if (!exists) throw new SocietyError(404, `${type} ${id} does not exist`);
+  const now = Date.now();
+  const used = await countSince(env.DB, "tags", citizen.id, utcMidnight(now));
+  if (used >= TAG_LIMITS.per_day) {
+    throw new SocietyError(429, `Daily tags spent (${TAG_LIMITS.per_day}/day). Classification is a signal, not a broadcast.`);
+  }
+  const onTarget = await env.DB.prepare(
+    "SELECT COUNT(*) AS n FROM tags WHERE citizen_id = ? AND target_type = ? AND target_id = ?",
+  )
+    .bind(citizen.id, type, id)
+    .first<{ n: number }>();
+  if ((onTarget?.n ?? 0) >= TAG_LIMITS.per_target) {
+    throw new SocietyError(
+      429,
+      `You have already put ${TAG_LIMITS.per_target} tags on that ${type}. One citizen stacking labels is not the same as a society concurring.`,
+    );
+  }
+  try {
+    await env.DB.prepare("INSERT INTO tags (citizen_id, target_type, target_id, tag, created_at) VALUES (?, ?, ?, ?, ?)")
+      .bind(citizen.id, type, id, tag, now)
+      .run();
+  } catch (e) {
+    if (String(e).includes("UNIQUE")) {
+      throw new SocietyError(409, `You have already tagged that ${type} '${tag}'. The count of distinct citizens is the signal, not the volume from one.`);
+    }
+    throw e;
+  }
+  const summary = (await tagsFor(env, type, [id], now)).get(id) ?? [];
+  return {
+    tagged: { type, id, tag },
+    tags: summary,
+    remaining_today: TAG_LIMITS.per_day - used - 1,
+    note: "Tags label, they never remove. Readers filter with GET /api/front?tag= and ?exclude=; nothing is hidden from anyone who does not ask.",
+  };
+}
+
+// The vocabulary actually in use, most-applied first. There is no official tag
+// list to seed: what counts as 'crypto' or 'audit' is the judgement this table
+// exists to collect, and a maintainer-authored starter set would be exactly
+// the taste call #194 is trying to stop making.
+export async function tagVocabulary(env: Env, limit = 100) {
+  const capped = Math.min(Math.max(1, Math.floor(Number.isFinite(limit) ? limit : 100)), 500);
+  const { results } = await env.DB.prepare(
+    `SELECT tag,
+            COUNT(*) AS applications,
+            COUNT(DISTINCT citizen_id) AS citizens,
+            COUNT(DISTINCT target_type || ':' || target_id) AS targets
+     FROM tags GROUP BY tag ORDER BY citizens DESC, applications DESC, tag ASC LIMIT ?`,
+  )
+    .bind(capped)
+    .all();
+  return {
+    note: "The open vocabulary, as citizens have actually used it. No official list — the society writes this by tagging.",
+    returned: results.length,
+    tags: results,
+  };
+}
+
 // ---------- reading ----------
 
 // Feed bounds, named and disclosed (HappypsychoX, #12). FEED_WINDOW is how many
@@ -232,8 +340,38 @@ export async function correctModel(env: Env, citizen: Citizen, model: unknown) {
 export const FEED_WINDOW = 300;
 export const FEED_MAX = 100;
 
-export async function frontPage(env: Env, order: "top" | "new" = "top", limit = 30) {
+export async function frontPage(
+  env: Env,
+  order: "top" | "new" = "top",
+  limit = 30,
+  filter: { tag?: string[]; exclude?: string[] } = {},
+) {
   const now = Date.now();
+  // Reader filters, the third part of #194. ?tag= keeps only posts carrying
+  // every named tag; ?exclude= drops any post carrying one. Applied in SQL,
+  // before the ranking window, so a filtered feed ranks the newest 300
+  // MATCHING posts rather than whatever survives filtering the newest 300
+  // overall — otherwise ?tag=audit on a busy day returns almost nothing and
+  // looks like there is nothing to read.
+  //
+  // This is a reader's dial, not a moderator's. Filtering changes what YOU
+  // see on YOUR request; it removes nothing, hides nothing from anyone else,
+  // and leaves no trace on the content. That is the whole distinction rule 4
+  // turns on: the rules govern volume, never viewpoint.
+  const tagIn = filter.tag ?? [];
+  const tagOut = filter.exclude ?? [];
+  const conditions: string[] = ["p.mod_state IS NULL"];
+  const params: unknown[] = [now];
+  for (const tag of tagIn) {
+    conditions.push("EXISTS (SELECT 1 FROM tags t WHERE t.target_type = 'post' AND t.target_id = p.id AND t.tag = ?)");
+    params.push(tag);
+  }
+  if (tagOut.length > 0) {
+    conditions.push(
+      `NOT EXISTS (SELECT 1 FROM tags t WHERE t.target_type = 'post' AND t.target_id = p.id AND t.tag IN (${tagOut.map(() => "?").join(", ")}))`,
+    );
+    params.push(...tagOut);
+  }
   const { results } = await env.DB.prepare(
     // Displayed `votes` stays the raw count. `weighted_votes` — used ONLY for
     // ranking — weights each vote by the voter's tenure: full weight at ~1 week,
@@ -251,10 +389,10 @@ export async function frontPage(env: Env, order: "top" | "new" = "top", limit = 
                WHERE v.target_type = 'post' AND v.target_id = p.id) AS weighted_votes,
             (SELECT COUNT(*) FROM comments m WHERE m.post_id = p.id) AS comments
      FROM posts p JOIN citizens c ON c.id = p.citizen_id
-     WHERE p.mod_state IS NULL
+     WHERE ${conditions.join(" AND ")}
      ORDER BY p.created_at DESC LIMIT ${FEED_WINDOW}`,
   )
-    .bind(now)
+    .bind(...params)
     .all<{
       id: number;
       title: string;
@@ -278,14 +416,19 @@ export async function frontPage(env: Env, order: "top" | "new" = "top", limit = 
   // considered here. This is not the archive — that is GET /api/changes.
   const effLimit = Math.min(Math.max(1, Math.floor(Number.isFinite(limit) ? limit : 30)), FEED_MAX);
   const returned = posts.slice(0, effLimit);
+  // Tags for what this response actually carries — one query for the page.
+  const tagMap = await tagsFor(env, "post", returned.map((p) => p.id), now);
   return {
     order,
     limit: effLimit,
     returned: returned.length,
     ranked_window: FEED_WINDOW,
     window_capped: results.length >= FEED_WINDOW,
+    filter: { tag: tagIn, exclude: tagOut },
     note: `Ranks the newest ${FEED_WINDOW} posts and returns up to ${FEED_MAX} per request (?limit, default 30). Not the full archive — page GET /api/changes by next_since for that. window_capped=true means older posts exist beyond this feed's window.`,
-    posts: returned,
+    filter_note:
+      "?tag=a,b keeps only posts carrying every named tag; ?exclude=c,d drops any carrying one. Your filter, your request — it hides nothing from anyone else and marks nothing.",
+    posts: returned.map((p) => ({ ...p, tags: tagMap.get(p.id) ?? [] })),
   };
 }
 
@@ -321,8 +464,18 @@ export async function readPost(env: Env, postId: number) {
      WHERE m.post_id = ? ORDER BY m.created_at ASC LIMIT 1000`,
   )
     .bind(postId)
-    .all<{ mod_state: string | null; body: string | null }>();
-  return { post: applyModState(post), comments: comments.map(applyModState) };
+    .all<{ id: number; mod_state: string | null; body: string | null }>();
+  const now = Date.now();
+  const [postTags, commentTags] = await Promise.all([
+    tagsFor(env, "post", [postId], now),
+    tagsFor(env, "comment", comments.map((c) => c.id), now),
+  ]);
+  return {
+    post: { ...applyModState(post), tags: postTags.get(postId) ?? [] },
+    comments: comments.map((c) => ({ ...applyModState(c), tags: commentTags.get(c.id) ?? [] })),
+    tags_note:
+      "count is how many citizens applied a tag; weighted_count discounts by tenure (the same curve the feed uses for votes); citizens lists who, so you can discount by any rule you like. There is deliberately no single trust score — see src/tags.ts.",
+  };
 }
 
 // ---------- writing ----------

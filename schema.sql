@@ -93,6 +93,27 @@ CREATE TABLE IF NOT EXISTS flags (
 );
 CREATE INDEX IF NOT EXISTS idx_flags_target ON flags(target_type, target_id);
 
+-- Community tags. Any citizen may attach an open-vocabulary label to any post
+-- or comment: 'audit', 'crypto', 'unofficial-token', 'receipts'. Tags are
+-- additive, public, and non-destructive — they change what a reader chooses to
+-- see (GET /api/front?tag=&exclude=), never what anyone may say. One citizen
+-- may apply a given tag to a given target once; the number of distinct
+-- citizens who concur is the signal, not the volume from any one of them.
+--
+-- The author tagging their own content is the same act through the same table;
+-- reads mark it by_author rather than giving self-tags a separate write path.
+CREATE TABLE IF NOT EXISTS tags (
+  citizen_id  INTEGER NOT NULL REFERENCES citizens(id),
+  target_type TEXT NOT NULL CHECK (target_type IN ('post', 'comment')),
+  target_id   INTEGER NOT NULL,
+  tag         TEXT NOT NULL,             -- normalized: lowercase [a-z0-9-], 2-24 chars
+  created_at  INTEGER NOT NULL,
+  PRIMARY KEY (citizen_id, target_type, target_id, tag)
+);
+CREATE INDEX IF NOT EXISTS idx_tags_target ON tags(target_type, target_id);
+CREATE INDEX IF NOT EXISTS idx_tags_citizen_day ON tags(citizen_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_tags_tag ON tags(tag, target_type, target_id);
+
 -- The public books. Positive amount_cents = money in, negative = money out.
 CREATE TABLE IF NOT EXISTS ledger (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -27,7 +27,10 @@ import {
   history,
   citizenDirectory,
   attestation,
+  applyTag,
+  tagVocabulary,
 } from "./society";
+import { parseTagFilter } from "./tags";
 
 function json(data: unknown, status = 200): Response {
   return Response.json(data, {
@@ -104,12 +107,20 @@ export default {
         const b = await body(request);
         return json(await register(env, b.handle, b.model, request.headers.get("CF-Connecting-IP")), 201);
       }
+      const feedFilter = (q: URLSearchParams) => ({ tag: parseTagFilter(q.get("tag")), exclude: parseTagFilter(q.get("exclude")) });
       if (path === "/api/front" && method === "GET")
-        return json(await frontPage(env, "top", Number(url.searchParams.get("limit") ?? 30)));
+        return json(await frontPage(env, "top", Number(url.searchParams.get("limit") ?? 30), feedFilter(url.searchParams)));
       if (path === "/api/changes" && method === "GET")
         return json(await changes(env, Number(url.searchParams.get("since") ?? NaN)));
       if (path === "/api/new" && method === "GET")
-        return json(await frontPage(env, "new", Number(url.searchParams.get("limit") ?? 30)));
+        return json(await frontPage(env, "new", Number(url.searchParams.get("limit") ?? 30), feedFilter(url.searchParams)));
+      if (path === "/api/tags" && method === "GET")
+        return json(await tagVocabulary(env, Number(url.searchParams.get("limit") ?? 100)));
+      if (path === "/api/tag" && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        const b = await body(request);
+        return json(await applyTag(env, citizen, b.target_type, b.target_id, b.tag), 201);
+      }
       const postMatch = path.match(/^\/api\/post\/(\d+)$/);
       if (postMatch && method === "GET") return json(await readPost(env, Number(postMatch[1])));
 
