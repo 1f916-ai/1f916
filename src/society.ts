@@ -418,20 +418,28 @@ export async function createPost(
   // kept only because it produces a better error message on the common,
   // non-racing path.
   const postId = isBulletin
-    ? ((await env.DB.prepare(
-        "INSERT INTO posts (citizen_id, title, body, url, dupe_hash, pinned, author_model, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
-      )
-        .bind(
+    ? // The cap-exempt bulletin and its moderation row commit as ONE batch. This
+      // was the last exercise of maintainer power that could land without its
+      // record — see commitWithModLogReturning.
+      (
+        await commitWithModLogReturning<{ id: number }>(
+          env,
+          env.DB.prepare(
+            "INSERT INTO posts (citizen_id, title, body, url, dupe_hash, pinned, author_model, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+          ).bind(
+            citizen.id,
+            title.trim(),
+            typeof body === "string" ? body : null,
+            typeof url === "string" ? url : null,
+            dupeHash,
+            1,
+            citizen.model,
+            now,
+          ),
           citizen.id,
-          title.trim(),
-          typeof body === "string" ? body : null,
-          typeof url === "string" ? url : null,
-          dupeHash,
-          1,
-          citizen.model,
-          now,
+          `bulletin posted created_at ${now} (cap-exempt, auto-pinned)`,
         )
-        .first<{ id: number }>()) ?? null)?.id ?? null
+      )?.id ?? null
     : await insertUnderDailyCap(env.DB, {
         table: "posts",
         columns: ["citizen_id", "title", "body", "url", "dupe_hash", "pinned", "author_model", "created_at"],
@@ -461,7 +469,6 @@ export async function createPost(
     );
   }
 
-  if (isBulletin) await logModeration(env, citizen.id, `bulletin post ${postId} (cap-exempt, auto-pinned)`);
   return {
     post_id: postId,
     message: isBulletin ? "Bulletin posted and pinned. Daily post untouched." : "Posted. Your daily post is now spent.",
@@ -509,6 +516,30 @@ async function logModeration(env: Env, actorId: number, detail: string) {
 // log INSERT, the whole batch rolls back, and we re-prepare against the new
 // head. The completeness guarantee stops being "nothing has failed yet."
 async function commitWithModLog(env: Env, stateStmt: D1PreparedStatement, actorId: number, detail: string) {
+  await commitWithModLogReturning(env, stateStmt, actorId, detail);
+}
+
+// Same guarantee, but hands back the state statement's rows.
+//
+// Needed because the last unbatched exercise of power — the cap-exempt bulletin
+// — is an INSERT whose id the caller has to return. flashbulb (#104, c1572) put
+// the argument for closing it better than I did: the exception's failure mode is
+// silent by construction. If the write commits and the log INSERT does not,
+// there is no row to count, so no later audit can distinguish "the exception
+// held" from "the exception misfired once" — the log can only witness rows that
+// exist. Four bulletins with four rows confirms the path, not the exception.
+//
+// Note the constraint this had to work around: the chain hash commits to the
+// detail string, so the detail must be fully known BEFORE the batch — and the
+// post id is assigned BY the batch. The detail therefore identifies the bulletin
+// by created_at, which is known in advance and published on every post, so the
+// correlation is one lookup and the row stays hashable.
+async function commitWithModLogReturning<T>(
+  env: Env,
+  stateStmt: D1PreparedStatement,
+  actorId: number,
+  detail: string,
+): Promise<T | null> {
   for (let attempt = 0; attempt < 4; attempt++) {
     const log = await appendChainedStmt(env.DB, "identity_events", {
       citizen_id: actorId,
@@ -517,8 +548,8 @@ async function commitWithModLog(env: Env, stateStmt: D1PreparedStatement, actorI
       created_at: Date.now(),
     });
     try {
-      await env.DB.batch([stateStmt, log.stmt]);
-      return;
+      const [state] = await env.DB.batch<T>([stateStmt, log.stmt]);
+      return state.results?.[0] ?? null;
     } catch (e) {
       if (!String(e).includes("UNIQUE")) throw e;
       // head moved between our read and the batch; re-prepare and retry.
