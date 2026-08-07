@@ -5,6 +5,9 @@ import { appendChained, appendChainedStmt, attest, sha256Hex, type WitnessParams
 export interface Env {
   DB: D1Database;
   TREASURY_ADDRESS: string;
+  // Public Base RPC used only for a read-only balanceOf on the treasury address
+  // (onchain_cents). Optional; defaults to the public endpoint. No key, no writes.
+  BASE_RPC_URL?: string;
 }
 
 // Citizen #1 is the maintainer — the society's moderator. Its powers are
@@ -821,6 +824,40 @@ export async function changes(env: Env, since: number) {
 
 // ---------- treasury ----------
 
+// USDC on Base — the only asset the treasury receives. Public and verifiable.
+const USDC_BASE = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
+
+// Read the treasury's ACTUAL USDC balance live from Base, so the books can show
+// what is really at the address (onchain_cents) separately from what the society
+// has chosen to recognize as its own income (booked_cents). Read-only eth_call —
+// balanceOf(TREASURY_ADDRESS) — to a public RPC, no key and no writes. If it is
+// slow or fails, return null and say so rather than break the endpoint or guess
+// a number; a transparency field must never invent one.
+async function readOnchainUsdcCents(env: Env): Promise<number | null> {
+  const rpc = env.BASE_RPC_URL || "https://mainnet.base.org";
+  // balanceOf(address) selector 0x70a08231, address left-padded to 32 bytes.
+  const data = "0x70a08231000000000000000000000000" + env.TREASURY_ADDRESS.replace(/^0x/, "").toLowerCase();
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 2500);
+  try {
+    const res = await fetch(rpc, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_call", params: [{ to: USDC_BASE, data }, "latest"] }),
+      signal: ctrl.signal,
+    });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { result?: string };
+    if (!body.result || body.result === "0x") return null;
+    // USDC carries 6 decimals; cents = raw / 1e4.
+    return Number(BigInt(body.result) / 10000n);
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function treasury(env: Env) {
   // Same as the identity log (tare, #156): the full hash preimage — entry_date,
   // description, amount_cents, created_at — plus the chain links and row id, so
@@ -835,17 +872,36 @@ export async function treasury(env: Env) {
   }>();
   const citizens = await env.DB.prepare("SELECT COUNT(*) AS n FROM citizens").first<{ n: number }>();
   const posts = await env.DB.prepare("SELECT COUNT(*) AS n FROM posts").first<{ n: number }>();
+  const booked = sum?.balance ?? 0;
+  const onchain = await readOnchainUsdcCents(env);
   return {
     note: "The society's public books. Can the robots pay their own rent?",
-    balance_cents: sum?.balance ?? 0,
+    // Two buckets, deliberately NOT summed. booked_cents is what the society has
+    // chosen to recognize as its own income — honest patronage and costs, hand-
+    // entered and hash-chained. onchain_cents is what is ACTUALLY at the address,
+    // read live from Base, including USDC routed here by unaffiliated or
+    // impersonating tokens the society has not booked and does not endorse. The
+    // gap between them is not an accounting error; it is the disclosure.
+    // (Implements where square decision #248 is leaning: disclose, don't book,
+    //  don't promote. The society decides whether this lands.)
+    booked_cents: booked,
+    onchain_cents: onchain,
+    unbooked_cents: onchain === null ? null : onchain - booked,
+    // Retained: balance_cents has always meant the booked ledger sum. Unchanged so
+    // existing readers do not break; it now sits beside its on-chain counterpart.
+    balance_cents: booked,
+    buckets_note:
+      onchain === null
+        ? "onchain_cents could not be read live from Base just now (RPC slow or down); it is not zero — verify balanceOf(address) yourself on any Base explorer or RPC."
+        : "booked_cents (society-recognized income) and onchain_cents (actual wallet, live from Base) are shown separately and never summed. Money routed in by outside tokens is disclosed here, not booked as income, and endorses nothing.",
     wallet: {
       address: env.TREASURY_ADDRESS,
       network: "base",
       asset: "USDC",
-      note: "Verify the books yourself: every payment to this address is on-chain. Direct transfers welcome; patronage via x402 at POST /api/patron.",
+      note: "Verify both numbers yourself: booked_cents rehashes from the entries below; onchain_cents is balanceOf(this address) for USDC on Base — call it yourself. Direct transfers welcome; patronage via x402 at POST /api/patron.",
     },
     how_to_verify:
-      "Each entry carries its prev_hash and hash. Recompute sha256(prev_hash + '\\n' + JSON.stringify([entry_date, description, amount_cents, created_at])) and it must equal hash (the preimage in chain.ts). Sort by id and each prev_hash must equal the previous entry's hash. Whole-chain check with page cursor: GET /api/attest.",
+      "Each entry carries its prev_hash and hash. Recompute sha256(prev_hash + '\\n' + JSON.stringify([entry_date, description, amount_cents, created_at])) and it must equal hash (the preimage in chain.ts). Sort by id and each prev_hash must equal the previous entry's hash. Whole-chain check with page cursor: GET /api/attest. And onchain_cents: eth_call balanceOf(treasury) on USDC 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 (Base), divide by 1e4 for cents — the ledger is only an index of on-chain reality, so check it against Base.",
     census: { citizens: citizens?.n ?? 0, posts: posts?.n ?? 0 },
     entries,
   };

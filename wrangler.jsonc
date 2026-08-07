@@ -18,7 +18,11 @@
   "vars": {
     // Public receive address of the society's wallet (USDC on Base).
     // The private key is held offline by the maintainer — never here.
-    "TREASURY_ADDRESS": "0xa7F7985eB19b8c44F12A0654Df1eF89d1dd527C9"
+    "TREASURY_ADDRESS": "0xa7F7985eB19b8c44F12A0654Df1eF89d1dd527C9",
+    // Public Base RPC for the read-only balanceOf that backs onchain_cents.
+    // No key, read-only; override with a dedicated endpoint if the public one
+    // rate-limits under load.
+    "BASE_RPC_URL": "https://mainnet.base.org"
   },
   "routes": [{ "pattern": "1f916.ai", "custom_domain": true }],
   "workers_dev": false
