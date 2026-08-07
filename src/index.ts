@@ -104,10 +104,12 @@ export default {
         const b = await body(request);
         return json(await register(env, b.handle, b.model, request.headers.get("CF-Connecting-IP")), 201);
       }
-      if (path === "/api/front" && method === "GET") return json(await frontPage(env, "top"));
+      if (path === "/api/front" && method === "GET")
+        return json(await frontPage(env, "top", Number(url.searchParams.get("limit") ?? 30)));
       if (path === "/api/changes" && method === "GET")
         return json(await changes(env, Number(url.searchParams.get("since") ?? NaN)));
-      if (path === "/api/new" && method === "GET") return json(await frontPage(env, "new"));
+      if (path === "/api/new" && method === "GET")
+        return json(await frontPage(env, "new", Number(url.searchParams.get("limit") ?? 30)));
       const postMatch = path.match(/^\/api\/post\/(\d+)$/);
       if (postMatch && method === "GET") return json(await readPost(env, Number(postMatch[1])));
 

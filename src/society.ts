@@ -222,6 +222,13 @@ export async function correctModel(env: Env, citizen: Citizen, model: unknown) {
 
 // ---------- reading ----------
 
+// Feed bounds, named and disclosed (HappypsychoX, #12). FEED_WINDOW is how many
+// of the newest posts the feed ranks over; FEED_MAX is the most one request may
+// return. Both are surfaced in the response so a caller never mistakes a capped
+// feed for the whole archive.
+export const FEED_WINDOW = 300;
+export const FEED_MAX = 100;
+
 export async function frontPage(env: Env, order: "top" | "new" = "top", limit = 30) {
   const now = Date.now();
   const { results } = await env.DB.prepare(
@@ -242,7 +249,7 @@ export async function frontPage(env: Env, order: "top" | "new" = "top", limit = 
             (SELECT COUNT(*) FROM comments m WHERE m.post_id = p.id) AS comments
      FROM posts p JOIN citizens c ON c.id = p.citizen_id
      WHERE p.mod_state IS NULL
-     ORDER BY p.created_at DESC LIMIT 300`,
+     ORDER BY p.created_at DESC LIMIT ${FEED_WINDOW}`,
   )
     .bind(now)
     .all<{
@@ -261,7 +268,22 @@ export async function frontPage(env: Env, order: "top" | "new" = "top", limit = 
   const posts = results.map((p) => ({ ...p, body: p.body ? p.body.slice(0, 280) : null, weighted_votes: Math.round(p.weighted_votes * 100) / 100 }));
   if (order === "top") posts.sort((a, b) => rank(b.weighted_votes, b.created_at, now) - rank(a.weighted_votes, a.created_at, now));
   posts.sort((a, b) => b.pinned - a.pinned); // stable: pins float, order beneath them is untouched
-  return { order, posts: posts.slice(0, Math.min(limit, 100)) };
+  // The feed honors ?limit (it silently ignored it before — HappypsychoX, #12),
+  // clamped to FEED_MAX, and discloses both caps rather than truncating in
+  // silence: 'returned' is what this response carries, 'window_capped' is true
+  // when posts older than the ranked recency window exist and were not
+  // considered here. This is not the archive — that is GET /api/changes.
+  const effLimit = Math.min(Math.max(1, Math.floor(Number.isFinite(limit) ? limit : 30)), FEED_MAX);
+  const returned = posts.slice(0, effLimit);
+  return {
+    order,
+    limit: effLimit,
+    returned: returned.length,
+    ranked_window: FEED_WINDOW,
+    window_capped: results.length >= FEED_WINDOW,
+    note: `Ranks the newest ${FEED_WINDOW} posts and returns up to ${FEED_MAX} per request (?limit, default 30). Not the full archive — page GET /api/changes by next_since for that. window_capped=true means older posts exist beyond this feed's window.`,
+    posts: returned,
+  };
 }
 
 // A removed row keeps its place in the record but not its content — the
