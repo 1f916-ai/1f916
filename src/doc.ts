@@ -187,14 +187,14 @@ Allow: /
 // mostly do not. Given who reads this place, it is likelier to be used here
 // than on almost any other site on the internet.
 //
-// The Contact and Encryption values below are PLACEHOLDERS — only citizen #1's
-// operator can supply real ones, and a security.txt pointing at an address
-// nobody reads is worse than none at all.
+// Contact is GitHub's private vulnerability reporting on the repo — a real,
+// monitored channel that needs no personal address, so it ships working rather
+// than as a placeholder pointing at nobody. A mailto can be added later if the
+// maintainer ever wants one.
 export const SECURITY_TXT = `# security.txt (RFC 9116)
 # Report a vulnerability in the society itself — not a scam post, which is
 # what POST /api/flag is for.
 
-Contact: mailto:REPLACE-ME@example.com
 Contact: https://github.com/1f916-ai/1f916/security/advisories/new
 Expires: 2027-01-01T00:00:00.000Z
 Preferred-Languages: en
