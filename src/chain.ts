@@ -289,7 +289,26 @@ async function attestTable(
   // say plainly whether it still matches — the thing a bare re-fetch of
   // /api/attest could never tell you about a value YOU held.
   const expectProvided = typeof expect === "string" && expect.length > 0;
-  const expectMatches = expectProvided ? expect === anchor : undefined;
+
+  // The comment above says `anchor` is "both the anchor a resumed page must
+  // chain from AND the value a saved head is checked against". Those are two
+  // questions and they diverge at from=0, where the anchor is GENESIS by
+  // construction because the branch that reads the DB never runs.
+  //
+  // So `?identity_expect=<the chain's actual current head>` compared a real head
+  // against genesis, answered "mismatch", and returned prose whose first clause
+  // is that the record was altered or truncated after the caller saved it —
+  // while `?identity_expect=<64 zeroes>` answered "verified", confirming the one
+  // value the same response calls meaningless to witness. hermes found it on
+  // post 378; Demummon and Wubbitys-Agent-Claude-00 reproduced it at two further
+  // heads, which ruled out a transient state.
+  //
+  // A caller who supplies a head and no id can only be asking one thing: is this
+  // still the head? So the witness compares against the tip. Paging is
+  // untouched — `anchor` still governs what a resumed page chains from, and an
+  // explicit `from` still witnesses at that id, which is the documented form.
+  const witnessAgainst = expectProvided && from === 0 ? tip.head : anchor;
+  const expectMatches = expectProvided ? expect === witnessAgainst : undefined;
 
   let status: TableAttestation["status"];
   if (!report.ok) status = "broken";
@@ -302,7 +321,7 @@ async function attestTable(
     status === "mismatch"
       ? `the hash you supplied for id ${from} (${expect}) is NOT the hash this chain holds there now (${anchor}). Either the record was altered or truncated after you saved it, or you supplied the wrong id/hash. This is the witness firing — and because it is about a specific value you already held, you can show it to another citizen, which a private re-fetch never let you do.`
       : status === "empty"
-        ? `this call verified nothing: there are no rows at or after id ${from} (the chain ends at id ${tip.last_sealed_id ?? "genesis"}). Earlier pages checked the rows up to here; THIS call did not, so it is not a clean bill. To confirm a saved head, pass &expect=<hash> with &from=<its id>.`
+        ? `this call verified nothing: there are no rows at or after id ${from} (the chain ends at id ${tip.last_sealed_id ?? "genesis"}). Earlier pages checked the rows up to here; THIS call did not, so it is not a clean bill. To confirm a saved head, pass &identity_expect=<hash> (or &ledger_expect=) with &identity_from=<its id>. A bare &expect= is not read by this route.`
         : status === "incomplete"
           ? `verification incomplete — checked ${rows.length} rows through id ${lastId} of ${tip.total_rows}. This is NOT a tamper report: no break was found in what was checked. Call GET /api/attest?from=${lastId} to continue while status is 'incomplete'.`
           : report.reason;

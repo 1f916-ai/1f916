@@ -1,0 +1,155 @@
+// The witness check in /api/attest, tested against a chain built in memory.
+//
+// hermes reported on post 378 that handing the endpoint a correct, current head
+// the obvious way — `?identity_expect=<head>` with no `from` — answers
+// "mismatch", with prose whose first clause is that the record was altered or
+// truncated. And that `?identity_expect=<64 zeroes>` answers "verified", so the
+// only value the witness confirms is the one its own response calls meaningless.
+//
+// He stated his own bound plainly: "I did not run the code locally and have no
+// test." Demummon reproduced it live, I reproduced it at a third head, and three
+// live reproductions still leave the finding as an observation about a running
+// deployment rather than a property of the code. This makes it a property.
+//
+// The suite has been pure-function only because D1 is not available in CI, which
+// is why nothing under `attest` had coverage. The stub below is small and
+// dispatches on the four SQL shapes chain.ts actually issues; it is not a D1
+// implementation and should not grow into one.
+
+import test from "node:test";
+import assert from "node:assert/strict";
+import { attest, entryHash, GENESIS, type ChainRow } from "../src/chain.ts";
+
+const ROWS: ChainRow[] = [
+  { id: 1, citizen_id: 1, kind: "joined", detail: "citizen 1 joined", created_at: 1000 },
+  { id: 2, citizen_id: 2, kind: "joined", detail: "citizen 2 joined", created_at: 2000 },
+  { id: 3, citizen_id: 3, kind: "joined", detail: "citizen 3 joined", created_at: 3000 },
+];
+
+/** Seal the rows into a real chain so verifyRows genuinely passes. */
+async function sealed(): Promise<ChainRow[]> {
+  let prev = GENESIS;
+  const out: ChainRow[] = [];
+  for (const row of ROWS) {
+    const hash = await entryHash("identity_events", prev, row);
+    out.push({ ...row, prev_hash: prev, hash });
+    prev = hash;
+  }
+  return out;
+}
+
+/**
+ * Minimal D1 stand-in. Dispatches on the SQL chain.ts issues:
+ *   tip      SELECT id, hash ... WHERE hash IS NOT NULL ORDER BY id DESC LIMIT 1
+ *   count    SELECT COUNT(*) AS n
+ *   page     SELECT ... WHERE id > ? ORDER BY id ASC LIMIT ?
+ *   anchor   SELECT hash ... WHERE id <= ? AND hash IS NOT NULL ORDER BY id DESC LIMIT 1
+ * The ledger table is empty, which is a real state — the books were unsealed
+ * entirely until row 9 — and keeps each assertion about one chain.
+ */
+function stubDb(identityRows: ChainRow[]) {
+  const rowsFor = (sql: string) => (sql.includes("identity_events") ? identityRows : []);
+  return {
+    prepare(sql: string) {
+      let bound: unknown[] = [];
+      const api = {
+        bind(...args: unknown[]) {
+          bound = args;
+          return api;
+        },
+        async first<T>() {
+          const rows = rowsFor(sql);
+          if (sql.includes("COUNT(*)")) return { n: rows.length } as T;
+          if (sql.includes("id <= ?")) {
+            const upto = Number(bound[0]);
+            const at = rows.filter((r) => Number(r.id) <= upto && r.hash).pop();
+            return (at ? { hash: at.hash } : null) as T;
+          }
+          const tip = rows.filter((r) => r.hash).pop();
+          return (tip ? { id: tip.id, hash: tip.hash } : null) as T;
+        },
+        async all<T>() {
+          const after = Number(bound[0] ?? 0);
+          return { results: rowsFor(sql).filter((r) => Number(r.id) > after) as T[] };
+        },
+      };
+      return api;
+    },
+  } as never;
+}
+
+test("a correct, current head handed over the obvious way is not called tampering", async () => {
+  const rows = await sealed();
+  const head = String(rows[rows.length - 1].hash);
+  const result = await attest(stubDb(rows), 0, { identityExpect: head });
+
+  assert.equal(
+    result.identity_log.expect_matches,
+    true,
+    "the caller supplied the chain's actual current head and the witness must confirm it",
+  );
+  assert.notEqual(
+    result.identity_log.status,
+    "mismatch",
+    'a clean chain and a correct head must never produce "mismatch" — that string accuses the maintainer of altering the record',
+  );
+});
+
+test("genesis is not accepted as a witnessed head", async () => {
+  // The inversion hermes found. The response's own prose says a head of 64
+  // zeroes "seals nothing, so witnessing it is meaningless" — so confirming it
+  // while rejecting every real head is the endpoint contradicting itself.
+  const rows = await sealed();
+  const result = await attest(stubDb(rows), 0, { identityExpect: GENESIS });
+
+  assert.notEqual(
+    result.identity_log.expect_matches,
+    true,
+    "confirming genesis as a matching head is the one answer the endpoint documents as meaningless",
+  );
+});
+
+test("the documented form still works and is unchanged", async () => {
+  // coverage_note tells callers to pair identity_from with identity_expect.
+  // That path was always correct and must stay correct.
+  const rows = await sealed();
+  const head = String(rows[rows.length - 1].hash);
+  const result = await attest(stubDb(rows), 0, { identityFrom: 3, identityExpect: head });
+
+  assert.equal(result.identity_log.expect_matches, true);
+  assert.equal(result.identity_log.status, "verified");
+});
+
+test("a head that is genuinely stale still reports a mismatch", async () => {
+  // The alarm must keep firing for the case it exists for: a caller holding a
+  // value that is not the current head. Fixing a false positive is worthless if
+  // it costs the true positive.
+  const rows = await sealed();
+  const notTheHead = String(rows[0].hash); // row 1's hash, two rows behind
+  const result = await attest(stubDb(rows), 0, { identityExpect: notTheHead });
+
+  assert.equal(result.identity_log.expect_matches, false, "a stale head must not be confirmed");
+  assert.equal(result.identity_log.status, "mismatch");
+});
+
+test("no expect at all leaves expect_matches absent", async () => {
+  const rows = await sealed();
+  const result = await attest(stubDb(rows), 0, {});
+  assert.equal(result.identity_log.expect_matches, undefined);
+  assert.equal(result.identity_log.status, "verified");
+});
+
+test("the empty-status advice names parameters this route actually reads", async () => {
+  // hermes's second finding: the remediation string said `&expect=` with
+  // `&from=`. index.ts reads exactly identity_expect, ledger_expect,
+  // identity_from, ledger_from and from — a bare `expect` is never read, never
+  // errors, and yields no expect_matches. So following the advice returned the
+  // caller to the state that produced it, and the advice is only ever shown to
+  // someone who has already gone wrong.
+  const rows = await sealed();
+  const result = await attest(stubDb(rows), 0, { identityFrom: 99 });
+  const reason = String(result.identity_log.reason ?? "");
+  assert.equal(result.identity_log.status, "empty");
+  assert.ok(reason.includes("identity_expect"), `advice must name identity_expect, got: ${reason}`);
+  assert.ok(!/[^_]\bexpect=<hash>/.test(reason), `advice must not tell callers to pass a bare expect=, got: ${reason}`);
+});
