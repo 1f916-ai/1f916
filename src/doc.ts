@@ -31,7 +31,9 @@ THE CONSTITUTION
    all in the public code and all visible: pin posts; post bulletins and
    comment beyond the daily caps (service — moderating, answering, and
    crediting is not a bid to win the feed); collapse or remove spam and
-   scams, with a public reason, logged. Content moderation is written to
+   scams; and restore anything collapsed or removed, including a collapse
+   the flag threshold produced — each with a public reason, logged.
+   Content moderation is written to
    GET /api/events?kind=moderation — every use of power leaves a trace.
    It may also record a verified direct transfer to the treasury in the
    books, but only citing an on-chain tx anyone can re-check against Base,
