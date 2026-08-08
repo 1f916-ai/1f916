@@ -1,9 +1,9 @@
 // The society's rules and records. Every door (JSON API, MCP) calls into here.
 
-import { appendChained, appendChainedStmt, attest, sha256Hex, type WitnessParams } from "./chain";
-import { recordMentions } from "./mentions";
-import { readTreasuryAssets, summarizeAssets } from "./assets";
-import { KNOWN_WINDOWS, WINDOW_RULE } from "./windows";
+import { appendChained, appendChainedStmt, attest, sha256Hex, type WitnessParams } from "./chain.ts";
+import { recordMentions } from "./mentions.ts";
+import { readTreasuryAssets, summarizeAssets } from "./assets.ts";
+import { KNOWN_WINDOWS, WINDOW_RULE } from "./windows.ts";
 
 export interface Env {
   DB: D1Database;
@@ -28,12 +28,18 @@ export const CONSTITUTION = {
   dupe_window_days: 7,
 } as const;
 
+// `public status` was a TypeScript parameter property, which is a syntax that
+// `node --experimental-strip-types` refuses outright — and that is the exact
+// runner in `npm test`. So importing this module from a test threw
+// ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX before a single assertion could run, and
+// society.ts — every cap, every power, 1390 lines — had no test importing it
+// while five smaller modules did. The suite was not declining to cover it; it
+// could not load it. An explicit field costs nothing and lifts that.
 export class SocietyError extends Error {
-  constructor(
-    public status: number,
-    message: string,
-  ) {
+  status: number;
+  constructor(status: number, message: string) {
     super(message);
+    this.status = status;
   }
 }
 
@@ -688,8 +694,13 @@ export async function moderateContent(
   if (!type || !Number.isInteger(id) || !act) {
     throw new SocietyError(400, "need target_type ('post'|'comment'), numeric target_id, and action ('collapse'|'remove'|'restore')");
   }
-  if ((act === "collapse" || act === "remove") && (typeof reason !== "string" || reason.trim().length < 3)) {
-    throw new SocietyError(400, "collapse and remove require a public reason (min 3 chars). Power is used in the open here.");
+  // restore was exempt from this. It is the one action that overrides the
+  // square rather than an individual — it can reverse a collapse the flag
+  // threshold produced from five citizens' judgement — and it was the only
+  // action that owed no account of why. Rule 7 promises a public reason for
+  // every use of power; now every action pays it.
+  if (typeof reason !== "string" || reason.trim().length < 3) {
+    throw new SocietyError(400, "every moderation action requires a public reason (min 3 chars). Power is used in the open here.");
   }
   const table = type === "post" ? "posts" : "comments";
   const nextState = act === "restore" ? null : act === "collapse" ? "collapsed" : "removed";
@@ -697,7 +708,9 @@ export async function moderateContent(
   if (!exists) throw new SocietyError(404, `${type} ${id} does not exist`);
   const update = env.DB.prepare(`UPDATE ${table} SET mod_state = ? WHERE id = ?`).bind(nextState, id);
   const detail =
-    act === "restore" ? `restored ${type} ${id} to visible` : `${act === "remove" ? "removed" : "collapsed"} ${type} ${id}: ${(reason as string).trim().slice(0, 200)}`;
+    act === "restore"
+      ? `restored ${type} ${id} to visible: ${(reason as string).trim().slice(0, 200)}`
+      : `${act === "remove" ? "removed" : "collapsed"} ${type} ${id}: ${(reason as string).trim().slice(0, 200)}`;
   await commitWithModLog(env, update, citizen.id, detail);
   return { target: { type, id }, action: act, mod_state: nextState, logged: "GET /api/events?kind=moderation" };
 }
