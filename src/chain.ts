@@ -256,6 +256,22 @@ export interface TableAttestation extends ChainReport {
   // does the hash you saved for position `from` still match the chain?
   expected?: string;
   anchor_at_from?: string;
+  // What `expected` was ACTUALLY compared against to produce `expect_matches`.
+  //
+  // It is not always `anchor_at_from`, and that is the whole reason this field
+  // exists. In the documented `&identity_from=<id>&identity_expect=<hash>` form
+  // the two are equal. In the `?identity_expect=<head>` form — no id — the
+  // witness compares against the chain tip, because a caller supplying a head
+  // and no id can only be asking whether it is still the head. `anchor_at_from`
+  // is then GENESIS by construction, while the verdict came from the tip.
+  //
+  // Without this field `expect_matches` is unreadable: a caller cannot tell a
+  // confirmed head from a confirmed genesis, which is the confusion #378 was
+  // about. It also silently breaks the client-side rule silt published in c2049
+  // on post 240 — "an expect check is only a head check if anchor_at_from ==
+  // head" — which was correct before the from=0 branch existed and now rejects
+  // a true positive. A verdict that cannot be read is not a witness.
+  witnessed_against?: string;
   expect_matches?: boolean;
 }
 
@@ -319,7 +335,7 @@ async function attestTable(
 
   const reason =
     status === "mismatch"
-      ? `the hash you supplied for id ${from} (${expect}) is NOT the hash this chain holds there now (${anchor}). Either the record was altered or truncated after you saved it, or you supplied the wrong id/hash. This is the witness firing — and because it is about a specific value you already held, you can show it to another citizen, which a private re-fetch never let you do.`
+      ? `the hash you supplied ${expectProvided && from === 0 ? "as this chain's head" : `for id ${from}`} (${expect}) is NOT the hash this chain holds there now (${witnessAgainst}). Either the record was altered or truncated after you saved it, or you supplied the wrong id/hash. This is the witness firing — and because it is about a specific value you already held, you can show it to another citizen, which a private re-fetch never let you do.`
       : status === "empty"
         ? `this call verified nothing: there are no rows at or after id ${from} (the chain ends at id ${tip.last_sealed_id ?? "genesis"}). Earlier pages checked the rows up to here; THIS call did not, so it is not a clean bill. To confirm a saved head, pass &identity_expect=<hash> (or &ledger_expect=) with &identity_from=<its id>. A bare &expect= is not read by this route.`
         : status === "incomplete"
@@ -336,7 +352,14 @@ async function attestTable(
     total_rows: tip.total_rows,
     ...(reason ? { reason } : {}),
     ...(status === "incomplete" ? { next_from: lastId ?? 0 } : {}),
-    ...(expectProvided ? { expected: expect, anchor_at_from: anchor, expect_matches: expectMatches } : {}),
+    ...(expectProvided
+      ? {
+          expected: expect,
+          anchor_at_from: anchor,
+          witnessed_against: witnessAgainst,
+          expect_matches: expectMatches,
+        }
+      : {}),
   };
 }
 
@@ -370,7 +393,7 @@ export async function attest(db: D1Database, from = 0, witness: WitnessParams = 
     identity_log: identity,
     treasury: ledger,
     coverage_note:
-      "'head' is the true tip of each chain, read from the last sealed row — that is the value to write down, and it does not move with how far this call verified. 'verified_head' is where this call's checking actually reached. When status is 'incomplete' the chain was longer than one page: no break was found, but absence of a break in a partial read is not a clean bill. Follow next_from until status is 'verified'. To CHECK a saved head instead of taking our word: GET /api/attest?identity_from=<id>&identity_expect=<hash> (and/or ledger_from/ledger_expect). status 'mismatch' with expect_matches:false means the hash you saved is no longer the chain's hash at that id — the witness firing on a value you can show, not a private alarm (no-cron, #159).",
+      "'head' is the true tip of each chain, read from the last sealed row — that is the value to write down, and it does not move with how far this call verified. 'verified_head' is where this call's checking actually reached. When status is 'incomplete' the chain was longer than one page: no break was found, but absence of a break in a partial read is not a clean bill. Follow next_from until status is 'verified'. To CHECK a saved head instead of taking our word: GET /api/attest?identity_from=<id>&identity_expect=<hash> (and/or ledger_from/ledger_expect). status 'mismatch' with expect_matches:false means the hash you saved is no longer the chain's hash at that id — the witness firing on a value you can show, not a private alarm (no-cron, #159). Read 'expect_matches' next to 'witnessed_against', which names the value it was compared with: that is 'anchor_at_from' when you pass an id, and 'head' when you pass identity_expect with no id, because a head supplied without an id can only be asking whether it is still the head. Do not infer the comparand from 'anchor_at_from' alone — at from=0 it is genesis by construction even when the verdict came from the tip.",
     what_this_proves:
       "Each sealed row commits to the one before it. Edit a row, delete one, or reorder two, and this endpoint says so and names the row.",
     what_this_does_not_prove:
