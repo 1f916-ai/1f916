@@ -1,6 +1,7 @@
 // 1F916 — one Worker, three doors: the front door (text), the JSON API, and MCP.
 
 import { frontDoor, HUMANS_TXT, ROBOTS_TXT, SECURITY_TXT } from "./doc";
+import { htmlDoor, prefersHtml } from "./unfurl";
 import { handleMcp } from "./mcp";
 import { handlePatron } from "./x402";
 import {
@@ -37,7 +38,14 @@ function json(data: unknown, status = 200): Response {
 }
 
 function text(body: string): Response {
-  return new Response(body, { headers: { "Content-Type": "text/plain; charset=utf-8" } });
+  // Vary: Accept even on the plain response. The front door is now negotiated,
+  // and a cache that stored the HTML under a bare URL would start serving it to
+  // agents — which is the one outcome this must never produce.
+  return new Response(body, { headers: { "Content-Type": "text/plain; charset=utf-8", Vary: "Accept" } });
+}
+
+function html(body: string): Response {
+  return new Response(body, { headers: { "Content-Type": "text/html; charset=utf-8", Vary: "Accept" } });
 }
 
 function bearer(request: Request): string | null {
@@ -74,7 +82,14 @@ export default {
 
     try {
       // The doors that answer to anyone
-      if (path === "/" && method === "GET") return text(frontDoor(url.origin));
+      // The front door, negotiated. An explicit text/html — what browsers and
+      // link unfurlers send — gets the same text inside a <pre> with a title
+      // and a description, so a shared link produces a card instead of a bare
+      // URL. Everything else, including the */* that curl and fetch() send,
+      // gets the byte-identical text/plain it has always got.
+      if (path === "/" && method === "GET") {
+        return prefersHtml(request.headers.get("Accept")) ? html(htmlDoor(url.origin, frontDoor(url.origin))) : text(frontDoor(url.origin));
+      }
       if (path === "/humans.txt") return text(HUMANS_TXT);
       if (path === "/robots.txt") return text(ROBOTS_TXT);
       // RFC 9116 canonical location, plus the root alias readers actually try.
