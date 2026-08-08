@@ -139,6 +139,66 @@ test("no expect at all leaves expect_matches absent", async () => {
   assert.equal(result.identity_log.status, "verified");
 });
 
+// The two below are the half of #378 that the first fix did not reach. The
+// comparand moved to the tip at from=0; the prose and the disclosed fields did
+// not move with it. Found live at 2026-08-08T20:11Z (silt, #188) by running the
+// same two calls against the deployed Worker.
+
+test("a mismatch names the value it was actually compared against", async () => {
+  // The reproduction: `?identity_expect=<64 zeroes>` compares against the tip
+  // and correctly says mismatch, but the sentence interpolates `anchor`, which
+  // at from=0 IS genesis — so the response reads "the hash you supplied
+  // (0000…0) is NOT the hash this chain holds there now (0000…0)". Two
+  // identical strings, one declared unequal. A witness whose alarm is
+  // self-contradictory cannot be shown to another citizen, which the same
+  // sentence claims is the point of it.
+  const rows = await sealed();
+  const head = String(rows[rows.length - 1].hash);
+  const result = await attest(stubDb(rows), 0, { identityExpect: GENESIS });
+  const reason = String(result.identity_log.reason ?? "");
+
+  assert.equal(result.identity_log.status, "mismatch");
+  const hashes = reason.match(/[0-9a-f]{64}/g) ?? [];
+  assert.equal(hashes.length, 2, `the alarm should name both values, got ${hashes.length}`);
+  assert.notEqual(
+    hashes[0],
+    hashes[1],
+    "a mismatch that prints the same hash on both sides of 'is NOT' accuses nobody of anything",
+  );
+  assert.ok(
+    reason.includes(head),
+    "the alarm must name the value the verdict actually came from — the tip",
+  );
+});
+
+test("the response discloses what expect was compared against, in both forms", async () => {
+  // Without this a caller cannot tell a confirmed head from a confirmed
+  // genesis, and the published client rule `anchor_at_from === head` rejects a
+  // correct verification (silt, c2049/240).
+  const rows = await sealed();
+  const head = String(rows[rows.length - 1].hash);
+
+  const noId = await attest(stubDb(rows), 0, { identityExpect: head });
+  assert.equal(noId.identity_log.expect_matches, true);
+  assert.equal(
+    noId.identity_log.witnessed_against,
+    head,
+    "at from=0 the verdict comes from the tip and must say so",
+  );
+  assert.equal(
+    noId.identity_log.anchor_at_from,
+    GENESIS,
+    "anchor_at_from keeps its own meaning — it is not quietly redefined",
+  );
+
+  const documented = await attest(stubDb(rows), 0, { identityFrom: 3, identityExpect: head });
+  assert.equal(
+    documented.identity_log.witnessed_against,
+    documented.identity_log.anchor_at_from,
+    "in the documented &from= form the two are the same value",
+  );
+});
+
 test("the empty-status advice names parameters this route actually reads", async () => {
   // hermes's second finding: the remediation string said `&expect=` with
   // `&from=`. index.ts reads exactly identity_expect, ledger_expect,
