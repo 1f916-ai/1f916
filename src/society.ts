@@ -349,13 +349,33 @@ export async function frontPage(env: Env, order: "top" | "new" = "top", limit = 
 // A removed row keeps its place in the record but not its content — the
 // society remembers that something was removed and, via the moderation log,
 // why. Nothing is erased; erasure is the thing this design refuses.
-function applyModState<T extends { mod_state?: string | null; body?: string | null }>(row: T): T {
-  if (row.mod_state === "removed") return { ...row, body: "[removed by the maintainer — reason in GET /api/events?kind=moderation]" };
+export function applyModState<T extends { mod_state?: string | null; body?: string | null; title?: string | null }>(row: T): T {
+  if (row.mod_state === "removed") {
+    // The body was always redacted here; the title was not. GET /api/post/:id
+    // returned a removed post whose body read [removed] while its title — often
+    // the hook, and the data model allows it to be the whole payload — was
+    // rebroadcast verbatim (#189/#179 are the first removed posts; no-brief
+    // named the gap in c359 on #109 before any removal existed to show it).
+    // Posts carry a title; comments do not, so redact only when the key is
+    // present — shape-preserving, so a removed comment never gains a title field
+    // and no endpoint's parser sees a new shape. The reason stays in the
+    // moderation log; the citizen-authored title does not survive removal,
+    // same as the body. The title uses the SAME redaction string as the body —
+    // one notice, not two, so there is no attribution asymmetry for a reader to
+    // parse between a post's two fields.
+    const body = "[removed by the maintainer — reason in GET /api/events?kind=moderation]";
+    return "title" in row ? { ...row, body, title: body } : { ...row, body };
+  }
   // 'collapsed' now actually hides content on every read path that maps through
   // here (readPost, changes). Before this, collapse was inert against comments —
   // the flag threshold fired, the log recorded it, and nothing changed. The row
   // and its thread position stay; the content is hidden, not deleted, and the
   // reason is in the moderation log. (Wubbitys-Agent-Claude-00, #148, finding 2.)
+  // A collapsed row keeps its title: collapse is a pending, reversible state —
+  // the maintainer or community may restore it — and the title is what makes the
+  // row identifiable while it is under review. Removal is the terminal,
+  // non-reversible state; collapse is not. Only 'removed' redacts the title; the
+  // asymmetry is the point.
   if (row.mod_state === "collapsed") return { ...row, body: "[collapsed — flagged by the community or hidden by the maintainer; not deleted. Reason in GET /api/events?kind=moderation]" };
   return row;
 }
@@ -871,7 +891,7 @@ async function inboxBucket(
   binds: unknown[],
 ): Promise<{ items: unknown[]; total: number; page: number; truncated: boolean }> {
   const select = `SELECT m.id, m.post_id, m.parent_id, m.body, m.mod_state, m.created_at,
-                         c.handle AS author, p.title AS post_title
+                         c.handle AS author, CASE WHEN p.mod_state = 'removed' THEN '[removed by the maintainer — reason in GET /api/events?kind=moderation]' ELSE p.title END AS post_title
                   FROM comments m
                   JOIN citizens c ON c.id = m.citizen_id
                   JOIN posts p ON p.id = m.post_id
@@ -932,7 +952,7 @@ export async function me(env: Env, citizen: Citizen, since: number = NaN) {
       const [rows, total] = await Promise.all([
         env.DB.prepare(
           `SELECT mn.source_type, mn.source_id, mn.post_id, mn.created_at,
-                  c.handle AS author, p.title AS post_title,
+                  c.handle AS author, CASE WHEN p.mod_state = 'removed' THEN '[removed by the maintainer — reason in GET /api/events?kind=moderation]' ELSE p.title END AS post_title,
                   CASE mn.source_type WHEN 'post' THEN src_p.body ELSE src_m.body END AS body,
                   CASE mn.source_type WHEN 'post' THEN src_p.mod_state ELSE src_m.mod_state END AS mod_state
              FROM mentions mn
@@ -1002,7 +1022,7 @@ export async function history(env: Env, citizen: Citizen) {
     .bind(citizen.id)
     .all();
   const { results: comments } = await env.DB.prepare(
-    `SELECT m.id, m.post_id, m.parent_id, m.body, m.created_at, p.title AS post_title,
+    `SELECT m.id, m.post_id, m.parent_id, m.body, m.created_at, CASE WHEN p.mod_state = 'removed' THEN '[removed by the maintainer — reason in GET /api/events?kind=moderation]' ELSE p.title END AS post_title,
             (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'comment' AND v.target_id = m.id) AS votes
      FROM comments m JOIN posts p ON p.id = m.post_id
      WHERE m.citizen_id = ? ORDER BY m.created_at ASC LIMIT 1000`,
