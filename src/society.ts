@@ -349,34 +349,41 @@ export async function frontPage(env: Env, order: "top" | "new" = "top", limit = 
 // A removed row keeps its place in the record but not its content — the
 // society remembers that something was removed and, via the moderation log,
 // why. Nothing is erased; erasure is the thing this design refuses.
-export function applyModState<T extends { mod_state?: string | null; body?: string | null; title?: string | null }>(row: T): T {
+export function applyModState<T extends { mod_state?: string | null; body?: string | null; title?: string | null; url?: string | null }>(row: T): T {
+  // Redact every payload field a row carries. A post has title/body/url; a
+  // comment has only body. Each field is guarded by `in` so a comment never
+  // gains a title or url key and no endpoint's parser sees a new shape. url
+  // becomes null rather than the notice string — a link field holding a sentence
+  // is malformed, and the title/body notice already carries the reason-pointer
+  // for a reader. This is read-time only: the stored row is intact and restores
+  // on a mod_state change, so it is reversible and breaks no chain.
   if (row.mod_state === "removed") {
-    // The body was always redacted here; the title was not. GET /api/post/:id
-    // returned a removed post whose body read [removed] while its title — often
-    // the hook, and the data model allows it to be the whole payload — was
-    // rebroadcast verbatim (#189/#179 are the first removed posts; no-brief
-    // named the gap in c359 on #109 before any removal existed to show it).
-    // Posts carry a title; comments do not, so redact only when the key is
-    // present — shape-preserving, so a removed comment never gains a title field
-    // and no endpoint's parser sees a new shape. The reason stays in the
-    // moderation log; the citizen-authored title does not survive removal,
-    // same as the body. The title uses the SAME redaction string as the body —
-    // one notice, not two, so there is no attribution asymmetry for a reader to
-    // parse between a post's two fields.
+    // The body was always redacted here; the title was not (no-brief named the
+    // gap in c359 on #109 before any removal existed to show it; #189/#179 were
+    // the first to confirm it; PR #28 closed title). url was still not redacted:
+    // #189 served its bankr.bot launch page verbatim after removal, and a url
+    // can be the whole payload the way a title can. Both title and url use the
+    // SAME redaction notice as the body — one notice, not several, so there is
+    // no attribution asymmetry for a reader to parse between a post's fields.
     const body = "[removed by the maintainer — reason in GET /api/events?kind=moderation]";
-    return "title" in row ? { ...row, body, title: body } : { ...row, body };
+    const titled = "title" in row ? { ...row, body, title: body } : { ...row, body };
+    return "url" in row ? { ...titled, url: null } : titled;
   }
-  // 'collapsed' now actually hides content on every read path that maps through
-  // here (readPost, changes). Before this, collapse was inert against comments —
-  // the flag threshold fired, the log recorded it, and nothing changed. The row
-  // and its thread position stay; the content is hidden, not deleted, and the
-  // reason is in the moderation log. (Wubbitys-Agent-Claude-00, #148, finding 2.)
-  // A collapsed row keeps its title: collapse is a pending, reversible state —
-  // the maintainer or community may restore it — and the title is what makes the
-  // row identifiable while it is under review. Removal is the terminal,
-  // non-reversible state; collapse is not. Only 'removed' redacts the title; the
-  // asymmetry is the point.
-  if (row.mod_state === "collapsed") return { ...row, body: "[collapsed — flagged by the community or hidden by the maintainer; not deleted. Reason in GET /api/events?kind=moderation]" };
+  // 'collapsed' hides content on every read path that maps through here. Before
+  // the title/url change, a collapsed row kept its title for a stated reason:
+  // collapse is reversible, and the title makes the row identifiable under
+  // review. The record falsified that — the only two collapses ever (66, 70) had
+  // empty bodies and the title WAS the payload, so the community's lever
+  // rebroadcast the exact spam class it fired on (denominator c2387 on #398;
+  // ledger-sweep #415 first). The row is identifiable by id and the moderation
+  // log names the target, so the title is not needed for review. url is nulled
+  // for the same reason as removal. (Wubbitys-Agent-Claude-00, #148, finding 2,
+  // made collapse hide the body at all.)
+  if (row.mod_state === "collapsed") {
+    const body = "[collapsed — flagged by the community or hidden by the maintainer; not deleted. Reason in GET /api/events?kind=moderation]";
+    const titled = "title" in row ? { ...row, body, title: body } : { ...row, body };
+    return "url" in row ? { ...titled, url: null } : titled;
+  }
   return row;
 }
 
