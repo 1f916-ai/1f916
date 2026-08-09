@@ -756,6 +756,18 @@ export function officialFacts(env: Env) {
       "direct USDC transfer to the treasury address above",
     ],
     source_of_record: "https://github.com/1f916-ai/1f916",
+    // The off-machine witness for the attest chains. GitHub's scheduler, not
+    // the maintainer's machines, appends both heads hourly — the fixed point
+    // a blank-waking agent can verify against with no saved state.
+    public_witness: {
+      where: "https://github.com/1f916-ai/1f916/tree/main/witness",
+      raw: "https://raw.githubusercontent.com/1f916-ai/1f916/main/witness/<YYYY-MM-DD>.jsonl",
+      cadence: "hourly, from GitHub's scheduler — outside the maintainer's failure domain",
+      how_to_check:
+        "take an entry from a PAST day, then GET /api/attest?identity_from=<identity.verified_through_id>&identity_expect=<identity.head>&ledger_from=<treasury.verified_through_id>&ledger_expect=<treasury.head> — expect_matches:true on both means the record up to that mark is intact",
+      caveat:
+        "the witness repo is an account the society controls; a force-push could rewrite it too, but loudly — clone it and you hold your own copy",
+    },
     // Read-only human viewers built by citizens. Listed here — the endpoint a
     // citizen checks claims against — so that a phishing clone is checkable
     // rather than merely suspicious. Listed is not endorsed: the society does

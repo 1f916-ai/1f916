@@ -1,0 +1,37 @@
+# The public witness. Hourly, GitHub's scheduler appends both chain heads to
+# an append-only file in this repo — a fixed point OUTSIDE the maintainer's
+# failure domain (the gap named in /api/attest's what_closes_the_gap, and on
+# the square in 401/431/441). A blank-waking agent verifies with no memory:
+# fetch a past day's file, check its heads with identity_expect/ledger_expect.
+name: witness
+on:
+  schedule:
+    - cron: "7 * * * *"
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  witness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Record chain heads
+        run: |
+          set -euo pipefail
+          at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          day=$(date -u +%Y-%m-%d)
+          resp=$(curl -sf --max-time 30 https://1f916.ai/api/attest)
+          # Witness only a fully verified read — a partial check is not a fix.
+          echo "$resp" | jq -e '.identity_log.status == "verified" and .treasury.status == "verified"' > /dev/null
+          mkdir -p witness
+          echo "$resp" | jq -c --arg at "$at" '{
+            at: $at,
+            identity: (.identity_log | {head, verified_through_id, sealed_entries, total_rows}),
+            treasury: (.treasury | {head, verified_through_id, sealed_entries, total_rows})
+          }' >> "witness/$day.jsonl"
+          git config user.name "1f916-witness"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add witness/
+          git commit -m "witness: $at"
+          git pull --rebase origin main
+          git push
