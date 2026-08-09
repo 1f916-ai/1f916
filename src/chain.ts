@@ -210,13 +210,24 @@ export async function appendChainedStmt(
 // hands back the cursor to continue from.
 export const VERIFY_PAGE = 20000;
 
-async function readChainPage(db: D1Database, table: ChainedTable, fromId: number): Promise<ChainRow[]> {
+// Reads one page plus a sentinel row. Asking for VERIFY_PAGE and inferring the
+// end from `rows.length < VERIFY_PAGE` is wrong at the boundary: with exactly
+// VERIFY_PAGE rows left the page reports `incomplete`, the continuation finds
+// nothing and reports `empty`, and no sequence of calls ever reaches
+// `verified` (Sirpixelalittle, #31, finding 3). The extra row answers "is
+// there more" as a fact instead of an inference; it is verified on the next
+// page, not this one.
+async function readChainPage(
+  db: D1Database,
+  table: ChainedTable,
+  fromId: number,
+): Promise<{ rows: ChainRow[]; hasMore: boolean }> {
   const cols = PAYLOAD[table];
   const { results } = await db
     .prepare(`SELECT id, ${cols.join(", ")}, prev_hash, hash FROM ${table} WHERE id > ? ORDER BY id ASC LIMIT ?`)
-    .bind(fromId, VERIFY_PAGE)
+    .bind(fromId, VERIFY_PAGE + 1)
     .all<ChainRow>();
-  return results;
+  return { rows: results.slice(0, VERIFY_PAGE), hasMore: results.length > VERIFY_PAGE };
 }
 
 // The true head, read straight from the tail in one row. This is the value a
@@ -281,7 +292,8 @@ async function attestTable(
   from: number,
   expect?: string,
 ): Promise<TableAttestation> {
-  const [tip, rows] = await Promise.all([chainTip(db, table), readChainPage(db, table, from)]);
+  const [tip, page] = await Promise.all([chainTip(db, table), readChainPage(db, table, from)]);
+  const { rows, hasMore } = page;
 
   // The chain's hash at `from` — the greatest sealed row at or before it. This
   // is both the anchor a resumed page must chain from AND the value a saved
@@ -296,9 +308,31 @@ async function attestTable(
   }
 
   const report = await verifyRows(table, rows, anchor);
-  const lastId = rows.length ? (rows[rows.length - 1].id ?? null) : from > 0 ? from : null;
-  const reachedEnd = rows.length < VERIFY_PAGE;
-  const nothingChecked = rows.length === 0;
+
+  // The anchor lookup is `WHERE id <= ?`, so ANY `from` past the end silently
+  // resolves to the chain tip. A caller asking about position 9999 of a 50-row
+  // chain was told their hash matched — it matched at row 50 — and got 9999
+  // back as `verified_through_id`, an id that does not exist, under
+  // `status: "verified"` (Sirpixelalittle, #31, finding 2).
+  //
+  // Note what the condition is NOT: "this page was empty". A witness who saved
+  // the head at the tip and hands it back with `from` = that id is the
+  // documented form, and of course nothing follows the tip. That call is caught
+  // up, not defective. The fault is a cursor naming no row at all.
+  const chainEndsAt = tip.last_sealed_id ?? 0;
+  const fromPastEnd = from > chainEndsAt;
+
+  // Never invent a position: a row this call hashed, else the caller's cursor
+  // when it names a real sealed row, else nothing.
+  const lastId = rows.length ? (rows[rows.length - 1].id ?? null) : fromPastEnd || from <= 0 ? null : from;
+
+  // tip and page are separate reads; an append can land between them. If the
+  // page believes it reached the end but the tip has moved past where we
+  // verified, this call did not cover the head it is reporting — so it is not
+  // 'verified', it is behind. Handing back next_from lets the caller converge
+  // instead of being told a moving chain was fully checked (#31, finding 1).
+  const tipMoved = !hasMore && report.head !== tip.head;
+  const reachedEnd = !hasMore && !tipMoved;
 
   // The witness check (no-cron, #159): a caller who saved a head can hand it
   // back as expect=. We compare it to the chain's current hash at `from` and
@@ -326,10 +360,17 @@ async function attestTable(
   const witnessAgainst = expectProvided && from === 0 ? tip.head : anchor;
   const expectMatches = expectProvided ? expect === witnessAgainst : undefined;
 
+  // `status` answers COVERAGE — what did this call actually hash. `expect_matches`
+  // answers the WITNESS question — is the value you held still there. They are
+  // different questions and must not gate each other: a matching expect used to
+  // suppress `empty`, so `from` past the end plus a correct head returned
+  // `verified` over zero rows (Sirpixelalittle, #31, finding 2). A verdict about
+  // one row is not coverage of a chain. Both are still reported; neither is
+  // allowed to launder the other.
   let status: TableAttestation["status"];
   if (!report.ok) status = "broken";
   else if (expectProvided && !expectMatches) status = "mismatch";
-  else if (nothingChecked && from > 0 && !expectProvided) status = "empty";
+  else if (fromPastEnd) status = "empty";
   else if (reachedEnd) status = "verified";
   else status = "incomplete";
 
@@ -337,10 +378,12 @@ async function attestTable(
     status === "mismatch"
       ? `the hash you supplied ${expectProvided && from === 0 ? "as this chain's head" : `for id ${from}`} (${expect}) is NOT the hash this chain holds there now (${witnessAgainst}). Either the record was altered or truncated after you saved it, or you supplied the wrong id/hash. This is the witness firing — and because it is about a specific value you already held, you can show it to another citizen, which a private re-fetch never let you do.`
       : status === "empty"
-        ? `this call verified nothing: there are no rows at or after id ${from} (the chain ends at id ${tip.last_sealed_id ?? "genesis"}). Earlier pages checked the rows up to here; THIS call did not, so it is not a clean bill. To confirm a saved head, pass &identity_expect=<hash> (or &ledger_expect=) with &identity_from=<its id>. A bare &expect= is not read by this route.`
-        : status === "incomplete"
-          ? `verification incomplete — checked ${rows.length} rows through id ${lastId} of ${tip.total_rows}. This is NOT a tamper report: no break was found in what was checked. Call GET /api/attest?from=${lastId} to continue while status is 'incomplete'.`
-          : report.reason;
+        ? `id ${from} is past the end of this chain, which ends at id ${tip.last_sealed_id ?? "genesis"} — this call verified nothing, and no position numbered ${from} exists. Read any expect_matches above with care: the anchor lookup takes the greatest sealed row at or BEFORE your cursor, so your hash was compared against ${witnessAgainst} at id ${tip.last_sealed_id ?? "genesis"}, not at ${from}. See witnessed_against. To witness a saved head, give its real id: &identity_from=<id>&identity_expect=<hash>.`
+        : status === "incomplete" && tipMoved
+          ? `verification is behind the chain, not broken — this call hashed through id ${lastId} and reached the end of its page, but the tip moved to ${tip.head} while it read (an entry was appended mid-request). No break was found. Call GET /api/attest?from=${lastId} to take in what landed.`
+          : status === "incomplete"
+            ? `verification incomplete — checked ${rows.length} rows through id ${lastId} of ${tip.total_rows}. This is NOT a tamper report: no break was found in what was checked. Call GET /api/attest?from=${lastId} to continue while status is 'incomplete'.`
+            : report.reason;
 
   return {
     ...report,
@@ -351,7 +394,10 @@ async function attestTable(
     verified_through_id: lastId,
     total_rows: tip.total_rows,
     ...(reason ? { reason } : {}),
-    ...(status === "incomplete" ? { next_from: lastId ?? 0 } : {}),
+    // Resume from the last row actually hashed. If nothing was hashed, resume
+    // from where this call started — never 0, which would silently restart a
+    // caller who was already deep in the chain.
+    ...(status === "incomplete" ? { next_from: lastId ?? from } : {}),
     ...(expectProvided
       ? {
           expected: expect,
