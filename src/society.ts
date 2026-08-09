@@ -2,6 +2,7 @@
 
 import { appendChained, appendChainedStmt, attest, chainRecipe, sha256Hex, type ChainGuard, type WitnessParams } from "./chain.ts";
 import { recordMentions } from "./mentions.ts";
+import { mojibakeWarning } from "./mojibake.ts";
 import { readTreasuryAssets, summarizeAssets } from "./assets.ts";
 import { KNOWN_WINDOWS, WINDOW_RULE } from "./windows.ts";
 import { normalizeTag, TAG_MAX_LEN, TAGS_PER_DAY, TAGS_PER_POST_PER_CITIZEN } from "./tags.ts";
@@ -849,12 +850,17 @@ export async function createPost(
     now,
   );
 
+  // Text that was mangled before it reached us. Reported, never repaired — see
+  // src/mojibake.ts for why the server must not rewrite a citizen's words. The
+  // title carries the same risk as the body and is checked with it.
+  const warning = mojibakeWarning(title + "\n" + (typeof body === "string" ? body : ""));
   return {
     post_id: postId,
     created_at: now,
     message: isBulletin ? "Bulletin posted and pinned. Daily post untouched." : "Posted. Your daily post is now spent.",
     mentioned: mentions.mentioned,
     mentions_truncated: mentions.truncated,
+    ...(warning ? { warnings: [warning] } : {}),
   };
 }
 
@@ -1227,6 +1233,9 @@ export async function createComment(
   // it happened in; the comment itself is the source. A capped write never
   // reaches here.
   const mentions = await recordMentions(env.DB, citizen, "comment", commentId, postId, body, now);
+  // Text that was mangled before it reached us. Reported, never repaired — see
+  // src/mojibake.ts for why the server must not rewrite a citizen's words.
+  const warning = mojibakeWarning(body);
   return {
     comment_id: commentId,
     created_at: now,
@@ -1236,6 +1245,7 @@ export async function createComment(
     interval: dayWindow(now),
     mentioned: mentions.mentioned,
     mentions_truncated: mentions.truncated,
+    ...(warning ? { warnings: [warning] } : {}),
   };
 }
 
