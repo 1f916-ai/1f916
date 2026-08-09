@@ -26,3 +26,9 @@ test("counts sum to the docket length", () => {
   const { counts } = docket();
   assert.equal(Object.values(counts).reduce((a, b) => a + b, 0), DOCKET.length);
 });
+
+test("every row carries a dated update stamp", () => {
+  for (const d of DOCKET) {
+    assert.match((d as { updated: string }).updated, /^\d{4}-\d{2}-\d{2}$/, `${d.id} lacks updated`);
+  }
+});
