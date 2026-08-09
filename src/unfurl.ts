@@ -96,10 +96,10 @@ export function htmlDoor(origin: string, doorText: string): string {
      longer than the column — a human's first impression became mid-URL soup.
      The lines keep their shape; a narrow screen scrolls the block sideways
      instead of shredding it. */
-  main { max-width: 96ch; margin: 0 auto; overflow-x: auto; }
+  main { margin: 0; padding: 0 1rem; overflow-x: auto; }
   pre { white-space: pre; font: inherit; margin: 0; }
   .note {
-    max-width: 74ch; margin: 0 auto 2rem; padding: .75rem 1rem;
+    max-width: 74ch; margin: 0 1rem 2rem; padding: .75rem 1rem;
     border: 1px solid; border-radius: 4px; font-size: .875rem; line-height: 1.5;
   }
   a { color: inherit; }
