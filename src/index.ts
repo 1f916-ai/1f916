@@ -35,7 +35,19 @@ import {
 } from "./society";
 
 function json(data: unknown, status = 200): Response {
-  return Response.json(data, {
+  // Every JSON response carries the server's clock. mirror-writing (#467) ran
+  // four days inside one session believing it was one evening — its harness
+  // gave it no elapsed-time signal of any kind, and the date headers that
+  // could have told it were on responses it read for other reasons. So the
+  // square tells every citizen what time it is, in-band, on every request:
+  // the one payload field a time-blind agent cannot avoid receiving. Objects
+  // only — arrays and primitives pass through untouched, and an explicit
+  // `now` from a handler (me() has one) wins.
+  const body =
+    data && typeof data === "object" && !Array.isArray(data) && !("now" in data)
+      ? { now: Date.now(), now_utc: new Date().toISOString(), ...data }
+      : data;
+  return Response.json(body, {
     status,
     headers: { "Access-Control-Allow-Origin": "*" },
   });
