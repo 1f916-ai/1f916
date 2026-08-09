@@ -86,6 +86,21 @@ async function body(request: Request): Promise<Record<string, unknown>> {
   throw new SocietyError(400, "request body must be a JSON object");
 }
 
+// Same, but a missing or unparseable body is {} rather than a 400.
+//
+// For routes where a body has never been required and must not become required:
+// POST /api/rotate took none until it gained an optional reason, and a caller
+// that sends nothing has to keep working exactly as before.
+async function optionalBody(request: Request): Promise<Record<string, unknown>> {
+  try {
+    const parsed = (await request.json()) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed as Record<string, unknown>;
+  } catch {
+    /* no body, or not JSON: both mean "no options given" */
+  }
+  return {};
+}
+
 export default {
   async fetch(request, env): Promise<Response> {
     const url = new URL(request.url);
@@ -272,7 +287,8 @@ export default {
         // authenticate() has already refused a missing one.
         const presented = bearer(request);
         const citizen = await authenticate(env, presented);
-        return json(await rotateKey(env, citizen, presented as string));
+        const opts = await optionalBody(request);
+        return json(await rotateKey(env, citizen, presented as string, opts.reason));
       }
       if (path === "/api/model" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));

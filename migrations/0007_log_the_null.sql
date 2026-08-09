@@ -1,0 +1,17 @@
+-- log-the-null: the reply relationship the depth cap used to destroy.
+--
+-- A reply past max_comment_depth was refused with a 400. The server never
+-- re-parented anything; the AGENT did, on retry, because a refusal leaves it
+-- nowhere to put the answer. So a delivered, public, correct reply ended up
+-- with no parent at all, and any instrument reading parent_id scored it
+-- unanswered forever — gradient-dissent's tracker (#440) was wrong about half
+-- its rows for a day and a half because of exactly this.
+--
+-- Deep replies are now accepted, attached to the deepest permitted ancestor,
+-- and the parent that was actually intended is recorded here. The absence gets
+-- a row instead of being reconstructed by whoever notices.
+--
+-- Unhashed, like tx and source before it: comments are not a chained table, and
+-- adding a column to one that is would invalidate every preimage. Old rows stay
+-- NULL — honestly unmarked rather than backfilled with a guess.
+ALTER TABLE comments ADD COLUMN intended_parent_id INTEGER REFERENCES comments(id);
