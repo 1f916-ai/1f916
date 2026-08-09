@@ -115,11 +115,30 @@ export function sqrtPriceX96ToToken0PerToken1(sqrtPriceX96: bigint, decimals0: n
 // The pool's own arithmetic for what a beneficiary may collect:
 //   (cumulated + uncollectedInPool - lastCumulatedForBeneficiary) * shares / 1e18
 //
-// The middle term is the one that matters here and the one a naive
-// implementation drops. For this pool cumulated and lastCumulated are both
-// zero and the entire balance is sitting uncollected inside the pool — so a
-// "settled fees only" reading returns 0 and reports the whole claim as nothing.
-// That is the original bug wearing a different hat.
+// All three terms are load-bearing, and which one dominates changes over the
+// life of a pool:
+//
+//   cumulated             fees the pool has already swept into its own
+//                         accounting, lifetime, for every beneficiary.
+//   uncollectedInPool     fees earned but not yet swept, still sitting in the
+//                         pool. Only a simulated collectFees reveals it.
+//   lastCumulated         what THIS beneficiary has already taken. Zero for a
+//                         beneficiary that has never collected.
+//
+// An earlier version of this comment named the live values — it said cumulated
+// and lastCumulated were both zero for this pool, which was true the day it was
+// written and stopped being true as soon as the pool traded. Atlas-Hermes (#206)
+// then read the recipe this file publishes, took the uncollected term alone, and
+// landed 63x below the figure /treasury reports. Their arithmetic was right; the
+// documentation was wrong. So: no live balances in comments. A comment may
+// describe an invariant, never a quantity that a trade can change, because a
+// stale comment does not fail a test — it just quietly teaches the wrong reading
+// to the next person who checks us.
+//
+// Dropping uncollectedInPool is still the failure mode worth naming: a "settled
+// fees only" reading understates the claim by whatever has not been swept yet,
+// and when nothing has been swept it returns 0 and reports the whole claim as
+// nothing. That is the original /treasury bug wearing a different hat.
 export function claimableFromPool(
   cumulated: bigint,
   uncollectedInPool: bigint,
@@ -197,19 +216,44 @@ export const BASE_CONTRACTS = {
   V4_STATE_VIEW: "0xA3c0c9b65baD0b08107Aa264b0f3dB444b867A71",
 } as const;
 
-// Function selectors. Listed so a reader can rebuild every call in this file by
-// hand from the signature, without trusting that the constant is right.
-export const SELECTORS = {
-  balanceOf: "0x70a08231", // balanceOf(address)
-  latestRoundData: "0xfeaf968c", // latestRoundData()
-  getSlot0: "0xc815641c", // getSlot0(bytes32)
-  getShares: "0x5ebb58fb", // getShares(bytes32,address)
-  getCumulatedFees0: "0xcb7dd8f2", // getCumulatedFees0(bytes32)
-  getCumulatedFees1: "0x5a302347", // getCumulatedFees1(bytes32)
-  getLastCumulatedFees0: "0x2b1fd599", // getLastCumulatedFees0(bytes32,address)
-  getLastCumulatedFees1: "0x1564cf6c", // getLastCumulatedFees1(bytes32,address)
-  collectFees: "0x817db73b", // collectFees(bytes32) -> (uint256,uint256)
+// The signature each selector below claims to be.
+//
+// This used to be a trailing comment on each constant, and that was the defect.
+// A comment asserting "0xcb7dd8f2 is getCumulatedFees0(bytes32)" is testimony:
+// the only test guarding it checked that the constant was 4-byte hex, which a
+// wrong selector also is. As data it is checkable, and test/assets.test.ts now
+// recomputes every one of these with keccak256 and fails on a mismatch.
+//
+// Keep the text canonical — no spaces, no argument names, no type aliases. The
+// hash is of this exact string, so "uint" instead of "uint256" is a different
+// function as far as the chain is concerned.
+export const SIGNATURES = {
+  balanceOf: "balanceOf(address)",
+  latestRoundData: "latestRoundData()",
+  getSlot0: "getSlot0(bytes32)",
+  getShares: "getShares(bytes32,address)",
+  getCumulatedFees0: "getCumulatedFees0(bytes32)",
+  getCumulatedFees1: "getCumulatedFees1(bytes32)",
+  getLastCumulatedFees0: "getLastCumulatedFees0(bytes32,address)",
+  getLastCumulatedFees1: "getLastCumulatedFees1(bytes32,address)",
+  collectFees: "collectFees(bytes32)",
 } as const;
+
+// Function selectors, hardcoded so the worker does not hash at runtime. Every
+// one is the first four bytes of keccak256(SIGNATURES[name]) and the test proves
+// it, so a reader can rebuild every call in this file by hand from the signature
+// rather than trusting that the constant is right.
+export const SELECTORS = {
+  balanceOf: "0x70a08231",
+  latestRoundData: "0xfeaf968c",
+  getSlot0: "0xc815641c",
+  getShares: "0x5ebb58fb",
+  getCumulatedFees0: "0xcb7dd8f2",
+  getCumulatedFees1: "0x5a302347",
+  getLastCumulatedFees0: "0x2b1fd599",
+  getLastCumulatedFees1: "0x1564cf6c",
+  collectFees: "0x817db73b",
+} as const satisfies Record<keyof typeof SIGNATURES, string>;
 
 // A pool whose fees are payable to the treasury.
 //
@@ -401,9 +445,26 @@ export async function readTreasuryAssets(treasuryAddress: string, rpcUrls: strin
     errors.push("fees-manager reads incomplete; the claim on the pool is unavailable and is NOT being reported as zero");
   }
   const sharePct = shares === null ? null : Number(shares) / 1e16;
+  // A recipe that names the calls but not the arithmetic is not a recipe. The
+  // first version of this string listed the four reads and left the reader to
+  // guess how they combine; Atlas-Hermes (#206) ran the simulated collectFees
+  // alone, landed 63x below the published figure, and correctly reported that
+  // our own instructions do not reproduce our own number. This states the whole
+  // computation — which call yields which term, how they combine, and the
+  // scaling — so the claim is checkable rather than merely sourced.
   const claimVerify =
-    `getShares/getCumulatedFees{0,1}/getLastCumulatedFees{0,1}(poolId=${src.poolId}) on ${src.feesManager}, ` +
-    `plus eth_call ${S.collectFees} collectFees(poolId) simulated with from=${treasuryAddress} for the uncollected-in-pool term. ` +
+    `On feesManager ${src.feesManager}, with poolId=${src.poolId} and beneficiary=${treasuryAddress}. ` +
+    `Index 0 is WETH, index 1 is ${src.symbol}. Four reads, all eth_call, nothing signed: ` +
+    `(a) ${S.getCumulatedFees0} getCumulatedFees0(poolId) and ${S.getCumulatedFees1} getCumulatedFees1(poolId) = cumulated_i, ` +
+    `lifetime fees the pool has swept into its accounting; ` +
+    `(b) ${S.getLastCumulatedFees0} getLastCumulatedFees0(poolId,beneficiary) and ${S.getLastCumulatedFees1} getLastCumulatedFees1(poolId,beneficiary) = lastCumulated_i, ` +
+    `what this beneficiary has already taken (0 if it has never collected); ` +
+    `(c) ${S.getShares} getShares(poolId,beneficiary) = shares, scaled so 1e18 is 100%; ` +
+    `(d) ${S.collectFees} collectFees(poolId) SIMULATED with from=${treasuryAddress} — its two return words are uncollected_0 and uncollected_1, ` +
+    `fees earned but not yet swept. Then, per side: ` +
+    `claimable_i = (cumulated_i + uncollected_i - lastCumulated_i) * shares / 1e18, divided by 1e18 for human units. ` +
+    `ALL FOUR TERMS ARE REQUIRED. collectFees alone is only the unswept remainder and is usually the smaller part of the claim, ` +
+    `so a recipe that stops there reports far less than the pool owes and reads like an inflated book. ` +
     `Cross-check both sides at https://api.bankr.bot/public/doppler/claimable-fees/${src.token}?beneficiary=${treasuryAddress} (unauthenticated).`;
 
   holdings.push({

@@ -2,16 +2,25 @@
 //
 // Run: npm test   (needs Node >= 22.6 for --experimental-strip-types)
 //
-// Two things here are worth more than the arithmetic.
+// Three things here are worth more than the arithmetic.
 //
 // First, claimableFromPool. The obvious implementation reads the pool's settled
-// counters and subtracts — and for the pool this society actually earns from,
-// both counters are zero and the entire balance is sitting uncollected inside
-// the pool. That implementation returns 0 and reports the whole claim as
-// nothing, which is the original /treasury bug wearing a different hat. The
-// regression test for it is below.
+// counters and subtracts, dropping the fees still sitting unswept inside the
+// pool. When nothing has been swept yet that implementation returns 0 and
+// reports the whole claim as nothing, which is the original /treasury bug
+// wearing a different hat. The regression test for it is below.
 //
-// Second, summarizeAssets must go null rather than under-report. A treasury
+// (This header used to say that both counters were zero "for the pool this
+// society actually earns from". That was true when it was written and false a
+// day later. Live on-chain quantities do not belong in comments — see the note
+// on claimableFromPool in src/assets.ts for what it cost.)
+//
+// Second, the selectors. Each one used to carry its signature in a trailing
+// comment, and the only test asserted it was 4-byte hex — which every wrong
+// selector also is. The signatures are now data in SIGNATURES, and the test
+// below recomputes all nine with keccak256. A wrong constant fails.
+//
+// Third, summarizeAssets must go null rather than under-report. A treasury
 // that quietly reports a partial sum as the whole is the failure this file
 // exists to correct.
 
@@ -27,9 +36,11 @@ import {
   TIERS,
   CLAIM_SOURCES,
   SELECTORS,
+  SIGNATURES,
   type Holding,
   type Tier,
 } from "../src/assets.ts";
+import { selector } from "./keccak256.ts";
 
 // ---------- formatUnits ----------
 
@@ -211,6 +222,43 @@ test("every selector is a 4-byte hex string", () => {
   for (const [name, sel] of Object.entries(SELECTORS)) {
     assert.match(sel, /^0x[0-9a-f]{8}$/, `${name} is not a 4-byte selector`);
   }
+});
+
+test("every selector IS the signature it claims to be", () => {
+  // The test the shape check could not do. Every wrong 4-byte constant passes
+  // the assertion above; none passes this one.
+  for (const [name, signature] of Object.entries(SIGNATURES)) {
+    const expected = selector(signature);
+    const actual = SELECTORS[name as keyof typeof SELECTORS];
+    assert.equal(actual, expected, `SELECTORS.${name} is ${actual}, but keccak256("${signature}") gives ${expected}`);
+  }
+});
+
+test("no selector is documented without a signature, and none is signed without a selector", () => {
+  // A name in one object and not the other is how a call quietly loses its
+  // proof: the keccak test above only covers keys that appear in SIGNATURES.
+  assert.deepEqual(Object.keys(SELECTORS).sort(), Object.keys(SIGNATURES).sort());
+});
+
+test("the claimable formula is the one the published verify string describes", () => {
+  // Pinned against a real read of the live pool on 2026-08-09, kept as fixed
+  // numbers so this is a test and not a network call. Reproduced independently
+  // by the unauthenticated Bankr endpoint the verify string cites, which
+  // returned 5.605600 WETH for the same block-ish moment.
+  const shares = 950000000000000000n; // 95%
+  const cumulated0 = 5004121043625882749n;
+  const uncollected0 = 896510738666619624n;
+  const lastCumulated0 = 0n;
+  const claim = claimableFromPool(cumulated0, uncollected0, lastCumulated0, shares);
+  assert.equal(formatUnits(claim, 18), "5.605600193177877254");
+
+  // And the reading that dropped the cumulated term — the one the old verify
+  // string invited — is an order of magnitude out. This is the regression that
+  // matters: not that the number is wrong, but that the recipe produced a
+  // different one.
+  const uncollectedOnly = claimableFromPool(0n, uncollected0, lastCumulated0, shares);
+  assert.equal(formatUnits(uncollectedOnly, 18), "0.851685201733288642");
+  assert.ok(claim / uncollectedOnly >= 6n, "the omitted term dominates; a recipe that drops it is not a recipe");
 });
 
 test("tier 3 is documented as notional, not as a price you could get", () => {
