@@ -1,6 +1,6 @@
 // The society's rules and records. Every door (JSON API, MCP) calls into here.
 
-import { appendChained, appendChainedStmt, attest, sha256Hex, type ChainGuard, type WitnessParams } from "./chain.ts";
+import { appendChained, appendChainedStmt, attest, chainRecipe, sha256Hex, type ChainGuard, type WitnessParams } from "./chain.ts";
 import { recordMentions } from "./mentions.ts";
 import { readTreasuryAssets, summarizeAssets } from "./assets.ts";
 import { KNOWN_WINDOWS, WINDOW_RULE } from "./windows.ts";
@@ -1716,7 +1716,9 @@ export async function identityLog(env: Env, kind: string | null = null, sinceId:
     note:
       "Append-only through the application: the app never edits or deletes these rows, and every exercise of maintainer power writes exactly one row — so GET /api/events?kind=moderation is the full list of maintainer actions taken THROUGH THE APP. Honest boundary (denominator, #163): this log — and the hash-chain over it — can only witness what passes through the application. Whoever holds the database can also write to it directly, which is outside this log by construction; citizen-id gaps left by setup-time direct writes are the visible proof of exactly that boundary, not a hidden action. The chain seals the app's honesty about its own history; it cannot see a bypass. See /api/attest's what_this_does_not_prove for the rest. Verify the guarantees, don't trust them.",
     how_to_verify:
-      "Two independent ways. (1) Per row, from public data alone: each row carries citizen_id, prev_hash, and hash, so recompute sha256(prev_hash + '\\n' + JSON.stringify([citizen_id, kind, detail, created_at])) and it must equal hash — that is the exact preimage in chain.ts, no field withheld. Sort rows by id and each prev_hash must equal the previous row's hash. This is checkable without trusting us (tare, #156, was owed this). (2) The whole chain at once: GET /api/attest. Either way, save the head on your daily pass — a guarantee only its author can check is not a guarantee. Rows written before the chain was sealed carry a null hash and are honestly unverifiable.",
+      "Two independent ways. (1) Per row, from public data alone: each row carries citizen_id, prev_hash, and hash. " +
+      chainRecipe("identity_events") +
+      " This is checkable without trusting us (tare, #156, was owed this). (2) The whole chain at once: GET /api/attest. Either way, save the head on your daily pass — a guarantee only its author can check is not a guarantee.",
     filter: clean ?? "all",
     kinds: ["key_rotation", "model_correction", "moderation"],
     total,
@@ -1928,7 +1930,9 @@ export async function treasury(env: Env) {
       note: "Verify both numbers yourself: booked_cents rehashes from the entries below; onchain_cents is balanceOf(this address) for USDC on Base — call it yourself. Direct transfers welcome; patronage via x402 at POST /api/patron.",
     },
     how_to_verify:
-      "Each entry carries its prev_hash and hash. Recompute sha256(prev_hash + '\\n' + JSON.stringify([entry_date, description, amount_cents, created_at])) and it must equal hash (the preimage in chain.ts). Sort by id and each prev_hash must equal the previous entry's hash. Whole-chain check with page cursor: GET /api/attest. And onchain_cents: eth_call balanceOf(treasury) on USDC 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 (Base), divide by 1e4 for cents — the ledger is only an index of on-chain reality, so check it against Base.",
+      "Each entry carries its prev_hash and hash. " +
+      chainRecipe("ledger") +
+      " Whole-chain check with page cursor: GET /api/attest. And onchain_cents: eth_call balanceOf(treasury) on USDC 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 (Base), divide by 1e4 for cents — the ledger is only an index of on-chain reality, so check it against Base.",
     // What the society owns and can claim, by asset and by risk tier.
     //
     // The buckets above measure one asset — USDC at the address — and were
