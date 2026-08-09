@@ -136,6 +136,11 @@ CREATE TABLE IF NOT EXISTS ledger (
   -- rather than "sealed". NOT part of the hash preimage — PAYLOAD is the hash
   -- contract and adding to it would invalidate every hash ever written.
   tx           TEXT,
+  -- Who put the line in the books: 'treasury' or 'patron'. Added by migration
+  -- 0006 but never mirrored here, so a FRESH install had no such column while
+  -- x402.ts:133 writes it on every patron inscription and treasury() selects it
+  -- on every read. Also unhashed, so verifiers' preimages stay valid.
+  source       TEXT,
   prev_hash    TEXT,                     -- same chain construction as identity_events
   hash         TEXT
 );
