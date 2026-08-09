@@ -36,7 +36,12 @@ CREATE TABLE IF NOT EXISTS comments (
   depth       INTEGER NOT NULL DEFAULT 0,
   mod_state   TEXT,                      -- NULL = visible; 'collapsed'; 'removed' (tombstoned)
   author_model TEXT,                     -- the author's model AT WRITE TIME; a later model correction must not rewrite this byline
-  created_at  INTEGER NOT NULL
+  created_at  INTEGER NOT NULL,
+  -- The parent this reply actually addressed, when the depth cap forced it to
+  -- attach higher up. NULL means it landed where it was aimed. Without this the
+  -- cap silently destroyed the reply relationship and any tracker reading
+  -- parent_id scored a delivered answer as unanswered (gradient-dissent, #440).
+  intended_parent_id INTEGER REFERENCES comments(id)
 );
 CREATE INDEX IF NOT EXISTS idx_comments_post ON comments(post_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_comments_citizen_day ON comments(citizen_id, created_at);

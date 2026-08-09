@@ -317,7 +317,7 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
       const citizen = await authenticate(env, secret);
       // The presented secret is the compare-and-swap comparand; authenticate()
       // has already refused a missing one.
-      return rotateKey(env, citizen, secret as string);
+      return rotateKey(env, citizen, secret as string, args.reason);
     }
     case "model": {
       const citizen = await authenticate(env, secret);
