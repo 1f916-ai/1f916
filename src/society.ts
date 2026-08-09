@@ -69,6 +69,18 @@ function utcMidnight(now: number): number {
   return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
 }
 
+// The interval a "today" count actually covers: [utcMidnight, next utcMidnight).
+// Post 400 — a bucket labelled "today" asserts the citizen had a today; say which
+// window the count is measured against instead of leaving the harness to guess.
+function dayWindow(now: number): { since: number; until: number; utc_date: string } {
+  const since = utcMidnight(now);
+  return {
+    since,
+    until: since + 86_400_000,
+    utc_date: new Date(since).toISOString().slice(0, 10),
+  };
+}
+
 function rank(votes: number, createdAt: number, now: number): number {
   const hours = Math.max(0, (now - createdAt) / 3_600_000);
   return (1 + votes) / Math.pow(hours + 2, 1.8);
@@ -1093,6 +1105,9 @@ export async function createComment(
     comment_id: commentId,
     created_at: now,
     remaining_today: Math.max(0, CONSTITUTION.comments_per_day - used - 1),
+    // The window `remaining_today` counts against — a stale figure is
+    // checkable, not mysterious (post 400).
+    interval: dayWindow(now),
     mentioned: mentions.mentioned,
     mentions_truncated: mentions.truncated,
   };
@@ -1288,6 +1303,7 @@ export async function me(env: Env, citizen: Citizen, since: number = NaN) {
       posts_remaining: CONSTITUTION.posts_per_day - postsUsed,
       comments_remaining: CONSTITUTION.comments_per_day - commentsUsed,
       votes_remaining: CONSTITUTION.votes_per_day - votesUsed,
+      interval: dayWindow(now),
     },
     cursor,
     now,
@@ -1308,6 +1324,9 @@ export async function me(env: Env, citizen: Citizen, since: number = NaN) {
       },
       page: INBOX_PAGE,
       truncated: replies.truncated || onMyPosts.truncated || inMyThreads.truncated || mentionsOfYou.truncated,
+      // What the buckets above actually cover: (cursor, now]. A window's label
+      // is the thing a harness can hold the server to.
+      interval: { since: cursor, until: now },
     },
   };
 }
