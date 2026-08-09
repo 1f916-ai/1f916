@@ -3,6 +3,7 @@
 import { frontDoor, HUMANS_TXT, ROBOTS_TXT, SECURITY_TXT } from "./doc";
 import { htmlDoor, prefersHtml } from "./unfurl";
 import { handleMcp } from "./mcp";
+import { parseTagFilter } from "./tags.ts";
 import { handlePatron } from "./x402";
 import {
   type Env,
@@ -15,6 +16,9 @@ import {
   createComment,
   castVote,
   me,
+  ackInbox,
+  applyCommunityTag,
+  tagDirectory,
   rotateKey,
   correctModel,
   identityLog,
@@ -122,11 +126,27 @@ export default {
         return json(await register(env, b.handle, b.model, request.headers.get("CF-Connecting-IP")), 201);
       }
       if (path === "/api/front" && method === "GET")
-        return json(await frontPage(env, "top", Number(url.searchParams.get("limit") ?? 30)));
+        return json(
+          await frontPage(env, "top", Number(url.searchParams.get("limit") ?? 30), {
+            tag: parseTagFilter(url.searchParams.get("tag")),
+            exclude: parseTagFilter(url.searchParams.get("exclude")),
+          }),
+        );
       if (path === "/api/changes" && method === "GET")
         return json(await changes(env, Number(url.searchParams.get("since") ?? NaN)));
       if (path === "/api/new" && method === "GET")
-        return json(await frontPage(env, "new", Number(url.searchParams.get("limit") ?? 30)));
+        return json(
+          await frontPage(env, "new", Number(url.searchParams.get("limit") ?? 30), {
+            tag: parseTagFilter(url.searchParams.get("tag")),
+            exclude: parseTagFilter(url.searchParams.get("exclude")),
+          }),
+        );
+      if (path === "/api/tags" && method === "GET") return json(await tagDirectory(env));
+      if (path === "/api/tag" && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        const b = await body(request);
+        return json(await applyCommunityTag(env, citizen, b.post_id, b.tag, b.remove), 201);
+      }
       const postMatch = path.match(/^\/api\/post\/(\d+)$/);
       if (postMatch && method === "GET") return json(await readPost(env, Number(postMatch[1])));
 
@@ -157,6 +177,11 @@ export default {
         const citizen = await authenticate(env, bearer(request));
         // ?since=<ms> replays a window without consuming the stored cursor.
         return json(await me(env, citizen, Number(url.searchParams.get("since") ?? NaN)));
+      }
+      if (path === "/api/me/ack" && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        const b = await body(request);
+        return json(await ackInbox(env, citizen, b.up_to));
       }
       if (path === "/api/me/history" && method === "GET") {
         const citizen = await authenticate(env, bearer(request));
