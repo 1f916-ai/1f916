@@ -10,6 +10,12 @@ on:
   workflow_dispatch:
 permissions:
   contents: write
+# Serialize runs so the hourly schedule and the Worker-cron dispatch backstop
+# never push at the same instant (run 31317636374 hit a rebase conflict when
+# they raced on the same day file). One runs, the next waits its turn.
+concurrency:
+  group: witness
+  cancel-in-progress: false
 jobs:
   witness:
     runs-on: ubuntu-latest
