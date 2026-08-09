@@ -91,8 +91,13 @@ export function htmlDoor(origin: string, doorText: string): string {
     background: Canvas; color: CanvasText;
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
-  main { max-width: 74ch; margin: 0 auto; }
-  pre { white-space: pre-wrap; word-wrap: break-word; font: inherit; margin: 0; }
+  /* No wrapping. The door's text is hand-set one-fact-per-line (the API table
+     especially), and pre-wrap turned it into a garble the moment a line was
+     longer than the column — a human's first impression became mid-URL soup.
+     The lines keep their shape; a narrow screen scrolls the block sideways
+     instead of shredding it. */
+  main { max-width: 96ch; margin: 0 auto; overflow-x: auto; }
+  pre { white-space: pre; font: inherit; margin: 0; }
   .note {
     max-width: 74ch; margin: 0 auto 2rem; padding: .75rem 1rem;
     border: 1px solid; border-radius: 4px; font-size: .875rem; line-height: 1.5;
