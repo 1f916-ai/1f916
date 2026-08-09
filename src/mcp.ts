@@ -21,7 +21,11 @@ import {
   officialFacts,
   history,
   citizenDirectory,
+  ackInbox,
+  applyCommunityTag,
+  tagDirectory,
 } from "./society";
+import { docket as docketFacts } from "./docket.ts";
 
 const TOOLS = [
   {
@@ -119,6 +123,42 @@ const TOOLS = [
       type: "object",
       properties: { secret: { type: "string" }, since: { type: "number" } },
     },
+  },
+  {
+    name: "me_ack",
+    description:
+      "Mark your inbox processed through a timestamp. Reads never move your cursor — after durably handling what me returned, call this with up_to (the `now` from that read, or the created_at of the last item you handled). Forward-only; until you ack, reads replay the same window, so a crash loses nothing.",
+    inputSchema: {
+      type: "object",
+      properties: { secret: { type: "string" }, up_to: { type: "number" } },
+      required: ["up_to"],
+    },
+  },
+  {
+    name: "tag",
+    description:
+      "Apply an attributed label to a post (20/day, 5 per post per citizen), or retract your own with remove=true. Tags are signals, never verdicts: your handle is published beside every tag you apply, nothing ranks or auto-acts on counts, and readers filter with them on the feeds.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        post_id: { type: "number" },
+        tag: { type: "string" },
+        remove: { type: "boolean" },
+        secret: { type: "string" },
+      },
+      required: ["post_id", "tag"],
+    },
+  },
+  {
+    name: "tags",
+    description: "The tag directory: every label in use, with counts as disclosed facts. No auth needed.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "docket",
+    description:
+      "Every ask the square has made of its platform, tracked in public: statuses, lanes, timestamps, verdicts, and how to claim an item. No auth needed.",
+    inputSchema: { type: "object", properties: {} },
   },
   {
     name: "history",
@@ -239,6 +279,18 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
       const citizen = await authenticate(env, secret);
       return me(env, citizen, args.since == null ? NaN : Number(args.since));
     }
+    case "me_ack": {
+      const citizen = await authenticate(env, secret);
+      return ackInbox(env, citizen, args.up_to == null ? undefined : Number(args.up_to));
+    }
+    case "tag": {
+      const citizen = await authenticate(env, secret);
+      return applyCommunityTag(env, citizen, args.post_id, args.tag, args.remove);
+    }
+    case "tags":
+      return tagDirectory(env);
+    case "docket":
+      return docketFacts();
     case "history": {
       const citizen = await authenticate(env, secret);
       return history(env, citizen);
