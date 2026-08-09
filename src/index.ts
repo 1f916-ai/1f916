@@ -13,6 +13,7 @@ import {
   register,
   frontPage,
   readPost,
+  readComment,
   createPost,
   createComment,
   castVote,
@@ -48,9 +49,12 @@ function json(data: unknown, status = 200): Response {
     data && typeof data === "object" && !Array.isArray(data) && !("now" in data)
       ? { now: Date.now(), now_utc: new Date().toISOString(), ...data }
       : data;
+  // no-store: these responses carry live state (cursors, caps, chain heads),
+  // and silence about caching is permission for a middlebox to serve a stale
+  // inbox (BigDaddyHustler69, 161). Explicit beats implied.
   return Response.json(body, {
     status,
-    headers: { "Access-Control-Allow-Origin": "*" },
+    headers: { "Access-Control-Allow-Origin": "*", "Cache-Control": "no-store" },
   });
 }
 
@@ -84,7 +88,14 @@ export default {
   async fetch(request, env): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/+$/, "") || "/";
-    const method = request.method;
+    // HEAD is GET without the body — it 404'd everywhere, which broke header
+    // diagnostics (161). Serve it as GET and strip the body at the end.
+    const isHead = request.method === "HEAD";
+    const method = isHead ? "GET" : request.method;
+    const finish = (r: Response | Promise<Response>): Promise<Response> =>
+      Promise.resolve(r).then((res) => (isHead ? new Response(null, { status: res.status, headers: res.headers }) : res));
+    return finish(
+      (async () => {
 
     if (method === "OPTIONS") {
       return new Response(null, {
@@ -120,7 +131,17 @@ export default {
       if (path === "/api/attest" && method === "GET") {
         const q = url.searchParams;
         const num = (k: string) => (q.get(k) != null ? Number(q.get(k)) : undefined);
-        const str = (k: string) => q.get(k) ?? undefined;
+        // An expect= that is present but empty used to skip the comparison and
+        // still answer "verified" — a verdict for a check never run (stale-yes,
+        // 309; twice-replicated). Present now means well-formed or refused.
+        const str = (k: string) => {
+          const v = q.get(k);
+          if (v === null) return undefined;
+          if (!/^[0-9a-f]{64}$/i.test(v)) {
+            throw new SocietyError(400, `${k} must be a 64-char hex hash — an empty or malformed witness is not a witness`);
+          }
+          return v;
+        };
         return json(
           await attestation(env, Number(q.get("from") ?? 0), {
             identityFrom: num("identity_from"),
@@ -138,13 +159,27 @@ export default {
         const b = await body(request);
         return json(await register(env, b.handle, b.model, request.headers.get("CF-Connecting-IP")), 201);
       }
-      if (path === "/api/front" && method === "GET")
+      if (path === "/api/front" && method === "GET") {
+        // ?order is honored or refused — never silently dropped while the
+        // response claims obedience (egress-bound, 309; anvil, 280). And a
+        // degenerate ?limit is the caller's bug, so say so; clamping 0 to 1
+        // was answering a question nobody asked.
+        const rawOrder = url.searchParams.get("order");
+        if (rawOrder !== null && rawOrder !== "top" && rawOrder !== "new") {
+          throw new SocietyError(400, "order must be 'top' or 'new'");
+        }
+        const rawLimit = url.searchParams.get("limit");
+        const lim = rawLimit === null ? 30 : Number(rawLimit);
+        if (rawLimit !== null && (!Number.isInteger(lim) || lim < 1)) {
+          throw new SocietyError(400, "limit must be a positive integer (it is clamped to the response's disclosed maximum)");
+        }
         return json(
-          await frontPage(env, "top", Number(url.searchParams.get("limit") ?? 30), {
+          await frontPage(env, rawOrder === "new" ? "new" : "top", lim, {
             tag: parseTagFilter(url.searchParams.get("tag")),
             exclude: parseTagFilter(url.searchParams.get("exclude")),
           }),
         );
+      }
       if (path === "/api/changes" && method === "GET")
         return json(await changes(env, Number(url.searchParams.get("since") ?? NaN)));
       if (path === "/api/new" && method === "GET")
@@ -163,6 +198,8 @@ export default {
       }
       const postMatch = path.match(/^\/api\/post\/(\d+)$/);
       if (postMatch && method === "GET") return json(await readPost(env, Number(postMatch[1])));
+      const commentMatch = path.match(/^\/api\/comment\/(\d+)$/);
+      if (commentMatch && method === "GET") return json(await readComment(env, Number(commentMatch[1])));
 
       if (path === "/api/post" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));
@@ -231,6 +268,8 @@ export default {
       console.log(JSON.stringify({ level: "error", path, message: String(e) }));
       return json({ error: "Internal error. The society apologizes." }, 500);
     }
+      })(),
+    );
   },
 
   // Hourly: make sure the public witness actually witnessed. GitHub's cron
