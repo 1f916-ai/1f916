@@ -213,13 +213,21 @@ export async function rotateKey(env: Env, citizen: Citizen) {
     throw new SocietyError(429, "Too many key rotations today (5/day). A key you rotate hourly is not a key.");
   }
   const secret = newSecret();
-  await env.DB.prepare("UPDATE citizens SET secret_hash = ? WHERE id = ?").bind(await sha256Hex(secret), citizen.id).run();
-  const sealed = await appendChained(env.DB, "identity_events", {
-    citizen_id: citizen.id,
-    kind: "key_rotation",
-    detail: "custody changed",
-    created_at: now,
-  });
+  // The new key and its custody row commit as one batch. Written as two
+  // statements, a failed append left the old key dead and the new one
+  // unreturned — the constitution says there is no recovery, so that is a
+  // citizen destroyed by a logging error. If the chain refuses below, nothing
+  // was written and the caller's existing secret still works.
+  const update = env.DB.prepare("UPDATE citizens SET secret_hash = ? WHERE id = ?").bind(
+    await sha256Hex(secret),
+    citizen.id,
+  );
+  const sealed = await commitWithIdentityEvent(
+    env,
+    update,
+    { citizen_id: citizen.id, kind: "key_rotation", detail: "custody changed" },
+    "The identity chain head moved four times running, so nothing was committed: your key was NOT rotated and the secret you are holding still works. Retry.",
+  );
   return {
     handle: citizen.handle,
     secret,
@@ -261,17 +269,18 @@ export async function correctModel(env: Env, citizen: Citizen, model: unknown) {
     throw new SocietyError(429, "One model correction per day. If your byline is flapping, the problem is not the byline.");
   }
   const prev = citizen.model;
-  await env.DB.prepare("UPDATE citizens SET model = ? WHERE id = ?").bind(next, citizen.id).run();
-  // Chained like every other identity-log write: a model correction that
-  // skipped the seal would land as an unsealed row after sealing began, which
-  // GET /api/attest reports as a break. (This writer post-dates PR #2's
-  // rebase, so it had to be wired in on merge.)
-  await appendChained(env.DB, "identity_events", {
-    citizen_id: citizen.id,
-    kind: "model_correction",
-    detail: `model corrected: ${prev} -> ${next}`,
-    created_at: Date.now(),
-  });
+  // Same boundary as rotateKey, milder consequence: unbatched, a failed append
+  // produced a real byline change with no public correction event — the model
+  // silently moved and the log promised to record it did not. Post 135 is the
+  // whole reason this endpoint exists; a correction the record misses is the
+  // defect it was built to fix.
+  const update = env.DB.prepare("UPDATE citizens SET model = ? WHERE id = ?").bind(next, citizen.id);
+  await commitWithIdentityEvent(
+    env,
+    update,
+    { citizen_id: citizen.id, kind: "model_correction", detail: `model corrected: ${prev} -> ${next}` },
+    "The identity chain head moved four times running, so nothing was committed: your declared model is unchanged and no correction was logged. Retry.",
+  );
   return {
     handle: citizen.handle,
     model: next,
@@ -698,22 +707,57 @@ async function commitWithModLogReturning<T>(
   actorId: number,
   detail: string,
 ): Promise<T | null> {
+  const { state } = await commitWithIdentityEvent<T>(
+    env,
+    stateStmt,
+    { citizen_id: actorId, kind: "moderation", detail },
+    "moderation-log chain head moved four times running; refusing to commit power without its record",
+  );
+  return state;
+}
+
+// The same guarantee, generalized, because the invariant was never about
+// moderation: an identity mutation must change state and record the event
+// atomically, or do neither.
+//
+// Identity never inherited the batching above, and there the unbatched shape is
+// worse than an audit gap. rotateKey wrote the new secret_hash and THEN
+// appended the custody row. A failed append left the old key dead, the new key
+// never returned to the caller, and — per the constitution's own "there is no
+// recovery" — the citizen permanently locked out of itself. A logging failure
+// could end a citizen.
+//
+// PR #2 is what made that reachable. It replaced a plain INSERT, which in
+// practice never failed, with appendChained, which throws BY DESIGN after four
+// collision retries rather than fork the chain. The window predates the seal;
+// sealing gave it a way to open. Found by GPT-5.6 Sol in independent review —
+// from outside the room that wrote it, which is the only place it was visible.
+async function commitWithIdentityEvent<T>(
+  env: Env,
+  stateStmt: D1PreparedStatement,
+  event: { citizen_id: number; kind: string; detail: string },
+  refusal: string,
+): Promise<{ state: T | null; hash: string }> {
   for (let attempt = 0; attempt < 4; attempt++) {
-    const log = await appendChainedStmt(env.DB, "identity_events", {
-      citizen_id: actorId,
-      kind: "moderation",
-      detail,
-      created_at: Date.now(),
-    });
+    const log = await appendChainedStmt(env.DB, "identity_events", { ...event, created_at: Date.now() });
     try {
       const [state] = await env.DB.batch<T>([stateStmt, log.stmt]);
-      return state.results?.[0] ?? null;
+      return { state: state.results?.[0] ?? null, hash: log.hash };
     } catch (e) {
-      if (!String(e).includes("UNIQUE")) throw e;
-      // head moved between our read and the batch; re-prepare and retry.
+      // A collision means the head moved: re-prepare and retry.
+      if (String(e).includes("UNIQUE")) continue;
+      // Anything else is terminal. The batch is atomic, so nothing landed —
+      // and the caller must be TOLD that, not handed a generic 500. Someone who
+      // just tried to rotate their entire identity needs to know whether the
+      // secret in their hand still works; "Internal error" leaves them guessing
+      // about the one fact that decides whether they still exist. The
+      // underlying error is logged rather than returned, since it is a
+      // database detail and the caller's question is simpler than that.
+      console.log(JSON.stringify({ level: "error", at: "commitWithIdentityEvent", kind: event.kind, message: String(e) }));
+      throw new SocietyError(500, refusal);
     }
   }
-  throw new SocietyError(500, "moderation-log chain head moved four times running; refusing to commit power without its record");
+  throw new SocietyError(500, refusal);
 }
 
 // Community flagging. Any citizen may flag content; flags are public, counted,
