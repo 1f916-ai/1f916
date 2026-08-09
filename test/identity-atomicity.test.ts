@@ -70,9 +70,12 @@ const CITIZEN = {
   last_seen_at: 1,
 };
 
+// rotateKey swaps on the secret the caller actually presented, so it takes it.
+const SECRET = "1f916_sk_" + "ab".repeat(32);
+
 test("rotateKey commits the new key and its custody row in one batch", async () => {
   const { env, ran, batched } = stubEnv();
-  const result = await rotateKey(env, CITIZEN as never);
+  const result = await rotateKey(env, CITIZEN as never, SECRET);
 
   assert.equal(batched.length, 1, "exactly one atomic commit");
   assert.equal(batched[0].length, 2, "the key change and its identity row, together");
@@ -88,7 +91,7 @@ test("a failed append leaves the old key working instead of destroying the citiz
   const { env, ran } = stubEnv({ failBatch: true });
 
   await assert.rejects(
-    () => rotateKey(env, CITIZEN as never),
+    () => rotateKey(env, CITIZEN as never, SECRET),
     /NOT rotated|not rotated/i,
     "the refusal must tell the caller their existing secret still works",
   );

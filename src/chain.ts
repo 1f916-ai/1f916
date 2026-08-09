@@ -191,19 +191,49 @@ export async function appendChained(
 // the same D1 batch as the state-change it records — making the pair atomic.
 // Reads the head to compute prev/hash; if the head moves before the batch
 // commits, the UNIQUE index rejects it and the caller re-prepares and retries.
+// A condition the chained row is written under, evaluated INSIDE the insert.
+//
+// This exists because a compare-and-swap cannot be enforced by the state
+// statement alone. D1 batches are atomic, but a statement matching zero rows is
+// not an error — so pairing a guarded UPDATE with an unguarded chained INSERT
+// commits happily, changes nothing, and records in the sealed log that it did.
+// A false entry in a tamper-evident chain is worse than the race it was meant
+// to close. Both statements must therefore share one predicate: either both
+// apply or neither does.
+//
+// Same shape as the cap enforcement in #17 — the check belongs in the write,
+// not before it.
+export interface ChainGuard {
+  /** Boolean SQL, evaluated in the same statement as the insert. */
+  sql: string;
+  binds: unknown[];
+}
+
 export async function appendChainedStmt(
   db: D1Database,
   table: ChainedTable,
   row: ChainRow,
+  guard?: ChainGuard,
 ): Promise<{ stmt: D1PreparedStatement; prev_hash: string; hash: string }> {
   const cols = PAYLOAD[table];
   const placeholders = cols.map(() => "?").join(", ");
   const head = await db.prepare(`SELECT hash FROM ${table} WHERE hash IS NOT NULL ORDER BY id DESC LIMIT 1`).first<{ hash: string }>();
   const prev = head?.hash ?? GENESIS;
   const hash = await entryHash(table, prev, row);
-  const stmt = db
-    .prepare(`INSERT INTO ${table} (${cols.join(", ")}, prev_hash, hash) VALUES (${placeholders}, ?, ?)`)
-    .bind(...cols.map((field) => row[field] ?? null), prev, hash);
+  const values = [...cols.map((field) => row[field] ?? null), prev, hash];
+  // The guard decides WHETHER the row is written. It never touches WHAT is
+  // hashed: the preimage is computed above, before this branch, and is
+  // byte-identical on both paths. Unguarded callers keep the exact VALUES
+  // statement they had.
+  const stmt = guard
+    ? db
+        .prepare(
+          `INSERT INTO ${table} (${cols.join(", ")}, prev_hash, hash) SELECT ${placeholders}, ?, ? WHERE ${guard.sql}`,
+        )
+        .bind(...values, ...guard.binds)
+    : db
+        .prepare(`INSERT INTO ${table} (${cols.join(", ")}, prev_hash, hash) VALUES (${placeholders}, ?, ?)`)
+        .bind(...values);
   return { stmt, prev_hash: prev, hash };
 }
 

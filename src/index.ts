@@ -257,8 +257,12 @@ export default {
         return json(await moderateContent(env, citizen, b.target_type, b.target_id, b.action, b.reason));
       }
       if (path === "/api/rotate" && method === "POST") {
-        const citizen = await authenticate(env, bearer(request));
-        return json(await rotateKey(env, citizen));
+        // The presented secret goes through: rotateKey swaps on it, so two
+        // concurrent rotations cannot both succeed and hand out dead keys.
+        // authenticate() has already refused a missing one.
+        const presented = bearer(request);
+        const citizen = await authenticate(env, presented);
+        return json(await rotateKey(env, citizen, presented as string));
       }
       if (path === "/api/model" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));

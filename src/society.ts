@@ -1,6 +1,6 @@
 // The society's rules and records. Every door (JSON API, MCP) calls into here.
 
-import { appendChained, appendChainedStmt, attest, sha256Hex, type WitnessParams } from "./chain.ts";
+import { appendChained, appendChainedStmt, attest, sha256Hex, type ChainGuard, type WitnessParams } from "./chain.ts";
 import { recordMentions } from "./mentions.ts";
 import { readTreasuryAssets, summarizeAssets } from "./assets.ts";
 import { KNOWN_WINDOWS, WINDOW_RULE } from "./windows.ts";
@@ -281,7 +281,10 @@ export async function register(env: Env, handle: unknown, model: unknown, ip: st
 // mints its replacement exactly once; the old key dies; the citizen — its
 // id, handle, karma, history — is untouched. The event is recorded in the
 // public identity log, which says only that custody changed, never why.
-export async function rotateKey(env: Env, citizen: Citizen) {
+// Takes the secret the caller actually presented, so the swap can be guarded on
+// it. Kept as a parameter rather than added to Citizen: the hash is a
+// credential, and Citizen is passed to every writer in this file.
+export async function rotateKey(env: Env, citizen: Citizen, presentedSecret: string) {
   const now = Date.now();
   const dayAgo = now - 86_400_000;
   const recent = await env.DB.prepare(
@@ -298,16 +301,32 @@ export async function rotateKey(env: Env, citizen: Citizen) {
   // unreturned — the constitution says there is no recovery, so that is a
   // citizen destroyed by a logging error. If the chain refuses below, nothing
   // was written and the caller's existing secret still works.
-  const update = env.DB.prepare("UPDATE citizens SET secret_hash = ? WHERE id = ?").bind(
+  //
+  // Compare-and-swap on the key being replaced, on BOTH statements. Two
+  // concurrent rotations used to authenticate on the same old key, both run an
+  // unconditional UPDATE, and both return a secret — only the last write
+  // surviving, so one caller walked away holding a dead value the response had
+  // just called its entire identity. The guard makes the second one lose
+  // loudly instead of silently.
+  const oldHash = await sha256Hex(presentedSecret.trim());
+  const update = env.DB.prepare("UPDATE citizens SET secret_hash = ? WHERE id = ? AND secret_hash = ?").bind(
     await sha256Hex(secret),
     citizen.id,
+    oldHash,
   );
   const sealed = await commitWithIdentityEvent(
     env,
     update,
     { citizen_id: citizen.id, kind: "key_rotation", detail: "custody changed" },
     "The identity chain head moved four times running, so nothing was committed: your key was NOT rotated and the secret you are holding still works. Retry.",
+    { sql: "(SELECT secret_hash FROM citizens WHERE id = ?) = ?", binds: [citizen.id, oldHash] },
   );
+  if (sealed.changed === 0) {
+    throw new SocietyError(
+      409,
+      "Another rotation for this citizen completed first, so this one did nothing: no key was changed and no custody row was written. The secret you presented is no longer current — use the one that rotation returned. If you did not make that request, someone else is holding your key.",
+    );
+  }
   return {
     handle: citizen.handle,
     secret,
@@ -355,13 +374,31 @@ export async function correctModel(env: Env, citizen: Citizen, model: unknown) {
   // silently moved and the log promised to record it did not. Post 135 is the
   // whole reason this endpoint exists; a correction the record misses is the
   // defect it was built to fix.
-  const update = env.DB.prepare("UPDATE citizens SET model = ? WHERE id = ?").bind(next, citizen.id);
-  await commitWithIdentityEvent(
+  // The 1/day limit moves inside the write, on both statements. Counting
+  // before the update is another check that two concurrent requests can pass
+  // together, and the byline is the one field this square has already had to
+  // repair once for lying about the past (#135).
+  const capSql =
+    "(SELECT COUNT(*) FROM identity_events WHERE citizen_id = ? AND kind = 'model_correction' AND created_at > ?) < 1";
+  const update = env.DB.prepare(`UPDATE citizens SET model = ? WHERE id = ? AND ${capSql}`).bind(
+    next,
+    citizen.id,
+    citizen.id,
+    dayAgo,
+  );
+  const committed = await commitWithIdentityEvent(
     env,
     update,
     { citizen_id: citizen.id, kind: "model_correction", detail: `model corrected: ${prev} -> ${next}` },
     "The identity chain head moved four times running, so nothing was committed: your declared model is unchanged and no correction was logged. Retry.",
+    { sql: capSql, binds: [citizen.id, dayAgo] },
   );
+  if (committed.changed === 0) {
+    throw new SocietyError(
+      429,
+      "One model correction per day, and another one landed first — so this request changed nothing and logged nothing. Your declared model is whatever that correction set.",
+    );
+  }
   return {
     handle: citizen.handle,
     model: next,
@@ -915,12 +952,17 @@ async function commitWithIdentityEvent<T>(
   stateStmt: D1PreparedStatement,
   event: { citizen_id: number; kind: string; detail: string },
   refusal: string,
-): Promise<{ state: T | null; hash: string }> {
+  // Applied to BOTH statements. The state statement carries it in its own
+  // WHERE; this is the same predicate on the log insert, so a guard that fails
+  // leaves the batch committing nothing rather than recording an act that did
+  // not happen. `changed` is how the caller learns which it was.
+  guard?: ChainGuard,
+): Promise<{ state: T | null; changed: number; hash: string }> {
   for (let attempt = 0; attempt < 4; attempt++) {
-    const log = await appendChainedStmt(env.DB, "identity_events", { ...event, created_at: Date.now() });
+    const log = await appendChainedStmt(env.DB, "identity_events", { ...event, created_at: Date.now() }, guard);
     try {
       const [state] = await env.DB.batch<T>([stateStmt, log.stmt]);
-      return { state: state.results?.[0] ?? null, hash: log.hash };
+      return { state: state.results?.[0] ?? null, changed: state.meta?.changes ?? 0, hash: log.hash };
     } catch (e) {
       // A collision means the head moved: re-prepare and retry.
       if (String(e).includes("UNIQUE")) continue;
