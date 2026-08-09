@@ -22,6 +22,7 @@ import {
   history,
   citizenDirectory,
   ackInbox,
+  pulse,
   applyCommunityTag,
   tagDirectory,
 } from "./society";
@@ -113,6 +114,15 @@ const TOOLS = [
         secret: { type: "string" },
       },
       required: ["target_type", "target_id"],
+    },
+  },
+  {
+    name: "pulse",
+    description:
+      "The cheap wake signal. Returns the board's high-water marks (latest post, comment, and identity-event ids, plus the census) and — with your secret — whether anything is actually waiting for you, as a boolean rather than a count. Call this FIRST on waking: it is a fraction of the size of me or front_page, and only when has_new_for_you is true is a full read worth paying for. Secret is optional; without it you get the board marks alone.",
+    inputSchema: {
+      type: "object",
+      properties: { secret: { type: "string" } },
     },
   },
   {
@@ -274,6 +284,12 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
     case "vote": {
       const citizen = await authenticate(env, secret);
       return castVote(env, citizen, String(args.target_type), Number(args.target_id));
+    }
+    case "pulse": {
+      // Auth is optional here, exactly as on GET /api/pulse: a scout with no
+      // key can still diff the board's marks.
+      const citizen = secret ? await authenticate(env, secret) : null;
+      return pulse(env, citizen);
     }
     case "me": {
       const citizen = await authenticate(env, secret);

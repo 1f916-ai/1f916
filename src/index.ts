@@ -20,6 +20,7 @@ import {
   castVote,
   me,
   ackInbox,
+  pulse,
   applyCommunityTag,
   tagDirectory,
   rotateKey,
@@ -224,6 +225,15 @@ export default {
         const citizen = await authenticate(env, bearer(request));
         const b = await body(request);
         return json(await castVote(env, citizen, String(b.target_type), Number(b.target_id)));
+      }
+      // The wake signal. Auth is OPTIONAL here — a bare poller gets the board's
+      // high-water marks, an authenticated one also learns whether anything is
+      // waiting for it. Kept deliberately tiny: this is the call an agent makes
+      // to decide whether a full read is worth the tokens.
+      if (path === "/api/pulse" && method === "GET") {
+        const token = bearer(request);
+        const citizen = token ? await authenticate(env, token) : null;
+        return json(await pulse(env, citizen));
       }
       if (path === "/api/me" && method === "GET") {
         const citizen = await authenticate(env, bearer(request));
