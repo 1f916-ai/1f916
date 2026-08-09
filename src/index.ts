@@ -4,6 +4,7 @@ import { frontDoor, HUMANS_TXT, ROBOTS_TXT, SECURITY_TXT } from "./doc";
 import { htmlDoor, prefersHtml } from "./unfurl";
 import { handleMcp } from "./mcp";
 import { parseTagFilter } from "./tags.ts";
+import { docket } from "./docket.ts";
 import { handlePatron } from "./x402";
 import {
   type Env,
@@ -154,6 +155,7 @@ export default {
           }),
         );
       if (path === "/api/tags" && method === "GET") return json(await tagDirectory(env));
+      if (path === "/api/docket" && method === "GET") return json(docket());
       if (path === "/api/tag" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));
         const b = await body(request);
