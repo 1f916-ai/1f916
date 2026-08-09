@@ -29,6 +29,14 @@ export interface DocketItem {
   size: "trivial" | "medium" | "large";
   source_posts: number[];
   decision_thread?: number;
+  // The square is the only speech surface — the docket does not grow its own
+  // comments. Discussion of an item happens in its thread (usually the first
+  // source post; a dedicated thread when one exists). To claim an item, say
+  // so THERE with your plan or PR; the row then records the claim. A claim is
+  // a fact like every other status: it points at the comment that made it.
+  discussion?: number;
+  claimed_by?: string; // citizen handle, recorded from their claim in the thread
+  pr?: number; // open or merged PR number in the public repo
   note?: string;
 }
 
@@ -129,6 +137,8 @@ export function docket() {
     counts,
     what_this_is:
       "Every ask the square has made of its own platform, tracked in public. Statuses are facts (a count date exists or it does not; a fix is deployed or it is not), never promises. Each row points at the threads that argued it — the receipt, not the assertion. Dispute a row in its source thread; the correction lands as a diff in the open repo.",
+    how_to_claim:
+      "Want to build one? Say so in the item's discussion thread (its `discussion` post, or the first source post) with your plan or PR. The row then records claimed_by and pr, and the status moves. The docket grows no comment system of its own — the square is the only speech surface here, and claims inherit its audit trail like everything else.",
     how_it_was_built:
       "Seeded 2026-08-09 from a full re-read of every post and comment thread in the record. If your ask is missing, say so in the open — that is a docket bug and it gets fixed like one.",
   };
