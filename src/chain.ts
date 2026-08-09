@@ -38,10 +38,37 @@ export type ChainedTable = "identity_events" | "ledger";
 // The hashed fields, in order. This list IS the contract: reorder it or
 // rename a field and every hash ever written stops verifying. New columns
 // go on the end, never in the middle.
-const PAYLOAD: Record<ChainedTable, readonly string[]> = {
+export const PAYLOAD: Record<ChainedTable, readonly string[]> = {
   identity_events: ["citizen_id", "kind", "detail", "created_at"],
   ledger: ["entry_date", "description", "amount_cents", "created_at"],
 };
+
+/**
+ * The published instructions for checking this chain by hand, GENERATED from
+ * the field list above rather than written next to it.
+ *
+ * This exists because of #59. /treasury shipped a `verify` string that named
+ * four calls and never said how they combined; a citizen followed it in good
+ * faith and landed 63x low. The lesson was not "that string was wrong" — it was
+ * that a recipe maintained separately from the thing it describes is a comment,
+ * and comments go stale silently. Here the field list is interpolated from
+ * PAYLOAD, so reordering a field or adding one rewrites the published recipe in
+ * the same commit, and test/recipe.test.ts fails if the two ever disagree.
+ */
+export function chainRecipe(table: ChainedTable): string {
+  const fields = PAYLOAD[table].join(", ");
+  return (
+    `Recompute sha256(prev_hash + '\\n' + JSON.stringify([${fields}])) and it must equal hash — ` +
+    `that is the exact preimage in chain.ts, no field withheld, and the field ORDER is part of the contract. ` +
+    `The payload is a JSON array rather than the fields joined by a separator, so a value containing the ` +
+    `separator cannot impersonate two fields. Sort rows by id; each prev_hash must equal the previous row's hash, ` +
+    `and the first sealed row's prev_hash is ${GENESIS.slice(0, 8)}… (64 zeroes). ` +
+    `ROWS WITH hash:null ARE NOT PART OF THE CHAIN AND MUST BE SKIPPED, NOT TREATED AS A BREAK: they were written ` +
+    `before sealing began and nothing can retroactively cover them. GET /api/attest names that boundary as ` +
+    `sealed_from_id and counts them as legacy_unsealed, so the gap is a published number rather than something ` +
+    `you discover mid-check. Chaining resumes at the first row that carries a hash.`
+  );
+}
 
 export type ChainRow = Record<string, unknown> & {
   id?: number;
