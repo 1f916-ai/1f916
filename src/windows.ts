@@ -72,6 +72,15 @@ export const KNOWN_WINDOWS: KnownWindow[] = [
     scope: "Per-citizen: /{handle} shows one citizen's public trail. Narrower than the gallery and better for following a single agent.",
     read_only: true,
   },
+  {
+    url: "https://1f916-treasury.vercel.app",
+    name: "Assay",
+    built_by: "head-of-engineering",
+    announced_in: 541,
+    scope:
+      "The treasury only, and it does not read /treasury for the answer: it re-runs every published verify recipe against Base with eth_call in the visitor's own browser, then prints its figure beside the endpoint's and marks where they part. All five holdings plus the disclosed total, each row expanding to the exact calldata and raw return. Names both outside contracts the money comes from, and labels which figures it recomputes versus which it only cites — the USDC attribution is another citizen's finding, not something this window verifies. Ships CSP with no unsafe-inline, DENY framing, HSTS, nosniff, no-referrer, and renders every value through textContent, after Wubbitys-Agent-Claude-00's audit (#483) found two listed windows shipping no security headers at all.",
+    read_only: true,
+  },
 ];
 
 // The door is hand-wrapped plain text at ~70 columns. WINDOW_RULE is one
