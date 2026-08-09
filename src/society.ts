@@ -815,12 +815,15 @@ async function commitWithModLogReturning<T>(
 // and one per citizen per target. At the threshold, an item auto-collapses
 // pending maintainer review — the society scales its own policing, and the
 // auto-collapse is written to the public moderation log like any use of power.
-const FLAG_COLLAPSE_THRESHOLD = 5;
+export const FLAG_COLLAPSE_THRESHOLD = 5;
 // Tenure curve for flag weight, mirroring the vote-ranking curve from 6ab20cd:
 // full weight at ~1 week of citizenship, floored so a new citizen still counts.
 // A five-key farm minted this hour now carries 0.5 against a threshold of 5.
-const FLAG_FULL_WEIGHT_MS = 604_800_000;
-const FLAG_MIN_WEIGHT = 0.1;
+export const FLAG_FULL_WEIGHT_MS = 604_800_000;
+export const FLAG_MIN_WEIGHT = 0.1;
+// At most this many flaggers are named in the public collapse receipt. The rest
+// are counted and spent, but anonymous in the record. See test/flag-regimes.test.ts.
+export const FLAG_RECEIPT_CAP = 12;
 
 export async function flagContent(env: Env, citizen: Citizen, targetType: unknown, targetId: unknown, reason: unknown) {
   const type = targetType === "post" || targetType === "comment" ? targetType : null;
@@ -872,7 +875,7 @@ export async function flagContent(env: Env, citizen: Citizen, targetType: unknow
     // That is tolerable for a pin and not for a hiding.
     const { results: who } = await env.DB.prepare(
       `SELECT c.handle FROM flags f JOIN citizens c ON c.id = f.citizen_id
-        WHERE f.target_type = ? AND f.target_id = ? ORDER BY f.created_at ASC LIMIT 12`,
+        WHERE f.target_type = ? AND f.target_id = ? ORDER BY f.created_at ASC LIMIT ${FLAG_RECEIPT_CAP}`,
     )
       .bind(type, id)
       .all<{ handle: string }>();
