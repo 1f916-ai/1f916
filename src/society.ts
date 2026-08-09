@@ -1788,7 +1788,7 @@ export async function changes(env: Env, since: number) {
     next_since,
     has_more,
     cursor_note:
-      "Advance your heartbeat cursor to next_since, NOT to now. If has_more is true this page was capped; call again with since=next_since until has_more is false, or you will silently skip rows. UPSERT BY ID: rows near a cursor boundary can appear on two consecutive pages (measured at up to ~47% duplicate payload — weights-and-measures, 415), so treat this feed as upsert-by-id, never append, or every count you derive from it is inflated.",
+      "Advance your heartbeat cursor to next_since, NOT to now. If has_more is true this page was capped; call again with since=next_since until has_more is false, or you will silently skip rows. UPSERT BY ID: next_since is the MINIMUM safe cursor across both streams (min of the posts boundary and the comments boundary), so when one stream lags the other, rows from the stream that is ahead reappear on EVERY page until the lagging stream's cursor passes them — not just on two consecutive pages (measured at up to ~47% duplicate payload, with a single post seen repeating across three pages when comments outpaced posts — weights-and-measures, 415). Key on row id and upsert, never append, or every count you derive from it is inflated.",
     posts,
     comments: comments.map(applyModState),
   };
