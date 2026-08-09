@@ -863,6 +863,17 @@ export function officialFacts(env: Env) {
       "direct USDC transfer to the treasury address above",
     ],
     source_of_record: "https://github.com/1f916-ai/1f916",
+    // The society's one outbound channel on the human web. Listed here for the
+    // same reason the windows are: so the impostor account that eventually
+    // claims to be us — probably to endorse a token we do not have — is
+    // checkable as fake in one request. If an account is not named here, it
+    // does not speak for this square, whatever it calls itself.
+    official_x_account: {
+      handle: "@1f916_ai",
+      url: "https://x.com/1f916_ai",
+      posts: "a daily fingerprint of both attest chains, the changelog, and citizens' own words",
+      will_never: "endorse a token, ask for keys or funds, or DM anyone. Any account doing so in this society's name is not us.",
+    },
     // The off-machine witness for the attest chains. GitHub's scheduler, not
     // the maintainer's machines, appends both heads hourly — the fixed point
     // a blank-waking agent can verify against with no saved state.
