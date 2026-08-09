@@ -21,6 +21,14 @@
 // with eth_call. The recipe for every number is carried in the response, so a
 // citizen can re-run it rather than believe it.
 
+import {
+  activeLiquidityAt,
+  bitmapWordRange,
+  simulateSellToken1,
+  ticksFromBitmapWord,
+  type TickDelta,
+} from "./pooldepth.ts";
+
 export const TIERS = {
   1: {
     label: "cash-equivalent",
@@ -32,7 +40,7 @@ export const TIERS = {
   },
   3: {
     label: "speculative",
-    note: "Thin or reflexive markets. The quantity is certain; the dollar value is NOTIONAL — a mark, not an offer. A position this size cannot be sold at the quoted price, because selling it is what moves the price.",
+    note: "Thin or reflexive markets. The quantity is certain; the dollar value is NOTIONAL — a mark, not an offer. A position this size cannot be sold at the quoted price, because selling it is what moves the price. Where the pool's tick ladder can be read, the holding now carries a 'realizable' block measuring HOW MUCH the mark overstates, so this warning is a number rather than a mood.",
   },
 } as const;
 
@@ -53,6 +61,27 @@ export interface Holding {
   notional: boolean;
   share_of_supply_pct?: number | null;
   note?: string;
+  verify: string;
+  // What the position would actually fetch, for holdings whose mark is
+  // notional. Present only on tier-3 rows and only when the pool's own ladder
+  // could be read and checked; null means unknown, never zero.
+  realizable?: RealizableValue | null;
+}
+
+/**
+ * A notional mark says what a position is worth at the last price. This says
+ * what it would fetch if it were sold, which for a position that is a percent
+ * of its own token's supply is a materially different number.
+ */
+export interface RealizableValue {
+  quantity: string;
+  value_cents: number | null;
+  /** realizable / marginal, as a percentage. 100 means no measurable impact. */
+  pct_of_mark: number | null;
+  ticks_crossed: number;
+  /** Set when the pool could not absorb the whole position at any price. */
+  unsellable_quantity: string | null;
+  method: string;
   verify: string;
 }
 
@@ -237,6 +266,9 @@ export const SIGNATURES = {
   getLastCumulatedFees0: "getLastCumulatedFees0(bytes32,address)",
   getLastCumulatedFees1: "getLastCumulatedFees1(bytes32,address)",
   collectFees: "collectFees(bytes32)",
+  getLiquidity: "getLiquidity(bytes32)",
+  getTickBitmap: "getTickBitmap(bytes32,int16)",
+  getTickLiquidity: "getTickLiquidity(bytes32,int24)",
 } as const;
 
 // Function selectors, hardcoded so the worker does not hash at runtime. Every
@@ -253,6 +285,9 @@ export const SELECTORS = {
   getLastCumulatedFees0: "0x2b1fd599",
   getLastCumulatedFees1: "0x1564cf6c",
   collectFees: "0x817db73b",
+  getLiquidity: "0xfa6793d5",
+  getTickBitmap: "0x1c7ccb4c",
+  getTickLiquidity: "0xcaedab54",
 } as const satisfies Record<keyof typeof SIGNATURES, string>;
 
 // A pool whose fees are payable to the treasury.
@@ -273,6 +308,20 @@ export interface ClaimSource {
   wethIsToken0: boolean;
   decimals: number;
   totalSupply: bigint;
+  // The pool's tick spacing. Immutable pool configuration, fixed when the pool
+  // was created — not a balance, so it belongs in a constant, unlike anything
+  // a trade can change.
+  //
+  // It is not readable from StateView, and the Initialize event that carries it
+  // is out of reach: every public Base RPC refuses an unbounded eth_getLogs.
+  // So it is DERIVED and then CHECKED. The tick bitmap is indexed by
+  // tick/spacing, so a wrong spacing decodes the same bits into ticks that do
+  // not exist; summing liquidityNet up to the current tick then disagrees with
+  // getLiquidity. At 200 the sum reproduces the pool's own reported liquidity
+  // exactly and the whole ladder nets to zero; at 50, 60 and 100 it does not.
+  // readPoolDepth re-runs that check on every read and publishes nothing if it
+  // fails, so this constant cannot go quietly wrong the way a comment can.
+  tickSpacing: number;
   note: string;
 }
 
@@ -286,6 +335,7 @@ export const CLAIM_SOURCES: ClaimSource[] = [
     wethIsToken0: true,
     decimals: 18,
     totalSupply: 100_000_000_000n * 10n ** 18n,
+    tickSpacing: 200,
     note: "An outside party's token, launched via Bankr, which named the treasury as its fee beneficiary at a 95% share. The society did not launch it, does not endorse it, and has never collected from it. It is listed because the claim is real, not because the token is ours.",
   },
 ];
@@ -346,6 +396,169 @@ export async function batchCall(rpcUrls: string[], calls: RpcCall[], timeoutMs =
   }
   return new Array(calls.length).fill(null);
 }
+
+/**
+ * batchCall, but it insists.
+ *
+ * batchCall returns as soon as ANY call in the batch answered, so a public RPC
+ * that rate-limits half a large batch yields a result array with holes and the
+ * next endpoint is never tried. That is fine for the eleven-call read this file
+ * started with and not fine for the ~40 the depth walk needs: a single throttled
+ * word silently costs the whole realizable figure, intermittently, which is the
+ * worst way for a number to be missing.
+ *
+ * So: re-request only the holes, rotating which endpoint leads each pass, and
+ * chunk so no single request is large enough to be worth throttling. Still
+ * returns nulls if the data genuinely cannot be read — callers must keep
+ * treating null as unknown.
+ */
+export async function batchCallComplete(
+  rpcUrls: string[],
+  calls: RpcCall[],
+  passes = 3,
+  chunkSize = 16,
+): Promise<(string | null)[]> {
+  const out: (string | null)[] = new Array(calls.length).fill(null);
+  for (let pass = 0; pass < passes; pass++) {
+    const missing: number[] = [];
+    out.forEach((v, i) => {
+      if (v === null) missing.push(i);
+    });
+    if (missing.length === 0) break;
+    const shift = pass % Math.max(1, rpcUrls.length);
+    const rotated = rpcUrls.slice(shift).concat(rpcUrls.slice(0, shift));
+    for (let c = 0; c < missing.length; c += chunkSize) {
+      const idx = missing.slice(c, c + chunkSize);
+      const res = await batchCall(
+        rotated,
+        idx.map((i) => calls[i]),
+      );
+      idx.forEach((target, k) => {
+        if (res[k] !== null) out[target] = res[k];
+      });
+    }
+  }
+  return out;
+}
+
+export interface PoolDepth {
+  /** Token0 the position would actually fetch, raw units. */
+  realizable0: bigint;
+  /** The same sale at the marginal price, ignoring impact. The mark's basis. */
+  marginal0: bigint;
+  ticksCrossed: number;
+  unfilled: bigint;
+  /** Every initialized tick, so a reader can re-run the walk themselves. */
+  ladder: TickDelta[];
+  lpFeePips: number;
+}
+
+/**
+ * Walk the pool's tick ladder and price the position against it.
+ *
+ * Kept in its own read, deliberately: if any of this fails or the spacing guard
+ * trips, /treasury still returns every number it returned before and simply
+ * carries no realizable figure. A depth estimate is an addition to the books,
+ * never a dependency of them.
+ */
+// The depth walk costs ~40 chain reads, against the eleven the rest of this
+// file needs. It is also the slowest-moving number here: the ladder only
+// changes when someone adds or removes liquidity, and the figure is explicitly
+// an estimate. So it is cached briefly — enough that a burst of /treasury reads
+// costs one walk, short enough that nobody is looking at a stale pool.
+//
+// The cache key includes the amount, because the whole point of the number is
+// that it depends on size.
+const DEPTH_TTL_MS = 60_000;
+let depthCache: { key: string; at: number; value: { depth: PoolDepth | null; error: string | null } } | null = null;
+
+export async function readPoolDepth(
+  src: ClaimSource,
+  amountIn: bigint,
+  rpcUrls: string[],
+): Promise<{ depth: PoolDepth | null; error: string | null }> {
+  const key = `${src.poolId}:${amountIn}`;
+  if (depthCache && depthCache.key === key && Date.now() - depthCache.at < DEPTH_TTL_MS) return depthCache.value;
+  const computed = await readPoolDepthUncached(src, amountIn, rpcUrls);
+  // Only a success is cached. A transient RPC failure must not pin "unknown"
+  // in front of the next reader for a minute.
+  if (computed.depth) depthCache = { key, at: Date.now(), value: computed };
+  return computed;
+}
+
+async function readPoolDepthUncached(
+  src: ClaimSource,
+  amountIn: bigint,
+  rpcUrls: string[],
+): Promise<{ depth: PoolDepth | null; error: string | null }> {
+  const S = SELECTORS;
+  const sv = BASE_CONTRACTS.V4_STATE_VIEW;
+  const int = (v: number) => BigInt.asUintN(256, BigInt(v)).toString(16).padStart(64, "0");
+
+  const [slot0, liqRaw] = await batchCallComplete(rpcUrls, [
+    { to: sv, data: S.getSlot0 + pad(src.poolId) },
+    { to: sv, data: S.getLiquidity + pad(src.poolId) },
+  ]);
+  if (!slot0 || !liqRaw) return { depth: null, error: "pool slot0/liquidity did not answer; no realizable figure" };
+  const sqrtPriceX96 = word(slot0, 0);
+  const tick = Number(BigInt.asIntN(256, word(slot0, 1)));
+  const lpFeePips = Number(word(slot0, 3));
+  const liquidity = BigInt(liqRaw);
+
+  // The whole legal range, so the spacing guard sees the entire ladder rather
+  // than the half that happens to be convenient.
+  const { from, to } = bitmapWordRange(src.tickSpacing);
+  const wordPositions: number[] = [];
+  for (let w = from; w <= to; w++) wordPositions.push(w);
+  const bitmaps = await batchCallComplete(
+    rpcUrls,
+    wordPositions.map((w) => ({ to: sv, data: S.getTickBitmap + pad(src.poolId) + int(w) })),
+  );
+  if (bitmaps.some((b) => b === null)) return { depth: null, error: "tick bitmap incomplete; no realizable figure" };
+  const ticks: number[] = [];
+  wordPositions.forEach((w, i) => ticks.push(...ticksFromBitmapWord(w, BigInt(bitmaps[i]!), src.tickSpacing)));
+  if (ticks.length === 0) return { depth: null, error: "no initialized ticks found; no realizable figure" };
+
+  const netRaw = await batchCallComplete(
+    rpcUrls,
+    ticks.map((t) => ({ to: sv, data: S.getTickLiquidity + pad(src.poolId) + int(t) })),
+  );
+  if (netRaw.some((r) => r === null)) return { depth: null, error: "tick liquidity incomplete; no realizable figure" };
+  // liquidityNet is int128, ABI-encoded sign-extended across the full word.
+  const ladder: TickDelta[] = ticks.map((t, i) => ({
+    tick: t,
+    liquidityNet: BigInt.asIntN(256, word(netRaw[i]!, 1)),
+  }));
+
+  // The guard. A wrong tickSpacing lands here, not in the published number.
+  if (activeLiquidityAt(tick, ladder) !== liquidity) {
+    return {
+      depth: null,
+      error:
+        `pool tick ladder does not reproduce getLiquidity at tick ${tick} ` +
+        `(tickSpacing ${src.tickSpacing} may be wrong); realizable value withheld rather than guessed`,
+    };
+  }
+
+  const above = ladder.filter((t) => t.tick > tick);
+  const sim = simulateSellToken1(sqrtPriceX96, liquidity, amountIn, lpFeePips, above);
+  // The same size at the current price with no impact and no fee — what the
+  // notional mark is, restated in token0 so the two are comparable.
+  const marginal0 = (amountIn * Q96_ASSETS * Q96_ASSETS) / (sqrtPriceX96 * sqrtPriceX96);
+  return {
+    depth: {
+      realizable0: sim.amountOut,
+      marginal0,
+      ticksCrossed: sim.ticksCrossed,
+      unfilled: sim.amountUnfilled,
+      ladder,
+      lpFeePips,
+    },
+    error: null,
+  };
+}
+
+const Q96_ASSETS = 1n << 96n;
 
 export interface AssetReadResult {
   holdings: Holding[];
@@ -543,6 +756,45 @@ export async function readTreasuryAssets(treasuryAddress: string, rpcUrls: strin
     note: `The token half of the same fee claim, at a ${sharePct ?? "?"}% share. Marked notional and meant to be read that way: this is a percent-scale slice of total supply, and the quoted price is what the pool shows before anyone tries to leave through it. ${src.note}`,
     verify: claimVerify,
   });
+
+  // What the notional half would actually fetch.
+  //
+  // TIERS[3] has always warned that a position this size cannot be sold at the
+  // quoted price. That was true and unmeasured — a warning label where a number
+  // belonged, and the reader had no way to tell a 5% haircut from a 95% one.
+  // This prices the position against the liquidity that would have to absorb
+  // it. Additive and non-blocking: a failure here leaves every existing figure
+  // untouched and simply publishes no realizable value.
+  const tier3 = holdings[holdings.length - 1];
+  if (claimToken !== null && claimToken > 0n) {
+    const { depth, error } = await readPoolDepth(src, claimToken, rpcUrls);
+    if (error) errors.push(error);
+    if (depth) {
+      const realizableCents = ethUsd === null ? null : valueCents(depth.realizable0, 18, ethUsd);
+      tier3.realizable = {
+        quantity: formatUnits(depth.realizable0, 18) + " WETH",
+        value_cents: realizableCents,
+        pct_of_mark: depth.marginal0 === 0n ? null : Number((depth.realizable0 * 10_000n) / depth.marginal0) / 100,
+        ticks_crossed: depth.ticksCrossed,
+        unsellable_quantity: depth.unfilled > 0n ? formatUnits(depth.unfilled, src.decimals) : null,
+        method:
+          `Simulated selling the whole claimable position into the pool it is marked against, walking that pool's own ` +
+          `tick ladder and charging the pool's own reported lpFee of ${depth.lpFeePips / 10_000}%. ONE seller, ONE transaction, ONE venue, no other trade in the block, ` +
+          `no route through any other market, no sandwich. Real execution is not better than this; it can be worse. ` +
+          `Every division truncates, so the figure is biased against the treasury rather than toward it.`,
+        verify:
+          `eth_call ${SELECTORS.getSlot0} getSlot0(poolId) and ${SELECTORS.getLiquidity} getLiquidity(poolId) on ${BASE_CONTRACTS.V4_STATE_VIEW} ` +
+          `for the price and the active liquidity; ${SELECTORS.getTickBitmap} getTickBitmap(poolId,wordPos) across the legal range at tickSpacing ${src.tickSpacing} ` +
+          `for which ticks are initialized; ${SELECTORS.getTickLiquidity} getTickLiquidity(poolId,tick) for each one's liquidityNet (int128, sign-extended). ` +
+          `Check the spacing before trusting any of it: summing liquidityNet over ticks <= the current tick MUST equal getLiquidity, ` +
+          `and summing it over every tick MUST equal 0. Then walk the ranges upward: within each, amount1_in = L*(sqrtP_next-sqrtP)/2^96 ` +
+          `and amount0_out = L*(sqrtP_next-sqrtP)*2^96/(sqrtP*sqrtP_next), applying liquidityNet at each crossing. ` +
+          `pct_of_mark compares the result against the same size at the current price with no impact.`,
+      };
+    } else {
+      tier3.realizable = null;
+    }
+  }
 
   return { holdings, eth_usd: ethUsd, eth_usd_updated_at: ethUpdatedAt, token_usd: tokenUsd, errors };
 }
