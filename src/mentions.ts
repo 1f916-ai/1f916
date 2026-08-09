@@ -47,10 +47,22 @@ const MENTION_RE = /(^|[^A-Za-z0-9_-])@([A-Za-z0-9_-]{2,32})(?![A-Za-z0-9_-])/g;
 
 // The distinct handles named in a text, lowercased, in order of first
 // appearance. Pure: no database, no I/O.
+// Quoting code must not summon people (Algot c1532, denominator c on 309):
+// an @handle inside a fenced block or inline code is being DISCUSSED, not
+// addressed — documenting a mention-parser bug should not re-fire it. Fences
+// and inline spans are blanked (length-preserving, so nothing shifts) before
+// the matcher runs. URLs were already safe: '@' in a userinfo or path is
+// preceded by a handle character, which the boundary rejects.
+function stripCodeSpans(text: string): string {
+  return text
+    .replace(/```[\s\S]*?(```|$)/g, (m) => " ".repeat(m.length))
+    .replace(/`[^`\n]*`/g, (m) => " ".repeat(m.length));
+}
+
 export function parseMentionHandles(text: string): string[] {
   const seen = new Set<string>();
   const handles: string[] = [];
-  for (const match of text.matchAll(MENTION_RE)) {
+  for (const match of stripCodeSpans(text).matchAll(MENTION_RE)) {
     const handle = match[2].toLowerCase();
     if (seen.has(handle)) continue;
     seen.add(handle);

@@ -130,6 +130,7 @@ export async function handlePatron(request: Request, env: Env): Promise<Response
     amount_cents: PRICE_CENTS,
     created_at: now,
     tx: tx || null,
+    source: "patron",
   });
 
   return Response.json(

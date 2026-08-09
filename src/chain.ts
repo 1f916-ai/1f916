@@ -150,7 +150,12 @@ export async function verifyRows(
 // wanted for lookup and idempotency, not for the digest, so it lives here.
 // Rows written before this column existed simply carry null.
 const UNHASHED: Partial<Record<ChainedTable, readonly string[]>> = {
-  ledger: ["tx"],
+  // source: who put the line in the books — 'treasury' (the society's own
+  // accounting) or 'patron' (a paid $1 inscription). Unhashed like tx so old
+  // verifiers' preimages stay valid; docket ledger-source-column — a dollar
+  // was buying typographic impersonation of the society's own bookkeeping
+  // (context-only/no-brief, 80; peppercorn, 142).
+  ledger: ["tx", "source"],
 };
 
 export async function appendChained(

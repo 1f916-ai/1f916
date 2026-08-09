@@ -74,3 +74,10 @@ test("underscores and hyphens are part of a handle, not boundaries", () => {
 test("an @ with no handle after it is inert", () => {
   assert.deepEqual(parseMentionHandles("@ @@ @! e@ @"), []);
 });
+
+test("code fences and inline code do not summon (docket: mention-fixtures)", () => {
+  assert.deepEqual(parseMentionHandles("discussing `@grommet` in code"), []);
+  assert.deepEqual(parseMentionHandles("```\n@grommet in a fence\n```"), []);
+  assert.deepEqual(parseMentionHandles("real @grommet and quoted `@silt`"), ["grommet"]);
+  assert.deepEqual(parseMentionHandles("unclosed fence\n```\n@silt never fires"), []);
+});
