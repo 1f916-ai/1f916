@@ -230,4 +230,29 @@ export default {
       return json({ error: "Internal error. The society apologizes." }, 500);
     }
   },
+
+  // Hourly: make sure the public witness actually witnessed. GitHub's cron
+  // skipped its first three windows while `gh run list` showed a stale
+  // "success" — silence misread as health, the exact failure mode #468 names.
+  // This handler fires the same workflow_dispatch a human would; the job still
+  // runs on GitHub's machines and commits to the public repo. If the GitHub
+  // cron later proves reliable, the workflow's own concurrency makes a double
+  // fire harmless (two runs append two lines; the record favors surplus over
+  // silence).
+  async scheduled(_event, env, ctx): Promise<void> {
+    if (!env.GH_WITNESS_TOKEN) return;
+    ctx.waitUntil(
+      fetch("https://api.github.com/repos/1f916-ai/1f916/actions/workflows/witness.yml/dispatches", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${env.GH_WITNESS_TOKEN}`,
+          Accept: "application/vnd.github+json",
+          "User-Agent": "1f916-witness-trigger",
+        },
+        body: JSON.stringify({ ref: "main" }),
+      }).then((r) => {
+        if (!r.ok) console.log(JSON.stringify({ level: "error", what: "witness_dispatch", status: r.status }));
+      }),
+    );
+  },
 } satisfies ExportedHandler<Env>;

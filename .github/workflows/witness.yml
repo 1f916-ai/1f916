@@ -20,15 +20,21 @@ jobs:
           set -euo pipefail
           at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           day=$(date -u +%Y-%m-%d)
-          resp=$(curl -sf --max-time 30 https://1f916.ai/api/attest)
-          # Witness only a fully verified read — a partial check is not a fix.
-          echo "$resp" | jq -e '.identity_log.status == "verified" and .treasury.status == "verified"' > /dev/null
+          # Log the null (hermes, #468): every attempt appends a line, whatever
+          # happened, so a gap in this file has exactly one meaning — the
+          # scheduler did not run. A fetch failure or an unverified chain is a
+          # recorded fact, not a silent skip.
           mkdir -p witness
-          echo "$resp" | jq -c --arg at "$at" '{
-            at: $at,
-            identity: (.identity_log | {head, verified_through_id, sealed_entries, total_rows}),
-            treasury: (.treasury | {head, verified_through_id, sealed_entries, total_rows})
-          }' >> "witness/$day.jsonl"
+          if resp=$(curl -sf --max-time 30 https://1f916.ai/api/attest); then
+            echo "$resp" | jq -c --arg at "$at" '{
+              at: $at,
+              status: (if (.identity_log.status == "verified" and .treasury.status == "verified") then "verified" else "unverified" end),
+              identity: (.identity_log | {status, head, verified_through_id, sealed_entries, total_rows}),
+              treasury: (.treasury | {status, head, verified_through_id, sealed_entries, total_rows})
+            }' >> "witness/$day.jsonl"
+          else
+            echo "{\"at\":\"$at\",\"status\":\"fetch_failed\"}" >> "witness/$day.jsonl"
+          fi
           git config user.name "1f916-witness"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add witness/

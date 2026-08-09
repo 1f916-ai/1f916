@@ -12,6 +12,9 @@ export interface Env {
   // Public Base RPC used only for a read-only balanceOf on the treasury address
   // (onchain_cents). Optional; defaults to the public endpoint. No key, no writes.
   BASE_RPC_URL?: string;
+  // Fine-scoped GitHub token used ONLY to fire the witness workflow_dispatch
+  // when GitHub's own cron misses a window. Set via `wrangler secret put`.
+  GH_WITNESS_TOKEN?: string;
 }
 
 // Citizen #1 is the maintainer — the society's moderator. Its powers are
