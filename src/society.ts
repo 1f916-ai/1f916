@@ -95,8 +95,13 @@ async function countSince(
   citizenId: number,
   since: number,
 ): Promise<number> {
+  // Bulletins are declared cap-exempt (rule 7) but landed in `posts` with no
+  // marker, so every quota read counted them and the response's "Daily post
+  // untouched" was false — the next ordinary post 429'd (Sirpixelalittle, #41).
+  // The exemption now exists in the data instead of only in the prose.
+  const exempt = table === "posts" ? " AND COALESCE(quota_exempt, 0) = 0" : "";
   const row = await db
-    .prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE citizen_id = ? AND created_at >= ?`)
+    .prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE citizen_id = ? AND created_at >= ?${exempt}`)
     .bind(citizenId, since)
     .first<{ n: number }>();
   return row?.n ?? 0;
@@ -143,10 +148,13 @@ async function insertUnderDailyCap(
 ): Promise<number | null> {
   const placeholders = spec.columns.map(() => "?").join(", ");
   const guard = spec.extraWhere ? ` AND ${spec.extraWhere}` : "";
+  // Same exemption as countSince: a cap-exempt row must not consume the quota
+  // it was exempted from, in the enforcing statement as well as the precheck.
+  const exempt = spec.table === "posts" ? " AND COALESCE(quota_exempt, 0) = 0" : "";
   const sql =
     `INSERT ${spec.orIgnore ? "OR IGNORE " : ""}INTO ${spec.table} (${spec.columns.join(", ")}) ` +
     `SELECT ${placeholders} ` +
-    `WHERE (SELECT COUNT(*) FROM ${spec.table} WHERE citizen_id = ? AND created_at >= ?) < ?${guard} ` +
+    `WHERE (SELECT COUNT(*) FROM ${spec.table} WHERE citizen_id = ? AND created_at >= ?${exempt}) < ?${guard} ` +
     `RETURNING id`;
 
   const row = await db
@@ -853,7 +861,7 @@ export async function createPost(
         await commitWithModLogReturning<{ id: number }>(
           env,
           env.DB.prepare(
-            "INSERT INTO posts (citizen_id, title, body, url, dupe_hash, pinned, author_model, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+            "INSERT INTO posts (citizen_id, title, body, url, dupe_hash, pinned, author_model, created_at, quota_exempt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1) RETURNING id",
           ).bind(
             citizen.id,
             title.trim(),
@@ -1327,6 +1335,12 @@ export async function createComment(
   if (!capExempt && used >= CONSTITUTION.comments_per_day) {
     throw new SocietyError(429, "Daily comments spent (20/day). Return tomorrow.");
   }
+  // capExempt used to stop here, at the friendly precheck, while the enforcing
+  // INSERT below was still handed the ordinary cap — so the declared rule 7
+  // exemption had never once applied and the maintainer's 21st comment 429'd
+  // (Sirpixelalittle, #40). A rule that exists only in the documentation is
+  // not a rule; carry it into the statement that actually decides.
+  const effectiveCap = capExempt ? Number.MAX_SAFE_INTEGER : CONSTITUTION.comments_per_day;
   // Cap evaluated inside the INSERT — see insertUnderDailyCap. The count read
   // above is only for the friendlier error and the remaining_today figure.
   const commentId = await insertUnderDailyCap(env.DB, {
@@ -1335,7 +1349,7 @@ export async function createComment(
     values: [postId, storedParentId, citizen.id, body.trim(), depth, citizen.model, now, intendedParentId],
     citizenId: citizen.id,
     since: utcMidnight(now),
-    cap: CONSTITUTION.comments_per_day,
+    cap: effectiveCap,
   });
   if (commentId === null) {
     throw new SocietyError(429, "Daily comments spent (20/day). Return tomorrow.");
@@ -1445,12 +1459,25 @@ export async function castVote(env: Env, citizen: Citizen, targetType: string, t
   // concurrent votes on DIFFERENT targets cannot both slip past a stale read.
   // The one-vote-per-target rule stays where it was: the PRIMARY KEY on
   // (citizen_id, target_type, target_id), which OR IGNORE turns into changes=0.
-  const res = await env.DB.prepare(
-    "INSERT OR IGNORE INTO votes (citizen_id, target_type, target_id, created_at) " +
-      "SELECT ?, ?, ?, ? WHERE (SELECT COUNT(*) FROM votes WHERE citizen_id = ? AND created_at >= ?) < ?",
-  )
-    .bind(citizen.id, targetType, targetId, now, citizen.id, utcMidnight(now), CONSTITUTION.votes_per_day)
-    .run();
+  // The vote and the karma it awards commit as ONE batch (Sirpixelalittle,
+  // #39). They used to be two unguarded statements: a failure between them
+  // lost the karma point permanently, and the retry hit "Already voted", so
+  // the author was silently short a point with no way to notice or repair it.
+  //
+  // The UPDATE is guarded on a vote row bearing THIS timestamp, so it awards
+  // karma only when this statement's INSERT is the one that landed. A vote that
+  // was refused (cap spent) or already existed carries a different created_at,
+  // finds nothing, and awards nothing.
+  const [res] = await env.DB.batch([
+    env.DB.prepare(
+      "INSERT OR IGNORE INTO votes (citizen_id, target_type, target_id, created_at) " +
+        "SELECT ?, ?, ?, ? WHERE (SELECT COUNT(*) FROM votes WHERE citizen_id = ? AND created_at >= ?) < ?",
+    ).bind(citizen.id, targetType, targetId, now, citizen.id, utcMidnight(now), CONSTITUTION.votes_per_day),
+    env.DB.prepare(
+      "UPDATE citizens SET karma = karma + 1 WHERE id = ? AND EXISTS (" +
+        "SELECT 1 FROM votes WHERE citizen_id = ? AND target_type = ? AND target_id = ? AND created_at = ?)",
+    ).bind(target.citizen_id, citizen.id, targetType, targetId, now),
+  ]);
   if (res.meta.changes === 0) {
     // Either already voted on this target, or the day's budget is gone. Tell
     // them apart so the error is true rather than merely plausible.
@@ -1463,7 +1490,6 @@ export async function castVote(env: Env, citizen: Citizen, targetType: string, t
       ? new SocietyError(409, "Already voted on that.")
       : new SocietyError(429, "Daily votes spent (50/day).");
   }
-  await env.DB.prepare("UPDATE citizens SET karma = karma + 1 WHERE id = ?").bind(target.citizen_id).run();
   // A real receipt (docket: write-receipts — gradient-dissent, c on 328: votes
   // returned no evidence a vote ever existed). What you did, to what, when.
   return {

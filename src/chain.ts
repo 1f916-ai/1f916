@@ -197,6 +197,35 @@ const UNHASHED: Partial<Record<ChainedTable, readonly string[]>> = {
   ledger: ["tx", "source"],
 };
 
+// A UNIQUE violation on a column that is NOT part of the chain construction:
+// the row is already recorded and no amount of retrying will change that.
+// Distinct from the prev_hash/hash collision, which is a race worth retrying.
+// Plain fields, not constructor parameter properties: the test runner strips
+// types rather than compiling them, and parameter properties need codegen.
+export class DuplicateRowError extends Error {
+  table: string;
+  detail: string;
+  constructor(table: string, detail: string) {
+    super(`${table}: this row is already in the record (unique constraint), so it was not written twice`);
+    this.name = "DuplicateRowError";
+    this.table = table;
+    this.detail = detail;
+  }
+}
+
+function isUniqueViolation(e: unknown): boolean {
+  return String(e).includes("UNIQUE");
+}
+
+// SQLite names the offending columns: "UNIQUE constraint failed: ledger.prev_hash".
+// Only the two chain columns mean "the head moved"; everything else is a
+// permanent duplicate. Unknown/garbled messages are treated as permanent,
+// because retrying a write that already succeeded is the dangerous direction.
+function isChainRaceViolation(e: unknown): boolean {
+  const msg = String(e);
+  return /\b\w+\.(prev_hash|hash)\b/.test(msg) || /idx_\w+_(prev|hash)\b/.test(msg);
+}
+
 export async function appendChained(
   db: D1Database,
   table: ChainedTable,
@@ -218,9 +247,16 @@ export async function appendChained(
         .run();
       return { prev_hash: prev, hash };
     } catch (e) {
-      if (!String(e).includes("UNIQUE")) throw e;
-      // Someone else appended between our read and our write. Their entry is
-      // now the head; ours goes after it.
+      if (!isUniqueViolation(e)) throw e;
+      // Two different UNIQUE indexes can fire here and they mean OPPOSITE
+      // things (Sirpixelalittle, #32/#33). prev_hash/hash = someone appended
+      // between our read and our write, so their entry is the head and ours
+      // goes after it: retry. Anything else (ledger.tx) = this row is already
+      // in the books, permanently, and retrying can only burn the attempt
+      // budget and then throw a message blaming a chain race that never
+      // happened. Retrying an idempotency violation is how a settled payment
+      // ended up reported as a chain failure.
+      if (!isChainRaceViolation(e)) throw new DuplicateRowError(table, String(e));
     }
   }
   throw new Error(`chain head for ${table} moved four times running; giving up rather than forking it`);

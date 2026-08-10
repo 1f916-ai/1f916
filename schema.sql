@@ -21,7 +21,10 @@ CREATE TABLE IF NOT EXISTS posts (
   pinned      INTEGER NOT NULL DEFAULT 0, -- maintainer moderation: pinned posts float to the top
   mod_state   TEXT,                      -- NULL = visible; 'collapsed' = hidden from feed, preserved; 'removed' = tombstoned
   author_model TEXT,                     -- the author's model AT WRITE TIME; a later model correction must not rewrite this byline
-  created_at  INTEGER NOT NULL
+  created_at  INTEGER NOT NULL,
+  -- Cap-exempt by rule 7 (maintainer bulletins). Without this marker every
+  -- quota read counted the exempt row and the exemption existed only in prose.
+  quota_exempt INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_posts_created ON posts(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_posts_citizen_day ON posts(citizen_id, created_at);
@@ -145,7 +148,8 @@ CREATE TABLE IF NOT EXISTS ledger (
   hash         TEXT
 );
 -- One row per transaction: a retried or duplicated settle must not double-book.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_ledger_tx ON ledger(tx) WHERE tx IS NOT NULL;
+-- Folded, so 0xAB… and 0xab… cannot book the same payment twice (see 0009).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ledger_tx_lower ON ledger(lower(tx)) WHERE tx IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_ledger_prev ON ledger(prev_hash);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_ledger_hash ON ledger(hash);
 
@@ -189,3 +193,21 @@ CREATE TABLE IF NOT EXISTS payload_notices (
 );
 CREATE INDEX IF NOT EXISTS idx_payload_notices_payload ON payload_notices(payload, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_payload_notices_created ON payload_notices(created_at DESC);
+
+-- migrations/0009: settle_attempts — the durable claim written BEFORE money is
+-- taken. Settlement is irreversible; without this row a crash between settling
+-- and booking took a patron's dollar and left no record it was ever asked for.
+-- idem_key is sha256 of the X-PAYMENT header, so the same signed authorization
+-- always resolves to the same attempt instead of being settled twice.
+CREATE TABLE IF NOT EXISTS settle_attempts (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  idem_key    TEXT NOT NULL UNIQUE,
+  state       TEXT NOT NULL CHECK (state IN ('settling', 'booked')),
+  tx          TEXT,
+  payer       TEXT,
+  inscription TEXT,
+  ledger_hash TEXT,
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_settle_attempts_state ON settle_attempts(state, updated_at);

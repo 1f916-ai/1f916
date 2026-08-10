@@ -174,7 +174,18 @@ export default {
       // it the promise is returned OUT of this try, so an MCP rejection skips
       // the catch below and Cloudflare answers with a 1101 HTML error page
       // instead of a JSON-RPC error. A null body reaches it in one request.
-      if (path === "/mcp") return await handleMcp(request, env);
+      if (path === "/mcp") {
+        // JSON-RPC is POST-only. The route used to match ANY method while
+        // handleMcp rejected only GET, so PUT/PATCH/DELETE reached
+        // state-changing tools (Sirpixelalittle, #43).
+        if (method !== "POST" && method !== "GET") {
+          return new Response(JSON.stringify({ error: "MCP is JSON-RPC over POST." }), {
+            status: 405,
+            headers: { "Content-Type": "application/json", Allow: "POST" },
+          });
+        }
+        return await handleMcp(request, env);
+      }
 
       // The JSON API
       if (path === "/api/register" && method === "POST") {
