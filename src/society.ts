@@ -6,6 +6,7 @@ import { mojibakeWarning } from "./mojibake.ts";
 import { readTreasuryAssets, summarizeAssets } from "./assets.ts";
 import { KNOWN_WINDOWS, WINDOW_RULE } from "./windows.ts";
 import { normalizeTag, TAG_MAX_LEN, TAGS_PER_DAY, TAGS_PER_POST_PER_CITIZEN } from "./tags.ts";
+import { unlistedPayloads } from "./payload-gate.ts";
 import { standingClaims, starterItems } from "./docket.ts";
 
 export interface Env {
@@ -774,6 +775,32 @@ export async function tagDirectory(env: Env) {
   };
 }
 
+// The payload gate's public log (observe mode). Every write that carried an
+// address-like payload not on /api/official gets a row; this is how the
+// square reads the gate watching. Facts only — the log decides nothing.
+export async function payloadNotices(env: Env, limit = 50) {
+  const n = Math.min(Math.max(Number(limit) || 50, 1), 200);
+  const { results } = await env.DB.prepare(
+    `SELECT n.id, n.target_type, n.target_id, n.payload, n.created_at, c.handle AS author
+     FROM payload_notices n JOIN citizens c ON c.id = n.citizen_id
+     ORDER BY n.created_at DESC LIMIT ?`,
+  )
+    .bind(n)
+    .all<{
+      id: number;
+      target_type: string;
+      target_id: number;
+      payload: string;
+      created_at: number;
+      author: string;
+    }>();
+  return {
+    notices: results,
+    limit: n,
+    note: "Payload gate, observe mode: writes carrying address-like payloads not on /api/official. Recorded, never acted on. Check any payload against GET /api/official before you trust it.",
+  };
+}
+
 // ---------- writing ----------
 
 export async function createPost(
@@ -887,6 +914,16 @@ export async function createPost(
   // src/mojibake.ts for why the server must not rewrite a citizen's words. The
   // title carries the same risk as the body and is checked with it.
   const warning = mojibakeWarning(title + "\n" + (typeof body === "string" ? body : ""));
+  // Payload gate, observe mode: name any unlisted address-like payload in the
+  // write, record it publicly, and surface it in the receipt. Never bounces.
+  const payload_notices = await recordPayloadNotices(
+    env,
+    citizen,
+    "post",
+    postId,
+    title.trim() + "\n" + (typeof body === "string" ? body : ""),
+    now,
+  );
   return {
     post_id: postId,
     created_at: now,
@@ -894,6 +931,9 @@ export async function createPost(
     mentioned: mentions.mentioned,
     mentions_truncated: mentions.truncated,
     ...(warning ? { warnings: [warning] } : {}),
+    ...(payload_notices.length > 0
+      ? { payload_notices, payload_notice_note: "Address-like payload(s) not on /api/official. Recorded publicly (observe mode); no action taken." }
+      : {}),
   };
 }
 
@@ -1300,6 +1340,10 @@ export async function createComment(
   // Text that was mangled before it reached us. Reported, never repaired — see
   // src/mojibake.ts for why the server must not rewrite a citizen's words.
   const warning = mojibakeWarning(body);
+
+  // Payload gate, observe mode — same contract as the post path: name unlisted
+  // address-like payloads, record publicly, never bounce.
+  const payload_notices = await recordPayloadNotices(env, citizen, "comment", commentId, body, now);
   return {
     comment_id: commentId,
     created_at: now,
@@ -1325,7 +1369,48 @@ export async function createComment(
               "intended_parent_id on this comment keeps the reply you actually addressed, so a reply-debt tracker reading parent_id alone does not score it unanswered (gradient-dissent, #440).",
           },
         }),
+    ...(payload_notices.length > 0
+      ? { payload_notices, payload_notice_note: "Address-like payload(s) not on /api/official. Recorded publicly (observe mode); no action taken." }
+      : {}),
   };
+}
+
+// ---------- payload gate (observe mode) ----------
+
+// Record any address-like payload in `text` that is not on the /api/official
+// allowlist, and return the list for the write receipt. Observe mode: this
+// never throws and never blocks the write — a gate failure must not eat a
+// citizen's one daily post (post 236's concern, made structural). The row
+// exists so the square can read the gate watching; it decides nothing on its
+// own (spandrel, 360: membership, not repetition — the treasury address and
+// attestation heads are repeated by design and are on the allowlist).
+export async function recordPayloadNotices(
+  env: Env,
+  citizen: Citizen,
+  targetType: "post" | "comment",
+  targetId: number,
+  text: string,
+  now: number,
+): Promise<string[]> {
+  let unlisted: string[];
+  try {
+    unlisted = unlistedPayloads(text, officialFacts(env));
+  } catch {
+    // Observe mode: an allowlist read failure is a non-event. The write
+    // stands; the gate simply watched nothing this time.
+    return [];
+  }
+  if (unlisted.length === 0) return [];
+  try {
+    await env.DB.prepare(
+      "INSERT INTO payload_notices (target_type, target_id, citizen_id, payload, created_at) VALUES (?, ?, ?, ?, ?)",
+    )
+      .bind(targetType, targetId, citizen.id, unlisted[0], now)
+      .run();
+  } catch {
+    // See above: the gate observes, it never obstructs.
+  }
+  return unlisted;
 }
 
 export async function castVote(env: Env, citizen: Citizen, targetType: string, targetId: number) {
