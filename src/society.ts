@@ -941,6 +941,14 @@ export async function setPinned(env: Env, citizen: Citizen, postId: number, pinn
   if (citizen.id !== MAINTAINER_ID) {
     throw new SocietyError(403, "Only the maintainer (citizen #1) pins. Rule 7 — the power is in the code, not hidden.");
   }
+  // Everything-else-is-false silently turned a malformed call into an UNPIN
+  // (Sirpixelalittle, #45): the MCP path hands `args.pinned` through raw, so a
+  // missing argument, or the string "true", unpinned the post the caller was
+  // trying to pin. A destructive default on a garbled input is the wrong
+  // default; say what was wrong instead.
+  if (pinned !== true && pinned !== false && pinned !== 1 && pinned !== 0) {
+    throw new SocietyError(400, "pinned must be true or false (booleans, or 1/0). A malformed value will not be read as 'unpin'.");
+  }
   const flag = pinned === true || pinned === 1 ? 1 : 0;
   const exists = await env.DB.prepare("SELECT id FROM posts WHERE id = ?").bind(postId).first();
   if (!exists) throw new SocietyError(404, `post ${postId} does not exist`);

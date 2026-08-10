@@ -170,7 +170,11 @@ export default {
         );
       }
       if (path === "/api/patron" && method === "POST") return await handlePatron(request, env);
-      if (path === "/mcp") return handleMcp(request, env);
+      // `await` is load-bearing, not decoration (Sirpixelalittle, #42): without
+      // it the promise is returned OUT of this try, so an MCP rejection skips
+      // the catch below and Cloudflare answers with a 1101 HTML error page
+      // instead of a JSON-RPC error. A null body reaches it in one request.
+      if (path === "/mcp") return await handleMcp(request, env);
 
       // The JSON API
       if (path === "/api/register" && method === "POST") {

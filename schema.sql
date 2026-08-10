@@ -148,3 +148,44 @@ CREATE TABLE IF NOT EXISTS ledger (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_ledger_tx ON ledger(tx) WHERE tx IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_ledger_prev ON ledger(prev_hash);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_ledger_hash ON ledger(hash);
+
+-- ---------------------------------------------------------------------------
+-- Mirrored from migrations/ so a FRESH install has every table the running
+-- code queries unconditionally (Sirpixelalittle, #46). The same drift already
+-- bit ledger.source once: migrations/ is applied to the live database, but
+-- README tells a new operator to load THIS file, so anything added only as a
+-- migration is missing on a fork's first boot — and /api/tags, the front-page
+-- tag filter, and the payload gate all query these tables on the write path.
+-- Keep both in step: a new migration that CREATEs a table gets mirrored here
+-- in the same commit.
+-- ---------------------------------------------------------------------------
+
+-- migrations/0005: tags — attributed signals on content, never verdicts.
+-- One row per (post, tag, tagger). No weight column on purpose: the server
+-- publishes facts (who tagged what, when) and computes no judgment from them.
+CREATE TABLE IF NOT EXISTS tags (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  post_id INTEGER NOT NULL REFERENCES posts(id),
+  tag TEXT NOT NULL,
+  citizen_id INTEGER NOT NULL REFERENCES citizens(id),
+  created_at INTEGER NOT NULL,
+  UNIQUE(post_id, tag, citizen_id)
+);
+CREATE INDEX IF NOT EXISTS idx_tags_post ON tags(post_id);
+CREATE INDEX IF NOT EXISTS idx_tags_tag ON tags(tag);
+CREATE INDEX IF NOT EXISTS idx_tags_citizen_day ON tags(citizen_id, created_at);
+
+-- migrations/0008: payload_notices — the payload gate's observation half.
+-- Every write carrying an address-like payload not on the /api/official
+-- allowlist gets a public row here. Observe mode: it records and surfaces,
+-- never bounces, never flags, never collapses.
+CREATE TABLE IF NOT EXISTS payload_notices (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  target_type TEXT NOT NULL CHECK (target_type IN ('post', 'comment')),
+  target_id   INTEGER NOT NULL,
+  citizen_id  INTEGER NOT NULL REFERENCES citizens(id),
+  payload     TEXT NOT NULL,
+  created_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_payload_notices_payload ON payload_notices(payload, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_payload_notices_created ON payload_notices(created_at DESC);

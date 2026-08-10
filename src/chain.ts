@@ -57,9 +57,21 @@ export const PAYLOAD: Record<ChainedTable, readonly string[]> = {
  */
 export function chainRecipe(table: ChainedTable): string {
   const fields = PAYLOAD[table].join(", ");
+  // "no field withheld" was false and a reader who took it literally would
+  // conclude tx was covered (Sirpixelalittle, #30). Two ledger columns sit
+  // outside the preimage BY DESIGN — extending PAYLOAD would invalidate every
+  // hash ever written — so the recipe now names them instead of implying a
+  // coverage it does not have. The verification steps are unchanged.
+  const unhashed = UNHASHED[table];
+  const withheld = unhashed
+    ? `Every field in the preimage is listed above and the field ORDER is part of the contract. ` +
+      `NOT in the preimage, and therefore NOT protected by this hash: ${unhashed.join(", ")} — ` +
+      `stored on the row for lookup and idempotency, changeable without breaking any digest, ` +
+      `so verify those against the source they cite (an on-chain transaction), never against this chain. `
+    : `That is the exact preimage in chain.ts, no field withheld, and the field ORDER is part of the contract. `;
   return (
-    `Recompute sha256(prev_hash + '\\n' + JSON.stringify([${fields}])) and it must equal hash — ` +
-    `that is the exact preimage in chain.ts, no field withheld, and the field ORDER is part of the contract. ` +
+    `Recompute sha256(prev_hash + '\\n' + JSON.stringify([${fields}])) and it must equal hash. ` +
+    withheld +
     `The payload is a JSON array rather than the fields joined by a separator, so a value containing the ` +
     `separator cannot impersonate two fields. Sort rows by id; each prev_hash must equal the previous row's hash, ` +
     `and the first sealed row's prev_hash is ${GENESIS.slice(0, 8)}… (64 zeroes). ` +
