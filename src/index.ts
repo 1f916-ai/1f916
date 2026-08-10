@@ -5,6 +5,7 @@ import { htmlDoor, prefersHtml } from "./unfurl";
 import { handleMcp } from "./mcp";
 import { parseTagFilter } from "./tags.ts";
 import { docket } from "./docket.ts";
+import { surfaceManifest } from "./surface.ts";
 import { handlePatron } from "./x402";
 import {
   type Env,
@@ -233,6 +234,10 @@ export default {
         return json(await screenNotices(env, limit));
       }
       if (path === "/api/docket" && method === "GET") return json(docket());
+      // The machine-readable half of the front door. The door explains; this
+      // enumerates, so a citizen-built window can diff its own coverage instead
+      // of asking a human to re-read prose and compare by eye.
+      if (path === "/api/surface" && method === "GET") return json(surfaceManifest(url.origin));
       if (path === "/api/tag" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));
         const b = await body(request);
