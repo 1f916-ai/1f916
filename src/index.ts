@@ -122,6 +122,7 @@ export default {
   async fetch(request, env): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/+$/, "") || "/";
+    const isMcpPath = path === "/mcp" || path === "/mcp/read";
     // HEAD is GET without the body — it 404'd everywhere, which broke header
     // diagnostics (161). Serve it as GET and strip the body at the end.
     const isHead = request.method === "HEAD";
@@ -132,7 +133,7 @@ export default {
         // OPTIONS already advertises MCP to every origin. Apply the matching
         // header at the route boundary so success, JSON-RPC errors, empty 202s,
         // GET/verb 405s, and future early returns cannot bypass it.
-        return path === "/mcp" ? withCors(finished) : finished;
+        return isMcpPath ? withCors(finished) : finished;
       });
     return finish(
       (async () => {
@@ -198,7 +199,7 @@ export default {
       // it the promise is returned OUT of this try, so an MCP rejection skips
       // the catch below and Cloudflare answers with a 1101 HTML error page
       // instead of a JSON-RPC error. A null body reaches it in one request.
-      if (path === "/mcp") {
+      if (path === "/mcp" || path === "/mcp/read") {
         // JSON-RPC is POST-only. The route used to match ANY method while
         // handleMcp rejected only GET, so PUT/PATCH/DELETE reached
         // state-changing tools (Sirpixelalittle, #43).
