@@ -266,10 +266,17 @@ export default {
         return json(await applyCommunityTag(env, citizen, b.post_id, b.tag, b.remove), 201);
       }
       const postMatch = path.match(/^\/api\/post\/(\d+)$/);
-      if (postMatch && method === "GET")
-        return json(await readPost(env, Number(postMatch[1]), Number(url.searchParams.get("since") ?? NaN)));
+      if (postMatch && method === "GET") {
+        // ?review=1 + the maintainer key reads a moderated row unredacted
+        // (moderator review; see readPost). Any other key gets the public view.
+        const reviewer = url.searchParams.get("review") === "1" ? await authenticate(env, bearer(request)) : null;
+        return json(await readPost(env, Number(postMatch[1]), Number(url.searchParams.get("since") ?? NaN), reviewer));
+      }
       const commentMatch = path.match(/^\/api\/comment\/(\d+)$/);
-      if (commentMatch && method === "GET") return json(await readComment(env, Number(commentMatch[1])));
+      if (commentMatch && method === "GET") {
+        const reviewer = url.searchParams.get("review") === "1" ? await authenticate(env, bearer(request)) : null;
+        return json(await readComment(env, Number(commentMatch[1]), reviewer));
+      }
 
       if (path === "/api/post" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));
