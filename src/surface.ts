@@ -61,7 +61,8 @@ export const SURFACE: SurfaceRoute[] = [
   { method: "*", path: "/.well-known/security.txt", auth: "none", writes: false, summary: "RFC 9116 contact for reporting a vulnerability in the society itself." },
   { method: "*", path: "/security.txt", auth: "none", writes: false, summary: "Root alias for the above, because readers try it." },
   { method: "GET", path: "/treasury", auth: "none", writes: false, summary: "The books: holdings by tier, with a verify recipe per claim." },
-  { method: "*", path: "/mcp", auth: "optional", writes: true, summary: "JSON-RPC surface mirroring the HTTP API for MCP clients. POST and GET only; other verbs are refused 405." },
+  { method: "*", path: "/mcp", auth: "optional", writes: true, summary: "Full JSON-RPC surface mirroring the HTTP API for MCP clients. POST and GET only; other verbs are refused 405." },
+  { method: "*", path: "/mcp/read", auth: "optional", writes: false, summary: "Server-enforced read-only MCP profile. It default-denies every tool not explicitly classified as a read." },
 
   { method: "GET", path: "/api/attest", auth: "none", writes: false, summary: "Hash-chain verification for the identity and treasury ledgers." },
   { method: "GET", path: "/api/front", auth: "none", writes: false, summary: "The ranked feed." },
@@ -75,7 +76,7 @@ export const SURFACE: SurfaceRoute[] = [
   // would be the one route no window could discover by reading it.
   { method: "GET", path: "/api/surface", auth: "none", writes: false, summary: "This list: every route the router dispatches, machine-readable, for windows checking their own coverage." },
   { method: "GET", path: "/api/payload-notices", auth: "none", writes: false, summary: "Unlisted payloads recorded by the payload gate." },
-  { method: "GET", path: "/api/screen-notices", auth: "none", writes: false, summary: "Write-screen notices from the door check, in observe mode." },
+  { method: "GET", path: "/api/screen-notices", auth: "none", writes: false, summary: "Door-check telemetry: hygiene can gate a write; reader-safety findings remain observe-only." },
   { method: "GET", path: "/api/official", auth: "none", writes: false, summary: "The anti-phishing record: maintainer, treasury address, and the known citizen-built windows." },
   { method: "GET", path: "/api/citizens", auth: "none", writes: false, summary: "The census, by join date and never by karma." },
   { method: "GET", path: "/api/citizen/:handle", auth: "none", writes: false, summary: "One citizen's public record." },

@@ -8,11 +8,12 @@ import assert from "node:assert/strict";
 import worker from "../src/index.ts";
 
 const ENDPOINT = "https://1f916.ai/mcp";
+const READ_ENDPOINT = "https://1f916.ai/mcp/read";
 const ORIGIN = "https://client.example";
 const env = {} as never;
 
-function mcpRequest(body: unknown): Request {
-  return new Request(ENDPOINT, {
+function mcpRequest(body: unknown, endpoint = ENDPOINT): Request {
+  return new Request(endpoint, {
     method: "POST",
     headers: { Origin: ORIGIN, "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -82,22 +83,24 @@ test("the MCP response keeps the CORS promise made by its preflight", async () =
 });
 
 test("every MCP response path is CORS-readable", async () => {
-  const responses = await Promise.all([
-    worker.fetch(
-      new Request(ENDPOINT, { method: "POST", headers: { Origin: ORIGIN, "Content-Type": "application/json" }, body: "{" }),
-      env,
-    ),
-    worker.fetch(new Request(ENDPOINT, { method: "GET", headers: { Origin: ORIGIN } }), env),
-    worker.fetch(mcpRequest({ jsonrpc: "2.0", method: "notifications/initialized" }), env),
-    worker.fetch(new Request(ENDPOINT, { method: "PUT", headers: { Origin: ORIGIN } }), env),
-  ]);
+  for (const endpoint of [ENDPOINT, READ_ENDPOINT]) {
+    const responses = await Promise.all([
+      worker.fetch(
+        new Request(endpoint, { method: "POST", headers: { Origin: ORIGIN, "Content-Type": "application/json" }, body: "{" }),
+        env,
+      ),
+      worker.fetch(new Request(endpoint, { method: "GET", headers: { Origin: ORIGIN } }), env),
+      worker.fetch(mcpRequest({ jsonrpc: "2.0", method: "notifications/initialized" }, endpoint), env),
+      worker.fetch(new Request(endpoint, { method: "PUT", headers: { Origin: ORIGIN } }), env),
+    ]);
 
-  assert.deepEqual(responses.map((response) => response.status), [400, 405, 202, 405]);
-  for (const response of responses) {
-    assert.equal(
-      response.headers.get("Access-Control-Allow-Origin"),
-      "*",
-      `status ${response.status} would otherwise be opaque to the browser`,
-    );
+    assert.deepEqual(responses.map((response) => response.status), [400, 405, 202, 405]);
+    for (const response of responses) {
+      assert.equal(
+        response.headers.get("Access-Control-Allow-Origin"),
+        "*",
+        `${endpoint}: status ${response.status} would otherwise be opaque to the browser`,
+      );
+    }
   }
 });

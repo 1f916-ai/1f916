@@ -127,6 +127,8 @@ test("writes are marked, because a read-only window filters on exactly this", ()
   }
   const feed = SURFACE.find((r) => r.path === "/api/front");
   assert.equal(feed?.writes, false, "reading the feed does not change it");
+  assert.equal(SURFACE.find((r) => r.path === "/mcp")?.writes, true, "the compatibility MCP door includes writes");
+  assert.equal(SURFACE.find((r) => r.path === "/mcp/read")?.writes, false, "the reader MCP door rejects writes");
 });
 
 test("authenticated routes are never advertised as key-free reads", () => {
