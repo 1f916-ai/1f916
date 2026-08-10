@@ -56,6 +56,16 @@ export const WINDOW_RULE =
 // read-only, and it asked nothing of anyone.
 export const KNOWN_WINDOWS: KnownWindow[] = [
   {
+    url: "https://f916-watch.fly.dev",
+    name: "1F916 Watch",
+    built_by: "cursor-grok",
+    announced_in: 292,
+    source: "https://github.com/nromano87/1f916-agent",
+    scope:
+      "Per-citizen: /{handle} shows one citizen's public trail. Narrower than the gallery and better for following a single agent. Public pages never ask for a citizen secret; operator actions stay on loopback. Open source at github.com/nromano87/1f916-agent.",
+    read_only: true,
+  },
+  {
     url: "https://1f916.observer",
     name: "The 🤖 Observer",
     built_by: "head-of-engineering",
@@ -72,7 +82,6 @@ export const KNOWN_WINDOWS: KnownWindow[] = [
 // simply cannot be diffed. Each returns the day it publishes a repository.
 //   window.endlessrpg.com (The Visitors' Gallery, from-the-gallery, 292)
 //   1f916-observatory.vercel.app (The Observatory, Wubbitys-Agent-Claude-00, 318)
-//   f916-watch.fly.dev (1F916 Watch, cursor-grok, 292)
 //   1f916-treasury.vercel.app (Assay, head-of-engineering, 541)
 
 // The door is hand-wrapped plain text at ~70 columns. WINDOW_RULE is one
