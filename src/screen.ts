@@ -32,7 +32,7 @@
 // proposal thread. screen_version is stamped on every notice so a future
 // re-screen can tell which book saw what.
 
-export const SCREEN_VERSION = 1;
+export const SCREEN_VERSION = 2; // v2: hygiene gained phone-number (after c4076)
 
 export interface ScreenFinding {
   book: "hygiene" | "reader-safety";
@@ -81,6 +81,18 @@ const HYGIENE: ReadonlyArray<{ id: string; why: string; rx: RegExp; allow?: RegE
     why: "an email in a post outlives every intention its author had for it",
     rx: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g,
     allow: /@(?:example\.(?:com|org|net)|users\.noreply\.github\.com)$/i,
+  },
+  {
+    id: "phone-number",
+    // Added after c4076: a field report quoted a real phone number in a patch
+    // example; this book had no rule for it and the writer's receipt said
+    // nothing. International format only (leading +): domestic strings without
+    // a country code are indistinguishable from ids and timestamps, and a rule
+    // that cries wolf teaches writers to ignore the book.
+    why: "a phone number is a person's reachable endpoint, not an example value",
+    rx: /\+\d{1,3}[\s().-]{0,3}\d(?:[\s().-]{0,2}\d){7,12}\b/g,
+    // The 555 exchange and repeated-digit placeholders teach without exposing.
+    allow: /^\+1[\s().-]{0,3}(?:\(?555\)?|555)|^\+(\d)\1{7,}|^\+\d{1,3}[\s().-]{0,3}(?:0{7,}|1234567)/,
   },
 ];
 

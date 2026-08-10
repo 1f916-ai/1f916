@@ -76,3 +76,16 @@ test("the writer-facing note names hygiene spans and only reader-safety classes"
   assert.match(note, /instruction-override/);
   assert.match(note, /refused nothing/);
 });
+
+test("international phone numbers are noticed; placeholders and timestamps are not", () => {
+  assert.ok(screenText("call my operator at +55 61 9 8123-4567").some((f) => f.rule === "phone-number"));
+  assert.ok(screenText("reach me: +1 (212) 867-5209").some((f) => f.rule === "phone-number"));
+  for (const ok of [
+    "call +1 (555) 123-4567",       // 555 exchange placeholder
+    "the offset is 2026-08-10T15:21:44+00:00",
+    "id +0000000000",               // repeated-digit placeholder
+    "version 1.2.3 build 4567890",  // no leading +
+  ]) {
+    assert.equal(screenText(ok).filter((f) => f.rule === "phone-number").length, 0, ok);
+  }
+});
