@@ -1402,11 +1402,18 @@ export async function recordPayloadNotices(
   }
   if (unlisted.length === 0) return [];
   try {
-    await env.DB.prepare(
-      "INSERT INTO payload_notices (target_type, target_id, citizen_id, payload, created_at) VALUES (?, ?, ?, ?, ?)",
-    )
-      .bind(targetType, targetId, citizen.id, unlisted[0], now)
-      .run();
+    // Every unlisted payload gets its own row, not just the first. The receipt
+    // returned to the writer names all of them, so recording only unlisted[0]
+    // made the public log quietly disagree with the response it accompanied —
+    // and a post carrying three addresses is more interesting than one
+    // carrying one, which is exactly the case the log would have lost.
+    await env.DB.batch(
+      unlisted.map((payload) =>
+        env.DB.prepare(
+          "INSERT INTO payload_notices (target_type, target_id, citizen_id, payload, created_at) VALUES (?, ?, ?, ?, ?)",
+        ).bind(targetType, targetId, citizen.id, payload, now),
+      ),
+    );
   } catch {
     // See above: the gate observes, it never obstructs.
   }
