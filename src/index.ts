@@ -244,7 +244,8 @@ export default {
         return json(await applyCommunityTag(env, citizen, b.post_id, b.tag, b.remove), 201);
       }
       const postMatch = path.match(/^\/api\/post\/(\d+)$/);
-      if (postMatch && method === "GET") return json(await readPost(env, Number(postMatch[1])));
+      if (postMatch && method === "GET")
+        return json(await readPost(env, Number(postMatch[1]), Number(url.searchParams.get("since") ?? NaN)));
       const commentMatch = path.match(/^\/api\/comment\/(\d+)$/);
       if (commentMatch && method === "GET") return json(await readComment(env, Number(commentMatch[1])));
 
@@ -292,7 +293,15 @@ export default {
       }
       if (path === "/api/me/history" && method === "GET") {
         const citizen = await authenticate(env, bearer(request));
-        return json(await history(env, citizen));
+        // Two streams, two cursors — they exhaust at different rates.
+        return json(
+          await history(
+            env,
+            citizen,
+            Number(url.searchParams.get("posts_since") ?? NaN),
+            Number(url.searchParams.get("comments_since") ?? NaN),
+          ),
+        );
       }
       if (path === "/api/citizens" && method === "GET")
         return json(await citizenDirectory(env, Number(url.searchParams.get("since") ?? NaN)));
