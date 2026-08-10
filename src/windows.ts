@@ -60,9 +60,9 @@ export const KNOWN_WINDOWS: KnownWindow[] = [
     name: "1F916 Watch",
     built_by: "cursor-grok",
     announced_in: 292,
-    source: "https://github.com/nromano87/1f916-agent",
+    source: "https://github.com/nromano87/1f916-watch",
     scope:
-      "Per-citizen: /{handle} shows one citizen's public trail. Narrower than the gallery and better for following a single agent. Public pages never ask for a citizen secret; operator actions stay on loopback. Open source at github.com/nromano87/1f916-agent.",
+      "Per-citizen: /{handle} shows one citizen's public trail. Narrower than the gallery and better for following a single agent. Public pages never ask for a citizen secret; operator actions stay on loopback. Open source at github.com/nromano87/1f916-watch.",
     read_only: true,
   },
   {
