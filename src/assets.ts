@@ -182,7 +182,8 @@ export function claimableFromPool(
 export interface TierSummary {
   tier: Tier;
   label: string;
-  cents: number;
+  /** Null unless every holding in the snapshot is valued; never a partial sum. */
+  cents: number | null;
   notional: boolean;
   note: string;
 }
@@ -220,7 +221,7 @@ export function summarizeAssets(holdings: Holding[]): AssetSummary {
     by_tier: ([1, 2, 3] as Tier[]).map((tier) => ({
       tier,
       label: TIERS[tier].label,
-      cents: sum(holdings.filter((h) => h.tier === tier)),
+      cents: complete ? sum(holdings.filter((h) => h.tier === tier)) : null,
       notional: holdings.some((h) => h.tier === tier && h.notional),
       note: TIERS[tier].note,
     })),
@@ -343,7 +344,10 @@ export const CLAIM_SOURCES: ClaimSource[] = [
 const pad = (hex: string) => hex.replace(/^0x/, "").toLowerCase().padStart(64, "0");
 const word = (hex: string, i: number): bigint => {
   const body = hex.replace(/^0x/, "").slice(i * 64, (i + 1) * 64);
-  return body.length === 64 ? BigInt("0x" + body) : 0n;
+  if (body.length !== 64) {
+    throw new Error(`short ABI response: word ${i} has ${body.length} hex digits; expected 64`);
+  }
+  return BigInt("0x" + body);
 };
 // Chainlink answers are int256.
 const toInt256 = (v: bigint): bigint => (v >= 1n << 255n ? v - (1n << 256n) : v);
@@ -401,10 +405,9 @@ export async function batchCall(rpcUrls: string[], calls: RpcCall[], timeoutMs =
  * batchCall, but it insists.
  *
  * batchCall returns as soon as ANY call in the batch answered, so a public RPC
- * that rate-limits half a large batch yields a result array with holes and the
- * next endpoint is never tried. That is fine for the eleven-call read this file
- * started with and not fine for the ~40 the depth walk needs: a single throttled
- * word silently costs the whole realizable figure, intermittently, which is the
+ * that rate-limits part of a batch yields a result array with holes and the next
+ * endpoint is never tried. That can erase a holding from the core asset read or
+ * part of the ~40-call depth ladder even when another provider is healthy — the
  * worst way for a number to be missing.
  *
  * So: re-request only the holes, rotating which endpoint leads each pass, and
@@ -514,6 +517,9 @@ async function readPoolDepthUncached(
   ]);
   if (!slot0 || !liqRaw) return { depth: null, error: "pool slot0/liquidity did not answer; no realizable figure" };
   const sqrtPriceX96 = word(slot0, 0);
+  if (sqrtPriceX96 === 0n) {
+    return { depth: null, error: "pool slot0 returned zero sqrtPriceX96; no realizable figure" };
+  }
   const tick = Number(BigInt.asIntN(256, word(slot0, 1)));
   const lpFeePips = Number(word(slot0, 3));
   const liquidity = BigInt(liqRaw);
@@ -607,7 +613,7 @@ export async function readTreasuryAssets(treasuryAddress: string, rpcUrls: strin
     { to: src.feesManager, data: S.collectFees + pad(src.poolId), from: treasuryAddress },
   ];
   const [usdcRaw, wethRaw, roundData, slot0, sharesRaw, cum0Raw, cum1Raw, last0Raw, last1Raw, tokenWalletRaw, collectRaw] =
-    await batchCall(rpcUrls, calls);
+    await batchCallComplete(rpcUrls, calls);
 
   // ETH/USD from Chainlink, 8 decimals. The update time is carried through so a
   // stale oracle is visible rather than silently trusted — an oracle that
@@ -723,13 +729,17 @@ export async function readTreasuryAssets(treasuryAddress: string, rpcUrls: strin
   // the only one it has any relationship to, and it is the one a sale of these
   // tokens would actually move.
   let tokenUsd: number | null = null;
-  if (slot0 && ethUsd !== null) {
+  if (slot0) {
     const sqrtPriceX96 = word(slot0, 0);
-    const ethPerToken = src.wethIsToken0
-      ? sqrtPriceX96ToToken0PerToken1(sqrtPriceX96, 18, src.decimals)
-      : 1 / sqrtPriceX96ToToken0PerToken1(sqrtPriceX96, src.decimals, 18);
-    tokenUsd = ethPerToken * ethUsd;
-  } else if (!slot0) {
+    if (sqrtPriceX96 === 0n) {
+      errors.push("pool slot0 returned zero sqrtPriceX96; the token mark is unavailable");
+    } else if (ethUsd !== null) {
+      const ethPerToken = src.wethIsToken0
+        ? sqrtPriceX96ToToken0PerToken1(sqrtPriceX96, 18, src.decimals)
+        : 1 / sqrtPriceX96ToToken0PerToken1(sqrtPriceX96, src.decimals, 18);
+      tokenUsd = ethPerToken * ethUsd;
+    }
+  } else {
     errors.push("pool slot0 did not answer; the token mark is unavailable");
   }
   const tokenPriceSource = `Uniswap V4 slot0 for poolId ${src.poolId} (StateView ${BASE_CONTRACTS.V4_STATE_VIEW}), converted at the Chainlink ETH/USD price. Pinned to the pool the claim sits in — other pools for this token quote materially different prices, so a token-wide average would be a number with no owner.`;

@@ -190,6 +190,11 @@ test("an unreadable holding nulls the totals instead of under-reporting", () => 
   assert.equal(s.complete, false);
   assert.equal(s.total_cents, null);
   assert.equal(s.conservative_total_cents, null);
+  assert.deepEqual(
+    s.by_tier.map((tier) => tier.cents),
+    [null, null, null],
+    "a tier subtotal must not turn an unknown holding into a confident zero",
+  );
   assert.equal(s.by_location.wallet_cents, null);
   // The per-holding rows still come back, so a reader can see WHAT is missing.
   assert.equal(s.holdings.length, 2);
@@ -199,6 +204,7 @@ test("no holdings is complete and zero, not incomplete", () => {
   const s = summarizeAssets([]);
   assert.equal(s.complete, true);
   assert.equal(s.total_cents, 0);
+  assert.deepEqual(s.by_tier.map((tier) => tier.cents), [0, 0, 0]);
 });
 
 // ---------- the allowlist ----------
