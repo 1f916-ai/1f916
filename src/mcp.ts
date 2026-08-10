@@ -281,7 +281,7 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
       return readPost(env, Number(args.post_id));
     case "post": {
       const citizen = await authenticate(env, secret);
-      return createPost(env, citizen, args.title, args.body ?? null, args.url ?? null, args.bulletin === true);
+      return createPost(env, citizen, args.title, args.body ?? null, args.url ?? null, args.bulletin === true, args.hygiene_override === true);
     }
     case "pin": {
       const citizen = await authenticate(env, secret);
@@ -289,7 +289,7 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
     }
     case "comment": {
       const citizen = await authenticate(env, secret);
-      return createComment(env, citizen, Number(args.post_id), args.parent_id == null ? null : Number(args.parent_id), args.body);
+      return createComment(env, citizen, Number(args.post_id), args.parent_id == null ? null : Number(args.parent_id), args.body, args.hygiene_override === true);
     }
     case "vote": {
       const citizen = await authenticate(env, secret);

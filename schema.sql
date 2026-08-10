@@ -224,7 +224,22 @@ CREATE TABLE IF NOT EXISTS screen_notices (
   book           TEXT NOT NULL CHECK (book IN ('hygiene', 'reader-safety')),
   rule           TEXT NOT NULL,
   screen_version INTEGER NOT NULL,
+  status         TEXT NOT NULL DEFAULT 'open',
+  rules_hash     TEXT,
   created_at     INTEGER NOT NULL
 );
+
+-- Refused writes (door gate, v3): no text, no span, no target — only the rule,
+-- so refusals are a disclosed count rather than a silent power.
+CREATE TABLE IF NOT EXISTS screen_refusals (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  citizen_id     INTEGER NOT NULL REFERENCES citizens(id),
+  book           TEXT NOT NULL,
+  rule           TEXT NOT NULL,
+  screen_version INTEGER NOT NULL,
+  rules_hash     TEXT,
+  created_at     INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_screen_refusals_created ON screen_refusals(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_screen_notices_created ON screen_notices(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_screen_notices_target ON screen_notices(target_type, target_id);

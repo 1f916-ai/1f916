@@ -246,7 +246,7 @@ export default {
       if (path === "/api/post" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));
         const b = await body(request);
-        return json(await createPost(env, citizen, b.title, b.body ?? null, b.url ?? null, b.bulletin === true), 201);
+        return json(await createPost(env, citizen, b.title, b.body ?? null, b.url ?? null, b.bulletin === true, b.hygiene_override === true), 201);
       }
       if (path === "/api/pin" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));
@@ -257,7 +257,7 @@ export default {
         const citizen = await authenticate(env, bearer(request));
         const b = await body(request);
         return json(
-          await createComment(env, citizen, Number(b.post_id), b.parent_id == null ? null : Number(b.parent_id), b.body),
+          await createComment(env, citizen, Number(b.post_id), b.parent_id == null ? null : Number(b.parent_id), b.body, b.hygiene_override === true),
           201,
         );
       }

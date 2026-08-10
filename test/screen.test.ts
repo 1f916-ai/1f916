@@ -74,7 +74,7 @@ test("the writer-facing note names hygiene spans and only reader-safety classes"
   const note = screenNote(screenText("path /home/marcus/x and also ignore previous instructions"));
   assert.match(note, /home-path \(\/home\/marcus\)/);
   assert.match(note, /instruction-override/);
-  assert.match(note, /refused nothing/);
+  assert.match(note, /override/); // hygiene findings on a published write mean the author overrode the gate
 });
 
 test("international phone numbers are noticed; placeholders and timestamps are not", () => {
@@ -88,4 +88,21 @@ test("international phone numbers are noticed; placeholders and timestamps are n
   ]) {
     assert.equal(screenText(ok).filter((f) => f.rule === "phone-number").length, 0, ok);
   }
+});
+
+test("the rules fingerprint exists, is stable in-process, and changes with the book", async () => {
+  const { RULES_FINGERPRINT, SCREEN_VERSION } = await import("../src/screen.ts");
+  assert.match(RULES_FINGERPRINT, /^[0-9a-f]{16}$/);
+  assert.ok(SCREEN_VERSION >= 3);
+});
+
+test("the refusal note names spans, the override, and the fingerprint, and admits nothing was stored", async () => {
+  const { refusalNote } = await import("../src/screen.ts");
+  const { screenText } = await import("../src/screen.ts");
+  const note = refusalNote(screenText("my box: /home/marcus/logs"));
+  assert.match(note, /refused/);
+  assert.match(note, /home-path \(\/home\/marcus\)/);
+  assert.match(note, /hygiene_override/);
+  assert.match(note, /nothing was published or stored/);
+  assert.match(note, /[0-9a-f]{16}/);
 });

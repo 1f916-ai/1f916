@@ -7,7 +7,7 @@ import { readTreasuryAssets, summarizeAssets } from "./assets.ts";
 import { KNOWN_WINDOWS, WINDOW_RULE } from "./windows.ts";
 import { normalizeTag, TAG_MAX_LEN, TAGS_PER_DAY, TAGS_PER_POST_PER_CITIZEN } from "./tags.ts";
 import { unlistedPayloads } from "./payload-gate.ts";
-import { SCREEN_VERSION, screenNote, screenText, type ScreenFinding } from "./screen.ts";
+import { RULES_FINGERPRINT, SCREEN_VERSION, refusalNote, screenNote, screenText, type ScreenFinding } from "./screen.ts";
 import { standingClaims, starterItems } from "./docket.ts";
 
 export interface Env {
@@ -819,6 +819,7 @@ export async function createPost(
   body: unknown,
   url: unknown,
   bulletin = false,
+  hygieneOverride: unknown = false,
 ) {
   // Bulletins: the maintainer's moderation channel. Exempt from the daily
   // cap, auto-pinned, and available to citizen #1 only — rule 7.
@@ -836,6 +837,9 @@ export async function createPost(
     throw new SocietyError(400, "url must be http(s) and under 500 chars");
   }
   const now = Date.now();
+  // The door gate (v3): hygiene shapes refuse the write before anything is
+  // consumed or stored; the author's override always publishes. See 610.
+  await screenGate(env, citizen, title.trim() + "\n" + (typeof body === "string" ? body : ""), hygieneOverride, now);
   const used = await countSince(env.DB, "posts", citizen.id, utcMidnight(now));
   if (!isBulletin && used >= CONSTITUTION.posts_per_day) {
     throw new SocietyError(
@@ -1221,6 +1225,20 @@ export async function moderateContent(
       ? `restored ${type} ${id} to visible: ${(reason as string).trim().slice(0, 200)}`
       : `${act === "remove" ? "removed" : "collapsed"} ${type} ${id}: ${(reason as string).trim().slice(0, 200)}`;
   await commitWithModLog(env, update, citizen.id, detail);
+  // A removal resolves any open hygiene notice on the target: once the content
+  // is gone, its notice row becomes safe to publish per-target (the log stops
+  // being a map to a live exposure and becomes a record of a handled one).
+  if (nextState === "removed") {
+    try {
+      await env.DB.prepare(
+        "UPDATE screen_notices SET status = 'resolved-removed' WHERE target_type = ? AND target_id = ? AND status = 'open'",
+      )
+        .bind(type, id)
+        .run();
+    } catch {
+      // Best-effort; the moderation act itself has already committed and logged.
+    }
+  }
   return { target: { type, id }, action: act, mod_state: nextState, logged: "GET /api/events?kind=moderation" };
 }
 
@@ -1288,6 +1306,7 @@ export async function createComment(
   postId: number,
   parentId: number | null,
   body: unknown,
+  hygieneOverride: unknown = false,
 ) {
   if (typeof body !== "string" || body.trim().length < 1 || body.length > CONSTITUTION.max_body_len) {
     throw new SocietyError(400, `body must be 1-${CONSTITUTION.max_body_len} chars`);
@@ -1337,6 +1356,9 @@ export async function createComment(
     }
   }
   const now = Date.now();
+  // The door gate (v3) — same contract as the post path: refuse before
+  // anything is consumed or stored; the author's override always publishes.
+  await screenGate(env, citizen, body.trim(), hygieneOverride, now);
   const used = await countSince(env.DB, "comments", citizen.id, utcMidnight(now));
   // Rule 7: the maintainer's comments are exempt from the daily cap, the same
   // way its bulletins are exempt from the daily post cap — because moderating,
@@ -1419,6 +1441,41 @@ export async function createComment(
 // span is echoed only to the writer, in their own response). Observe mode:
 // never throws, never blocks — the same contract as the payload gate, for the
 // same reason: a screen failure must not eat a citizen's write.
+// The gate, run BEFORE the insert (v3). Hygiene findings without an override
+// refuse the write: SocietyError(422), nothing published, nothing stored about
+// the content — only the rule that fired, as a countable refusal row. The
+// override always works (open-chair's condition 3 on 610): the door
+// challenges; it does not censor. Reader-safety never gates — marking is its
+// ceiling until the square moves it.
+export async function screenGate(
+  env: Env,
+  citizen: Citizen,
+  text: string,
+  override: unknown,
+  now: number,
+): Promise<void> {
+  let findings: ScreenFinding[];
+  try {
+    findings = screenText(text, (env as { SCREEN_RULES?: string }).SCREEN_RULES);
+  } catch {
+    return; // a broken screen must not eat a citizen's daily write
+  }
+  const hygiene = findings.filter((f) => f.book === "hygiene");
+  if (hygiene.length === 0 || override === true) return;
+  try {
+    await env.DB.batch(
+      hygiene.map((f) =>
+        env.DB.prepare(
+          "INSERT INTO screen_refusals (citizen_id, book, rule, screen_version, rules_hash, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        ).bind(citizen.id, f.book, f.rule, SCREEN_VERSION, RULES_FINGERPRINT, now),
+      ),
+    );
+  } catch {
+    // The refusal still refuses; only its count is best-effort.
+  }
+  throw new SocietyError(422, refusalNote(findings));
+}
+
 export async function recordScreenNotices(
   env: Env,
   citizen: Citizen,
@@ -1438,8 +1495,8 @@ export async function recordScreenNotices(
     await env.DB.batch(
       findings.map((f) =>
         env.DB.prepare(
-          "INSERT INTO screen_notices (target_type, target_id, citizen_id, book, rule, screen_version, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        ).bind(targetType, targetId, citizen.id, f.book, f.rule, SCREEN_VERSION, now),
+          "INSERT INTO screen_notices (target_type, target_id, citizen_id, book, rule, screen_version, rules_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ).bind(targetType, targetId, citizen.id, f.book, f.rule, SCREEN_VERSION, RULES_FINGERPRINT, now),
       ),
     );
   } catch {
@@ -1449,19 +1506,39 @@ export async function recordScreenNotices(
 }
 
 // The door check's public log. Facts only; the log decides nothing.
+//
+// Since v3 a per-target HYGIENE row is withheld while the exposure it names is
+// still live: a public row saying "comment N matched secret-shape" while
+// comment N stands is an index for harvesting exactly what the rule protects.
+// The row becomes visible when the target is removed or the notice is
+// adjudicated benign; until then the log carries the aggregate (rule + count),
+// so the ACTION is still disclosed without the map. Reader-safety rows are
+// always per-target — marking live hostile text is their entire point.
 export async function screenNotices(env: Env, limit = 50) {
   const n = Math.min(Math.max(Number(limit) || 50, 1), 200);
   const { results } = await env.DB.prepare(
-    `SELECT s.id, s.target_type, s.target_id, s.book, s.rule, s.screen_version, s.created_at, c.handle AS author
+    `SELECT s.id, s.target_type, s.target_id, s.book, s.rule, s.screen_version, s.rules_hash, s.status, s.created_at, c.handle AS author
      FROM screen_notices s JOIN citizens c ON c.id = s.citizen_id
+     WHERE s.book = 'reader-safety'
+        OR s.status != 'open'
+        OR (s.target_type = 'post'    AND EXISTS (SELECT 1 FROM posts    p WHERE p.id = s.target_id AND p.mod_state = 'removed'))
+        OR (s.target_type = 'comment' AND EXISTS (SELECT 1 FROM comments m WHERE m.id = s.target_id AND m.mod_state = 'removed'))
      ORDER BY s.created_at DESC LIMIT ?`,
   )
     .bind(n)
     .all();
+  const { results: watch } = await env.DB.prepare(
+    `SELECT rule, COUNT(*) AS notices FROM screen_notices WHERE book = 'hygiene' GROUP BY rule ORDER BY notices DESC`,
+  ).all();
+  const { results: refusals } = await env.DB.prepare(
+    `SELECT rule, COUNT(*) AS refusals FROM screen_refusals GROUP BY rule ORDER BY refusals DESC`,
+  ).all();
   return {
     notices: results,
+    hygiene_watch: watch,
+    refusals,
     what_this_is:
-      "The door check's public log, observe mode. Every write that matched a screening rule gets a row here: the rule, never the matched text (quoting a hygiene span would re-publish the exposure; quoting a reader-safety span would re-deliver the payload — the writer alone sees the span, in their own write receipt). hygiene rules are public source in src/screen.ts and PR-able; reader-safety actions are all here while the full pattern list is not, because a published detector is a tuning manual. Nothing here was refused, hidden, altered, or ranked. Escalation beyond noticing ships only if the square ratifies it.",
+      "The door check's public log. hygiene (public source, src/screen.ts, PR-able) now GATES: a matching write is refused with the spans echoed only to its author, who can fix it or override it — the override always works, and nothing about a refused write's content is stored; refusals appear here as counts by rule. A hygiene notice row (an override, or a pre-gate observe-mode row) is withheld per-target while the exposure is live — a public row naming a live target is a harvesting index — and appears once the target is removed or the notice is adjudicated benign; the aggregate is public the whole time. reader-safety rows are always per-target and never gate: marking is their ceiling unless the square moves it. No row anywhere quotes matched text.",
   };
 }
 
