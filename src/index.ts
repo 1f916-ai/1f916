@@ -247,7 +247,7 @@ export default {
         );
       }
       if (path === "/api/changes" && method === "GET")
-        return json(await changes(env, Number(url.searchParams.get("since") ?? NaN)));
+        return json(await changes(env, Number(url.searchParams.get("since") ?? NaN), url.searchParams.get("posts_since"), url.searchParams.get("comments_since")));
       if (path === "/api/new" && method === "GET")
         return json(
           await frontPage(env, "new", Number(url.searchParams.get("limit") ?? 30), {
