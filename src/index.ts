@@ -1,12 +1,12 @@
 // 1F916 — one Worker, three doors: the front door (text), the JSON API, and MCP.
 
-import { frontDoor, HUMANS_TXT, ROBOTS_TXT, SECURITY_TXT } from "./doc";
-import { htmlDoor, prefersHtml } from "./unfurl";
-import { handleMcp } from "./mcp";
+import { frontDoor, HUMANS_TXT, ROBOTS_TXT, SECURITY_TXT } from "./doc.ts";
+import { htmlDoor, prefersHtml } from "./unfurl.ts";
+import { handleMcp } from "./mcp.ts";
 import { parseTagFilter } from "./tags.ts";
 import { docket } from "./docket.ts";
 import { surfaceManifest } from "./surface.ts";
-import { handlePatron } from "./x402";
+import { handlePatron } from "./x402.ts";
 import {
   type Env,
   SocietyError,
@@ -39,7 +39,7 @@ import {
   history,
   citizenDirectory,
   attestation,
-} from "./society";
+} from "./society.ts";
 
 function json(data: unknown, status = 200): Response {
   // Every JSON response carries the server's clock. mirror-writing (#467) ran
@@ -60,6 +60,20 @@ function json(data: unknown, status = 200): Response {
   return Response.json(body, {
     status,
     headers: { "Access-Control-Allow-Origin": "*", "Cache-Control": "no-store" },
+  });
+}
+
+// CORS is a two-response contract: allowing a browser's preflight and then
+// omitting ACAO from the real response still makes the response unreadable.
+// Clone rather than mutate so this also works for responses whose header guard
+// is immutable; status, body, content type, and JSON-RPC envelope stay intact.
+function withCors(response: Response): Response {
+  const headers = new Headers(response.headers);
+  headers.set("Access-Control-Allow-Origin", "*");
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
   });
 }
 
@@ -113,16 +127,24 @@ export default {
     const isHead = request.method === "HEAD";
     const method = isHead ? "GET" : request.method;
     const finish = (r: Response | Promise<Response>): Promise<Response> =>
-      Promise.resolve(r).then((res) => (isHead ? new Response(null, { status: res.status, headers: res.headers }) : res));
+      Promise.resolve(r).then((res) => {
+        const finished = isHead ? new Response(null, { status: res.status, headers: res.headers }) : res;
+        // OPTIONS already advertises MCP to every origin. Apply the matching
+        // header at the route boundary so success, JSON-RPC errors, empty 202s,
+        // GET/verb 405s, and future early returns cannot bypass it.
+        return path === "/mcp" ? withCors(finished) : finished;
+      });
     return finish(
       (async () => {
 
     if (method === "OPTIONS") {
+      // Streamable HTTP requires MCP-Protocol-Version after initialize. It is
+      // not CORS-safelisted, so browser transports need it named explicitly.
       return new Response(null, {
         headers: {
           "Access-Control-Allow-Origin": "*",
           "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-          "Access-Control-Allow-Headers": "Content-Type, Authorization, X-PAYMENT",
+          "Access-Control-Allow-Headers": "Content-Type, Authorization, MCP-Protocol-Version, X-PAYMENT",
           "Access-Control-Expose-Headers": "X-PAYMENT-RESPONSE",
         },
       });

@@ -26,7 +26,7 @@ import {
   applyCommunityTag,
   tagDirectory,
   payloadNotices,
-} from "./society";
+} from "./society.ts";
 import { docket as docketFacts } from "./docket.ts";
 
 const TOOLS = [

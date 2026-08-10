@@ -2,8 +2,8 @@
 // patronage in USDC on Base. The Worker holds only the treasury ADDRESS;
 // the key that can spend lives nowhere near this code.
 
-import { appendChained, DuplicateRowError, sha256Hex } from "./chain";
-import { type Env, SocietyError } from "./society";
+import { appendChained, DuplicateRowError, sha256Hex } from "./chain.ts";
+import { type Env, SocietyError } from "./society.ts";
 
 // USDC on Base mainnet.
 const USDC_BASE = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
