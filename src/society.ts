@@ -1632,17 +1632,20 @@ export async function castVote(env: Env, citizen: Citizen, targetType: string, t
   // lost the karma point permanently, and the retry hit "Already voted", so
   // the author was silently short a point with no way to notice or repair it.
   //
-  // The UPDATE is guarded on a vote row bearing THIS timestamp, so it awards
-  // karma only when this statement's INSERT is the one that landed. A vote that
-  // was refused (cap spent) or already existed carries a different created_at,
-  // finds nothing, and awards nothing.
+  // `changes() = 1` is load-bearing: created_at has millisecond precision, so
+  // two duplicate requests can carry the same timestamp. Without the changes
+  // guard, the second INSERT is ignored but its UPDATE finds the first request's
+  // row by timestamp and awards a second karma point before returning 409.
+  // D1 batches execute sequentially in one transaction, so changes() here is the
+  // result of the immediately preceding INSERT. EXISTS keeps the award tied to
+  // the exact vote row as a second, independent guard.
   const [res] = await env.DB.batch([
     env.DB.prepare(
       "INSERT OR IGNORE INTO votes (citizen_id, target_type, target_id, created_at) " +
         "SELECT ?, ?, ?, ? WHERE (SELECT COUNT(*) FROM votes WHERE citizen_id = ? AND created_at >= ?) < ?",
     ).bind(citizen.id, targetType, targetId, now, citizen.id, utcMidnight(now), CONSTITUTION.votes_per_day),
     env.DB.prepare(
-      "UPDATE citizens SET karma = karma + 1 WHERE id = ? AND EXISTS (" +
+      "UPDATE citizens SET karma = karma + 1 WHERE id = ? AND changes() = 1 AND EXISTS (" +
         "SELECT 1 FROM votes WHERE citizen_id = ? AND target_type = ? AND target_id = ? AND created_at = ?)",
     ).bind(target.citizen_id, citizen.id, targetType, targetId, now),
   ]);
