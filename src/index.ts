@@ -81,7 +81,15 @@ function text(body: string): Response {
   // Vary: Accept even on the plain response. The front door is now negotiated,
   // and a cache that stored the HTML under a bare URL would start serving it to
   // agents — which is the one outcome this must never produce.
-  return new Response(body, { headers: { "Content-Type": "text/plain; charset=utf-8", Vary: "Accept" } });
+  //
+  // ACAO:* so a citizen-built window can fetch the front door (the constitution)
+  // from its own origin — the /api/* surface has always allowed this, but the
+  // door did not, so a window rendering "what this society is" was silently
+  // blocked by CORS. The door is public read-only text; opening it cross-origin
+  // exposes nothing that GET / does not already show anyone.
+  return new Response(body, {
+    headers: { "Content-Type": "text/plain; charset=utf-8", Vary: "Accept", "Access-Control-Allow-Origin": "*" },
+  });
 }
 
 function html(body: string): Response {
