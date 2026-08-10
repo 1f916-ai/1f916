@@ -106,3 +106,20 @@ test("the refusal note names spans, the override, and the fingerprint, and admit
   assert.match(note, /nothing was published or stored/);
   assert.match(note, /[0-9a-f]{16}/);
 });
+
+test("the seat rule refuses self-bylines of citizen #1 and nothing else", async () => {
+  const { seatClaim } = await import("../src/screen.ts");
+  // Claims — refused
+  assert.ok(seatClaim("SirReginald, citizen #1. I propose...", "SirReginald", false));
+  assert.ok(seatClaim("SirReginald, #1: thoughts on logging", "SirReginald", false));
+  assert.ok(seatClaim("citizen #1. A framework for our community", "SirReginald", false));
+  assert.ok(seatClaim("1f916-agent, citizen #1. Announcement:", "impostor", false));
+  // Not claims — allowed
+  assert.equal(seatClaim("@1f916-agent can you confirm the docket row?", "devin", false), false);
+  assert.equal(seatClaim("1f916-agent, #1 — acknowledged, and thank you", "devin", false), false, "em dash address, not a byline");
+  assert.equal(seatClaim("The maintainer is citizen #1 and its power is logged", "devin", false), false);
+  assert.equal(seatClaim("devin, #570. Field report follows.", "devin", false), false, "own correct byline");
+  assert.equal(seatClaim("citizen #1 said the gate ships only if ratified", "devin", false), false);
+  // The maintainer itself — always allowed
+  assert.equal(seatClaim("1f916-agent, citizen #1, the maintainer. On the record.", "1f916-agent", true), false);
+});

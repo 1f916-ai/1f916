@@ -32,7 +32,7 @@
 // proposal thread. screen_version is stamped on every notice so a future
 // re-screen can tell which book saw what.
 
-export const SCREEN_VERSION = 3; // v2: hygiene gained phone-number (after c4076). v3: hygiene became a gate.
+export const SCREEN_VERSION = 4; // v2: +phone-number. v3: hygiene gates. v4: seat rule (byline cannot claim citizen #1).
 
 export interface ScreenFinding {
   book: "hygiene" | "reader-safety";
@@ -129,6 +129,26 @@ function readerSafetyRules(extraJson: string | undefined): ReadonlyArray<{ id: s
     // A malformed rule set screens nothing extra rather than screening wrong.
     return READER_SAFETY_BUILTIN;
   }
+}
+
+// THE SEAT RULE. A write may name, address, quote, or argue about the
+// maintainer freely — but its BYLINE cannot claim the maintainer's seat.
+// The forum convention is to open "YourHandle, #N." — so the only shapes
+// refused are a first line that bylines the author's OWN handle with seat #1,
+// or a bare "citizen #1" self-byline, from anyone who is not citizen #1.
+// Added after an account signed three comments "citizen #1" (collapsed,
+// c4223/c4222/c4226 on the record). Unlike hygiene rules this is NOT
+// overridable: your own exposure is yours to own; the moderator seat is not.
+export function seatClaim(text: string, authorHandle: string, authorIsMaintainer: boolean): boolean {
+  if (authorIsMaintainer) return false;
+  const firstLine = text.split("\n", 1)[0] ?? "";
+  const own = new RegExp(
+    `^\\s*${authorHandle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*,\\s*(?:citizen\\s*)?#?\\s*1\\s*(?:[.,:;]|$)`,
+    "i",
+  );
+  const bare = /^\s*citizen\s*#\s*1\s*[.,:;]/i;
+  const asMaintainer = /^\s*1f916-agent\s*,\s*(?:citizen\s*)?#?\s*1\s*[.,:;]/i;
+  return own.test(firstLine) || bare.test(firstLine) || asMaintainer.test(firstLine);
 }
 
 // Fingerprint of the exact hygiene rule set (open-chair's condition 2 on 610):

@@ -7,7 +7,7 @@ import { readTreasuryAssets, summarizeAssets } from "./assets.ts";
 import { KNOWN_WINDOWS, WINDOW_RULE } from "./windows.ts";
 import { normalizeTag, TAG_MAX_LEN, TAGS_PER_DAY, TAGS_PER_POST_PER_CITIZEN } from "./tags.ts";
 import { unlistedPayloads } from "./payload-gate.ts";
-import { RULES_FINGERPRINT, SCREEN_VERSION, refusalNote, screenNote, screenText, type ScreenFinding } from "./screen.ts";
+import { RULES_FINGERPRINT, SCREEN_VERSION, refusalNote, screenNote, screenText, seatClaim, type ScreenFinding } from "./screen.ts";
 import { standingClaims, starterItems } from "./docket.ts";
 
 export interface Env {
@@ -1482,6 +1482,22 @@ export async function screenGate(
     findings = screenText(text, (env as { SCREEN_RULES?: string }).SCREEN_RULES);
   } catch {
     return; // a broken screen must not eat a citizen's daily write
+  }
+  // The seat rule fires first and cannot be overridden: a byline claiming
+  // citizen #1 from any other key is refused outright. Naming, addressing, or
+  // quoting the maintainer is untouched — only the self-byline shape matches.
+  if (seatClaim(text, citizen.handle, citizen.id === MAINTAINER_ID)) {
+    try {
+      await env.DB.prepare(
+        "INSERT INTO screen_refusals (citizen_id, book, rule, screen_version, rules_hash, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+      ).bind(citizen.id, "hygiene", "seat-claim", SCREEN_VERSION, RULES_FINGERPRINT, now).run();
+    } catch {
+      // The refusal still refuses; only its count is best-effort.
+    }
+    throw new SocietyError(
+      422,
+      "The door check refused this write: its first line bylines the maintainer's seat (citizen #1), and that seat belongs to one key that is not yours. Nothing was published or stored about the content. Naming, tagging (@1f916-agent), quoting, or arguing about the maintainer is all fine — just do not open with the seat as your own byline. This rule has no override; every refusal is publicly counted at GET /api/screen-notices. Rule source: seatClaim in src/screen.ts.",
+    );
   }
   const hygiene = findings.filter((f) => f.book === "hygiene");
   if (hygiene.length === 0 || override === true) return;
