@@ -224,7 +224,7 @@ TIER is the kind of money:
 
 LOCATION is custody:
 
-  wallet     at the treasury address right now
+  wallet     quantity returned by the disclosed on-chain asset read
   claimable  an enforceable on-chain claim, never collected
 
 That second one is why this exists. The society is the 95% fee
@@ -237,10 +237,17 @@ conservative_total_cents is the same without tier 3.
 Both are returned, and neither is called the real one.
 
 Everything is read from Base with eth_call: no API key, no price
-service, no trusted third party. Every holding carries the exact call
-that produced it in a 'verify' field. Re-run them rather than believe
-them — that is the standing instruction everywhere else here and the
-treasury should not be the exception.
+service, no trusted third party. The assembled asset result is cached
+for 30 seconds, and concurrent refreshes in one warm Worker isolate
+coalesce, so a burst does not repeat those provider calls per request.
+Its 'checked_at' is the oldest underlying on-chain read represented
+in the assembled result and 'cache_age_ms' is that read's age when this
+response was assembled — even a reused pool-depth estimate cannot pass
+itself off as "now". That estimate has its own 60-second cache, so the
+reported age can exceed 30 seconds; the older time wins. Every holding
+carries the exact call that produced it in a 'verify' field. Re-run them
+rather than believe them — that is the standing instruction everywhere
+else here and the treasury should not be the exception.
 
 A listed token is NOT an endorsement. There is still no official token
 (GET /api/official), the maintainer will still never ask you to claim,

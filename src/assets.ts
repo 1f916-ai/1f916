@@ -11,10 +11,10 @@
 //   TIER     what kind of money it is. USDC is not WETH; WETH is not a
 //            speculative coin. One blended total tells a reader less than
 //            three subtotals that refuse to blend.
-//   LOCATION where it is. 'wallet' is at the treasury address now. 'claimable'
-//            is an enforceable on-chain claim not yet collected. Money the
-//            society can take but has not taken is still money, and reporting
-//            it as zero is the bug this file exists to fix.
+//   LOCATION where it is. 'wallet' is at the address in this on-chain read.
+//            'claimable' is an enforceable on-chain claim not yet collected.
+//            Money the society can take but has not taken is still money.
+//            Reporting it as zero is the bug this file exists to fix.
 //
 // Everything is priced from Base: no API key, no price service, no trusted
 // third party. Chainlink's ETH/USD feed and the pool's own slot0, both read
@@ -468,22 +468,35 @@ export interface PoolDepth {
 // costs one walk, short enough that nobody is looking at a stale pool.
 //
 // The cache key includes the amount, because the whole point of the number is
-// that it depends on size.
+// that it depends on size. Its timestamp is propagated to the assembled asset
+// result, so the outer cache cannot re-label an older estimate as freshly read.
 const DEPTH_TTL_MS = 60_000;
-let depthCache: { key: string; at: number; value: { depth: PoolDepth | null; error: string | null } } | null = null;
+let depthCache: {
+  key: string;
+  checkedAt: number;
+  cachedAt: number;
+  value: { depth: PoolDepth | null; error: string | null };
+} | null = null;
 
 export async function readPoolDepth(
   src: ClaimSource,
   amountIn: bigint,
   rpcUrls: string[],
-): Promise<{ depth: PoolDepth | null; error: string | null }> {
+): Promise<{ depth: PoolDepth | null; error: string | null; checked_at: number }> {
   const key = `${src.poolId}:${amountIn}`;
-  if (depthCache && depthCache.key === key && Date.now() - depthCache.at < DEPTH_TTL_MS) return depthCache.value;
+  if (depthCache && depthCache.key === key && Date.now() - depthCache.cachedAt < DEPTH_TTL_MS) {
+    return { ...depthCache.value, checked_at: depthCache.checkedAt };
+  }
+  // TTL begins when the completed walk is cached, but honesty begins when its
+  // first read can occur. Keep those clocks separate: a slow multi-pass walk
+  // must not be made younger merely because it took seconds to finish.
+  const checkedAt = Date.now();
   const computed = await readPoolDepthUncached(src, amountIn, rpcUrls);
+  const cachedAt = Date.now();
   // Only a success is cached. A transient RPC failure must not pin "unknown"
   // in front of the next reader for a minute.
-  if (computed.depth) depthCache = { key, at: Date.now(), value: computed };
-  return computed;
+  if (computed.depth) depthCache = { key, checkedAt, cachedAt, value: computed };
+  return { ...computed, checked_at: checkedAt };
 }
 
 async function readPoolDepthUncached(
@@ -566,9 +579,14 @@ export interface AssetReadResult {
   eth_usd_updated_at: number | null;
   token_usd: number | null;
   errors: string[];
+  /** Oldest underlying on-chain read represented in this assembled result. */
+  checked_at: number;
 }
 
 export async function readTreasuryAssets(treasuryAddress: string, rpcUrls: string[]): Promise<AssetReadResult> {
+  // Start time is conservative: fallback retries can make a read span seconds,
+  // and an older cached pool-depth estimate may move this timestamp back again.
+  let checkedAt = Date.now();
   const errors: string[] = [];
   const t = pad(treasuryAddress);
   const src = CLAIM_SOURCES[0];
@@ -767,7 +785,8 @@ export async function readTreasuryAssets(treasuryAddress: string, rpcUrls: strin
   // untouched and simply publishes no realizable value.
   const tier3 = holdings[holdings.length - 1];
   if (claimToken !== null && claimToken > 0n) {
-    const { depth, error } = await readPoolDepth(src, claimToken, rpcUrls);
+    const { depth, error, checked_at } = await readPoolDepth(src, claimToken, rpcUrls);
+    checkedAt = Math.min(checkedAt, checked_at);
     if (error) errors.push(error);
     if (depth) {
       const realizableCents = ethUsd === null ? null : valueCents(depth.realizable0, 18, ethUsd);
@@ -796,5 +815,12 @@ export async function readTreasuryAssets(treasuryAddress: string, rpcUrls: strin
     }
   }
 
-  return { holdings, eth_usd: ethUsd, eth_usd_updated_at: ethUpdatedAt, token_usd: tokenUsd, errors };
+  return {
+    holdings,
+    eth_usd: ethUsd,
+    eth_usd_updated_at: ethUpdatedAt,
+    token_usd: tokenUsd,
+    errors,
+    checked_at: checkedAt,
+  };
 }

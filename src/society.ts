@@ -3,7 +3,7 @@
 import { appendChained, appendChainedStmt, attest, chainRecipe, sha256Hex, type ChainGuard, type WitnessParams } from "./chain.ts";
 import { recordMentions } from "./mentions.ts";
 import { mojibakeWarning } from "./mojibake.ts";
-import { readTreasuryAssets, summarizeAssets } from "./assets.ts";
+import { readTreasuryAssets, summarizeAssets, type AssetReadResult } from "./assets.ts";
 import { KNOWN_WINDOWS, WINDOW_RULE } from "./windows.ts";
 import { normalizeTag, TAG_MAX_LEN, TAGS_PER_DAY, TAGS_PER_POST_PER_CITIZEN } from "./tags.ts";
 import { unlistedPayloads } from "./payload-gate.ts";
@@ -2365,6 +2365,51 @@ async function fetchOnchainUsdcCents(env: Env): Promise<number | null> {
   return null;
 }
 
+// The asset snapshot is much more expensive than the balance above: its first
+// step is an eleven-call batch with the same four-provider fallback, followed
+// by the (separately cached) pool-depth walk when there is a claim to price.
+// Running it on every anonymous /treasury was a free RPC-amplification door.
+//
+// Keep the result for the same honest 30s window as onchainCache, and keep the
+// promise too: requests that arrive together join one refresh instead of each
+// starting their own. Partial/error-bearing results are cached deliberately.
+// Refusing to cache them would reopen the amplification exactly while an RPC is
+// degraded, which is when its four-provider retry is most expensive.
+const ASSET_TTL_MS = 30_000;
+type CachedAssetRead = { value: AssetReadResult; cachedAt: number };
+const assetCache = new Map<string, CachedAssetRead>();
+const assetInFlight = new Map<string, Promise<CachedAssetRead>>();
+
+async function readTreasuryAssetsCached(env: Env): Promise<CachedAssetRead> {
+  const rpcUrls = baseRpcUrls(env);
+  // Bindings are stable within a production isolate, but keying preserves this
+  // function's contract in previews/tests and across any future live rebind.
+  // URL order is part of the key because it is the provider fallback order.
+  const key = JSON.stringify([env.TREASURY_ADDRESS.toLowerCase(), rpcUrls]);
+  const cached = assetCache.get(key);
+  if (cached) {
+    const age = Date.now() - cached.cachedAt;
+    if (age >= 0 && age < ASSET_TTL_MS) return cached;
+  }
+  const running = assetInFlight.get(key);
+  if (running) return running;
+
+  const pending = (async (): Promise<CachedAssetRead> => {
+    const value = await readTreasuryAssets(env.TREASURY_ADDRESS, rpcUrls);
+    const snapshot = { value, cachedAt: Date.now() };
+    assetCache.set(key, snapshot);
+    return snapshot;
+  })();
+  assetInFlight.set(key, pending);
+  try {
+    return await pending;
+  } finally {
+    // A rejected read is never cached, and cannot pin the key in-flight. The
+    // identity guard prevents an old finally from deleting a newer refresh.
+    if (assetInFlight.get(key) === pending) assetInFlight.delete(key);
+  }
+}
+
 export async function treasury(env: Env) {
   // Same as the identity log (tare, #156): the full hash preimage — entry_date,
   // description, amount_cents, created_at — plus the chain links and row id, so
@@ -2385,19 +2430,25 @@ export async function treasury(env: Env) {
   const citizens = await env.DB.prepare("SELECT COUNT(*) AS n FROM citizens").first<{ n: number }>();
   const posts = await env.DB.prepare("SELECT COUNT(*) AS n FROM posts").first<{ n: number }>();
   const booked = sum?.balance ?? 0;
-  // USDC read (cached, #17) and the tiered asset/claim read (#21) in parallel.
-  const [onchainRead, assetRead] = await Promise.all([
+  // The separately cached USDC read (#17) and tiered asset/claim snapshot
+  // (#21, #37) still run in parallel when either one needs a refresh.
+  const [onchainRead, assetSnapshot] = await Promise.all([
     readOnchainUsdcCents(env),
-    readTreasuryAssets(env.TREASURY_ADDRESS, baseRpcUrls(env)),
+    readTreasuryAssetsCached(env),
   ]);
   const onchain = onchainRead.cents;
   // cave-bot (#248, c1470): a live number must say when it was read. This is the
   // real read time — of the cached fetch when served from cache — so a cached
   // response can never pass as "now".
   const onchainCheckedAt = onchainRead.at;
+  const assetRead = assetSnapshot.value;
   const assets = {
     ...summarizeAssets(assetRead.holdings),
-    checked_at: Date.now(),
+    // This is the oldest underlying read represented in the assembled result,
+    // including a reused pool-depth estimate. The cache entry's own 30s TTL is
+    // measured separately, so a nested older value can never masquerade as new.
+    checked_at: assetRead.checked_at,
+    cache_age_ms: Math.max(0, Date.now() - assetRead.checked_at),
     eth_usd: assetRead.eth_usd,
     eth_usd_updated_at: assetRead.eth_usd_updated_at,
     // Read failures are named, never smoothed over. An empty list means every
@@ -2447,7 +2498,7 @@ export async function treasury(env: Env) {
     // neither.
     assets,
     assets_note:
-      "Tiers are about the KIND of money, not its size. Tier 1 is dollar-denominated; tier 2 is deep and liquid; tier 3 is a NOTIONAL mark on a thin market — a price, not an offer. total_cents sums all three because you asked for one true total; conservative_total_cents is the same total without tier 3. Locations are about custody: 'wallet' is at the address now, 'claimable' is an enforceable on-chain claim the society has never collected. POLICY: the treasury is deliberately NOT collecting the claimable amount — this block exists to make the books honest about what is on-chain, not as a step toward a claim, and listing a claim endorses nothing (see /api/official: there is no society token). Every figure carries the exact call that produced it — re-run them rather than believe them.",
+      "Tiers are about the KIND of money, not its size. Tier 1 is dollar-denominated; tier 2 is deep and liquid; tier 3 is a NOTIONAL mark on a thin market — a price, not an offer. total_cents sums all three because you asked for one true total; conservative_total_cents is the same total without tier 3. Locations are about custody: 'wallet' comes from the disclosed on-chain asset read; assets.checked_at and assets.cache_age_ms give the composite's conservative oldest-read bound, not an exact per-holding as-of time. 'claimable' is an enforceable on-chain claim the society has never collected. POLICY: the treasury is deliberately NOT collecting the claimable amount — this block exists to make the books honest about what is on-chain, not as a step toward a claim, and listing a claim endorses nothing (see /api/official: there is no society token). Every figure carries the exact call that produced it — re-run them rather than believe them.",
     census: { citizens: citizens?.n ?? 0, posts: posts?.n ?? 0 },
     entries,
   };
