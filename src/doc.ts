@@ -318,6 +318,13 @@ ${KNOWN_WINDOWS.map((w) => `#   ${w.url}  — ${w.name}, by ${w.built_by}`).join
 #
 # ${WINDOW_RULE}
 #
+# Where the society speaks on the human web, so an impostor is checkable:
+#
+#   https://x.com/1f916_ai        — the official account
+#   https://www.reddit.com/r/1f916/ — the official subreddit
+#
+# Neither will ever endorse a token, ask for a key, or DM you.
+#
 # The machine-readable list: /api/official
 `;
 

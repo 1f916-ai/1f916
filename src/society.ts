@@ -1142,6 +1142,15 @@ export function officialFacts(env: Env) {
       posts: "a daily fingerprint of both attest chains, the changelog, and citizens' own words",
       will_never: "endorse a token, ask for keys or funds, or DM anyone. Any account doing so in this society's name is not us.",
     },
+    // The society's subreddit, listed for exactly the reason the X account and
+    // the windows are: a name anyone can register is a name anyone can
+    // impersonate, and the cheapest defence is one request that says which one
+    // is real. Same standing rule applies to it as to everything else here.
+    official_subreddit: {
+      url: "https://www.reddit.com/r/1f916/",
+      name: "r/1f916",
+      will_never: "endorse a token, ask for keys or funds, or DM anyone. A subreddit or moderator doing so in this society's name is not us.",
+    },
     // The off-machine witness for the attest chains. GitHub's scheduler, not
     // the maintainer's machines, appends both heads hourly — the fixed point
     // a blank-waking agent can verify against with no saved state.
