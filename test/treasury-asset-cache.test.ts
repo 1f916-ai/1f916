@@ -8,6 +8,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { SELECTORS } from "../src/assets.ts";
 import { treasury, type Env } from "../src/society.ts";
 
 const TREASURY = "0x0000000000000000000000000000000000000037";
@@ -33,15 +34,36 @@ function stubEnv(
   return { DB: db, TREASURY_ADDRESS: treasuryAddress, BASE_RPC_URL: rpcUrl } as unknown as Env;
 }
 
-function assetBatchResponse(payload: { id: number }[], now: number): Response {
+type AssetRpcRequest = { id: number; params?: [{ data: string }, "latest"] };
+
+function assetBatchResponse(payload: AssetRpcRequest[], now: number): Response {
   const zero = "0x" + word(0n);
   // A positive Chainlink answer and a 1:1 pool sqrt price keep the fixture
   // complete while every balance/claim remains zero (and avoids the depth walk).
   const roundData =
     "0x" + [0n, 2_000n * 100_000_000n, 0n, BigInt(Math.floor(now / 1000)), 0n].map(word).join("");
-  const sqrtPriceX96 = "0x" + word(1n << 96n);
+  const slot0 = "0x" + [1n << 96n, 0n, 0n, 3_000n].map(word).join("");
+  const collectFees = "0x" + word(0n) + word(0n);
   return Response.json(
-    payload.map(({ id }) => ({ id, result: id === 2 ? roundData : id === 3 ? sqrtPriceX96 : zero })),
+    payload.map(({ id, params }) => {
+      const data = params?.[0].data;
+      const result = data
+        ? data === SELECTORS.latestRoundData
+          ? roundData
+          : data.startsWith(SELECTORS.getSlot0)
+            ? slot0
+            : data.startsWith(SELECTORS.collectFees)
+              ? collectFees
+              : zero
+        : id === 2
+          ? roundData
+          : id === 3
+            ? slot0
+            : id === 10
+              ? collectFees
+              : zero;
+      return { id, result };
+    }),
   );
 }
 
@@ -51,6 +73,7 @@ test("treasury asset reads cache, coalesce, and disclose their age", async () =>
   const startedAt = 1_700_000_000_000;
   let now = startedAt;
   let assetBatchFetches = 0;
+  let degradedOutage = false;
   let brokenRpc = true;
   let releaseFirstBatch: (response: Response) => void = () => {};
   const firstBatch = new Promise<Response>((resolve) => {
@@ -65,15 +88,13 @@ test("treasury asset reads cache, coalesce, and disclose their age", async () =>
     if (Array.isArray(payload)) {
       assetBatchFetches++;
       if (assetBatchFetches === 1) return firstBatch;
-      // One valid row makes batchCall accept this degraded provider response;
-      // the resolved AssetReadResult then carries explicit errors/nulls.
-      if (String(input) === "https://degraded.rpc") {
-        return Response.json([{ id: 0, result: "0x" + word(0n) }]);
-      }
+      // Keep every provider unavailable for this scenario. The complete-batch
+      // reader will exhaust its hole-filling passes and resolve honest nulls.
+      if (degradedOutage) return Response.json([]);
       if (String(input) === "https://broken.rpc" && brokenRpc) {
         return Response.json([{ id: 0, result: "0xnot-hex" }]);
       }
-      return assetBatchResponse(payload as { id: number }[], now);
+      return assetBatchResponse(payload as AssetRpcRequest[], now);
     }
     // The separate onchain_cents read is not the asset batch under test.
     return Response.json({ jsonrpc: "2.0", id: 1, result: "0x" + word(0n) });
@@ -123,23 +144,29 @@ test("treasury asset reads cache, coalesce, and disclose their age", async () =>
     // Cache that too: otherwise an outage reopens the amplification path at its
     // most expensive moment, when every request walks the fallback list.
     const degradedEnv = stubEnv("0x0000000000000000000000000000000000000039", "https://degraded.rpc");
+    const beforeDegraded = assetBatchFetches;
+    degradedOutage = true;
     const degraded = await treasury(degradedEnv);
+    degradedOutage = false;
     assert.ok(degraded.assets.errors.length > 0);
-    assert.equal(assetBatchFetches, 4);
+    const afterDegraded = assetBatchFetches;
+    assert.ok(afterDegraded > beforeDegraded, "the simulated outage should exercise provider fallbacks");
     now += 250;
     const degradedHit = await treasury(degradedEnv);
-    assert.equal(assetBatchFetches, 4, "a resolved degraded read is cached inside the TTL");
+    assert.equal(assetBatchFetches, afterDegraded, "a resolved degraded read is cached inside the TTL");
     assert.deepEqual(degradedHit.assets.errors, degraded.assets.errors);
     assert.equal(degradedHit.assets.cache_age_ms, 250);
 
     // An unexpected parser failure is different: do not cache a rejection, and
     // always clear its in-flight slot so a healthy next attempt can recover.
     const brokenEnv = stubEnv("0x0000000000000000000000000000000000000040", "https://broken.rpc");
+    const beforeBroken = assetBatchFetches;
     await assert.rejects(treasury(brokenEnv), /BigInt|convert/i);
-    assert.equal(assetBatchFetches, 5);
+    const afterBroken = assetBatchFetches;
+    assert.ok(afterBroken > beforeBroken, "the malformed provider result should reach the parser");
     brokenRpc = false;
     const recovered = await treasury(brokenEnv);
-    assert.equal(assetBatchFetches, 6, "a rejected refresh must not poison the cache or in-flight map");
+    assert.equal(assetBatchFetches, afterBroken + 1, "a rejected refresh must not poison the cache or in-flight map");
     assert.deepEqual(recovered.assets.errors, []);
   } finally {
     // Safe even when already resolved; prevents a failed assertion from leaving
