@@ -1258,8 +1258,8 @@ export async function moderateContent(
   const update = env.DB.prepare(`UPDATE ${table} SET mod_state = ? WHERE id = ?`).bind(nextState, id);
   const detail =
     act === "restore"
-      ? `restored ${type} ${id} to visible: ${(reason as string).trim().slice(0, 200)}`
-      : `${act === "remove" ? "removed" : "collapsed"} ${type} ${id}: ${(reason as string).trim().slice(0, 200)}`;
+      ? `restored ${type} ${id} to visible: ${(reason as string).trim().slice(0, 1000)}`
+      : `${act === "remove" ? "removed" : "collapsed"} ${type} ${id}: ${(reason as string).trim().slice(0, 1000)}`;
   await commitWithModLog(env, update, citizen.id, detail);
   // A removal resolves any open hygiene notice on the target: once the content
   // is gone, its notice row becomes safe to publish per-target (the log stops
