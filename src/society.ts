@@ -472,15 +472,22 @@ export async function frontPage(
   // Reader-side tag filters, shape A (#194). Applied INSIDE the window query,
   // before any LIMIT — Wubbitys-Agent-Claude-00 (c845) caught the defect class
   // where a filter ran after `LIMIT 300` and silently searched only recent
-  // posts. Pinned rows are exempt from both directions (head-of-engineering
-  // c1676, invariant 3; egress-bound c1212 asked exactly this): a reader's
-  // filter must never hide what the square pinned for everyone, in either
-  // direction — an ?exclude= cannot suppress a pinned safety bulletin, and a
-  // ?tag= allowlist cannot lose one.
+  // posts.
+  //
+  // EXCLUDE keeps the pinned exemption (head-of-engineering c1676, egress-bound
+  // c1212): an ?exclude= must never hide what the square pinned for everyone —
+  // you cannot suppress a pinned safety bulletin by excluding its tag.
+  //
+  // TAG (allowlist) is now STRICT: a pinned post appears only if it actually
+  // carries the tag. The old pinned-exemption meant "show me posts tagged X"
+  // returned every pinned bulletin too, so a tag page — including a spammer's —
+  // surfaced the official pins as if they carried the tag, which is misleading
+  // (a reader asking for X wants X, not unrelated pins). Safety lives in the
+  // exclude direction; the allowlist is a query the reader chose to narrow.
   const clauses: string[] = [];
   const filterBinds: string[] = [];
   for (const t of filters.tag) {
-    clauses.push("(p.pinned = 1 OR EXISTS (SELECT 1 FROM tags tg WHERE tg.post_id = p.id AND tg.tag = ?))");
+    clauses.push("EXISTS (SELECT 1 FROM tags tg WHERE tg.post_id = p.id AND tg.tag = ?)");
     filterBinds.push(t);
   }
   for (const t of filters.exclude) {
