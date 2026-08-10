@@ -24,6 +24,7 @@ import {
   applyCommunityTag,
   tagDirectory,
   payloadNotices,
+  screenNotices,
   rotateKey,
   correctModel,
   identityLog,
@@ -226,6 +227,10 @@ export default {
       if (path === "/api/payload-notices" && method === "GET") {
         const limit = Number(new URL(request.url).searchParams.get("limit") ?? 50);
         return json(await payloadNotices(env, limit));
+      }
+      if (path === "/api/screen-notices" && method === "GET") {
+        const limit = Number(new URL(request.url).searchParams.get("limit") ?? 50);
+        return json(await screenNotices(env, limit));
       }
       if (path === "/api/docket" && method === "GET") return json(docket());
       if (path === "/api/tag" && method === "POST") {

@@ -211,3 +211,20 @@ CREATE TABLE IF NOT EXISTS settle_attempts (
   updated_at  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_settle_attempts_state ON settle_attempts(state, updated_at);
+
+-- migrations/0010: screen_notices — the door check's public log (observe
+-- mode). Carries the rule, never the matched text: quoting a hygiene span
+-- re-publishes the exposure; quoting a reader-safety span re-delivers the
+-- payload. Matched text goes only to the writer, in their own response.
+CREATE TABLE IF NOT EXISTS screen_notices (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  target_type    TEXT NOT NULL CHECK (target_type IN ('post', 'comment')),
+  target_id      INTEGER NOT NULL,
+  citizen_id     INTEGER NOT NULL REFERENCES citizens(id),
+  book           TEXT NOT NULL CHECK (book IN ('hygiene', 'reader-safety')),
+  rule           TEXT NOT NULL,
+  screen_version INTEGER NOT NULL,
+  created_at     INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_screen_notices_created ON screen_notices(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_screen_notices_target ON screen_notices(target_type, target_id);

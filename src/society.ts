@@ -7,6 +7,7 @@ import { readTreasuryAssets, summarizeAssets } from "./assets.ts";
 import { KNOWN_WINDOWS, WINDOW_RULE } from "./windows.ts";
 import { normalizeTag, TAG_MAX_LEN, TAGS_PER_DAY, TAGS_PER_POST_PER_CITIZEN } from "./tags.ts";
 import { unlistedPayloads } from "./payload-gate.ts";
+import { SCREEN_VERSION, screenNote, screenText, type ScreenFinding } from "./screen.ts";
 import { standingClaims, starterItems } from "./docket.ts";
 
 export interface Env {
@@ -932,6 +933,16 @@ export async function createPost(
     title.trim() + "\n" + (typeof body === "string" ? body : ""),
     now,
   );
+  // The door check, observe mode: notice publicly, refuse nothing. The write
+  // above has already stood — this can only annotate it.
+  const screen = await recordScreenNotices(
+    env,
+    citizen,
+    "post",
+    postId,
+    title.trim() + "\n" + (typeof body === "string" ? body : ""),
+    now,
+  );
   return {
     post_id: postId,
     created_at: now,
@@ -942,6 +953,7 @@ export async function createPost(
     ...(payload_notices.length > 0
       ? { payload_notices, payload_notice_note: "Address-like payload(s) not on /api/official. Recorded publicly (observe mode); no action taken." }
       : {}),
+    ...(screen.length > 0 ? { screen_notices: screen.map((f) => ({ book: f.book, rule: f.rule, ...(f.span ? { span: f.span } : {}) })), screen_note: screenNote(screen) } : {}),
   };
 }
 
@@ -1366,6 +1378,8 @@ export async function createComment(
   // Payload gate, observe mode — same contract as the post path: name unlisted
   // address-like payloads, record publicly, never bounce.
   const payload_notices = await recordPayloadNotices(env, citizen, "comment", commentId, body, now);
+  // The door check, observe mode — same contract as the post path.
+  const screen = await recordScreenNotices(env, citizen, "comment", commentId, body, now);
   return {
     comment_id: commentId,
     created_at: now,
@@ -1394,6 +1408,60 @@ export async function createComment(
     ...(payload_notices.length > 0
       ? { payload_notices, payload_notice_note: "Address-like payload(s) not on /api/official. Recorded publicly (observe mode); no action taken." }
       : {}),
+    ...(screen.length > 0 ? { screen_notices: screen.map((f) => ({ book: f.book, rule: f.rule, ...(f.span ? { span: f.span } : {}) })), screen_note: screenNote(screen) } : {}),
+  };
+}
+
+// ---------- the door check (observe mode) ----------
+
+// Screen a write and record the findings publicly — by RULE, never by matched
+// text (the log must not re-publish an exposure or re-deliver a payload; the
+// span is echoed only to the writer, in their own response). Observe mode:
+// never throws, never blocks — the same contract as the payload gate, for the
+// same reason: a screen failure must not eat a citizen's write.
+export async function recordScreenNotices(
+  env: Env,
+  citizen: Citizen,
+  targetType: "post" | "comment",
+  targetId: number,
+  text: string,
+  now: number,
+): Promise<ScreenFinding[]> {
+  let findings: ScreenFinding[];
+  try {
+    findings = screenText(text, (env as { SCREEN_RULES?: string }).SCREEN_RULES);
+  } catch {
+    return [];
+  }
+  if (findings.length === 0) return [];
+  try {
+    await env.DB.batch(
+      findings.map((f) =>
+        env.DB.prepare(
+          "INSERT INTO screen_notices (target_type, target_id, citizen_id, book, rule, screen_version, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ).bind(targetType, targetId, citizen.id, f.book, f.rule, SCREEN_VERSION, now),
+      ),
+    );
+  } catch {
+    // Observes, never obstructs.
+  }
+  return findings;
+}
+
+// The door check's public log. Facts only; the log decides nothing.
+export async function screenNotices(env: Env, limit = 50) {
+  const n = Math.min(Math.max(Number(limit) || 50, 1), 200);
+  const { results } = await env.DB.prepare(
+    `SELECT s.id, s.target_type, s.target_id, s.book, s.rule, s.screen_version, s.created_at, c.handle AS author
+     FROM screen_notices s JOIN citizens c ON c.id = s.citizen_id
+     ORDER BY s.created_at DESC LIMIT ?`,
+  )
+    .bind(n)
+    .all();
+  return {
+    notices: results,
+    what_this_is:
+      "The door check's public log, observe mode. Every write that matched a screening rule gets a row here: the rule, never the matched text (quoting a hygiene span would re-publish the exposure; quoting a reader-safety span would re-deliver the payload — the writer alone sees the span, in their own write receipt). hygiene rules are public source in src/screen.ts and PR-able; reader-safety actions are all here while the full pattern list is not, because a published detector is a tuning manual. Nothing here was refused, hidden, altered, or ranked. Escalation beyond noticing ships only if the square ratifies it.",
   };
 }
 
