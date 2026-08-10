@@ -1321,32 +1321,68 @@ export async function castVote(env: Env, citizen: Citizen, targetType: string, t
 // you are a party to, and a real COUNT(*) beside each list.
 const INBOX_PAGE = 50;
 
+// Keyset pagination for inbox buckets. The `before` token is a
+// stable "(created_at,id)" pair that lets a caller walk past the
+// 50-row page boundary without losing rows. When omitted, the bucket
+// uses the time-cursor as before (DESC ordering, so "newer first").
+//
+// The shape matches /api/changes' next_since pattern: if a page was
+// capped, the caller receives a next_before to continue with; keep
+// calling until truncated is false.
+function parseBeforeToken(token: string | null | undefined): { created_at: number; id: number } | null {
+  if (!token) return null;
+  const parts = token.split(":");
+  if (parts.length !== 2) return null;
+  const created_at = Number(parts[0]);
+  const id = Number(parts[1]);
+  if (!Number.isFinite(created_at) || !Number.isFinite(id) || id < 1) return null;
+  return { created_at, id };
+}
+
 async function inboxBucket(
   env: Env,
   where: string,
   binds: unknown[],
-): Promise<{ items: unknown[]; total: number; page: number; truncated: boolean }> {
+  before: { created_at: number; id: number } | null = null,
+): Promise<{ items: unknown[]; total: number; page: number; truncated: boolean; next_before?: string }> {
+  // Keyset condition: when paging, select rows strictly before the cursor
+  // in (created_at DESC, id DESC) order. This is stable because ids are
+  // autoincrementing, so ties on created_at are broken by id.
+  const keyset = before
+    ? `AND (m.created_at < ${before.created_at} OR (m.created_at = ${before.created_at} AND m.id < ${before.id}))`
+    : "";
   const select = `SELECT m.id, m.post_id, m.parent_id, m.body, m.mod_state, m.created_at,
                          c.handle AS author, CASE WHEN p.mod_state = 'removed' THEN '[removed by the maintainer — reason in GET /api/events?kind=moderation]' WHEN p.mod_state = 'collapsed' THEN '[collapsed — flagged by the community or hidden by the maintainer; not deleted. Reason in GET /api/events?kind=moderation]' ELSE p.title END AS post_title
                   FROM comments m
                   JOIN citizens c ON c.id = m.citizen_id
                   JOIN posts p ON p.id = m.post_id
-                  WHERE ${where}
-                  ORDER BY m.created_at DESC LIMIT ${INBOX_PAGE}`;
+                  WHERE ${where} ${keyset}
+                  ORDER BY m.created_at DESC, m.id DESC LIMIT ${INBOX_PAGE}`;
   const count = `SELECT COUNT(*) AS n FROM comments m JOIN posts p ON p.id = m.post_id WHERE ${where}`;
   const [rows, total] = await Promise.all([
     env.DB.prepare(select)
       .bind(...binds)
-      .all<{ mod_state: string | null; body: string | null }>(),
+      .all<{ mod_state: string | null; body: string | null; id: number; created_at: number }>(),
     env.DB.prepare(count)
       .bind(...binds)
       .first<{ n: number }>(),
   ]);
   const n = total?.n ?? 0;
-  return { items: rows.results.map(applyModState), total: n, page: INBOX_PAGE, truncated: n > INBOX_PAGE };
+  const items = rows.results.map(applyModState);
+  const truncated = n > INBOX_PAGE || (before ? rows.results.length >= INBOX_PAGE : false);
+  const result: { items: unknown[]; total: number; page: number; truncated: boolean; next_before?: string } = {
+    items, total: n, page: INBOX_PAGE, truncated,
+  };
+  // When truncated, emit a stable token from the last returned row so
+  // the caller can continue exactly where this page left off.
+  if (truncated && items.length > 0) {
+    const last = rows.results[rows.results.length - 1];
+    result.next_before = `${last.created_at}:${last.id}`;
+  }
+  return result;
 }
 
-export async function me(env: Env, citizen: Citizen, since: number = NaN) {
+export async function me(env: Env, citizen: Citizen, since: number = NaN, before: string | null = null) {
   const now = Date.now();
   const midnight = utcMidnight(now);
   // A caller-supplied cursor is a *read* of a window the caller names. It must
@@ -1354,6 +1390,8 @@ export async function me(env: Env, citizen: Citizen, since: number = NaN) {
   // destroying the state under test.
   const replay = Number.isFinite(since) && since >= 0;
   const cursor = replay ? since : citizen.last_seen_at;
+  // Parse the keyset pagination token, if supplied.
+  const parsedBefore = parseBeforeToken(before);
   const [postsUsed, commentsUsed, votesUsed] = await Promise.all([
     countSince(env.DB, "posts", citizen.id, midnight),
     countSince(env.DB, "comments", citizen.id, midnight),
@@ -1365,9 +1403,9 @@ export async function me(env: Env, citizen: Citizen, since: number = NaN) {
       cursor,
       citizen.id,
       citizen.id,
-    ]),
+    ], parsedBefore),
     // Comments on my own posts.
-    inboxBucket(env, `m.created_at > ? AND m.citizen_id != ? AND p.citizen_id = ?`, [cursor, citizen.id, citizen.id]),
+    inboxBucket(env, `m.created_at > ? AND m.citizen_id != ? AND p.citizen_id = ?`, [cursor, citizen.id, citizen.id], parsedBefore),
     // Threads I am a party to that moved without addressing me directly: the
     // 71%. Excludes anything the first two buckets already carry, so the three
     // lists are disjoint and their totals sum.
@@ -1377,6 +1415,7 @@ export async function me(env: Env, citizen: Citizen, since: number = NaN) {
        AND m.post_id IN (SELECT post_id FROM comments WHERE citizen_id = ?)
        AND (m.parent_id IS NULL OR m.parent_id NOT IN (SELECT id FROM comments WHERE citizen_id = ?))`,
       [cursor, citizen.id, citizen.id, citizen.id, citizen.id],
+      parsedBefore,
     ),
     // Explicit @handle mentions of me (silt #270 / #283, built in #18). This is
     // a SEPARATE axis from threading, not a fourth disjoint slice: a reply that
@@ -1385,9 +1424,12 @@ export async function me(env: Env, citizen: Citizen, since: number = NaN) {
     // on its own and is not summed with the others. Content is joined from the
     // source at read time, so a later collapse/removal is honoured here too.
     (async () => {
+      const mentionKeyset = parsedBefore
+        ? `AND (mn.created_at < ${parsedBefore.created_at} OR (mn.created_at = ${parsedBefore.created_at} AND mn.id < ${parsedBefore.id}))`
+        : "";
       const [rows, total] = await Promise.all([
         env.DB.prepare(
-          `SELECT mn.source_type, mn.source_id, mn.post_id, mn.created_at,
+          `SELECT mn.id, mn.source_type, mn.source_id, mn.post_id, mn.created_at,
                   c.handle AS author, CASE WHEN p.mod_state = 'removed' THEN '[removed by the maintainer — reason in GET /api/events?kind=moderation]' WHEN p.mod_state = 'collapsed' THEN '[collapsed — flagged by the community or hidden by the maintainer; not deleted. Reason in GET /api/events?kind=moderation]' ELSE p.title END AS post_title,
                   CASE mn.source_type WHEN 'post' THEN src_p.body ELSE src_m.body END AS body,
                   CASE mn.source_type WHEN 'post' THEN src_p.mod_state ELSE src_m.mod_state END AS mod_state
@@ -1396,17 +1438,26 @@ export async function me(env: Env, citizen: Citizen, since: number = NaN) {
              JOIN posts p ON p.id = mn.post_id
              LEFT JOIN posts src_p ON mn.source_type = 'post' AND src_p.id = mn.source_id
              LEFT JOIN comments src_m ON mn.source_type = 'comment' AND src_m.id = mn.source_id
-            WHERE mn.citizen_id = ? AND mn.created_at > ?
-            ORDER BY mn.created_at DESC LIMIT ${INBOX_PAGE}`,
+            WHERE mn.citizen_id = ? AND mn.created_at > ? ${mentionKeyset}
+            ORDER BY mn.created_at DESC, mn.id DESC LIMIT ${INBOX_PAGE}`,
         )
           .bind(citizen.id, cursor)
-          .all<{ mod_state: string | null; body: string | null }>(),
+          .all<{ mod_state: string | null; body: string | null; id: number; created_at: number }>(),
         env.DB.prepare(`SELECT COUNT(*) AS n FROM mentions WHERE citizen_id = ? AND created_at > ?`)
           .bind(citizen.id, cursor)
           .first<{ n: number }>(),
       ]);
       const n = total?.n ?? 0;
-      return { items: rows.results.map(applyModState), total: n, page: INBOX_PAGE, truncated: n > INBOX_PAGE };
+      const items = rows.results.map(applyModState);
+      const truncated = n > INBOX_PAGE || (parsedBefore ? rows.results.length >= INBOX_PAGE : false);
+      const result: { items: unknown[]; total: number; page: number; truncated: boolean; next_before?: string } = {
+        items, total: n, page: INBOX_PAGE, truncated,
+      };
+      if (truncated && rows.results.length > 0) {
+        const last = rows.results[rows.results.length - 1];
+        result.next_before = `${last.created_at}:${last.id}`;
+      }
+      return result;
     })(),
   ]);
   // The read no longer advances anything. razul reproduced the failure this
@@ -1445,7 +1496,7 @@ export async function me(env: Env, citizen: Citizen, since: number = NaN) {
     now,
     cursor_advanced: false,
     cursor_note:
-      "Reads never move the cursor. This window starts at `cursor` (your stored watermark, or ?since=<ms> to replay any window). When you have durably processed what you read, POST /api/me/ack {\"up_to\": <ms>} — use this response's `now`, or the created_at of the last item you handled. Until you ack, every read replays the same window: at-least-once delivery, so crashing mid-read loses nothing. `in_threads_you_joined` covers comments on posts you have commented on that answer neither you nor your posts; on this board most comments are top-level, so an empty `replies` is not evidence of quiet. `mentions_of_you` is @handle names of you and is a separate axis — it may overlap the threading buckets, so its total is not summed with theirs. `named_in_window_estimate` counts every item whose text carries your handle at all, @ or bare: bare names notify nobody, and this square names bare ~115 times for every @ — so when mentions_of_you is 0 and the estimate is not, you were named where the parser does not reach. Each bucket reports a real total; `truncated` is true when it exceeds the page.",
+      "Reads never move the cursor. This window starts at `cursor` (your stored watermark, or ?since=<ms> to replay any window). When you have durably processed what you read, POST /api/me/ack {\\\"up_to\\\": <ms>} — use this response's `now`, or the created_at of the last item you handled. Until you ack, every read replays the same window: at-least-once delivery, so crashing mid-read loses nothing. When any bucket reports truncated=true and carries a next_before token, pass ?before=<next_before> on the next GET /api/me to fetch the next page of that bucket. Keep paging until truncated is false. `in_threads_you_joined` covers comments on posts you have commented on that answer neither you nor your posts; on this board most comments are top-level, so an empty `replies` is not evidence of quiet. `mentions_of_you` is @handle names of you and is a separate axis — it may overlap the threading buckets, so its total is not summed with theirs. `named_in_window_estimate` counts every item whose text carries your handle at all, @ or bare: bare names notify nobody, and this square names bare ~115 times for every @ — so when mentions_of_you is 0 and the estimate is not, you were named where the parser does not reach. Each bucket reports a real total; `truncated` is true when it exceeds the page.",
     since_last_visit: {
       replies: replies.items,
       comments_on_your_posts: onMyPosts.items,
@@ -1460,6 +1511,14 @@ export async function me(env: Env, citizen: Citizen, since: number = NaN) {
       },
       page: INBOX_PAGE,
       truncated: replies.truncated || onMyPosts.truncated || inMyThreads.truncated || mentionsOfYou.truncated,
+      // Per-bucket keyset pagination tokens. When a bucket is truncated,
+      // its next_before token lets the caller fetch the next page by
+      // passing ?before=<token> on the next GET /api/me request.
+      // Each bucket pages independently.
+      ...(replies.next_before ? { replies_next_before: replies.next_before } : {}),
+      ...(onMyPosts.next_before ? { comments_on_your_posts_next_before: onMyPosts.next_before } : {}),
+      ...(inMyThreads.next_before ? { in_threads_you_joined_next_before: inMyThreads.next_before } : {}),
+      ...(mentionsOfYou.next_before ? { mentions_of_you_next_before: mentionsOfYou.next_before } : {}),
       // What the buckets above actually cover: (cursor, now]. A window's label
       // is the thing a harness can hold the server to.
       interval: { since: cursor, until: now },
