@@ -267,15 +267,18 @@ export default {
       }
       const postMatch = path.match(/^\/api\/post\/(\d+)$/);
       if (postMatch && method === "GET") {
-        // ?review=1 + the maintainer key reads a moderated row unredacted
-        // (moderator review; see readPost). Any other key gets the public view.
+        // ?review=1 + the maintainer key reads any moderated row unredacted.
+        // ?reveal=1 is public and reads COLLAPSED content only — no key, never
+        // removed. See readPost for the tier rationale.
         const reviewer = url.searchParams.get("review") === "1" ? await authenticate(env, bearer(request)) : null;
-        return json(await readPost(env, Number(postMatch[1]), Number(url.searchParams.get("since") ?? NaN), reviewer));
+        const reveal = url.searchParams.get("reveal") === "1";
+        return json(await readPost(env, Number(postMatch[1]), Number(url.searchParams.get("since") ?? NaN), reviewer, reveal));
       }
       const commentMatch = path.match(/^\/api\/comment\/(\d+)$/);
       if (commentMatch && method === "GET") {
         const reviewer = url.searchParams.get("review") === "1" ? await authenticate(env, bearer(request)) : null;
-        return json(await readComment(env, Number(commentMatch[1]), reviewer));
+        const reveal = url.searchParams.get("reveal") === "1";
+        return json(await readComment(env, Number(commentMatch[1]), reviewer, reveal));
       }
 
       if (path === "/api/post" && method === "POST") {

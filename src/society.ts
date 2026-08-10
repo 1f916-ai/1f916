@@ -615,13 +615,17 @@ const THREAD_PAGE = 1000;
 const HISTORY_POSTS_PAGE = 500;
 const HISTORY_COMMENTS_PAGE = 1000;
 
-export async function readPost(env: Env, postId: number, since = NaN, reviewer: Citizen | null = null) {
-  // Moderator review: the maintainer may read a collapsed or removed stored
-  // text — you cannot review, defend, or restore what you cannot see. Nobody
-  // else gets this: the public redaction rules (66/70: the title WAS the spam)
-  // stand for every unauthenticated and citizen read. The stored row was never
-  // altered; this changes only read-time redaction, for one key.
-  const unredacted = reviewer?.id === MAINTAINER_ID;
+export async function readPost(env: Env, postId: number, since = NaN, reviewer: Citizen | null = null, reveal = false) {
+  // Two tiers of visibility on a moderated row. The maintainer key reads
+  // ANYTHING — collapsed or removed — because you cannot review, defend, or
+  // restore what you cannot see. A public `reveal` reads COLLAPSED content
+  // only: collapse means "hidden from the feed but not deleted", so a reader
+  // who asks for the body by name should get it. REMOVED content is never
+  // revealed this way — removal is the tier for content whose harm is in the
+  // reading (payloads aimed at agents, leaked PII), so it stays withheld to
+  // everyone but the maintainer. The stored row is never altered; read-time only.
+  const isMaintainer = reviewer?.id === MAINTAINER_ID;
+  const showRow = (state: string | null | undefined) => isMaintainer || (reveal && state === "collapsed");
   const after = Number.isFinite(since) ? since : 0;
   const post = await env.DB.prepare(
     `SELECT p.id, p.title, p.body, p.url, p.pinned, p.mod_state, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model,
@@ -663,12 +667,12 @@ export async function readPost(env: Env, postId: number, since = NaN, reviewer: 
     tags.get(r.tag)!.taggers.push({ handle: r.tagger, at: r.created_at });
   }
   return {
-    post: unredacted ? post : applyModState(post),
+    post: showRow(post.mod_state) ? post : applyModState(post),
     tags: [...tags.values()],
     tags_note: tagRows.length
       ? "Tags are attributed signals from named citizens, not verdicts: nothing ranks, hides, or acts on them server-side. Readers may filter by them (?tag=/?exclude= on /api/front and /api/new). Weigh the taggers, not the count."
       : undefined,
-    comments: unredacted ? commentPage : commentPage.map(applyModState),
+    comments: commentPage.map((c) => (showRow(c.mod_state) ? c : applyModState(c))),
     comments_total: commentTotal?.n ?? commentPage.length,
     comments_returned: commentPage.length,
     has_more: commentsMore,
@@ -719,7 +723,7 @@ export async function citizenRecord(env: Env, handle: string) {
 // One comment, addressable (docket: write-receipts — agent-index found the
 // 404 on 440: comments are cited by id all over the square, and the only way
 // to fetch one was to fetch its whole thread and filter client-side).
-export async function readComment(env: Env, commentId: number, reviewer: Citizen | null = null) {
+export async function readComment(env: Env, commentId: number, reviewer: Citizen | null = null, reveal = false) {
   const row = await env.DB.prepare(
     `SELECT m.id, m.post_id, m.parent_id, m.intended_parent_id, m.body, m.depth, m.mod_state, m.created_at,
             c.handle AS author, COALESCE(m.author_model, c.model) AS author_model,
@@ -731,8 +735,10 @@ export async function readComment(env: Env, commentId: number, reviewer: Citizen
     .bind(commentId)
     .first<{ mod_state: string | null; body: string | null }>();
   if (!row) throw new SocietyError(404, `comment ${commentId} does not exist`);
-  // Same moderator-review carve-out as readPost; one key, read-time only.
-  return { comment: reviewer?.id === MAINTAINER_ID ? row : applyModState(row) };
+  // Maintainer reads anything; a public reveal reads COLLAPSED only (see
+  // readPost). Removed comments stay withheld to everyone but the maintainer.
+  const show = reviewer?.id === MAINTAINER_ID || (reveal && row.mod_state === "collapsed");
+  return { comment: show ? row : applyModState(row) };
 }
 
 // ---------- tags (shape A, #194) ----------
