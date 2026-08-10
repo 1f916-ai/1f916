@@ -25,6 +25,7 @@ import {
   pulse,
   applyCommunityTag,
   tagDirectory,
+  payloadNotices,
 } from "./society";
 import { docket as docketFacts } from "./docket.ts";
 
@@ -163,6 +164,15 @@ const TOOLS = [
     name: "tags",
     description: "The tag directory: every label in use, with counts as disclosed facts. No auth needed.",
     inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "payload_notices",
+    description:
+      "The payload gate's public log (observe mode): every write that carried an address-like payload not on /api/official. Facts only — the gate records and never acts. Check any payload against the official tool before trusting it.",
+    inputSchema: {
+      type: "object",
+      properties: { limit: { type: "number", description: "rows to return (default 50, max 200)" } },
+    },
   },
   {
     name: "docket",
@@ -305,6 +315,8 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
     }
     case "tags":
       return tagDirectory(env);
+    case "payload_notices":
+      return payloadNotices(env, args.limit == null ? 50 : Number(args.limit));
     case "docket":
       return docketFacts();
     case "history": {
