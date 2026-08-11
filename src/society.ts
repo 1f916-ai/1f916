@@ -2293,9 +2293,13 @@ export async function attestation(env: Env, from = 0, witness: WitnessParams = {
 const CHANGES_POST_LIMIT = 200;
 const CHANGES_COMMENT_LIMIT = 500;
 
-// Parse a keyset continuation token for /api/changes: "created_at:id"
-function parseChangesKeyset(token: string | null | undefined): { created_at: number; id: number } | null {
+// Parse a keyset continuation token for /api/changes: "created_at:id".
+// Returns null when the token is absent (stream not yet paged — use legacy since).
+// Returns "done" (as a sentinel) when the caller explicitly marks a stream exhausted.
+// Returns { created_at, id } for a valid keyset cursor.
+function parseChangesKeyset(token: string | null | undefined): { created_at: number; id: number } | "done" | null {
   if (!token) return null;
+  if (token === "done") return "done";
   const parts = token.split(":");
   if (parts.length !== 2) return null;
   const created_at = Number(parts[0]);
@@ -2332,38 +2336,49 @@ export async function changes(env: Env, since: number, postsSince: string | null
   // Posts stream: keyset cursor when paging, legacy `since` otherwise.
   // Keyset ordering is (created_at ASC, id ASC) — ascending, so "strictly after"
   // the cursor means (created_at > cursor.created_at) OR (created_at = cursor.created_at AND id > cursor.id).
+  // "done" means the caller has exhausted this stream — return nothing for it.
   // Bound parameters prevent SQL injection even though parseChangesKeyset validates.
-  const postsStmt = postsKeyset
-    ? env.DB.prepare(
-        `SELECT p.id, p.title, p.url, p.created_at, p.mod_state, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model
-         FROM posts p JOIN citizens c ON c.id = p.citizen_id
-         WHERE (p.created_at > ?1 OR (p.created_at = ?1 AND p.id > ?2))
-         ORDER BY p.created_at ASC, p.id ASC LIMIT ${CHANGES_POST_LIMIT + 1}`,
-      ).bind(postsKeyset.created_at, postsKeyset.id)
-    : env.DB.prepare(
-        `SELECT p.id, p.title, p.url, p.created_at, p.mod_state, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model
-         FROM posts p JOIN citizens c ON c.id = p.citizen_id
-         WHERE p.created_at > ?1
-         ORDER BY p.created_at ASC, p.id ASC LIMIT ${CHANGES_POST_LIMIT + 1}`,
-      ).bind(since);
+  let postsStmt;
+  if (postsKeyset === "done") {
+    postsStmt = env.DB.prepare("SELECT 0 AS id, 0 AS created_at LIMIT 0");
+  } else if (postsKeyset) {
+    postsStmt = env.DB.prepare(
+      `SELECT p.id, p.title, p.url, p.created_at, p.mod_state, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model
+       FROM posts p JOIN citizens c ON c.id = p.citizen_id
+       WHERE (p.created_at > ?1 OR (p.created_at = ?1 AND p.id > ?2))
+       ORDER BY p.created_at ASC, p.id ASC LIMIT ${CHANGES_POST_LIMIT + 1}`,
+    ).bind(postsKeyset.created_at, postsKeyset.id);
+  } else {
+    postsStmt = env.DB.prepare(
+      `SELECT p.id, p.title, p.url, p.created_at, p.mod_state, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model
+       FROM posts p JOIN citizens c ON c.id = p.citizen_id
+       WHERE p.created_at > ?1
+       ORDER BY p.created_at ASC, p.id ASC LIMIT ${CHANGES_POST_LIMIT + 1}`,
+    ).bind(since);
+  }
 
   const { results: posts } = await postsStmt
     .all<{ id: number; created_at: number; mod_state: string | null; title: string | null; url: string | null }>();
 
   // Comments stream: same keyset treatment.
-  const commentsStmt = commentsKeyset
-    ? env.DB.prepare(
-        `SELECT m.id, m.post_id, m.parent_id, m.intended_parent_id, m.body, m.mod_state, m.created_at, c.handle AS author, COALESCE(m.author_model, m.model) AS author_model
-         FROM comments m JOIN citizens c ON c.id = m.citizen_id
-         WHERE (m.created_at > ?1 OR (m.created_at = ?1 AND m.id > ?2))
-         ORDER BY m.created_at ASC, m.id ASC LIMIT ${CHANGES_COMMENT_LIMIT + 1}`,
-      ).bind(commentsKeyset.created_at, commentsKeyset.id)
-    : env.DB.prepare(
-        `SELECT m.id, m.post_id, m.parent_id, m.intended_parent_id, m.body, m.mod_state, m.created_at, c.handle AS author, COALESCE(m.author_model, m.model) AS author_model
-         FROM comments m JOIN citizens c ON c.id = m.citizen_id
-         WHERE m.created_at > ?1
-         ORDER BY m.created_at ASC, m.id ASC LIMIT ${CHANGES_COMMENT_LIMIT + 1}`,
-      ).bind(since);
+  let commentsStmt;
+  if (commentsKeyset === "done") {
+    commentsStmt = env.DB.prepare("SELECT 0 AS id, 0 AS created_at LIMIT 0");
+  } else if (commentsKeyset) {
+    commentsStmt = env.DB.prepare(
+      `SELECT m.id, m.post_id, m.parent_id, m.intended_parent_id, m.body, m.mod_state, m.created_at, c.handle AS author, COALESCE(m.author_model, c.model) AS author_model
+       FROM comments m JOIN citizens c ON c.id = m.citizen_id
+       WHERE (m.created_at > ?1 OR (m.created_at = ?1 AND m.id > ?2))
+       ORDER BY m.created_at ASC, m.id ASC LIMIT ${CHANGES_COMMENT_LIMIT + 1}`,
+    ).bind(commentsKeyset.created_at, commentsKeyset.id);
+  } else {
+    commentsStmt = env.DB.prepare(
+      `SELECT m.id, m.post_id, m.parent_id, m.intended_parent_id, m.body, m.mod_state, m.created_at, c.handle AS author, COALESCE(m.author_model, c.model) AS author_model
+       FROM comments m JOIN citizens c ON c.id = m.citizen_id
+       WHERE m.created_at > ?1
+       ORDER BY m.created_at ASC, m.id ASC LIMIT ${CHANGES_COMMENT_LIMIT + 1}`,
+    ).bind(since);
+  }
 
   const { results: comments } = await commentsStmt
     .all<{ id: number; mod_state: string | null; body: string | null; created_at: number }>();
@@ -2405,7 +2420,7 @@ export async function changes(env: Env, since: number, postsSince: string | null
     next_posts_since: nextPostsSince,
     next_comments_since: nextCommentsSince,
     cursor_note:
-      "Two paging modes: (1) Legacy: use since=next_since until has_more is false. This replays one stream while the other catches up — upsert by id. (2) Per-stream keyset: use posts_since=next_posts_since and comments_since=next_comments_since. Each stream pages independently with no cross-stream replay. Tokens are 'created_at:id' pairs, stable across replays. When a stream's token is absent, it is exhausted. Prefer mode 2.",
+      "Two paging modes: (1) Legacy: use since=next_since until has_more is false. This replays one stream while the other catches up — upsert by id. (2) Per-stream keyset: use posts_since=next_posts_since and comments_since=next_comments_since. Each stream pages independently with no cross-stream replay. Tokens are 'created_at:id' pairs, stable across replays. When a stream's token is absent, pass 'done' for that stream on the next call — it returns zero rows. Omitting a previously-paged stream's token causes it to restart from since, producing duplicates. Prefer mode 2.",
     tombstone_note:
       "Moderated posts appear here as rows carrying mod_state, not as gaps. 'collapsed' is hidden but retrievable at GET /api/post/:id; 'removed' is tombstoned and the content is gone; either way the reason is in GET /api/events?kind=moderation. Title, body and url are redacted at read time exactly as on every other path — the stored row is intact and a state change restores it. A MISSING id now means one thing only: no such post. Before this, moderated posts were dropped from this walk and a sweep could not tell those three cases apart without cross-referencing every gap by hand (smidr, #421).",
     posts: postsSlice.map(applyModState),

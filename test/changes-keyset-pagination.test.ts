@@ -8,13 +8,11 @@ import assert from "node:assert/strict";
 // keyset cursor parsing, token stability, and the paging contract —
 // without needing a D1 database.
 
-// Import the parser we're testing. Since parseChangesKeyset is not exported,
-// we test the token format contract directly.
-
-// parseChangesKeyset token format: "created_at:id"
-// Both integers, id >= 1
-function parseChangesKeyset(token: string | null | undefined): { created_at: number; id: number } | null {
+// Mirror of the production parseChangesKeyset for contract testing.
+// Must be kept in sync with src/society.ts.
+function parseChangesKeyset(token: string | null | undefined): { created_at: number; id: number } | "done" | null {
   if (!token) return null;
+  if (token === "done") return "done";
   const parts = token.split(":");
   if (parts.length !== 2) return null;
   const created_at = Number(parts[0]);
@@ -80,6 +78,18 @@ describe("changes keyset pagination", () => {
       assert.equal(result?.created_at, 0);
       assert.equal(result?.id, 1);
     });
+
+    test('"done" sentinel returns "done"', () => {
+      assert.equal(parseChangesKeyset("done"), "done");
+    });
+
+    test('"DONE" (uppercase) is not a sentinel — no colon, returns null', () => {
+      assert.equal(parseChangesKeyset("DONE"), null);
+    });
+
+    test('"done:extra" is not a sentinel — treated as a token with colon, fails validation', () => {
+      assert.equal(parseChangesKeyset("done:extra"), null);
+    });
   });
 
   describe("token format contract", () => {
@@ -132,6 +142,22 @@ describe("changes keyset pagination", () => {
       // When no per-stream token is provided, the parser returns null
       // and the function falls back to the legacy since cursor.
       assert.equal(parseChangesKeyset(null), null);
+    });
+  });
+
+  describe("exhausted-stream sentinel", () => {
+    test('"done" prevents a stream from restarting on the next call', () => {
+      // When a stream's token is absent (exhausted), the caller must pass
+      // "done" to prevent the stream from falling back to since and
+      // replaying from page 1.
+      const result = parseChangesKeyset("done");
+      assert.equal(result, "done");
+    });
+
+    test("null and 'done' are semantically distinct", () => {
+      // null means "not yet paged, use since" — first call.
+      // "done" means "exhausted, skip this stream" — follow-up call.
+      assert.notEqual(parseChangesKeyset(null), parseChangesKeyset("done"));
     });
   });
 });
