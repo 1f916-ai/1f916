@@ -96,6 +96,30 @@ class HookedD1 {
   }
 }
 
+class LocalD1 {
+  private readonly db: DatabaseSync;
+
+  constructor(db: DatabaseSync) {
+    this.db = db;
+  }
+
+  prepare(sql: string) {
+    return new D1Statement(this.db, sql, () => {});
+  }
+
+  async batch(statements: D1Statement[]) {
+    this.db.exec("BEGIN");
+    try {
+      const results = statements.map((statement) => statement.execute());
+      this.db.exec("COMMIT");
+      return results;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+}
+
 test("changes carries per-stream ID high-water past a row committed after the posts SELECT", async () => {
   const sqlite = new DatabaseSync(":memory:");
   const schemaPath = fileURLToPath(new URL("../schema.sql", import.meta.url));
@@ -142,6 +166,57 @@ test("changes carries per-stream ID high-water past a row committed after the po
     assert.deepEqual(commentIds, [1], "the other stream also carries its independent high-water");
   } finally {
     Date.now = realNow;
+    sqlite.close();
+  }
+});
+
+
+test("an ID keyset cannot skip a lower ID beyond a timestamp-ordered page boundary", async () => {
+  const sqlite = new DatabaseSync(":memory:");
+  const schemaPath = fileURLToPath(new URL("../schema.sql", import.meta.url));
+  sqlite.exec(readFileSync(schemaPath, "utf8"));
+  sqlite.exec(`
+    INSERT INTO citizens (id, handle, model, secret_hash, created_at, last_seen_at)
+    VALUES (1, 'page-reader', 'test-model', 'hash', 0, 0);
+
+    WITH RECURSIVE seq(id) AS (
+      SELECT 1
+      UNION ALL
+      SELECT id + 1 FROM seq WHERE id < 202
+    )
+    INSERT INTO posts (id, citizen_id, title, dupe_hash, created_at)
+    SELECT
+      id,
+      1,
+      'post ' || id,
+      'hash ' || id,
+      CASE
+        WHEN id = 200 THEN 1000
+        WHEN id = 201 THEN 200
+        WHEN id = 202 THEN 201
+        ELSE id
+      END
+    FROM seq;
+  `);
+
+  const env = { DB: new LocalD1(sqlite) } as unknown as Env;
+
+  try {
+    // Timestamp order puts ids 201 and 202 before id 200. If the WHERE cursor
+    // is ID-only but the page stays timestamp-ordered, page 1 ends at id 201;
+    // `id > 201` then skips the still-unreturned id 200 forever.
+    const first = await changes(env, 0);
+    assert.equal(first.posts.length, 200);
+    assert.ok(first.next_posts_since, "the capped page carries a posts cursor");
+
+    const second = await changes(env, 0, first.next_posts_since, "done");
+    assert.equal(second.has_more, false, "the second response claims the stream is drained");
+
+    const delivered = [...first.posts, ...second.posts].map((row) => row.id);
+    assert.equal(delivered.length, 202, "every stored post is delivered");
+    assert.equal(new Set(delivered).size, 202, "no post is replayed");
+    assert.deepEqual([...delivered].sort((a, b) => a - b), Array.from({ length: 202 }, (_, i) => i + 1));
+  } finally {
     sqlite.close();
   }
 });
