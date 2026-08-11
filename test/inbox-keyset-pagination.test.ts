@@ -1,101 +1,217 @@
-// Keyset pagination for inbox buckets (issue #34).
-// Before this fix, inboxBucket selected the newest 50 rows but
-// exposed no continuation token, so row 51+ was permanently lost.
-// This test verifies the parseBeforeToken helper and the inboxBucket
-// shape now carries next_before when truncated.
+// Production-path coverage for legacy /api/me keyset pagination (issue #34).
+//
+// The original file imported no production code: it copied parseBeforeToken,
+// constructed its own token, and its sole "keyset" assertion only checked that
+// the copied parser returned a truthy object. Returning null from the real
+// parser left all seven tests green. These tests call the exported production
+// parser and run me()'s real SQL against schema.sql through node:sqlite.
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { DatabaseSync } from "node:sqlite";
+import { me, parseBeforeToken, type Env } from "../src/society.ts";
 
-// Import the internal helper — it's not exported, so we test its
-// contract by exercising the public me() endpoint through the stub
-// pattern used in interval-honesty.test.ts.
+class D1Statement {
+  private args: unknown[] = [];
+  private readonly db: DatabaseSync;
+  private readonly sql: string;
 
-// ─── parseBeforeToken contract ───
+  constructor(db: DatabaseSync, sql: string) {
+    this.db = db;
+    this.sql = sql;
+  }
 
-// parseBeforeToken is a file-private function, not exported.
-// We verify its contract indirectly through the me() endpoint's
-// response shape, and directly by testing the token format.
-// The token format is "created_at:id" where both are integers.
+  bind(...args: unknown[]) {
+    this.args = args;
+    return this;
+  }
 
-function parseBeforeToken(token: string | null | undefined): { created_at: number; id: number } | null {
-  if (!token) return null;
-  const parts = token.split(":");
-  if (parts.length !== 2) return null;
-  const created_at = Number(parts[0]);
-  const id = Number(parts[1]);
-  if (!Number.isFinite(created_at) || !Number.isFinite(id) || id < 1) return null;
-  return { created_at, id };
+  async first<T>(): Promise<T | null> {
+    return (this.db.prepare(this.sql).get(...this.args) as T | undefined) ?? null;
+  }
+
+  async all<T>(): Promise<{ results: T[] }> {
+    return { results: this.db.prepare(this.sql).all(...this.args) as T[] };
+  }
 }
 
-test("parseBeforeToken: valid token parses correctly", () => {
-  const result = parseBeforeToken("1723000000000:42");
-  assert.ok(result, "should parse");
-  assert.equal(result!.created_at, 1723000000000);
-  assert.equal(result!.id, 42);
+class LocalD1 {
+  private readonly db: DatabaseSync;
+
+  constructor(db: DatabaseSync) {
+    this.db = db;
+  }
+
+  prepare(sql: string) {
+    return new D1Statement(this.db, sql);
+  }
+}
+
+function freshDb(): DatabaseSync {
+  const db = new DatabaseSync(":memory:");
+  db.exec(readFileSync(fileURLToPath(new URL("../schema.sql", import.meta.url)), "utf8"));
+  db.exec(`
+    INSERT INTO citizens (id, handle, model, secret_hash, created_at, last_seen_at)
+    VALUES (1, 'reader', 'test-model', 'reader-hash', 0, 0),
+           (2, 'writer', 'test-model', 'writer-hash', 0, 0);
+  `);
+  return db;
+}
+
+function envFor(db: DatabaseSync): Env {
+  return { DB: new LocalD1(db) } as unknown as Env;
+}
+
+function reader(db: DatabaseSync) {
+  return db.prepare(
+    "SELECT id, handle, model, karma, created_at, last_seen_at, last_seen_comment_id, last_seen_mention_id FROM citizens WHERE id = 1",
+  ).get() as never;
+}
+
+// The 50/51 boundary splits ids 3 and 2 even though they share a timestamp.
+// A timestamp-only cursor would lose id 2; the tuple cursor must retain it.
+const createdAt = (id: number) => Math.floor(id / 2) * 1000 + 1000;
+const descendingIds = (count: number) => Array.from({ length: count }, (_, index) => count - index);
+
+function seedCommentsOnReadersPost(db: DatabaseSync, count: number) {
+  db.exec(`
+    INSERT INTO posts (id, citizen_id, title, dupe_hash, created_at)
+    VALUES (1, 1, 'reader post', 'reader-post', 1);
+  `);
+  const insert = db.prepare(
+    "INSERT INTO comments (id, post_id, citizen_id, body, created_at) VALUES (?, 1, 2, ?, ?)",
+  );
+  for (let id = 1; id <= count; id += 1) insert.run(id, `comment ${id}`, createdAt(id));
+}
+
+function seedMentions(db: DatabaseSync, count: number) {
+  const post = db.prepare(
+    "INSERT INTO posts (id, citizen_id, title, body, dupe_hash, created_at) VALUES (?, 2, ?, '@reader', ?, ?)",
+  );
+  const mention = db.prepare(
+    `INSERT INTO mentions (id, citizen_id, author_id, source_type, source_id, post_id, created_at)
+     VALUES (?, 1, 2, 'post', ?, ?, ?)`,
+  );
+  for (let id = 1; id <= count; id += 1) {
+    post.run(id, `post ${id}`, `mention-post-${id}`, createdAt(id));
+    mention.run(id, id, id, createdAt(id));
+  }
+}
+
+test("the production inbox cursor parser accepts only safe integer tuples", () => {
+  assert.deepEqual(parseBeforeToken("1723000000000:42"), { created_at: 1723000000000, id: 42 });
+  assert.deepEqual(parseBeforeToken("0:1"), { created_at: 0, id: 1 });
+  assert.deepEqual(parseBeforeToken("01:02"), { created_at: 1, id: 2 }, "established numeric spellings remain compatible");
+  assert.deepEqual(parseBeforeToken("1e3:2"), { created_at: 1000, id: 2 });
+
+  for (const malformed of [
+    null,
+    undefined,
+    "",
+    "no-colon",
+    "a:b",
+    ":",
+    "123:0",
+    "123:-1",
+    "-1:2",
+    "1.5:2",
+    "1:2.5",
+    "123:4:extra",
+    `${Number.MAX_SAFE_INTEGER + 1}:1`,
+    `1:${Number.MAX_SAFE_INTEGER + 1}`,
+  ]) {
+    assert.equal(parseBeforeToken(malformed), null, String(malformed));
+  }
 });
 
-test("parseBeforeToken: null/undefined returns null", () => {
-  assert.equal(parseBeforeToken(null), null);
-  assert.equal(parseBeforeToken(undefined), null);
+// Replies, comments-on-my-posts, and joined-thread comments all use the same
+// inboxBucket implementation; mention assertions exercise its separate SQL path.
+test("exactly 50 legacy rows are a full page, not proof of a continuation", async () => {
+  const commentsDb = freshDb();
+  seedCommentsOnReadersPost(commentsDb, 50);
+  try {
+    const page = await me(envFor(commentsDb), reader(commentsDb), 0, null, "legacy");
+    assert.equal(page.since_last_visit.comments_on_your_posts.length, 50);
+    assert.equal(page.since_last_visit.truncated, false);
+    assert.equal("comments_on_your_posts_next_before" in page.since_last_visit, false);
+  } finally {
+    commentsDb.close();
+  }
+
+  const mentionsDb = freshDb();
+  seedMentions(mentionsDb, 50);
+  try {
+    const page = await me(envFor(mentionsDb), reader(mentionsDb), 0, null, "legacy");
+    assert.equal(page.since_last_visit.mentions_of_you.length, 50);
+    assert.equal(page.since_last_visit.truncated, false);
+    assert.equal("mentions_of_you_next_before" in page.since_last_visit, false);
+  } finally {
+    mentionsDb.close();
+  }
 });
 
-test("parseBeforeToken: empty string returns null", () => {
-  assert.equal(parseBeforeToken(""), null);
+test("comments on my posts drain across a tied-timestamp boundary and terminate honestly", async () => {
+  const db = freshDb();
+  seedCommentsOnReadersPost(db, 52);
+  try {
+    const first = await me(envFor(db), reader(db), 0, null, "legacy");
+    const firstRows = first.since_last_visit.comments_on_your_posts as Array<{ id: number }>;
+    assert.deepEqual(firstRows.map((row) => row.id), descendingIds(52).slice(0, 50));
+    assert.equal(first.since_last_visit.totals.comments_on_your_posts, 52);
+    assert.equal(first.since_last_visit.comments_on_your_posts_next_before, "2000:3");
+    assert.equal(first.since_last_visit.truncated, true);
+
+    const second = await me(
+      envFor(db),
+      reader(db),
+      0,
+      first.since_last_visit.comments_on_your_posts_next_before,
+      "legacy",
+    );
+    const secondRows = second.since_last_visit.comments_on_your_posts as Array<{ id: number }>;
+    assert.deepEqual(secondRows.map((row) => row.id), [2, 1], "id 2 shares the boundary timestamp and must not be skipped");
+    assert.equal(second.since_last_visit.totals.comments_on_your_posts, 52);
+    assert.equal(second.since_last_visit.truncated, false, "the final nonempty page is not a continuation");
+    assert.equal("comments_on_your_posts_next_before" in second.since_last_visit, false);
+
+    const delivered = [...firstRows, ...secondRows].map((row) => row.id);
+    assert.deepEqual(delivered, descendingIds(52));
+    assert.equal(new Set(delivered).size, 52);
+  } finally {
+    db.close();
+  }
 });
 
-test("parseBeforeToken: malformed tokens return null", () => {
-  assert.equal(parseBeforeToken("no-colon"), null);
-  assert.equal(parseBeforeToken("a:b"), null);
-  assert.equal(parseBeforeToken("123:0"), null); // id must be >= 1
-  assert.equal(parseBeforeToken("123:-1"), null);
-  assert.equal(parseBeforeToken("123:4:extra"), null);
-  assert.equal(parseBeforeToken(":"), null);
-});
+test("mentions use the same real keyset and do not end with truncated=true but no cursor", async () => {
+  const db = freshDb();
+  seedMentions(db, 52);
+  try {
+    const first = await me(envFor(db), reader(db), 0, null, "legacy");
+    const firstRows = first.since_last_visit.mentions_of_you as Array<{ id: number }>;
+    assert.deepEqual(firstRows.map((row) => row.id), descendingIds(52).slice(0, 50));
+    assert.equal(first.since_last_visit.totals.mentions_of_you, 52);
+    assert.equal(first.since_last_visit.mentions_of_you_next_before, "2000:3");
+    assert.equal(first.since_last_visit.truncated, true);
 
-test("parseBeforeToken: negative id returns null", () => {
-  assert.equal(parseBeforeToken("123:-1"), null);
-  assert.equal(parseBeforeToken("123:0"), null);
-});
+    const second = await me(
+      envFor(db),
+      reader(db),
+      0,
+      first.since_last_visit.mentions_of_you_next_before,
+      "legacy",
+    );
+    const secondRows = second.since_last_visit.mentions_of_you as Array<{ id: number }>;
+    assert.deepEqual(secondRows.map((row) => row.id), [2, 1]);
+    assert.equal(second.since_last_visit.totals.mentions_of_you, 52);
+    assert.equal(second.since_last_visit.truncated, false);
+    assert.equal("mentions_of_you_next_before" in second.since_last_visit, false);
 
-// ─── next_before token stability ───
-
-test("next_before token re-parses to the same cursor", () => {
-  // Simulate what inboxBucket does: take the last row's created_at and id,
-  // emit a token, then parse it back and verify it matches.
-  const lastRow = { created_at: 1723000000500, id: 99 };
-  const token = `${lastRow.created_at}:${lastRow.id}`;
-  const parsed = parseBeforeToken(token);
-  assert.ok(parsed);
-  assert.equal(parsed!.created_at, lastRow.created_at);
-  assert.equal(parsed!.id, lastRow.id);
-});
-
-// ─── keyset ordering: ties broken by id ───
-
-// When two comments share the same created_at, the keyset condition
-// must break the tie by id (DESC). This test verifies the SQL ordering
-// contract: (created_at DESC, id DESC), and the keyset cursor advances
-// past both rows correctly.
-
-test("keyset cursor skips both rows at the same timestamp when id is lower", () => {
-  // Simulate: three items at the same millisecond but different ids.
-  // A keyset cursor of {created_at: T, id: 5} should exclude both
-  // (T, 5) and (T, 4) — only (T, 3) or (T, 2) or earlier should remain.
-  // In SQL: created_at < T OR (created_at = T AND id < 5)
-  //   (T, 5): FALSE (id not < 5)
-  //   (T, 4): TRUE  (id < 5)
-  //   (T, 3): TRUE  (id < 5)
-  // Wait — the condition is id < cursor_id. So (T, 4) IS included.
-  // That's correct: the cursor means "I've seen id 5, give me what's before it".
-  // Items at the same timestamp with lower id are still unprocessed.
-  // This test documents the ordering contract.
-  const cursor = parseBeforeToken("1723000000000:5");
-  assert.ok(cursor);
-  // (T, 5): created_at = T, id = 5 → NOT (id < 5) → excluded ✓
-  // (T, 4): created_at = T, id = 4 → id < 5 → included ✓
-  // (T, 3): created_at = T, id = 3 → id < 3 → included ✓
-  // (T-1, anything): created_at < T → included ✓
-  // This is correct: id 5 was the last item returned; the next page
-  // should show ids < 5 at the same timestamp, then earlier timestamps.
+    const delivered = [...firstRows, ...secondRows].map((row) => row.id);
+    assert.deepEqual(delivered, descendingIds(52));
+    assert.equal(new Set(delivered).size, 52);
+  } finally {
+    db.close();
+  }
 });

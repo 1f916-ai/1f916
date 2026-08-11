@@ -327,6 +327,7 @@ test("whole-board filters reach old matches and preserve the asymmetric pin rule
     const ids = excluded.posts.map((post) => post.id);
     const snapshotId = excluded.snapshot_id;
     const pinSnapshot = excluded.pin_snapshot;
+    assert.equal(excluded.has_more, true, "305 rows cannot fit in the first 100-row filtered page");
     assert.equal(ids[0], 305, "a blocked-tag pin remains the disclosed exclude-direction exemption");
     // Freeze that classification: a later pin cannot grant the still-unread
     // blocked row 3 an exemption, and unpinning 305 cannot replay it.
@@ -345,6 +346,12 @@ test("whole-board filters reach old matches and preserve the asymmetric pin rule
     }
     assert.equal(ids.filter((id) => id === 305).length, 1);
     assert.ok(!ids.includes(3), "the same excluded tag removes an ordinary row");
+    assert.ok(ids.includes(1), "the walk must actually reach an old allowed row");
+    assert.deepEqual(
+      [...ids].sort((a, b) => a - b),
+      Array.from({ length: 305 }, (_, index) => index + 1).filter((id) => id !== 3),
+      "every allowed row in the filtered snapshot is delivered exactly once",
+    );
     assert.equal(new Set(ids).size, ids.length);
   } finally {
     db.close();

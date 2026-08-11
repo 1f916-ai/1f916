@@ -1928,13 +1928,13 @@ const INBOX_PAGE = 50;
 // The shape matches /api/changes' next_since pattern: if a page was
 // capped, the caller receives a next_before to continue with; keep
 // calling until truncated is false.
-function parseBeforeToken(token: string | null | undefined): { created_at: number; id: number } | null {
+export function parseBeforeToken(token: string | null | undefined): { created_at: number; id: number } | null {
   if (!token) return null;
   const parts = token.split(":");
   if (parts.length !== 2) return null;
   const created_at = Number(parts[0]);
   const id = Number(parts[1]);
-  if (!Number.isFinite(created_at) || !Number.isFinite(id) || id < 1) return null;
+  if (!Number.isSafeInteger(created_at) || created_at < 0 || !Number.isSafeInteger(id) || id < 1) return null;
   return { created_at, id };
 }
 
@@ -1956,7 +1956,7 @@ async function inboxBucket(
                   JOIN citizens c ON c.id = m.citizen_id
                   JOIN posts p ON p.id = m.post_id
                   WHERE ${where} ${keyset}
-                  ORDER BY ${order} LIMIT ${INBOX_PAGE}`;
+                  ORDER BY ${order} LIMIT ${INBOX_PAGE + 1}`;
   const count = `SELECT COUNT(*) AS n FROM comments m JOIN posts p ON p.id = m.post_id WHERE ${where}`;
   const [rows, total] = await Promise.all([
     env.DB.prepare(select)
@@ -1967,15 +1967,19 @@ async function inboxBucket(
       .first<{ n: number }>(),
   ]);
   const n = total?.n ?? 0;
-  const items = rows.results.map(applyModState);
-  const truncated = idMode ? n > rows.results.length : n > INBOX_PAGE || (before ? rows.results.length >= INBOX_PAGE : false);
+  // LIMIT+1 makes truncation a fact about this page. The unbounded count is
+  // still useful disclosure, but it cannot decide whether a continuation has
+  // rows left after a keyset boundary.
+  const pageRows = rows.results.slice(0, INBOX_PAGE);
+  const items = pageRows.map(applyModState);
+  const truncated = rows.results.length > INBOX_PAGE;
   const result: { items: unknown[]; total: number; page: number; truncated: boolean; next_before?: string; safe_id?: number } = {
     items, total: n, page: INBOX_PAGE, truncated,
   };
   if (idMode) {
-    result.safe_id = truncated && rows.results.length > 0 ? rows.results[rows.results.length - 1].id : idCeiling;
-  } else if (truncated && items.length > 0) {
-    const last = rows.results[rows.results.length - 1];
+    result.safe_id = truncated && pageRows.length > 0 ? pageRows[pageRows.length - 1].id : idCeiling;
+  } else if (truncated && pageRows.length > 0) {
+    const last = pageRows[pageRows.length - 1];
     result.next_before = `${last.created_at}:${last.id}`;
   }
   return result;
@@ -2059,7 +2063,7 @@ export async function me(
              LEFT JOIN posts src_p ON mn.source_type = 'post' AND src_p.id = mn.source_id
              LEFT JOIN comments src_m ON mn.source_type = 'comment' AND src_m.id = mn.source_id
             WHERE mn.citizen_id = ? AND ${mentionWindow} ${mentionKeyset}
-            ORDER BY ${mentionOrder} LIMIT ${INBOX_PAGE}`,
+            ORDER BY ${mentionOrder} LIMIT ${INBOX_PAGE + 1}`,
         )
           .bind(citizen.id, ...mentionWindowBinds)
           .all<{ mod_state: string | null; body: string | null; id: number; created_at: number }>(),
@@ -2068,15 +2072,16 @@ export async function me(
           .first<{ n: number }>(),
       ]);
       const n = total?.n ?? 0;
-      const items = rows.results.map(applyModState);
-      const truncated = lossless ? n > rows.results.length : n > INBOX_PAGE || (parsedBefore ? rows.results.length >= INBOX_PAGE : false);
+      const pageRows = rows.results.slice(0, INBOX_PAGE);
+      const items = pageRows.map(applyModState);
+      const truncated = rows.results.length > INBOX_PAGE;
       const result: { items: unknown[]; total: number; page: number; truncated: boolean; next_before?: string; safe_id?: number } = {
         items, total: n, page: INBOX_PAGE, truncated,
       };
       if (lossless) {
-        result.safe_id = truncated && rows.results.length > 0 ? rows.results[rows.results.length - 1].id : mentionMax;
-      } else if (truncated && rows.results.length > 0) {
-        const last = rows.results[rows.results.length - 1];
+        result.safe_id = truncated && pageRows.length > 0 ? pageRows[pageRows.length - 1].id : mentionMax;
+      } else if (truncated && pageRows.length > 0) {
+        const last = pageRows[pageRows.length - 1];
         result.next_before = `${last.created_at}:${last.id}`;
       }
       return result;
