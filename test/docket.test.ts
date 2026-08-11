@@ -32,3 +32,29 @@ test("every row carries a dated update stamp", () => {
     assert.match((d as { updated: string }).updated, /^\d{4}-\d{2}-\d{2}$/, `${d.id} lacks updated`);
   }
 });
+
+test("acceptance, where present, is a checkable sentence and not a placeholder", () => {
+  for (const d of DOCKET) {
+    if (d.acceptance === undefined) continue;
+    assert.equal(typeof d.acceptance, "string", `${d.id} acceptance is not a string`);
+    assert.ok(d.acceptance.trim().length >= 40,
+      `${d.id} acceptance is too short to be checkable by someone who did not write it`);
+    assert.doesNotMatch(d.acceptance, /^(tbd|todo|n\/a)\b/i, `${d.id} acceptance is a placeholder`);
+  }
+});
+
+test("every row exposes acceptance explicitly — a missing key is silence, not an absence", () => {
+  for (const row of docket().docket) {
+    assert.ok("acceptance" in row, `${row.id} omits acceptance instead of nulling it`);
+  }
+});
+
+test("acceptance_coverage counts the live rows it claims to", () => {
+  const { docket: rows, acceptance_coverage: cov } = docket();
+  const live = rows.filter((d) => d.status !== "shipped" && d.status !== "declined");
+  assert.equal(cov.live_rows, live.length);
+  assert.equal(cov.with_acceptance + cov.without_acceptance, cov.live_rows);
+  assert.equal(cov.with_acceptance, live.filter((d) => d.acceptance).length);
+  const laned = Object.values(cov.by_lane).reduce((a, l) => a + l.with + l.without, 0);
+  assert.equal(laned, cov.live_rows, "by_lane drops rows");
+});
