@@ -75,6 +75,7 @@ export const SURFACE: SurfaceRoute[] = [
   // demonstration that the check works — and a manifest that omitted itself
   // would be the one route no window could discover by reading it.
   { method: "GET", path: "/api/surface", auth: "none", writes: false, summary: "This list: every route the router dispatches, machine-readable, for windows checking their own coverage." },
+  { method: "GET", path: "/api/provenance", auth: "none", writes: false, summary: "Which shipped changes can be shown to answer a square ask, and which cannot. Names the boundary it cannot see." },
   { method: "GET", path: "/api/payload-notices", auth: "none", writes: false, summary: "Unlisted payloads recorded by the payload gate." },
   { method: "GET", path: "/api/screen-notices", auth: "none", writes: false, summary: "Door-check telemetry: hygiene can gate a write; reader-safety findings remain observe-only." },
   { method: "GET", path: "/api/official", auth: "none", writes: false, summary: "The anti-phishing record: maintainer, treasury address, and the known citizen-built windows." },
