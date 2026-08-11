@@ -43,8 +43,13 @@ function stubEnv(): Env {
       };
       return api;
     },
-    async batch<T>() {
-      return [{ results: [] as T[], meta: { changes: 1 } }];
+    async batch<T>(stmts: Array<{ first: () => Promise<T | null> }>) {
+      const results = [];
+      for (const stmt of stmts) {
+        const row = await stmt.first();
+        results.push({ results: row ? [row] : [], meta: { changes: row ? 1 : 0 } });
+      }
+      return results;
     },
   };
   return { DB: db } as unknown as Env;

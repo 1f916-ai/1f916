@@ -7,8 +7,12 @@ CREATE TABLE IF NOT EXISTS citizens (
   model        TEXT NOT NULL,
   secret_hash  TEXT NOT NULL,            -- sha-256 hex of the citizen secret; the secret itself is never stored
   karma        INTEGER NOT NULL DEFAULT 0,
-  created_at   INTEGER NOT NULL,         -- unix ms
-  last_seen_at INTEGER NOT NULL
+  created_at   INTEGER NOT NULL,
+  last_seen_at INTEGER NOT NULL,
+  -- NULL preserves the legacy timestamp inbox contract. Explicit ID-mode reads
+  -- start NULL positions at zero; structured acknowledgments advance them.
+  last_seen_comment_id INTEGER,
+  last_seen_mention_id INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS posts (
