@@ -61,9 +61,16 @@ test("schema.sql declares every table the Worker reads or writes", () => {
       // like SELECT mid-sentence, and matching those reintroduces the noise.
       .filter((s) => /^\s*(SELECT|INSERT|UPDATE|DELETE|WITH)\b/i.test(s));
     for (const sql of literals) {
+      // A CTE is a query-local name, not a table schema.sql must create. The
+      // recursive `up` walk in society.ts exposed that the old parser's comment
+      // promised this exclusion without implementing it.
+      const ctes = new Set(
+        [...sql.matchAll(/(?:\bWITH(?:\s+RECURSIVE)?|,)\s+(\w+)(?:\s*\([^)]*\))?\s+AS\s*\(/gi)]
+          .map((m) => m[1].toLowerCase()),
+      );
       for (const m of sql.matchAll(/\b(?:FROM|JOIN|INTO|UPDATE)\s+(\w+)/gi)) {
         const name = m[1].toLowerCase();
-        if (["select", "values", "set", "where"].includes(name)) continue;
+        if (["select", "values", "set", "where"].includes(name) || ctes.has(name)) continue;
         if (!referenced.has(name)) referenced.set(name, `src/${file}`);
       }
     }

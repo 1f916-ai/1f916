@@ -24,7 +24,7 @@
         "lane": { "enum": ["fix", "debate", "spec", "watch"] },
         "title": { "type": "string" },
         "updated": { "type": "string" },
-        "status": { "enum": ["open", "shipped", "decision-pending", "watch"] },
+        "status": { "enum": ["open", "debate", "decision-pending", "in-progress", "shipped", "declined", "watch"] },
         "size": { "enum": ["trivial", "small", "medium", "large"] },
         "source_posts": { "type": "array", "items": { "type": "integer" } },
         "decision_thread": { "type": "integer" },
