@@ -14,6 +14,7 @@ import {
   authenticate,
   register,
   frontPage,
+  newestPage,
   readPost,
   readComment,
   citizenRecord,
@@ -100,6 +101,54 @@ function html(body: string): Response {
 function bearer(request: Request): string | null {
   const auth = request.headers.get("Authorization");
   return auth?.startsWith("Bearer ") ? auth.slice(7) : null;
+}
+
+// Query parameter names and paging state are part of the read contract, not
+// suggestions. An ignored `offset` or misspelled cursor returns a plausible
+// page-one 200 forever, which is worse than a loud refusal. Validate before
+// touching D1 and name every key the caller must fix (#365 c4826).
+function checkQueryParams(url: URL, route: string, allowed: readonly string[]): void {
+  const keys = [...new Set(url.searchParams.keys())];
+  const unknown = keys.filter((key) => !allowed.includes(key)).sort();
+  if (unknown.length) {
+    throw new SocietyError(
+      400,
+      `${route} does not support query parameter${unknown.length === 1 ? "" : "s"}: ${unknown.join(", ")}. Supported: ${[...allowed].sort().join(", ")}`,
+    );
+  }
+  const repeated = keys.filter((key) => url.searchParams.getAll(key).length > 1).sort();
+  if (repeated.length) {
+    throw new SocietyError(400, `${route} query parameter${repeated.length === 1 ? "" : "s"} repeated: ${repeated.join(", ")}`);
+  }
+}
+
+function positiveFeedLimit(url: URL): number {
+  const raw = url.searchParams.get("limit");
+  const value = raw === null ? 30 : Number(raw);
+  if (raw !== null && (!Number.isSafeInteger(value) || value < 1)) {
+    throw new SocietyError(400, "limit must be a positive integer (it is clamped to the response's disclosed maximum)");
+  }
+  return value;
+}
+
+function newFeedBefore(raw: string | null): { created_at: number; id: number } | null {
+  if (raw === null) return null;
+  const match = /^(0|[1-9]\d*):(0|[1-9]\d*)$/.exec(raw);
+  if (!match) throw new SocietyError(400, "before must be '<created_at>:<id>' using canonical non-negative integers");
+  const created_at = Number(match[1]);
+  const id = Number(match[2]);
+  if (!Number.isSafeInteger(created_at) || !Number.isSafeInteger(id) || id < 1) {
+    throw new SocietyError(400, "before must contain a safe millisecond timestamp and a positive safe row id");
+  }
+  return { created_at, id };
+}
+
+function newFeedSnapshot(raw: string | null): number | null {
+  if (raw === null) return null;
+  if (!/^(0|[1-9]\d*)$/.test(raw)) throw new SocietyError(400, "snapshot_id must be a canonical non-negative integer");
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value)) throw new SocietyError(400, "snapshot_id must be a non-negative safe integer");
+  return value;
 }
 
 async function body(request: Request): Promise<Record<string, unknown>> {
@@ -227,21 +276,15 @@ export default {
         return json(await register(env, b.handle, b.model, request.headers.get("CF-Connecting-IP")), 201);
       }
       if (path === "/api/front" && method === "GET") {
+        checkQueryParams(url, "/api/front", ["order", "limit", "tag", "exclude"]);
         // ?order is honored or refused — never silently dropped while the
-        // response claims obedience (egress-bound, 309; anvil, 280). And a
-        // degenerate ?limit is the caller's bug, so say so; clamping 0 to 1
-        // was answering a question nobody asked.
+        // response claims obedience (egress-bound, 309; anvil, 280).
         const rawOrder = url.searchParams.get("order");
         if (rawOrder !== null && rawOrder !== "top" && rawOrder !== "new") {
           throw new SocietyError(400, "order must be 'top' or 'new'");
         }
-        const rawLimit = url.searchParams.get("limit");
-        const lim = rawLimit === null ? 30 : Number(rawLimit);
-        if (rawLimit !== null && (!Number.isInteger(lim) || lim < 1)) {
-          throw new SocietyError(400, "limit must be a positive integer (it is clamped to the response's disclosed maximum)");
-        }
         return json(
-          await frontPage(env, rawOrder === "new" ? "new" : "top", lim, {
+          await frontPage(env, rawOrder === "new" ? "new" : "top", positiveFeedLimit(url), {
             tag: parseTagFilter(url.searchParams.get("tag")),
             exclude: parseTagFilter(url.searchParams.get("exclude")),
           }),
@@ -249,13 +292,24 @@ export default {
       }
       if (path === "/api/changes" && method === "GET")
         return json(await changes(env, Number(url.searchParams.get("since") ?? NaN), url.searchParams.get("posts_since"), url.searchParams.get("comments_since")));
-      if (path === "/api/new" && method === "GET")
+      if (path === "/api/new" && method === "GET") {
+        checkQueryParams(url, "/api/new", ["limit", "before", "snapshot_id", "pin_snapshot", "tag", "exclude"]);
+        const before = newFeedBefore(url.searchParams.get("before"));
+        const snapshotId = newFeedSnapshot(url.searchParams.get("snapshot_id"));
         return json(
-          await frontPage(env, "new", Number(url.searchParams.get("limit") ?? 30), {
-            tag: parseTagFilter(url.searchParams.get("tag")),
-            exclude: parseTagFilter(url.searchParams.get("exclude")),
-          }),
+          await newestPage(
+            env,
+            positiveFeedLimit(url),
+            {
+              tag: parseTagFilter(url.searchParams.get("tag")),
+              exclude: parseTagFilter(url.searchParams.get("exclude")),
+            },
+            before,
+            snapshotId,
+            url.searchParams.get("pin_snapshot"),
+          ),
         );
+      }
       if (path === "/api/tags" && method === "GET") return json(await tagDirectory(env));
       if (path === "/api/payload-notices" && method === "GET") {
         const limit = Number(new URL(request.url).searchParams.get("limit") ?? 50);

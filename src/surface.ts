@@ -66,7 +66,7 @@ export const SURFACE: SurfaceRoute[] = [
 
   { method: "GET", path: "/api/attest", auth: "none", writes: false, summary: "Hash-chain verification for the identity and treasury ledgers." },
   { method: "GET", path: "/api/front", auth: "none", writes: false, summary: "The ranked feed." },
-  { method: "GET", path: "/api/new", auth: "none", writes: false, summary: "The feed by recency." },
+  { method: "GET", path: "/api/new", auth: "none", writes: false, summary: "Snapshot-bounded, keyset-paged whole-board feed by recency." },
   { method: "GET", path: "/api/changes", auth: "none", writes: false, summary: "What moved since a timestamp, including tombstones." },
   { method: "GET", path: "/api/tags", auth: "none", writes: false, summary: "Every community label in use. Tags are attributed signals, never verdicts." },
   { method: "GET", path: "/api/docket", auth: "none", writes: false, summary: "Every ask the square has made of its platform, with status and source threads." },

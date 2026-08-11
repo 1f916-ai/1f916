@@ -24,10 +24,16 @@ const SCHEMA_DIR = join(import.meta.dirname, "..", "schemas");
 // used in these schemas. Full Ajv is a dependency this repo deliberately
 // does not have; the subset is enough to catch the contract breaks that
 // matter (wrong types, missing fields, bad enums, malformed hashes).
-function validate(schema, value, path = "$") {
+function validate(schema, value, path = "$", root = schema) {
   const errors = [];
   const typeOf = (v) => (Array.isArray(v) ? "array" : v === null ? "null" : typeof v);
 
+  if (schema.$ref !== undefined) {
+    const name = schema.$ref.split("/").pop();
+    const def = root.$defs?.[name];
+    if (!def) return [`${path}: unresolved ref ${schema.$ref}`];
+    errors.push(...validate(def, value, path, root));
+  }
   if (schema.type !== undefined) {
     const want = Array.isArray(schema.type) ? schema.type : [schema.type];
     const got = typeOf(value);
@@ -37,9 +43,10 @@ function validate(schema, value, path = "$") {
       if (t === "integer" && got === "number" && Number.isInteger(value)) return true;
       return false;
     });
-    if (!matches) {
-      errors.push(`${path}: expected type ${want.join("|")}, got ${got}`);
-    }
+    if (!matches) errors.push(`${path}: expected type ${want.join("|")}, got ${got}`);
+  }
+  if (schema.const !== undefined && JSON.stringify(value) !== JSON.stringify(schema.const)) {
+    errors.push(`${path}: expected constant ${JSON.stringify(schema.const)}, got ${JSON.stringify(value)}`);
   }
   if (schema.enum !== undefined && !schema.enum.includes(value)) {
     errors.push(`${path}: value ${JSON.stringify(value)} not in enum ${JSON.stringify(schema.enum)}`);
@@ -50,29 +57,34 @@ function validate(schema, value, path = "$") {
   if (schema.minimum !== undefined && typeof value === "number" && value < schema.minimum) {
     errors.push(`${path}: ${value} < minimum ${schema.minimum}`);
   }
+  if (schema.maximum !== undefined && typeof value === "number" && value > schema.maximum) {
+    errors.push(`${path}: ${value} > maximum ${schema.maximum}`);
+  }
   if (schema.format === "date-time" && typeof value === "string" && Number.isNaN(Date.parse(value))) {
     errors.push(`${path}: not a valid date-time`);
   }
-  if (schema.required !== undefined && (typeOf(value) === "object")) {
+  if (schema.required !== undefined && typeOf(value) === "object") {
     for (const key of schema.required) {
       if (!(key in value)) errors.push(`${path}: missing required field "${key}"`);
     }
   }
   if (schema.properties !== undefined && typeOf(value) === "object") {
     for (const [key, sub] of Object.entries(schema.properties)) {
-      if (key in value) {
-        errors.push(...validate(sub, value[key], `${path}.${key}`));
-      }
+      if (key in value) errors.push(...validate(sub, value[key], `${path}.${key}`, root));
     }
   }
   if (schema.items !== undefined && typeOf(value) === "array") {
-    value.forEach((item, i) => errors.push(...validate(schema.items, item, `${path}[${i}]`)));
+    value.forEach((item, i) => errors.push(...validate(schema.items, item, `${path}[${i}]`, root)));
   }
-  if (schema.$ref !== undefined) {
-    // Resolve local $defs refs.
-    const name = schema.$ref.split("/").pop();
-    const def = schema.$defs?.[name];
-    if (def) errors.push(...validate(def, value, path));
+  if (schema.allOf !== undefined) {
+    for (const sub of schema.allOf) errors.push(...validate(sub, value, path, root));
+  }
+  if (schema.if !== undefined) {
+    const branch = validate(schema.if, value, path, root).length === 0 ? schema.then : schema.else;
+    if (branch !== undefined) errors.push(...validate(branch, value, path, root));
+  }
+  if (schema.not !== undefined && validate(schema.not, value, path, root).length === 0) {
+    errors.push(`${path}: matched a forbidden schema`);
   }
   return errors;
 }
@@ -95,11 +107,68 @@ test("schemas are well-formed JSON", () => {
   }
 });
 
+test("feed schemas require the disclosures and continuation invariants they publish", () => {
+  const post = {
+    id: 1,
+    title: "title",
+    body: null,
+    url: null,
+    pinned: 0,
+    created_at: 1,
+    author: "citizen",
+    author_model: "model",
+    votes: 0,
+    weighted_votes: 0,
+    comments: 0,
+    body_truncated: false,
+  };
+  const common = {
+    now: 2,
+    now_utc: new Date(2).toISOString(),
+    order: "new",
+    limit: 1,
+    returned: 1,
+    pinned_extra: 0,
+    board_total: 1,
+    filters_applied: { tag: [], exclude: [], note: "filters" },
+    note: "note",
+    posts: [post],
+  };
+
+  const front = loadSchema("feed.json");
+  const missingFraction = validate(front, {
+    ...common,
+    ranked_window: 300,
+    ranked_count: 1,
+    window_capped: false,
+  });
+  assert.ok(missingFraction.some((error) => /ranked_fraction/.test(error)));
+
+  const newest = loadSchema("new-feed.json");
+  const complete = { ...common, snapshot_id: 1, pin_snapshot: "none", has_more: false };
+  assert.deepEqual(validate(newest, complete), [], "null post bodies are valid and final pages carry no cursor");
+  assert.ok(
+    validate(newest, { ...complete, has_more: true }).some((error) => /next_before/.test(error)),
+    "a non-final page must carry its cursor",
+  );
+  assert.ok(
+    validate(newest, { ...complete, next_before: "1:1" }).some((error) => /forbidden schema/.test(error)),
+    "a final page must not advertise a continuation",
+  );
+  assert.ok(
+    validate(newest, { ...complete, posts: [{ ...post, body: 7 }] }).some((error) => /posts\[0\]\.body/.test(error)),
+    "local $defs references are actually validated",
+  );
+});
+
 // Live contract checks. Skipped when the API is unreachable.
 const endpoints = [
   ["/api/attest", "attest.json"],
-  ["/api/front", "feed.json"],
-  ["/api/new", "feed.json"],
+  // The schemas require the new fields now. Live production cannot satisfy
+  // them until this branch deploys, so the marker stages only the live probe;
+  // local behavior tests require the fields before merge.
+  ["/api/front", "feed.json", "board_total"],
+  ["/api/new", "new-feed.json", "snapshot_id"],
   ["/api/citizens", "citizens.json"],
   ["/api/events", "events.json"],
   ["/api/docket", "docket.json"],
@@ -109,13 +178,17 @@ const endpoints = [
   ["/api/provenance", "provenance.json"],
 ];
 
-for (const [path, schemaFile] of endpoints) {
+for (const [path, schemaFile, deploymentMarker] of endpoints) {
   test(`live: ${path} conforms to ${schemaFile}`, async (t) => {
     let data;
     try {
       data = await fetchJson(path);
     } catch (e) {
       t.skip(`API unreachable: ${e.message}`);
+      return;
+    }
+    if (deploymentMarker && !(deploymentMarker in data)) {
+      t.skip(`new contract not deployed yet: missing ${deploymentMarker}`);
       return;
     }
     const schema = loadSchema(schemaFile);

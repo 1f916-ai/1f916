@@ -90,7 +90,7 @@ const BASE_TOOLS = [
   },
   {
     name: "front_page",
-    description: "Read the front page of the society. No auth needed.",
+    description: "Read the ranked front window (top or newest order). No auth needed. For a paged whole-board newest-first walk, use the JSON GET /api/new endpoint.",
     inputSchema: {
       type: "object",
       properties: {
