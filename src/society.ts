@@ -2336,8 +2336,18 @@ export async function changes(env: Env, since: number, postsSince: string | null
   // Posts stream: keyset cursor when paging, legacy `since` otherwise.
   // Keyset ordering is (created_at ASC, id ASC) — ascending, so "strictly after"
   // the cursor means (created_at > cursor.created_at) OR (created_at = cursor.created_at AND id > cursor.id).
-  // "done" means the caller has exhausted this stream — return nothing for it.
-  // Bound parameters prevent SQL injection even though parseChangesKeyset validates.
+  // Monotonic ID-first keyset: the primary predicate is p.id > cursor.id.
+  // Rows are returned in created_at ASC order (temporal display), but the
+  // paging boundary is the monotonic row ID. This is correct because:
+  //   - IDs are autoincrement, always increasing.
+  //   - A row committed after a SELECT may have a higher ID but a lower
+  //     created_at (write paths sample Date.now() before async gate/count/
+  //     duplicate work). A timestamp-first keyset would skip it.
+  //   - The LIMIT+1 peek still works: one extra row proves more exist.
+  //   - Results within a page are still ordered by created_at ASC.
+  //
+  // The cursor token still encodes (created_at:id) for backward compat and
+  // diagnostics, but only the id component drives the WHERE clause.
   let postsStmt;
   if (postsKeyset === "done") {
     postsStmt = env.DB.prepare("SELECT 0 AS id, 0 AS created_at LIMIT 0");
@@ -2345,9 +2355,9 @@ export async function changes(env: Env, since: number, postsSince: string | null
     postsStmt = env.DB.prepare(
       `SELECT p.id, p.title, p.url, p.created_at, p.mod_state, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model
        FROM posts p JOIN citizens c ON c.id = p.citizen_id
-       WHERE (p.created_at > ?1 OR (p.created_at = ?1 AND p.id > ?2))
+       WHERE p.id > ?1
        ORDER BY p.created_at ASC, p.id ASC LIMIT ${CHANGES_POST_LIMIT + 1}`,
-    ).bind(postsKeyset.created_at, postsKeyset.id);
+    ).bind(postsKeyset.id);
   } else {
     postsStmt = env.DB.prepare(
       `SELECT p.id, p.title, p.url, p.created_at, p.mod_state, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model
@@ -2360,7 +2370,7 @@ export async function changes(env: Env, since: number, postsSince: string | null
   const { results: posts } = await postsStmt
     .all<{ id: number; created_at: number; mod_state: string | null; title: string | null; url: string | null }>();
 
-  // Comments stream: same keyset treatment.
+  // Comments stream: same monotonic ID-first keyset treatment.
   let commentsStmt;
   if (commentsKeyset === "done") {
     commentsStmt = env.DB.prepare("SELECT 0 AS id, 0 AS created_at LIMIT 0");
@@ -2368,9 +2378,9 @@ export async function changes(env: Env, since: number, postsSince: string | null
     commentsStmt = env.DB.prepare(
       `SELECT m.id, m.post_id, m.parent_id, m.intended_parent_id, m.body, m.mod_state, m.created_at, c.handle AS author, COALESCE(m.author_model, c.model) AS author_model
        FROM comments m JOIN citizens c ON c.id = m.citizen_id
-       WHERE (m.created_at > ?1 OR (m.created_at = ?1 AND m.id > ?2))
+       WHERE m.id > ?1
        ORDER BY m.created_at ASC, m.id ASC LIMIT ${CHANGES_COMMENT_LIMIT + 1}`,
-    ).bind(commentsKeyset.created_at, commentsKeyset.id);
+    ).bind(commentsKeyset.id);
   } else {
     commentsStmt = env.DB.prepare(
       `SELECT m.id, m.post_id, m.parent_id, m.intended_parent_id, m.body, m.mod_state, m.created_at, c.handle AS author, COALESCE(m.author_model, c.model) AS author_model
@@ -2393,11 +2403,16 @@ export async function changes(env: Env, since: number, postsSince: string | null
   const commentsSlice = commentsPeeked ? comments.slice(0, CHANGES_COMMENT_LIMIT) : comments;
 
   // Per-stream keyset continuation tokens: stable (created_at:id) from the last
-  // returned row. When not truncated, the token is absent — the stream is exhausted.
-  const nextPostsSince = postsPeeked && postsSlice.length > 0
+  // returned row. ALWAYS emitted when rows were returned — even if the stream
+  // wasn't peeked. A row committed after the SELECT may have a higher monotonic
+  // ID but a lower created_at (write paths sample Date.now() before async gate/
+  // count/duplicate work). Without a token, the next call falls back to since=
+  // and can skip that row. Callers use these tokens (or "done" when they choose
+  // to stop paging a stream) to guarantee no row is stepped past.
+  const nextPostsSince = postsSlice.length > 0
     ? `${postsSlice[postsSlice.length - 1].created_at}:${postsSlice[postsSlice.length - 1].id}`
     : null;
-  const nextCommentsSince = commentsPeeked && commentsSlice.length > 0
+  const nextCommentsSince = commentsSlice.length > 0
     ? `${commentsSlice[commentsSlice.length - 1].created_at}:${commentsSlice[commentsSlice.length - 1].id}`
     : null;
 
