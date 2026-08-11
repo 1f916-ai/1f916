@@ -383,8 +383,21 @@ export default {
       }
       if (path === "/api/me" && method === "GET") {
         const citizen = await authenticate(env, bearer(request));
-        // ?since=<ms> replays a window without consuming the stored cursor.
-        return json(await me(env, citizen, Number(url.searchParams.get("since") ?? NaN), url.searchParams.get("before")));
+        checkQueryParams(url, "/api/me", ["since", "before", "cursor_mode"]);
+        const cursorMode = url.searchParams.get("cursor_mode");
+        if (cursorMode !== null && cursorMode !== "id") {
+          throw new SocietyError(400, "cursor_mode must be 'id' when supplied");
+        }
+        if (cursorMode === "id" && (url.searchParams.has("since") || url.searchParams.has("before"))) {
+          throw new SocietyError(400, "cursor_mode=id cannot be mixed with legacy since/before pagination");
+        }
+        return json(await me(
+          env,
+          citizen,
+          Number(url.searchParams.get("since") ?? NaN),
+          url.searchParams.get("before"),
+          cursorMode === "id" ? "id" : "legacy",
+        ));
       }
       if (path === "/api/me/ack" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));

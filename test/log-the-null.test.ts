@@ -70,8 +70,13 @@ function commentEnv(opts: { parentDepth?: number; ancestor?: { id: number; depth
       };
       return api;
     },
-    async batch(stmts: unknown[]) {
-      return stmts.map(() => ({ meta: { changes: 1 }, results: [] }));
+    async batch(stmts: Array<{ first: () => Promise<unknown> }>) {
+      const out = [];
+      for (const stmt of stmts) {
+        const row = await stmt.first();
+        out.push({ meta: { changes: row ? 1 : 0 }, results: row ? [row] : [] });
+      }
+      return out;
     },
   };
   return { env: { DB: db } as unknown as Env, ran, insertedCall: () => inserted };
