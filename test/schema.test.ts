@@ -16,6 +16,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { docket } from "../src/docket.ts";
+import { provenance } from "../src/provenance.ts";
 
 const BASE = "https://1f916.ai";
 const SCHEMA_DIR = join(import.meta.dirname, "..", "schemas");
@@ -59,6 +61,9 @@ function validate(schema, value, path = "$", root = schema) {
   }
   if (schema.maximum !== undefined && typeof value === "number" && value > schema.maximum) {
     errors.push(`${path}: ${value} > maximum ${schema.maximum}`);
+  }
+  if (schema.minItems !== undefined && Array.isArray(value) && value.length < schema.minItems) {
+    errors.push(`${path}: ${value.length} items < minimum ${schema.minItems}`);
   }
   if (schema.format === "date-time" && typeof value === "string" && Number.isNaN(Date.parse(value))) {
     errors.push(`${path}: not a valid date-time`);
@@ -161,6 +166,62 @@ test("feed schemas require the disclosures and continuation invariants they publ
   );
 });
 
+test("the local docket response publishes complete delivery receipts", () => {
+  const schema = loadSchema("docket.json");
+  const data = {
+    now: 1,
+    now_utc: new Date(1).toISOString(),
+    ...docket(),
+  };
+  assert.deepEqual(validate(schema, data), []);
+
+  const partial = structuredClone(data);
+  const delivered = partial.docket.find((row) => row.delivery);
+  assert.ok(delivered, "fixture must reach a delivered row");
+  delete delivered.delivery.commit;
+  assert.ok(
+    validate(schema, partial).some((error) => /delivery.*commit/.test(error)),
+    "the docket schema must reject a partial delivery receipt",
+  );
+});
+
+test("the local provenance response satisfies the new claim/delivery contract", () => {
+  const schema = loadSchema("provenance.json");
+  const data = {
+    now: 1,
+    now_utc: new Date(1).toISOString(),
+    ...provenance("https://example.test"),
+  };
+  assert.deepEqual(validate(schema, data), []);
+
+  const partial = structuredClone(data);
+  const partialRow = partial.rows.find((row) => row.joined);
+  assert.ok(partialRow, "fixture must reach a delivered row");
+  partialRow.delivery_commit = null;
+  assert.ok(
+    validate(schema, partial).some((error) => /delivery_commit/.test(error)),
+    "the schema must reject a present PR with a null delivery commit",
+  );
+
+  const falseJoin = structuredClone(data);
+  const falseJoinRow = falseJoin.rows.find((row) => row.joined);
+  assert.ok(falseJoinRow);
+  falseJoinRow.source_posts = [];
+  assert.ok(
+    validate(schema, falseJoin).some((error) => /source_posts/.test(error)),
+    "joined=true must require a source ask",
+  );
+
+  const hiddenJoin = structuredClone(data);
+  const hiddenJoinRow = hiddenJoin.rows.find((row) => row.joined);
+  assert.ok(hiddenJoinRow);
+  hiddenJoinRow.joined = false;
+  assert.ok(
+    validate(schema, hiddenJoin).some((error) => /forbidden schema/.test(error)),
+    "joined=false must not hide a complete ask/claim/delivery join",
+  );
+});
+
 // Live contract checks. Skipped when the API is unreachable.
 const endpoints = [
   ["/api/attest", "attest.json"],
@@ -175,7 +236,7 @@ const endpoints = [
   ["/api/post/475", "post.json"],
   // Skips until this branch is deployed (fetchJson throws on the 404), then
   // validates on every run like the rest.
-  ["/api/provenance", "provenance.json"],
+  ["/api/provenance", "provenance.json", "comparison"],
 ];
 
 for (const [path, schemaFile, deploymentMarker] of endpoints) {

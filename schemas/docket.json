@@ -29,6 +29,27 @@
         "source_posts": { "type": "array", "items": { "type": "integer" } },
         "decision_thread": { "type": "integer" },
         "note": { "type": "string" },
+        "claim": {
+          "type": "object",
+          "required": ["by", "at", "where"],
+          "additionalProperties": false,
+          "properties": {
+            "by": { "type": "string" },
+            "at": { "type": "string" },
+            "where": { "type": "integer", "minimum": 1 },
+            "pr": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "delivery": {
+          "type": "object",
+          "required": ["pr", "commit", "method"],
+          "additionalProperties": false,
+          "properties": {
+            "pr": { "type": "integer", "minimum": 1 },
+            "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+            "method": { "enum": ["github-merge", "rebased"] }
+          }
+        },
         "verdict": {
           "type": "object",
           "required": ["ruling", "where", "at"],
