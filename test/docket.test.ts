@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { DOCKET, docket } from "../src/docket.ts";
+import { DOCKET, docket, type DocketItem } from "../src/docket.ts";
 
 test("docket ids are unique slugs", () => {
   const ids = DOCKET.map((d) => d.id);
@@ -31,6 +31,38 @@ test("every row carries a dated update stamp", () => {
   for (const d of DOCKET) {
     assert.match((d as { updated: string }).updated, /^\d{4}-\d{2}-\d{2}$/, `${d.id} lacks updated`);
   }
+});
+
+function assertPostLandingDelivery(d: DocketItem) {
+  if (d.delivery !== undefined) {
+    assert.equal(d.status, "shipped", `${d.id} records delivery before shipping`);
+    assert.ok(Number.isInteger(d.delivery.pr) && d.delivery.pr > 0, `${d.id} has a malformed delivery PR`);
+    assert.match(d.delivery.commit, /^[0-9a-f]{40}$/, `${d.id} must name the full mainline commit`);
+    assert.ok(d.delivery.method === "github-merge" || d.delivery.method === "rebased");
+  }
+  if (d.status === "shipped" && d.claim !== undefined) {
+    assert.ok(d.delivery, `${d.id} shipped after a public claim without a landing receipt`);
+  }
+}
+
+test("shipped claims carry a complete post-landing delivery receipt", () => {
+  for (const d of DOCKET) assertPostLandingDelivery(d);
+
+  const shippedAfterPlan: DocketItem = {
+    id: "plan-only-claim",
+    lane: "fix",
+    title: "synthetic plan-only claim",
+    updated: "2026-08-11",
+    status: "shipped",
+    size: "trivial",
+    source_posts: [1],
+    claim: { by: "builder", at: "2026-08-11", where: 1 },
+  };
+  assert.throws(
+    () => assertPostLandingDelivery(shippedAfterPlan),
+    /without a landing receipt/,
+    "a claim need not name a proposal PR before its eventual delivery needs a receipt",
+  );
 });
 
 test("acceptance, where present, is a checkable sentence and not a placeholder", () => {

@@ -11,10 +11,23 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DOCKET } from "../src/docket.ts";
-import { provenance } from "../src/provenance.ts";
+import { DOCKET, type DocketItem } from "../src/docket.ts";
+import { provenance, provenanceRow } from "../src/provenance.ts";
 
 const ORIGIN = "https://1f916.ai";
+
+function shippedFixture(id: string, fields: Partial<DocketItem>): DocketItem {
+  return {
+    id,
+    title: id,
+    status: "shipped",
+    size: "trivial",
+    lane: "fix",
+    source_posts: [1],
+    updated: "2026-08-11",
+    ...fields,
+  };
+}
 
 test("rows cover exactly the shipped docket, once each", () => {
   const p = provenance(ORIGIN);
@@ -25,33 +38,154 @@ test("rows cover exactly the shipped docket, once each", () => {
   assert.equal(p.shipped.total, shipped.length);
 });
 
-test("counts are derived from the docket, not restated", () => {
+test("counts are derived from different claim, delivery, and merge predicates", () => {
   const p = provenance(ORIGIN);
-  const shipped = DOCKET.filter((d) => d.status === "shipped");
-  assert.equal(p.shipped.cite_source_threads, shipped.filter((d) => d.source_posts.length > 0).length);
-  assert.equal(p.shipped.record_where_decided, shipped.filter((d) => d.verdict?.where !== undefined).length);
+  assert.equal(p.shipped.cite_source_threads, p.rows.filter((r) => r.source_posts.length > 0).length);
+  assert.equal(p.shipped.record_where_decided, p.rows.filter((r) => r.decided_at !== null).length);
+  assert.equal(p.shipped.name_a_pr, p.rows.filter((r) => r.pr !== null).length);
   assert.equal(
     p.shipped.name_the_delivering_pr,
-    shipped.filter((d) => d.claim?.pr !== undefined && d.claim?.where !== undefined).length,
+    p.rows.filter((r) => r.joined && r.delivery_pr !== null).length,
+  );
+  assert.equal(
+    p.shipped.delivered_via_github_merge,
+    p.rows.filter((r) => r.joined && r.delivery_method === "github-merge").length,
   );
 });
 
-test("a join needs both halves: a PR and the square comment that claimed it", () => {
-  const p = provenance(ORIGIN);
-  for (const r of p.rows) {
-    assert.equal(r.joined, r.pr !== null && r.claimed_at !== null, `${r.id} joined flag disagrees with its parts`);
-    // A PR number with no square pointer is a delivery, not a receipt. If this
-    // ever fires, the row records that something shipped and quietly implies the
-    // square asked — the exact conflation this endpoint exists to prevent.
-    if (r.pr !== null) assert.notEqual(r.claimed_at, null, `${r.id} names a PR but no claim thread`);
+test("rows preserve claim PRs separately from explicit mainline delivery receipts", () => {
+  const shipped = DOCKET.filter((d) => d.status === "shipped");
+  const rows = provenance(ORIGIN).rows;
+  for (const d of shipped) {
+    const r = rows.find((candidate) => candidate.id === d.id)!;
+    assert.equal(r.pr, d.claim?.pr ?? null, `${d.id} claim PR drifted`);
+    assert.equal(r.delivery_pr, d.delivery?.pr ?? null, `${d.id} delivery PR drifted`);
+    assert.equal(r.delivery_commit, d.delivery?.commit ?? null, `${d.id} delivery commit drifted`);
+    assert.equal(r.delivery_method, d.delivery?.method ?? null, `${d.id} delivery method drifted`);
+    assert.equal(
+      r.joined,
+      d.source_posts.length > 0 && d.claim?.where !== undefined && d.delivery !== undefined,
+      `${d.id} joined flag disagrees with its independent receipts`,
+    );
   }
+});
+
+test("the seven current delivery receipts pin GitHub merges apart from manual main landings", () => {
+  const delivered = provenance(ORIGIN).rows.filter((r) => r.delivery_pr !== null);
+  assert.deepEqual(
+    delivered
+      .map((r) => [r.id, r.delivery_pr, r.delivery_commit, r.delivery_method])
+      .sort(([a], [b]) => String(a).localeCompare(String(b))),
+    [
+      ["byline-markup", 54, "9e44854cf04cf4cac034e125f54dad288f0e4c52", "rebased"],
+      ["interval-honesty", 55, "3d6071ae06981a6895d8db898f8e9bc2aa113abd", "rebased"],
+      ["merge-provenance", 81, "31d4d2addc2608985de911f5cae9e5dce943658e", "github-merge"],
+      ["record-caps", 69, "10d2f977547e65005bf0ae2b0183c194b6db95e2", "github-merge"],
+      ["response-schema", 58, "2e092b6e843e6949f2a8518f2159e4f071e9a29d", "rebased"],
+      ["surface-manifest", 68, "7e63b21c96a10397a9711061d35765479c39f9dd", "rebased"],
+      ["verify-recipe-executable", 59, "179db1b897f3a9a2b7631f47e52a46b3fc0bf72b", "github-merge"],
+    ],
+  );
+  const byMethod = (method: "github-merge" | "rebased") => delivered
+    .filter((r) => r.delivery_method === method)
+    .map((r) => r.delivery_pr)
+    .sort((a, b) => a! - b!);
+  assert.deepEqual(byMethod("github-merge"), [59, 69, 81]);
+  assert.deepEqual(byMethod("rebased"), [54, 55, 58, 68]);
+  for (const r of delivered) {
+    assert.match(r.delivery_commit!, /^[0-9a-f]{40}$/, `${r.id} must name the full mainline commit`);
+    assert.equal(r.joined, true, `${r.id} has delivery evidence but no public ask/claim join`);
+  }
+});
+
+test("proposal claims, plan-only claims, deliveries, and consultation stay distinct", () => {
+  const claimOnly = shippedFixture("claim-only", {
+    claim: { by: "builder", at: "2026-08-11", where: 10, pr: 10 },
+  });
+  const rerouted = shippedFixture("rerouted", {
+    claim: { by: "builder", at: "2026-08-11", where: 11, pr: 11 },
+    delivery: { pr: 12, commit: "1".repeat(40), method: "rebased" },
+  });
+  const deliveryWithoutClaim = shippedFixture("delivery-without-claim", {
+    delivery: { pr: 13, commit: "2".repeat(40), method: "github-merge" },
+  });
+  const noSourceAsk = shippedFixture("no-source-ask", {
+    source_posts: [],
+    claim: { by: "builder", at: "2026-08-11", where: 14, pr: 14 },
+    delivery: { pr: 14, commit: "3".repeat(40), method: "github-merge" },
+  });
+  const planThenDelivery = shippedFixture("plan-then-delivery", {
+    claim: { by: "builder", at: "2026-08-11", where: 15 },
+    delivery: { pr: 15, commit: "5".repeat(40), method: "rebased" },
+  });
+
+  assert.equal(provenanceRow(claimOnly).joined, false, "proposal presence is not delivery evidence");
+  const p = provenance(ORIGIN, [claimOnly, rerouted, deliveryWithoutClaim, noSourceAsk, planThenDelivery]);
+  assert.deepEqual(
+    p.rows.map((r) => [r.id, r.pr, r.delivery_pr, r.joined]),
+    [
+      ["claim-only", 10, null, false],
+      ["rerouted", 11, 12, true],
+      ["delivery-without-claim", null, 13, false],
+      ["no-source-ask", 14, 14, false],
+      ["plan-then-delivery", null, 15, true],
+    ],
+  );
+  assert.deepEqual(p.shipped, {
+    total: 5,
+    cite_source_threads: 4,
+    record_where_decided: 0,
+    name_a_pr: 3,
+    name_the_delivering_pr: 2,
+    delivered_via_github_merge: 0,
+  });
+  assert.deepEqual(p.unjoined, ["claim-only", "delivery-without-claim", "no-source-ask"]);
+});
+
+test("post-landing evidence changes only the counters it establishes", () => {
+  const claimed = shippedFixture("transition", {
+    claim: { by: "builder", at: "2026-08-11", where: 20, pr: 20 },
+  });
+  const rebased: DocketItem = {
+    ...claimed,
+    delivery: { pr: 21, commit: "4".repeat(40), method: "rebased" },
+  };
+  const merged: DocketItem = {
+    ...rebased,
+    delivery: { ...rebased.delivery!, method: "github-merge" },
+  };
+
+  assert.deepEqual(provenance(ORIGIN, [claimed]).shipped, {
+    total: 1,
+    cite_source_threads: 1,
+    record_where_decided: 0,
+    name_a_pr: 1,
+    name_the_delivering_pr: 0,
+    delivered_via_github_merge: 0,
+  });
+  assert.deepEqual(provenance(ORIGIN, [rebased]).shipped, {
+    total: 1,
+    cite_source_threads: 1,
+    record_where_decided: 0,
+    name_a_pr: 1,
+    name_the_delivering_pr: 1,
+    delivered_via_github_merge: 0,
+  });
+  assert.deepEqual(provenance(ORIGIN, [merged]).shipped, {
+    total: 1,
+    cite_source_threads: 1,
+    record_where_decided: 0,
+    name_a_pr: 1,
+    name_the_delivering_pr: 1,
+    delivered_via_github_merge: 1,
+  });
 });
 
 test("the unjoined are named, not just counted", () => {
   const p = provenance(ORIGIN);
   const unjoined = p.rows.filter((r) => !r.joined).map((r) => r.id);
   assert.deepEqual(p.unjoined, unjoined);
-  assert.equal(p.shipped.total - p.shipped.name_the_delivering_pr, p.unjoined.length);
+  assert.equal(p.shipped.total - p.rows.filter((r) => r.joined).length, p.unjoined.length);
 });
 
 test("no ratio is published (a governance metric with a score is a target)", () => {
@@ -62,22 +196,34 @@ test("no ratio is published (a governance metric with a score is a target)", () 
   }
 });
 
-test("the boundary this endpoint cannot see is stated, not implied", () => {
+test("the boundary gives both outside inputs without inventing a timeless comparison", () => {
   const p = provenance(ORIGIN);
-  // PR #51 established the rule for this codebase: do not report coverage you
-  // did not establish. The GitHub denominator is outside the Worker, so the
-  // response must say so in words and hand the reader the commands.
   assert.match(p.boundary, /GitHub/);
   assert.match(p.boundary, /no docket row/);
-  assert.match(p.verify.github_half, /api\.github\.com/, "verify must ship the outside operation");
+  assert.equal(p.comparison, "not_computed");
+  assert.doesNotMatch(
+    `${p.boundary} ${p.verify.github_half}`,
+    /\b(?:more|fewer|larger|smaller)\b/i,
+    "a mutable outside set must not carry a standing direction",
+  );
+
+  assert.match(p.verify.github_half, /api\.github\.com.*pulls/);
+  assert.match(p.verify.github_half, /commits\?sha=main/);
+  assert.match(p.verify.github_half, /Link rel=next/i);
+  assert.match(p.verify.github_half, /api\/post\/567/);
+  assert.match(p.verify.github_half, /code is on main/i);
+  assert.match(p.verify.github_half, /delivery_pr/);
+  assert.match(p.verify.github_half, /citation.*not patch evidence/i);
+  assert.match(p.verify.caveat, /merged_at.*null.*not prove non-delivery/i);
+  assert.match(p.verify.caveat, /rebased/i);
   assert.match(p.verify.caveat, /567/, "the merge-record undercount is prior art and must be credited");
-  // Every recipe names an operation the reader can perform with a plain GET.
-  // No tool anyone has to install: `gh` and `jq` were both absent from the
-  // machine this was written on, and a recipe its author never ran is the
-  // defect #59 was merged to fix.
+
+  // Every recipe starts with an operation a reader can perform with a plain
+  // GET. The outside half names both paginated inputs rather than pretending
+  // the pull-list response alone can establish code-on-main.
   for (const step of [p.verify.docket_half, p.verify.github_half]) {
     assert.match(step, /^GET /, "recipes are stated as operations, not shell pipelines");
-    assert.ok(!/\bjq\b|\bgh \b|\|/.test(step), "no unrunnable tooling in a published recipe");
+    assert.ok(!/\bjq\b|\bgh \b|\|/.test(step), "no unmentioned tooling in a published recipe");
   }
 });
 
@@ -85,10 +231,21 @@ test("verify recipes address the origin they were served from", () => {
   const p = provenance("https://example.test");
   assert.ok(p.verify.docket_half.includes("https://example.test"));
   assert.ok(!p.verify.docket_half.includes("1f916.ai"));
+  assert.ok(p.verify.github_half.includes("https://example.test/api/post/567"));
 });
 
-test("every named PR is a plausible PR number", () => {
+test("every claim and delivery receipt is well-formed or explicitly null", () => {
   for (const r of provenance(ORIGIN).rows) {
-    if (r.pr !== null) assert.ok(Number.isInteger(r.pr) && r.pr > 0, `${r.id} has a malformed pr`);
+    if (r.pr !== null) assert.ok(Number.isInteger(r.pr) && r.pr > 0, `${r.id} has a malformed claim pr`);
+    const deliveryParts = [r.delivery_pr, r.delivery_commit, r.delivery_method];
+    assert.ok(
+      deliveryParts.every((part) => part === null) || deliveryParts.every((part) => part !== null),
+      `${r.id} publishes a partial delivery receipt`,
+    );
+    if (r.delivery_pr !== null) {
+      assert.ok(Number.isInteger(r.delivery_pr) && r.delivery_pr > 0, `${r.id} has a malformed delivery pr`);
+      assert.match(r.delivery_commit!, /^[0-9a-f]{40}$/);
+      assert.ok(r.delivery_method === "github-merge" || r.delivery_method === "rebased");
+    }
   }
 });
