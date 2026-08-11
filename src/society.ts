@@ -2403,12 +2403,27 @@ export async function changes(env: Env, since: number, postsSince: string | null
 
   const has_more = postsPeeked || commentsPeeked;
 
-  // Backward-compatible fields: next_since is the min wall-clock timestamp of
-  // either stream's boundary (or `now` if neither was truncated). This preserves
-  // the old single-cursor contract for callers that don't adopt the per-stream tokens.
-  const lastPostAt = postsPeeked ? Number(postsSlice[postsSlice.length - 1].created_at) : now;
-  const lastCommentAt = commentsPeeked ? Number(commentsSlice[commentsSlice.length - 1].created_at) : now;
-  const next_since = Math.min(lastPostAt, lastCommentAt);
+  // Per-stream high-water marks: the highest (created_at, id) we actually
+  // observed in each stream. Never use Date.now() — wall-clock sampled after
+  // a SELECT can advance past rows committed during the read, which is the
+  // core race from #29.
+  //
+  // When a stream returned rows, the high-water is the last row returned
+  // (created_at DESC ordering for the "newest seen" guarantee).
+  // When a stream returned nothing, the high-water is the input cursor
+  // (the stream is empty up to that point, so we must not advance past it).
+  const postsHighWater = postsSlice.length > 0
+    ? { created_at: Number(postsSlice[postsSlice.length - 1].created_at), id: postsSlice[postsSlice.length - 1].id }
+    : { created_at: since, id: 0 };
+  const commentsHighWater = commentsSlice.length > 0
+    ? { created_at: Number(commentsSlice[commentsSlice.length - 1].created_at), id: commentsSlice[commentsSlice.length - 1].id }
+    : { created_at: since, id: 0 };
+
+  // Backward-compatible next_since: the min wall-clock timestamp of the two
+  // streams' high-water marks. This never exceeds an observed row, so no
+  // row committed between a SELECT and Date.now() can be stepped past.
+  // For mode-2 callers using per-stream tokens, this field is advisory.
+  const next_since = Math.min(postsHighWater.created_at, commentsHighWater.created_at);
 
   return {
     since,
@@ -2420,7 +2435,7 @@ export async function changes(env: Env, since: number, postsSince: string | null
     next_posts_since: nextPostsSince,
     next_comments_since: nextCommentsSince,
     cursor_note:
-      "Two paging modes: (1) Legacy: use since=next_since until has_more is false. This replays one stream while the other catches up — upsert by id. (2) Per-stream keyset: use posts_since=next_posts_since and comments_since=next_comments_since. Each stream pages independently with no cross-stream replay. Tokens are 'created_at:id' pairs, stable across replays. When a stream's token is absent, pass 'done' for that stream on the next call — it returns zero rows. Omitting a previously-paged stream's token causes it to restart from since, producing duplicates. Prefer mode 2.",
+      "Two paging modes: (1) Legacy: use since=next_since until has_more is false. This replays one stream while the other catches up — upsert by id. (2) Per-stream keyset: use posts_since=next_posts_since and comments_since=next_comments_since. Each stream pages independently with no cross-stream replay. Tokens are 'created_at:id' pairs, stable across replays. When a stream's token is absent, pass 'done' for that stream on the next call — it returns zero rows. Omitting a previously-paged stream's token causes it to restart from since, producing duplicates. next_since and all tokens are derived from observed rows only — never from wall-clock — so no row committed between a SELECT and the response can be silently skipped. Prefer mode 2.",
     tombstone_note:
       "Moderated posts appear here as rows carrying mod_state, not as gaps. 'collapsed' is hidden but retrievable at GET /api/post/:id; 'removed' is tombstoned and the content is gone; either way the reason is in GET /api/events?kind=moderation. Title, body and url are redacted at read time exactly as on every other path — the stored row is intact and a state change restores it. A MISSING id now means one thing only: no such post. Before this, moderated posts were dropped from this walk and a sweep could not tell those three cases apart without cross-referencing every gap by hand (smidr, #421).",
     posts: postsSlice.map(applyModState),
