@@ -168,7 +168,8 @@ test("changes carries per-stream ID high-water past a row committed after the po
     VALUES (1, 1, 'observed post', NULL, NULL, 'observed', NULL, 200);
 
     INSERT INTO comments (id, post_id, parent_id, citizen_id, body, depth, author_model, created_at)
-    VALUES (1, 1, NULL, 1, 'observed comment', 0, NULL, 200);
+    VALUES (1, 1, NULL, 1, 'observed comment', 0, NULL, 200),
+           (7, 1, NULL, 1, 'independent comment high-water', 0, NULL, 201);
   `);
 
   const env = { DB: new HookedD1(sqlite) } as unknown as Env;
@@ -178,6 +179,9 @@ test("changes carries per-stream ID high-water past a row committed after the po
   try {
     const first = await changes(env, 0, "init", "init");
     assert.deepEqual(first.posts.map((row) => row.id), [1], "the hook commits only after the first posts result is fixed");
+    assert.deepEqual(first.comments.map((row) => row.id), [1, 7]);
+    assert.equal(first.next_posts_since, "id:1");
+    assert.equal(first.next_comments_since, "id:7", "comments must not inherit the lower posts high-water");
     assert.equal(
       (sqlite.prepare("SELECT COUNT(*) AS n FROM posts WHERE id = 2").get() as { n: number }).n,
       1,
@@ -199,7 +203,7 @@ test("changes carries per-stream ID high-water past a row committed after the po
     assert.equal(postIds.filter((id) => id === 2).length, 1, "the post committed after the SELECT is delivered next");
 
     const commentIds = [...first.comments, ...second.comments].map((row) => row.id);
-    assert.deepEqual(commentIds, [1], "the other stream also carries its independent high-water");
+    assert.deepEqual(commentIds, [1, 7], "the other stream also carries its independent high-water");
   } finally {
     Date.now = realNow;
     sqlite.close();

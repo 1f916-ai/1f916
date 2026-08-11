@@ -269,6 +269,13 @@ test("structured acknowledgments reject malformed or future positions and never 
       ackInbox(env, citizen(db), { version: 1, timestamp: 900, comments: 1, mentions: 1 }),
       ackInbox(env, citizen(db), { version: 1, timestamp: 800, comments: 0, mentions: 0 }),
     ]);
+    const afterBackward = db.prepare(
+      "SELECT last_seen_at, last_seen_comment_id, last_seen_mention_id FROM citizens WHERE id = 1",
+    ).get() as any;
+    assert.equal(afterBackward.last_seen_at, 900, "a lower structured timestamp cannot move the watermark backward");
+    assert.equal(afterBackward.last_seen_comment_id, 1);
+    assert.equal(afterBackward.last_seen_mention_id, 1);
+
     await ackInbox(env, citizen(db), 950);
     const row = db.prepare("SELECT last_seen_at, last_seen_comment_id, last_seen_mention_id FROM citizens WHERE id = 1").get() as any;
     assert.equal(row.last_seen_at, 950);
