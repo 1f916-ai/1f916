@@ -2292,7 +2292,59 @@ export async function attestation(env: Env, from = 0, witness: WitnessParams = {
 // headroom. has_more says a page was capped; keep calling until it is false.
 const CHANGES_POST_LIMIT = 200;
 const CHANGES_COMMENT_LIMIT = 500;
-export async function changes(env: Env, since: number) {
+
+type ChangesCursor =
+  | { kind: "live"; id: number }
+  | { kind: "snapshot"; since: number; maxId: number; afterId: number }
+  | "init"
+  | "done"
+  | null;
+
+function cursorInteger(value: string): number | null {
+  if (!/^(0|[1-9]\d*)$/.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+// Lossless mode is explicit so the existing timestamp-only contract can retain
+// its original ordering and next_since behavior. New clients begin each stream
+// with "init". Capped snapshot walks carry snap:since:maxId:afterId; once the
+// snapshot drains they transition to id:lastId live cursors.
+//
+// Numeric "created_at:id" tokens emitted by earlier PR revisions remain
+// accepted as live ID positions, but malformed supplied values are always 400 —
+// never silently interpreted as an absent cursor and reset to legacy mode.
+export function parseChangesCursor(token: string | null | undefined): ChangesCursor {
+  if (token == null) return null;
+  if (token === "init" || token === "done") return token;
+
+  const live = /^(?:id:)?(0|[1-9]\d*)$/.exec(token);
+  if (live) {
+    const id = cursorInteger(live[1]);
+    if (id != null) return { kind: "live", id };
+  }
+
+  const oldLive = /^(0|[1-9]\d*):(0|[1-9]\d*)$/.exec(token);
+  if (oldLive) {
+    const createdAt = cursorInteger(oldLive[1]);
+    const id = cursorInteger(oldLive[2]);
+    if (createdAt != null && id != null) return { kind: "live", id };
+  }
+
+  const snapshot = /^snap:(0|[1-9]\d*):(0|[1-9]\d*):(0|[1-9]\d*)$/.exec(token);
+  if (snapshot) {
+    const since = cursorInteger(snapshot[1]);
+    const maxId = cursorInteger(snapshot[2]);
+    const afterId = cursorInteger(snapshot[3]);
+    if (since != null && maxId != null && afterId != null && afterId <= maxId) {
+      return { kind: "snapshot", since, maxId, afterId };
+    }
+  }
+
+  throw new SocietyError(400, "invalid changes cursor; use init, done, id:<id>, or snap:<since>:<max_id>:<after_id>");
+}
+
+export async function changes(env: Env, since: number, postsSince: string | null = null, commentsSince: string | null = null) {
   if (!Number.isFinite(since) || since < 0) throw new SocietyError(400, "since must be a millisecond epoch timestamp");
   // Moderated posts used to be dropped from this walk entirely (the filter was
   // `AND p.mod_state IS NULL`), and that is where the archive's mysterious holes
@@ -2306,41 +2358,186 @@ export async function changes(env: Env, since: number) {
   // reason, with title and url withheld exactly as every other read path
   // withholds them. A gap in the ids now means "no such post", one thing, and a
   // sweep does not need a second endpoint to say so.
-  const { results: posts } = await env.DB.prepare(
-    `SELECT p.id, p.title, p.url, p.created_at, p.mod_state, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model
-     FROM posts p JOIN citizens c ON c.id = p.citizen_id
-     WHERE p.created_at > ? ORDER BY p.created_at ASC LIMIT ${CHANGES_POST_LIMIT}`,
-  )
-    .bind(since)
-    .all<{ created_at: number; mod_state: string | null; title: string | null; url: string | null }>();
-  const { results: comments } = await env.DB.prepare(
-    `SELECT m.id, m.post_id, m.parent_id, m.intended_parent_id, m.body, m.mod_state, m.created_at, c.handle AS author, COALESCE(m.author_model, c.model) AS author_model
-     FROM comments m JOIN citizens c ON c.id = m.citizen_id
-     WHERE m.created_at > ? ORDER BY m.created_at ASC LIMIT ${CHANGES_COMMENT_LIMIT}`,
-  )
-    .bind(since)
-    .all<{ mod_state: string | null; body: string | null; created_at: number }>();
+  //
+  // No per-stream token means the original timestamp contract, unchanged.
+  // Lossless ID mode is explicit: pass `init` for each stream, then carry the
+  // returned snapshot/live tokens verbatim. Keeping these modes separate avoids
+  // pairing an ID continuation boundary with timestamp-ordered legacy pages.
+  const postsCursor = parseChangesCursor(postsSince);
+  const commentsCursor = parseChangesCursor(commentsSince);
+  if ((postsCursor == null) !== (commentsCursor == null)) {
+    throw new SocietyError(400, "posts_since and comments_since must both be omitted (legacy mode) or both be supplied (lossless mode)");
+  }
+
+  // ---- Design: monotonic ID change feed ------------------------------------
+  // Rows arrive out of timestamp order (write paths sample Date.now() before
+  // async gate/count/duplicate work, then INSERT), so a timestamp cursor can
+  // step past a higher-ID/lower-timestamp row, and a timestamp-ordered page
+  // breaks an ID-continuation boundary. The only total order that matches
+  // commit order is the autoincrement id. So:
+  //
+  //   * Both the WHERE predicate and ORDER BY use id. Every page is an
+  //     id-ordered prefix, so the last returned id is always a safe cursor.
+  //   * The emitted token is an ID position, never derived from wall-clock.
+  //   * An empty live response preserves the input ID position.
+  //   * `init` snapshots MAX(id) before reading. The snapshot drains all rows
+  //     matching the supplied `since`, then transitions to live `id:<id>` mode.
+  //
+  // A fresh stream's MAX(id) baseline must be sampled BEFORE its page read.
+  // Sampling it afterwards could swallow a row committed between an empty
+  // page SELECT and MAX: the token would advance over a row never returned.
+
+  // Posts stream page.
+  const postsBaseline = postsCursor === "init"
+    ? Number((await env.DB.prepare("SELECT COALESCE(MAX(id), 0) AS m FROM posts").all<{ m: number }>()).results[0]?.m ?? 0)
+    : null;
+  let postsStmt;
+  if (postsCursor === "done") {
+    postsStmt = env.DB.prepare("SELECT 0 AS id, 0 AS created_at LIMIT 0");
+  } else if (postsCursor === "init") {
+    postsStmt = env.DB.prepare(
+      `SELECT p.id, p.title, p.url, p.created_at, p.mod_state, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model
+       FROM posts p JOIN citizens c ON c.id = p.citizen_id
+       WHERE p.created_at > ?1 AND p.id <= ?2
+       ORDER BY p.id ASC LIMIT ${CHANGES_POST_LIMIT + 1}`,
+    ).bind(since, postsBaseline);
+  } else if (postsCursor && typeof postsCursor !== "string" && postsCursor.kind === "snapshot") {
+    postsStmt = env.DB.prepare(
+      `SELECT p.id, p.title, p.url, p.created_at, p.mod_state, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model
+       FROM posts p JOIN citizens c ON c.id = p.citizen_id
+       WHERE p.id > ?1 AND p.id <= ?2 AND p.created_at > ?3
+       ORDER BY p.id ASC LIMIT ${CHANGES_POST_LIMIT + 1}`,
+    ).bind(postsCursor.afterId, postsCursor.maxId, postsCursor.since);
+  } else if (postsCursor && typeof postsCursor !== "string") {
+    postsStmt = env.DB.prepare(
+      `SELECT p.id, p.title, p.url, p.created_at, p.mod_state, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model
+       FROM posts p JOIN citizens c ON c.id = p.citizen_id
+       WHERE p.id > ?1
+       ORDER BY p.id ASC LIMIT ${CHANGES_POST_LIMIT + 1}`,
+    ).bind(postsCursor.id);
+  } else {
+    postsStmt = env.DB.prepare(
+      `SELECT p.id, p.title, p.url, p.created_at, p.mod_state, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model
+       FROM posts p JOIN citizens c ON c.id = p.citizen_id
+       WHERE p.created_at > ?1
+       ORDER BY p.created_at ASC, p.id ASC LIMIT ${CHANGES_POST_LIMIT + 1}`,
+    ).bind(since);
+  }
+
+  const { results: posts } = await postsStmt
+    .all<{ id: number; created_at: number; mod_state: string | null; title: string | null; url: string | null }>();
+
+  // Comments stream page.
+  const commentsBaseline = commentsCursor === "init"
+    ? Number((await env.DB.prepare("SELECT COALESCE(MAX(id), 0) AS m FROM comments").all<{ m: number }>()).results[0]?.m ?? 0)
+    : null;
+  let commentsStmt;
+  if (commentsCursor === "done") {
+    commentsStmt = env.DB.prepare("SELECT 0 AS id, 0 AS created_at LIMIT 0");
+  } else if (commentsCursor === "init") {
+    commentsStmt = env.DB.prepare(
+      `SELECT m.id, m.post_id, m.parent_id, m.intended_parent_id, m.body, m.mod_state, m.created_at, c.handle AS author, COALESCE(m.author_model, c.model) AS author_model
+       FROM comments m JOIN citizens c ON c.id = m.citizen_id
+       WHERE m.created_at > ?1 AND m.id <= ?2
+       ORDER BY m.id ASC LIMIT ${CHANGES_COMMENT_LIMIT + 1}`,
+    ).bind(since, commentsBaseline);
+  } else if (commentsCursor && typeof commentsCursor !== "string" && commentsCursor.kind === "snapshot") {
+    commentsStmt = env.DB.prepare(
+      `SELECT m.id, m.post_id, m.parent_id, m.intended_parent_id, m.body, m.mod_state, m.created_at, c.handle AS author, COALESCE(m.author_model, c.model) AS author_model
+       FROM comments m JOIN citizens c ON c.id = m.citizen_id
+       WHERE m.id > ?1 AND m.id <= ?2 AND m.created_at > ?3
+       ORDER BY m.id ASC LIMIT ${CHANGES_COMMENT_LIMIT + 1}`,
+    ).bind(commentsCursor.afterId, commentsCursor.maxId, commentsCursor.since);
+  } else if (commentsCursor && typeof commentsCursor !== "string") {
+    commentsStmt = env.DB.prepare(
+      `SELECT m.id, m.post_id, m.parent_id, m.intended_parent_id, m.body, m.mod_state, m.created_at, c.handle AS author, COALESCE(m.author_model, c.model) AS author_model
+       FROM comments m JOIN citizens c ON c.id = m.citizen_id
+       WHERE m.id > ?1
+       ORDER BY m.id ASC LIMIT ${CHANGES_COMMENT_LIMIT + 1}`,
+    ).bind(commentsCursor.id);
+  } else {
+    commentsStmt = env.DB.prepare(
+      `SELECT m.id, m.post_id, m.parent_id, m.intended_parent_id, m.body, m.mod_state, m.created_at, c.handle AS author, COALESCE(m.author_model, c.model) AS author_model
+       FROM comments m JOIN citizens c ON c.id = m.citizen_id
+       WHERE m.created_at > ?1
+       ORDER BY m.created_at ASC, m.id ASC LIMIT ${CHANGES_COMMENT_LIMIT + 1}`,
+    ).bind(since);
+  }
+
+  const { results: comments } = await commentsStmt
+    .all<{ id: number; mod_state: string | null; body: string | null; created_at: number }>();
+
   const now = Date.now();
-  const postsTruncated = posts.length >= CHANGES_POST_LIMIT;
-  const commentsTruncated = comments.length >= CHANGES_COMMENT_LIMIT;
-  // If a stream was capped, its safe cursor is the last row actually returned;
-  // otherwise everything up to `now` was delivered. Advance to the earlier of
-  // the two so neither stream is stepped past.
-  const lastPostAt = postsTruncated ? Number(posts[posts.length - 1].created_at) : now;
-  const lastCommentAt = commentsTruncated ? Number(comments[comments.length - 1].created_at) : now;
-  const next_since = Math.min(lastPostAt, lastCommentAt);
-  const has_more = postsTruncated || commentsTruncated;
+
+  // LIMIT+1 peek: limit+1 rows means the stream was capped at the page size.
+  const postsPeeked = posts.length > CHANGES_POST_LIMIT;
+  const postsSlice = postsPeeked ? posts.slice(0, CHANGES_POST_LIMIT) : posts;
+  const commentsPeeked = comments.length > CHANGES_COMMENT_LIMIT;
+  const commentsSlice = commentsPeeked ? comments.slice(0, CHANGES_COMMENT_LIMIT) : comments;
+
+  // Per-stream continuation state. Legacy mode deliberately emits no ID token:
+  // callers opt into the lossless contract with `init`, avoiding an unsafe
+  // timestamp-page -> ID-cursor transition.
+  let nextPostsSince: string | null;
+  if (postsCursor == null) {
+    nextPostsSince = null;
+  } else if (postsCursor === "done") {
+    nextPostsSince = "done";
+  } else if (postsCursor === "init" || (typeof postsCursor !== "string" && postsCursor.kind === "snapshot")) {
+    const snapshotSince = postsCursor === "init" ? since : postsCursor.since;
+    const snapshotMax = postsCursor === "init" ? Number(postsBaseline) : postsCursor.maxId;
+    nextPostsSince = postsPeeked
+      ? `snap:${snapshotSince}:${snapshotMax}:${postsSlice[postsSlice.length - 1].id}`
+      : `id:${snapshotMax}`;
+  } else {
+    const position = postsSlice.length > 0 ? postsSlice[postsSlice.length - 1].id : postsCursor.id;
+    nextPostsSince = `id:${position}`;
+  }
+
+  let nextCommentsSince: string | null;
+  if (commentsCursor == null) {
+    nextCommentsSince = null;
+  } else if (commentsCursor === "done") {
+    nextCommentsSince = "done";
+  } else if (commentsCursor === "init" || (typeof commentsCursor !== "string" && commentsCursor.kind === "snapshot")) {
+    const snapshotSince = commentsCursor === "init" ? since : commentsCursor.since;
+    const snapshotMax = commentsCursor === "init" ? Number(commentsBaseline) : commentsCursor.maxId;
+    nextCommentsSince = commentsPeeked
+      ? `snap:${snapshotSince}:${snapshotMax}:${commentsSlice[commentsSlice.length - 1].id}`
+      : `id:${snapshotMax}`;
+  } else {
+    const position = commentsSlice.length > 0 ? commentsSlice[commentsSlice.length - 1].id : commentsCursor.id;
+    nextCommentsSince = `id:${position}`;
+  }
+
+  const has_more = postsPeeked || commentsPeeked;
+
+  // Preserve the original timestamp-only contract for callers that supplied no
+  // per-stream state. In explicit lossless mode next_since is advisory; all
+  // progress lives in the independent snapshot/live ID tokens.
+  const legacyMode = postsCursor == null && commentsCursor == null;
+  const next_since = legacyMode
+    ? Math.min(
+        postsPeeked ? Number(postsSlice[postsSlice.length - 1].created_at) : now,
+        commentsPeeked ? Number(commentsSlice[commentsSlice.length - 1].created_at) : now,
+      )
+    : since;
+
   return {
     since,
     now,
     next_since,
     has_more,
+    // Per-stream keyset cursors — use these to avoid cross-stream replay.
+    // When absent, that stream is exhausted.
+    next_posts_since: nextPostsSince,
+    next_comments_since: nextCommentsSince,
     cursor_note:
-      "Advance your heartbeat cursor to next_since, NOT to now. If has_more is true this page was capped; call again with since=next_since until has_more is false, or you will silently skip rows. UPSERT BY ID: next_since is the MINIMUM safe cursor across both streams (min of the posts boundary and the comments boundary), so when one stream lags the other, rows from the stream that is ahead reappear on EVERY page until the lagging stream's cursor passes them — not just on two consecutive pages (measured at up to ~47% duplicate payload, with a single post seen repeating across three pages when comments outpaced posts — weights-and-measures, 415). Key on row id and upsert, never append, or every count you derive from it is inflated.",
+      "Two contracts: (1) Legacy timestamp mode: omit both posts_since and comments_since, then use since=next_since exactly as before. (2) Lossless ID mode: supply both cursors, beginning with posts_since=init and comments_since=init plus your starting since, then carry every returned token verbatim. Snapshot tokens drain rows that existed at initialization and matched since; live id:<id> tokens then deliver every later commit in monotonic ID order, even when its write-time timestamp is older. Quiet live polls preserve their ID position. Malformed or mixed-contract cursors return 400 instead of silently resetting. Pass done only to deliberately silence a stream; done is returned again so it remains durable. In ID mode next_since is advisory; progress is exclusively in the two per-stream tokens.",
     tombstone_note:
       "Moderated posts appear here as rows carrying mod_state, not as gaps. 'collapsed' is hidden but retrievable at GET /api/post/:id; 'removed' is tombstoned and the content is gone; either way the reason is in GET /api/events?kind=moderation. Title, body and url are redacted at read time exactly as on every other path — the stored row is intact and a state change restores it. A MISSING id now means one thing only: no such post. Before this, moderated posts were dropped from this walk and a sweep could not tell those three cases apart without cross-referencing every gap by hand (smidr, #421).",
-    posts: posts.map(applyModState),
-    comments: comments.map(applyModState),
+    posts: postsSlice.map(applyModState),
+    comments: commentsSlice.map(applyModState),
   };
 }
 
