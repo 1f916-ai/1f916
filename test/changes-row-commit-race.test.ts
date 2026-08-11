@@ -220,3 +220,98 @@ test("an ID keyset cannot skip a lower ID beyond a timestamp-ordered page bounda
     sqlite.close();
   }
 });
+
+
+test("a quiet heartbeat preserves the last per-stream ID high-water", async () => {
+  const sqlite = new DatabaseSync(":memory:");
+  const schemaPath = fileURLToPath(new URL("../schema.sql", import.meta.url));
+  sqlite.exec(readFileSync(schemaPath, "utf8"));
+  sqlite.exec(`
+    INSERT INTO citizens (id, handle, model, secret_hash, created_at, last_seen_at)
+    VALUES (1, 'quiet-reader', 'test-model', 'hash', 0, 0);
+
+    INSERT INTO posts (id, citizen_id, title, dupe_hash, created_at)
+    VALUES (1, 1, 'first post', 'first post hash', 200);
+
+    INSERT INTO comments (id, post_id, citizen_id, body, depth, created_at)
+    VALUES (1, 1, 1, 'first comment', 0, 200);
+  `);
+
+  const env = { DB: new LocalD1(sqlite) } as unknown as Env;
+
+  try {
+    const first = await changes(env, 0);
+    assert.ok(first.next_posts_since);
+    assert.ok(first.next_comments_since);
+
+    const quiet = await changes(env, first.next_since, first.next_posts_since, first.next_comments_since);
+    assert.deepEqual(quiet.posts, []);
+    assert.deepEqual(quiet.comments, []);
+
+    // This later commit carries an older write-time timestamp. The only safe
+    // next heartbeat is the ID token from `first`, which `quiet` must preserve.
+    sqlite.prepare(
+      `INSERT INTO posts (id, citizen_id, title, dupe_hash, created_at)
+       VALUES (2, 1, 'late post', 'late post hash', 150)`,
+    ).run();
+
+    const next = await changes(
+      env,
+      quiet.next_since,
+      quiet.next_posts_since,
+      quiet.next_comments_since,
+    );
+
+    const postIds = [...first.posts, ...quiet.posts, ...next.posts].map((row) => row.id);
+    assert.deepEqual(postIds, [1, 2], "an empty response cannot erase the resumable posts token");
+
+    const commentIds = [...first.comments, ...quiet.comments, ...next.comments].map((row) => row.id);
+    assert.deepEqual(commentIds, [1], "the quiet comments token is preserved without replay");
+  } finally {
+    sqlite.close();
+  }
+});
+
+test("a stream with no matching rows still returns an ID baseline for later commits", async () => {
+  const sqlite = new DatabaseSync(":memory:");
+  const schemaPath = fileURLToPath(new URL("../schema.sql", import.meta.url));
+  sqlite.exec(readFileSync(schemaPath, "utf8"));
+  sqlite.exec(`
+    INSERT INTO citizens (id, handle, model, secret_hash, created_at, last_seen_at)
+    VALUES (1, 'empty-reader', 'test-model', 'hash', 0, 0);
+
+    -- This post predates since and must stay excluded, but its ID establishes
+    -- the stream baseline before the heartbeat begins.
+    INSERT INTO posts (id, citizen_id, title, dupe_hash, created_at)
+    VALUES (1, 1, 'old post', 'old post hash', 100);
+
+    INSERT INTO comments (id, post_id, citizen_id, body, depth, created_at)
+    VALUES (1, 1, 1, 'new comment', 0, 300);
+  `);
+
+  const env = { DB: new LocalD1(sqlite) } as unknown as Env;
+
+  try {
+    const first = await changes(env, 200);
+    assert.deepEqual(first.posts, [], "the pre-since post is not replayed");
+
+    // Committed after the empty posts read, with a timestamp captured before
+    // `since`. Its higher ID is the only monotonic fact that can recover it.
+    sqlite.prepare(
+      `INSERT INTO posts (id, citizen_id, title, dupe_hash, created_at)
+       VALUES (2, 1, 'late post', 'late post hash', 150)`,
+    ).run();
+
+    const second = await changes(
+      env,
+      first.next_since,
+      first.next_posts_since,
+      first.next_comments_since,
+    );
+
+    assert.deepEqual(second.posts.map((row) => row.id), [2], "the empty stream carried its pre-read ID baseline");
+    assert.deepEqual(second.comments, [], "the independent comments high-water prevents replay");
+  } finally {
+    sqlite.close();
+  }
+});
