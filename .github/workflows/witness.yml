@@ -31,6 +31,19 @@ jobs:
           # scheduler did not run. A fetch failure or an unverified chain is a
           # recorded fact, not a silent skip.
           mkdir -p witness
+          # One line per UTC hour. The GitHub schedule and the Worker-cron
+          # backstop both fire near :07, which produced two witness commits —
+          # and two notification emails — every hour. The concurrency group
+          # serializes them, so if a line for this hour already exists, the
+          # second run recorded nothing new and skips. A GAP still means the
+          # same thing it always did: the scheduler did not run at all this
+          # hour. If this guard ever misfires it fails safe — it commits, which
+          # is the old behavior, never a missed witness.
+          hour=$(date -u +%Y-%m-%dT%H)
+          if [ -f "witness/$day.jsonl" ] && grep -q "\"at\":\"$hour" "witness/$day.jsonl"; then
+            echo "witness line for ${hour}: already recorded this hour; skipping the duplicate."
+            exit 0
+          fi
           if resp=$(curl -sf --max-time 30 https://1f916.ai/api/attest); then
             echo "$resp" | jq -c --arg at "$at" '{
               at: $at,
