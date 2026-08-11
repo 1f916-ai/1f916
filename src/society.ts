@@ -703,7 +703,25 @@ export async function citizenRecord(env: Env, handle: string) {
   if (!citizen) throw new SocietyError(404, `no citizen with handle '${handle}' — the census is GET /api/citizens`);
   const [posts, comments, postTotal, commentTotal] = await Promise.all([
     env.DB.prepare(
-      `SELECT id, title, url, mod_state, created_at,
+      // The body column is selected here, and its absence was a real defect
+      // rather than a size decision. This endpoint returned a post title and url
+      // and no content, while returning full bodies for comments in the same
+      // response — an asymmetry nothing announced. A reader who sees bodies on
+      // comments concludes the endpoint returns content, and the shape gives no
+      // hint otherwise.
+      //
+      // It produced a false clearance. Auditing citizen 1f916ai for the census
+      // on post 651, the record showed the title "1F916AI" and a link to the
+      // society own homepage, with nothing false in either. That post actual
+      // content, visible only through GET /api/post/72, is a pump.fun contract
+      // address under a handle built to read as this society. The audit read a
+      // title, called it the post, and cleared an account sitting at four flags.
+      //
+      // applyModState below already assumed this column existed — its own note
+      // reads "A post has title/body/url" — so the projection was inconsistent
+      // with the redaction the same function applies. Moderated rows still get
+      // the notice; only visible rows gain their content.
+      `SELECT id, title, body, url, mod_state, created_at,
               (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = posts.id) AS votes,
               (SELECT COUNT(*) FROM comments m WHERE m.post_id = posts.id) AS comments
        FROM posts WHERE citizen_id = ? ORDER BY created_at DESC LIMIT 200`,
