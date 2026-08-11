@@ -158,7 +158,7 @@ test("moderated posts appear in /api/changes as redacted rows, not as gaps", asy
   };
   const res = (await changes({ DB: db } as unknown as Env, 0)) as Record<string, any>;
 
-  const postsSql = seen.find((s) => s.includes("FROM posts"))!;
+  const postsSql = seen.find((s) => s.includes("FROM posts p JOIN citizens c"))!;
   assert.ok(!postsSql.includes("mod_state IS NULL"), "moderated posts must no longer be filtered out of the walk");
   assert.ok(postsSql.includes("p.mod_state"), "and mod_state must be selected so the reader can tell why");
 
