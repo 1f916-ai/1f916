@@ -20,7 +20,16 @@ function stubEnv(
 ): Env {
   const db = {
     prepare(sql: string) {
-      return {
+      // bind() returns the statement so calls chain, as D1 does. Added when
+      // treasury() gained its first parameterized read (the sealed collection
+      // policy); without it that call threw before the asset batch ran, and the
+      // failure surfaced as "the first request should reach the asset RPC
+      // batch" — a missing method in the fake wearing the costume of a cache
+      // bug. No assertion in this file changed.
+      const stmt = {
+        bind(..._args: unknown[]) {
+          return stmt;
+        },
         async all<T>() {
           return { results: [] as T[] };
         },
@@ -29,6 +38,7 @@ function stubEnv(
           return { n: 0 } as T;
         },
       };
+      return stmt;
     },
   };
   return { DB: db, TREASURY_ADDRESS: treasuryAddress, BASE_RPC_URL: rpcUrl } as unknown as Env;

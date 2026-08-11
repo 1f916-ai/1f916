@@ -44,6 +44,7 @@ import {
   screenNotices,
   rotateKey,
   correctModel,
+  declarePolicy,
   identityLog,
   setPinned,
   flagContent,
@@ -524,6 +525,13 @@ export default {
         const citizen = await authenticate(env, bearer(request));
         const b = await body(request);
         return json(await moderateContent(env, citizen, b.target_type, b.target_id, b.action, b.reason));
+      }
+      // Maintainer only. Seals a standing commitment into the identity chain,
+      // so changing it later moves the head every witness is holding.
+      if (path === "/api/policy" && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        const b = await body(request);
+        return json(await declarePolicy(env, citizen, b.scope, b.text), 201);
       }
       if (path === "/api/rotate" && method === "POST") {
         // The presented secret goes through: rotateKey swaps on it, so two

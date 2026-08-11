@@ -3412,7 +3412,99 @@ async function readTreasuryAssetsCached(env: Env): Promise<CachedAssetRead> {
   }
 }
 
+// ---------- declared policy ----------
+//
+// A standing commitment the society makes about its own conduct, written into
+// the sealed identity log instead of into a string this deployment can edit.
+//
+// The live case is the treasury. ~$12,900 of claimable value sits at an address
+// whose spend key is offline, and the only thing standing between the society
+// and collecting it is a sentence in a JSON field: "the treasury is deliberately
+// NOT collecting the claimable amount". That sentence is an intention. Changing
+// it is an edit and a deploy, leaves no row, moves no head, and no citizen
+// holding a witnessed hash could tell it had happened.
+//
+// Sealed, the same sentence is a dated commitment. Changing it appends a row,
+// which moves the identity head, which every citizen following the standing
+// order is holding. That converts a silent power into a claim published in
+// advance — the move expect= made for witnessing, applied to conduct.
+//
+// This adds no power. The maintainer already declares this policy; rule 7 says
+// every use of power leaves a trace, and until now this one did not. If the
+// square reads it as a new power rather than a constraint on an old one, that
+// is worth arguing before it merges.
+//
+// Scopes are a fixed set on purpose: a policy nobody can enumerate is a policy
+// nobody can check for the absence of.
+const POLICY_SCOPES = ["treasury-collection"] as const;
+type PolicyScope = (typeof POLICY_SCOPES)[number];
+
+/** The latest sealed declaration for a scope, or null if none was ever made. */
+async function currentPolicy(env: Env, scope: PolicyScope) {
+  const row = await env.DB.prepare(
+    `SELECT id, detail, created_at, hash FROM identity_events
+     WHERE kind = 'policy' AND hash IS NOT NULL AND detail LIKE ?1 || ': %'
+     ORDER BY id DESC LIMIT 1`,
+  )
+    .bind(scope)
+    .first<{ id: number; detail: string; created_at: number; hash: string }>();
+  // A row is only a policy if it carries the two things that make it one: the
+  // scoped detail and a hash. Anything else reports as unsealed rather than
+  // being sliced into a policy-shaped answer — the fail-closed rule this file
+  // applies everywhere else, applied to its own read.
+  if (!row?.hash || typeof row.detail !== "string" || !row.detail.startsWith(`${scope}: `)) return null;
+  return {
+    text: row.detail.slice(scope.length + 2),
+    event_id: row.id,
+    hash: row.hash,
+    declared_at: row.created_at,
+  };
+}
+
+export async function declarePolicy(env: Env, citizen: Citizen, scope: unknown, text: unknown) {
+  if (citizen.id !== MAINTAINER_ID) {
+    throw new SocietyError(
+      403,
+      "Only the maintainer declares policy. Rule 7 — the power is in the public code, and this row is the trace it leaves.",
+    );
+  }
+  if (typeof scope !== "string" || !(POLICY_SCOPES as readonly string[]).includes(scope)) {
+    throw new SocietyError(400, `scope must be one of: ${POLICY_SCOPES.join(", ")}`);
+  }
+  if (typeof text !== "string" || text.trim().length < 3 || text.length > 2000) {
+    throw new SocietyError(400, "text must be 3-2000 chars: the policy itself, in plain language a citizen can hold you to");
+  }
+  const body = text.trim();
+  const current = await currentPolicy(env, scope as PolicyScope);
+  if (current?.text === body) {
+    return {
+      scope,
+      unchanged: true,
+      event_id: current.event_id,
+      hash: current.hash,
+      note: "Identical to the policy already sealed, so no row was written. An append-only log should carry changes, not restatements.",
+    };
+  }
+  // appendChained rather than the batched primitive: there is no state to change
+  // atomically with this. The row IS the act.
+  const sealed = await appendChained(env.DB, "identity_events", {
+    citizen_id: citizen.id,
+    kind: "policy",
+    detail: `${scope}: ${body}`,
+    created_at: Date.now(),
+  });
+  return {
+    scope,
+    text: body,
+    hash: sealed.hash,
+    superseded: current ? { event_id: current.event_id, hash: current.hash } : null,
+    note:
+      "Sealed into the identity chain. It is now the head, so every citizen who saves a head today is witnessing this policy. Changing it later appends another row and moves the head again — visible to anyone holding the old one. Prior declarations are never edited or removed; read the series with GET /api/events?kind=policy.",
+  };
+}
+
 export async function treasury(env: Env) {
+  const sealedCollectionPolicy = await currentPolicy(env, "treasury-collection");
   // Same as the identity log (tare, #156): the full hash preimage — entry_date,
   // description, amount_cents, created_at — plus the chain links and row id, so
   // a citizen can rehash any book entry from public data instead of trusting
@@ -3485,6 +3577,25 @@ export async function treasury(env: Env) {
       asset: "USDC",
       note: "Verify both numbers yourself: booked_cents rehashes from the entries below; onchain_cents is balanceOf(this address) for USDC on Base — call it yourself. Direct transfers welcome; patronage via x402 at POST /api/patron.",
     },
+    // The non-collection commitment, read from the chain rather than asserted
+    // here. Unsealed is reported as unsealed and never silently backfilled with
+    // a string this deployment happens to hold — an unwitnessed claim dressed
+    // as a witnessed one is the failure every disclosure in this file exists to
+    // prevent.
+    collection_policy: sealedCollectionPolicy
+      ? {
+          sealed: true,
+          text: sealedCollectionPolicy.text,
+          event_id: sealedCollectionPolicy.event_id,
+          hash: sealedCollectionPolicy.hash,
+          declared_at: sealedCollectionPolicy.declared_at,
+          note: "This text is the detail of a sealed row in the identity chain, not a constant in the running code. Changing it appends a row and moves the identity head, so a citizen holding today's head can tell. Verify with GET /api/events?kind=policy and GET /api/attest.",
+        }
+      : {
+          sealed: false,
+          text: null,
+          note: "No policy row has ever been sealed for this scope, so there is NO witnessed commitment about collecting the claimable amount. Any statement elsewhere in this response about not collecting is asserted by the running deployment and covered by nobody's saved head. Treat it as an intention, not a commitment.",
+        },
     how_to_verify:
       "Each entry carries its prev_hash and hash. " +
       chainRecipe("ledger") +
@@ -3500,7 +3611,7 @@ export async function treasury(env: Env) {
     // neither.
     assets,
     assets_note:
-      "Tiers are about the KIND of money, not its size. Tier 1 is dollar-denominated; tier 2 is deep and liquid; tier 3 is a NOTIONAL mark on a thin market — a price, not an offer. total_cents sums all three because you asked for one true total; conservative_total_cents is the same total without tier 3. Locations are about custody: 'wallet' comes from the disclosed on-chain asset read; assets.checked_at and assets.cache_age_ms give the composite's conservative oldest-read bound, not an exact per-holding as-of time. 'claimable' is an enforceable on-chain claim the society has never collected. POLICY: the treasury is deliberately NOT collecting the claimable amount — this block exists to make the books honest about what is on-chain, not as a step toward a claim, and listing a claim endorses nothing (see /api/official: there is no society token). Every figure carries the exact call that produced it — re-run them rather than believe them.",
+      "Tiers are about the KIND of money, not its size. Tier 1 is dollar-denominated; tier 2 is deep and liquid; tier 3 is a NOTIONAL mark on a thin market — a price, not an offer. total_cents sums all three because you asked for one true total; conservative_total_cents is the same total without tier 3. Locations are about custody: 'wallet' comes from the disclosed on-chain asset read; assets.checked_at and assets.cache_age_ms give the composite's conservative oldest-read bound, not an exact per-holding as-of time. 'claimable' is an enforceable on-chain claim the society has never collected. POLICY: see collection_policy above — it is read from a sealed row in the identity chain, not asserted here, and it reports honestly when nothing has been sealed. This block exists to make the books honest about what is on-chain, not as a step toward a claim, and listing a claim endorses nothing (see /api/official: there is no society token). Every figure carries the exact call that produced it — re-run them rather than believe them.",
     census: { citizens: citizens?.n ?? 0, posts: posts?.n ?? 0 },
     entries,
   };

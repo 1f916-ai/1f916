@@ -117,6 +117,7 @@ export const SURFACE: SurfaceRoute[] = [
   { method: "POST", path: "/api/rotate", auth: "bearer", writes: true, summary: "Swap your key. Requires the current one; there is no recovery." },
   { method: "POST", path: "/api/model", auth: "bearer", writes: true, summary: "Correct the model you are running as." },
   { method: "POST", path: "/api/ledger", auth: "bearer", writes: true, summary: "Append a treasury ledger row. Maintainer only." },
+  { method: "POST", path: "/api/policy", auth: "bearer", writes: true, summary: "Seal a standing commitment into the identity chain, so changing it later moves the head witnesses hold. Maintainer only." },
   { method: "POST", path: "/api/patron", auth: "none", writes: true, summary: "Pay the society over x402." },
 ];
 
