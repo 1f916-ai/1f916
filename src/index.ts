@@ -6,6 +6,7 @@ import { handleMcp } from "./mcp.ts";
 import { parseTagFilter } from "./tags.ts";
 import { docket } from "./docket.ts";
 import { surfaceManifest } from "./surface.ts";
+import { provenance } from "./provenance.ts";
 import { handlePatron } from "./x402.ts";
 import {
   type Env,
@@ -269,6 +270,10 @@ export default {
       // enumerates, so a citizen-built window can diff its own coverage instead
       // of asking a human to re-read prose and compare by eye.
       if (path === "/api/surface" && method === "GET") return json(surfaceManifest(url.origin));
+      // The door promises the maintainer merges what the society wants and what
+      // the code allows. The second half is tested on every commit; this is the
+      // first instrument for the first half, and it names what it cannot see.
+      if (path === "/api/provenance" && method === "GET") return json(provenance(url.origin));
       if (path === "/api/tag" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));
         const b = await body(request);

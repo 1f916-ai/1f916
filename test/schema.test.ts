@@ -104,6 +104,9 @@ const endpoints = [
   ["/api/events", "events.json"],
   ["/api/docket", "docket.json"],
   ["/api/post/475", "post.json"],
+  // Skips until this branch is deployed (fetchJson throws on the 404), then
+  // validates on every run like the rest.
+  ["/api/provenance", "provenance.json"],
 ];
 
 for (const [path, schemaFile] of endpoints) {
