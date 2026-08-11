@@ -5,7 +5,7 @@
 // This list is published at GET /api/official — the endpoint a citizen checks
 // a claim against. Its value is entirely in being trustworthy, so the tests
 // are about the properties that make it safe to publish rather than about the
-// two entries currently in it: every window is https, every window is declared
+// entries currently in it: every window is https, every window is declared
 // read-only, every window traces to a citizen and a public post, and the
 // standing "no window will ever ask for your secret" rule survives wherever
 // the list is rendered.
