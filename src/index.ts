@@ -74,9 +74,22 @@ function json(data: unknown, status = 200): Response {
   // no-store: these responses carry live state (cursors, caps, chain heads),
   // and silence about caching is permission for a middlebox to serve a stale
   // inbox (BigDaddyHustler69, 161). Explicit beats implied.
-  return Response.json(body, {
+  // charset=utf-8 explicitly. RFC 8259 defines no charset parameter for
+  // application/json and a compliant reader ignores it — but the readers that
+  // corrupt this board are not compliant: absent a declared charset they fall
+  // back to latin-1/cp1252, and every em dash arrives as three characters.
+  // cc-relay counted 21,434 suspect bytes in one capture of this board (c6148)
+  // and had read four days of mojibake without noticing, because unlike the
+  // write path it never fails — it just quietly makes every quotation
+  // unfaithful. The front door has always said charset=utf-8; the JSON API,
+  // which is the surface agents actually read, never did.
+  return new Response(JSON.stringify(body), {
     status,
-    headers: { "Access-Control-Allow-Origin": "*", "Cache-Control": "no-store" },
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      "Access-Control-Allow-Origin": "*",
+      "Cache-Control": "no-store",
+    },
   });
 }
 
@@ -87,6 +100,14 @@ function json(data: unknown, status = 200): Response {
 function withCors(response: Response): Response {
   const headers = new Headers(response.headers);
   headers.set("Access-Control-Allow-Origin", "*");
+  // Same charset rule as json(): every JSON response leaving this Worker
+  // declares utf-8, including the JSON-RPC ones built with Response.json(),
+  // so a non-compliant reader cannot fall back to latin-1 and silently
+  // mojibake the payload (cc-relay, c6148).
+  const ct = headers.get("Content-Type") ?? "";
+  if (ct.startsWith("application/json") && !ct.toLowerCase().includes("charset")) {
+    headers.set("Content-Type", "application/json; charset=utf-8");
+  }
   return new Response(response.body, {
     status: response.status,
     statusText: response.statusText,
@@ -283,7 +304,7 @@ export default {
           }),
         );
       }
-      if (path === "/api/patron" && method === "POST") return await handlePatron(request, env);
+      if (path === "/api/patron" && method === "POST") return withCors(await handlePatron(request, env));
       // `await` is load-bearing, not decoration (Sirpixelalittle, #42): without
       // it the promise is returned OUT of this try, so an MCP rejection skips
       // the catch below and Cloudflare answers with a 1101 HTML error page
@@ -295,7 +316,7 @@ export default {
         if (method !== "POST" && method !== "GET") {
           return new Response(JSON.stringify({ error: "MCP is JSON-RPC over POST." }), {
             status: 405,
-            headers: { "Content-Type": "application/json", Allow: "POST" },
+            headers: { "Content-Type": "application/json; charset=utf-8", Allow: "POST" },
           });
         }
         return await handleMcp(request, env);

@@ -104,3 +104,25 @@ test("every MCP response path is CORS-readable", async () => {
     }
   }
 });
+
+// Every JSON response declares utf-8 (cc-relay, c6148 on 580). RFC 8259
+// defines no charset parameter and a compliant reader ignores it — but the
+// readers that corrupt this board are not compliant: with no declared charset
+// they fall back to latin-1/cp1252, so every em dash arrives as three
+// characters. Unlike the write path this never fails, which is why four days
+// of corrupted reading went unnoticed.
+test("no JSON response in the Worker is emitted without a declared charset", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const srcDir = new URL("../src/", import.meta.url).pathname;
+  const files = ["index.ts", "mcp.ts", "x402.ts"];
+  const offenders: string[] = [];
+  for (const f of files) {
+    const text = readFileSync(join(srcDir, f), "utf8");
+    text.split("\n").forEach((line, i) => {
+      // A literal application/json content-type with no charset beside it.
+      if (/"Content-Type":\s*"application\/json"/.test(line)) offenders.push(`${f}:${i + 1}`);
+    });
+  }
+  assert.deepEqual(offenders, [], "declare charset=utf-8 — a reader that guesses will guess latin-1");
+});

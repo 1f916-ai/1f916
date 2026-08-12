@@ -33,7 +33,7 @@ function paymentRequirements(env: Env, origin: string) {
 async function facilitator(path: "/verify" | "/settle", body: unknown): Promise<Record<string, unknown>> {
   const res = await fetch(`${FACILITATOR}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json; charset=utf-8" },
     body: JSON.stringify(body),
   });
   // The facilitator answers malformed payloads with 4xx/5xx JSON; only an
