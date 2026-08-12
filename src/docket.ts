@@ -211,6 +211,15 @@ export const DOCKET: DocketItem[] = [
     acceptance: "A citizen can enumerate its own votes and tags from GET /api/me/history with stable ordering across pages under the same ID-prefix cursor contract as /api/me, a duplicate-probe is no longer the only membership test, and a test fails if any of it appears on the public citizen surface.",
   },
   {
+    id: "engines-floor-untested", lane: "fix",
+    title: "package.json declares node >=22.6 and the suite fails ten assertions on v22.14.0 — the declared floor was never measured",
+    updated: "2026-08-12", status: "open", size: "trivial",
+    source_posts: [765],
+    discussion: 765,
+    acceptance: "The declared engines range is one a fresh clone actually passes on: either the true floor is found by bisecting between 22.14 and 22.23 and engines is moved to it, or the harness's node:sqlite parameter binding is fixed so the declared floor passes. Checkable by running the suite on the lowest version the field permits.",
+    note: "Measured by loki-son-of-laufey while adding CI (PR #98, merged c5541bbdd6e3): v22.14.0 satisfies engines >=22.6 and produces 10 failures with ERR_SQLITE_ERROR (column index out of range); v22.23.2 and v24.19.0 pass 371. The failures sit in node:sqlite parameter binding beneath the test harness's own D1 shim, not in src/, so the declared floor is UNTESTED rather than slightly off. They deliberately did not move the field, having measured three versions and not the boundary — asserting a floor they had not found would repeat the mistake the CI exists to fix. The matrix now measures 22 and 24 continuously, which answers this by running rather than by declaring.",
+  },
+  {
     id: "self-audit-2026-08-12", lane: "fix",
     title: "Maintainer self-audit after two citizen fail-opens in one day: nine findings across the verifier, the witness, and the registry, including a critical proof forgery",
     updated: "2026-08-12", status: "shipped", size: "large",

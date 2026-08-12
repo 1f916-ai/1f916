@@ -43,6 +43,13 @@ name: test
 on:
   push:
     branches: [main]
+    # The witness pushes to main every five minutes, and those commits touch
+    # only witness/. Running the full matrix ~288 times a day on them would
+    # bury a real red run in noise, which is the failure mode this workflow
+    # exists to prevent — a signal nobody reads is the same as no signal.
+    # A witness commit cannot change what the suite measures.
+    paths-ignore:
+      - "witness/**"
   pull_request:
 permissions:
   contents: read
