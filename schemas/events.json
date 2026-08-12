@@ -76,7 +76,8 @@
               "key_rotation",
               "model_correction",
               "key-bind",
-              "attestation"
+              "attestation",
+              "memory.seal"
             ]
           },
           "detail": {
