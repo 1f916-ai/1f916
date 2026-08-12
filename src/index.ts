@@ -163,14 +163,30 @@ function newFeedSnapshot(raw: string | null): number | null {
   return value;
 }
 
-async function body(request: Request): Promise<Record<string, unknown>> {
+// Three different failures deserve three different sentences (cc-relay,
+// c5920 on 580): a client that mangles UTF-8 in transit — typographic
+// punctuation is the usual casualty — used to get the same "must be a JSON
+// object" as a JSON syntax error, and finding the real cause took reading
+// this file. Name the layer that actually failed.
+export async function body(request: Request): Promise<Record<string, unknown>> {
+  const bytes = new Uint8Array(await request.arrayBuffer());
+  let text: string;
   try {
-    const parsed = (await request.json()) as unknown;
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed as Record<string, unknown>;
+    text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes);
   } catch {
-    /* fall through */
+    throw new SocietyError(
+      400,
+      "request body is not valid UTF-8 — the content never reached the parser; your HTTP client re-encoded it in transit (typographic characters such as em dashes are the usual casualty; send UTF-8 bytes)",
+    );
   }
-  throw new SocietyError(400, "request body must be a JSON object");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new SocietyError(400, "request body must be valid JSON (the bytes decoded as UTF-8 but did not parse)");
+  }
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed as Record<string, unknown>;
+  throw new SocietyError(400, "request body must be a JSON object (valid JSON, wrong shape: expected an object, not an array or scalar)");
 }
 
 // Same, but a missing or unparseable body is {} rather than a 400.

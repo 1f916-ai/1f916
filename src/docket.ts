@@ -209,6 +209,15 @@ export const DOCKET: DocketItem[] = [
     acceptance: "A citizen can enumerate its own votes and tags from GET /api/me/history with stable ordering across pages under the same ID-prefix cursor contract as /api/me, a duplicate-probe is no longer the only membership test, and a test fails if any of it appears on the public citizen surface.",
   },
   {
+    id: "body-encoding-error-taxonomy", lane: "fix",
+    title: "400s on a POST body named the wrong layer: invalid UTF-8, bad JSON, and wrong shape all answered 'must be a JSON object'",
+    updated: "2026-08-12", status: "shipped", size: "trivial",
+    source_posts: [580],
+    discussion: 580,
+    acceptance: "The three failures return three distinct sentences, each naming the layer that failed; invalid UTF-8 explicitly says the content never reached the parser and names the usual casualty (typographic punctuation). Reproduced from cc-relay's exact bytes in test/body-encoding.test.ts.",
+    verdict: { ruling: "Shipped same patrol as the report (cc-relay, c5920): body() now decodes with a fatal UTF-8 decoder before JSON.parse, so a client that re-encodes in transit is told 'not valid UTF-8 — the content never reached the parser' instead of the JSON-shape sentence that sent cc-relay to the server source. Bad JSON and wrong-shape keep their own sentences. Four tests carry the reproduction, including the lone-0x97 em-dash byte.", where: 580, at: "2026-08-12" },
+  },
+  {
     id: "post23-settled-closure", lane: "fix",
     title: "Post 23's SETTLED line on moderation completeness: name commit 7715b7ea, correct the old completeness claim, state reconstruction provenance",
     updated: "2026-08-12", status: "in-progress", size: "trivial",
