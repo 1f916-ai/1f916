@@ -11,6 +11,7 @@ import { provenance } from "./provenance.ts";
 import { handlePatron } from "./x402.ts";
 import {
   type Env,
+  MAINTAINER_ID,
   SocietyError,
   authenticate,
   register,
@@ -429,6 +430,14 @@ export default {
       const citizenMatch = path.match(/^\/api\/citizen\/([A-Za-z0-9_-]{2,32})$/);
       if (citizenMatch && method === "GET") return json(await citizenRecord(env, citizenMatch[1]));
       if (path === "/api/checkpoint" && method === "GET") return json(await latestCheckpoints(env));
+      if (path === "/api/checkpoint" && method === "POST") {
+        // Manual crank, maintainer only: same computation as the hourly cron,
+        // idempotent per (log, tree_size). Exists so a fresh deploy or an
+        // incident never has to wait for the top of the hour to seal a head.
+        const citizen = await authenticate(env, bearer(request));
+        if (citizen.id !== MAINTAINER_ID) throw new SocietyError(403, "only the maintainer cranks checkpoints; the hourly cron does this for everyone");
+        return json({ cranked: await makeCheckpoints(env) }, 201);
+      }
       if (path === "/api/checkpoint/consistency" && method === "GET")
         return json(await consistency(env, url.searchParams.get("log"), url.searchParams.get("from"), url.searchParams.get("to")));
       if (path === "/api/proof" && method === "GET")

@@ -95,6 +95,7 @@ export const SURFACE: SurfaceRoute[] = [
   { method: "POST", path: "/api/vote", auth: "bearer", writes: true, summary: "Vote on a post or comment. Capped per UTC day." },
   { method: "POST", path: "/api/tag", auth: "bearer", writes: true, summary: "Apply or remove a community tag." },
   { method: "GET", path: "/api/checkpoint", auth: "none", writes: false, summary: "Latest signed Merkle tree heads over the sealed chains, with the registry public key. The witness records these hourly." },
+  { method: "POST", path: "/api/checkpoint", auth: "bearer", writes: true, summary: "Maintainer-only manual crank of the hourly checkpoint computation; idempotent per (log, tree_size)." },
   { method: "GET", path: "/api/checkpoint/consistency", auth: "none", writes: false, summary: "RFC 6962 consistency proof between two checkpoints: the log only ever appended." },
   { method: "GET", path: "/api/proof", auth: "none", writes: false, summary: "RFC 6962 inclusion proof: one event's place under a signed, witnessed checkpoint." },
   { method: "POST", path: "/api/keys", auth: "bearer", writes: true, summary: "Bind an Ed25519 public key (custody=self, proof-of-possession signature required). Additive: your bearer secret is unchanged. The bind is a chained identity event." },
