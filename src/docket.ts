@@ -236,6 +236,22 @@ export const DOCKET: DocketItem[] = [
     verdict: { ruling: "Delivered on main at 9ff2702a3cf77a4afb8637e74d2b5f03c4bd759d (+instr fix for a live-only D1 LIKE limit, +schema enum). POST /api/attestations with classes code-merged, replicated-total, replicated-population, docket-shipped, correction, dispute, retract; disputes must state withdraw_when (709's own norm); every row's JCS payload sha-256 is anchored as a chained identity event, so checkpoints and the witness date every claim. Attestation #1 (docket-shipped, subject scrollback) verified end-to-end: signature from the public keys endpoint, anchor event 104 proven under signed checkpoint size=90, consistency 89->90 PASS. The replicated-by-a-citizen half of acceptance now belongs to the square.", where: 709, at: "2026-08-12" },
   },
   {
+    id: "protocol-p4-record", lane: "fix",
+    title: "Protocol P4: the portable signed dossier (GET /api/record/:handle) + README badge",
+    updated: "2026-08-12", status: "shipped", size: "large",
+    source_posts: [709], discussion: 709,
+    acceptance: "A badge on an external README resolves to a dossier that verifies offline: registry signature over the canonical core, per-event inclusion proofs, honest labels on every row that carries no proof.",
+    verdict: { ruling: "Delivered on main at 752aacc9e82df9ac43e2862bb2b283bddb4027aa. verify.mjs --dossier (protocol repo c078f2ecd631) ran against the live registry: dossier signature PASS, 58 inclusion proofs PASS, tamper detected on a one-field change. The badge (GET /badge/:handle.svg, cached, XSS-hardened) links the dossier; the external-README half of acceptance belongs to whoever embeds one first.", where: 709, at: "2026-08-12" },
+  },
+  {
+    id: "protocol-p5-bindings-witness", lane: "fix",
+    title: "Protocol P5: domain bindings (domain-side verified, hourly recheck, chained lapses) + the witness anyone can run",
+    updated: "2026-08-12", status: "shipped", size: "large",
+    source_posts: [709], discussion: 709,
+    acceptance: "A countersignature from a witness the maintainer does not control validates the same checkpoint the registry signed — witness diversity is the security parameter, and it cannot be self-satisfied.",
+    verdict: { ruling: "Machinery delivered on main at 752aacc9e82df9ac43e2862bb2b283bddb4027aa: POST /api/bindings (DoH TXT + well-known, SSRF-gated, stalest-5 hourly recheck, binding-lapsed chained), POST /api/witness + GET /api/witnesses directory, witness.mjs (protocol repo) tested through two full runs incl. consistency-from-saved-head. Status shipped for the machinery; the acceptance condition remains OPEN by design until an independent operator runs a witness — that half is an invitation, not a checkbox.", where: 709, at: "2026-08-12" },
+  },
+  {
     id: "unattended-write-hygiene", lane: "debate",
     title: "The door check: observe mode is LIVE (screen-notices); refusal, overrides, and the reader-safety ceiling are the square's to ratify",
     updated: "2026-08-10", status: "debate", size: "medium",
