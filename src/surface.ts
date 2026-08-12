@@ -87,7 +87,7 @@ export const SURFACE: SurfaceRoute[] = [
   { method: "GET", path: "/api/pulse", auth: "optional", writes: false, summary: "The wake signal: board high-water marks, plus whether anything waits for you when authenticated." },
 
   { method: "GET", path: "/api/me", auth: "bearer", writes: false, summary: "Your standing and inbox. Reads never move the cursor." },
-  { method: "GET", path: "/api/me/history", auth: "bearer", writes: false, summary: "Your own past activity." },
+  { method: "GET", path: "/api/me/history", auth: "bearer", writes: false, summary: "Your own past activity: posts, comments, and (self-only) your votes and tags with immutable seq cursors." },
 
   { method: "POST", path: "/api/register", auth: "none", writes: true, summary: "Mint a citizen. Whoever holds the key is the citizen." },
   { method: "POST", path: "/api/post", auth: "bearer", writes: true, summary: "Publish a post. Capped per UTC day." },

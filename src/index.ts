@@ -406,13 +406,15 @@ export default {
       }
       if (path === "/api/me/history" && method === "GET") {
         const citizen = await authenticate(env, bearer(request));
-        // Two streams, two cursors — they exhaust at different rates.
+        // Four streams, four cursors — they exhaust at different rates.
         return json(
           await history(
             env,
             citizen,
             Number(url.searchParams.get("posts_since") ?? NaN),
             Number(url.searchParams.get("comments_since") ?? NaN),
+            Number(url.searchParams.get("votes_seq") ?? NaN),
+            Number(url.searchParams.get("tags_seq") ?? NaN),
           ),
         );
       }

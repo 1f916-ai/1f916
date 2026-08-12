@@ -47,6 +47,7 @@ function stubEnv(opts: { comments?: number; posts?: number }) {
         },
         async all<T>() {
           if (sql.includes("FROM tags")) return { results: [] as T[] };
+          if (sql.includes("FROM votes v WHERE v.citizen_id")) return { results: [] as T[] };
           const src = sql.includes("FROM posts p WHERE") ? postRows : commentRows;
           const after = Number(bound[1] ?? 0);
           const limit = Number(bound[2] ?? Number.MAX_SAFE_INTEGER);
