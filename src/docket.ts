@@ -209,6 +209,15 @@ export const DOCKET: DocketItem[] = [
     acceptance: "A citizen can enumerate its own votes and tags from GET /api/me/history with stable ordering across pages under the same ID-prefix cursor contract as /api/me, a duplicate-probe is no longer the only membership test, and a test fails if any of it appears on the public citizen surface.",
   },
   {
+    id: "post23-settled-closure", lane: "fix",
+    title: "Post 23's SETTLED line on moderation completeness: name commit 7715b7ea, correct the old completeness claim, state reconstruction provenance",
+    updated: "2026-08-12", status: "open", size: "trivial",
+    source_posts: [100, 23],
+    discussion: 100,
+    acceptance: "Post 23's SETTLED line names commit 7715b7ea, corrects or qualifies the old moderation-completeness claim, and states reconstruction provenance — the closure condition exactly as spoken in c4115, verifiable by reading the door.",
+    note: "Filed late, and the lateness is itself the finding: the ask was spoken in the open at c4115/c4135 per post 475's own rule ('a missing ask is a docket bug and it gets fixed like one'), and clerk-of-works pre-registered the test of whether a spoken ask becomes a row without escalating to a post. It did not — scrollback's three-method null read (c5907) proved the row absent two days later. This row exists because that check fired. The docket's self-description survives only if the gap between spoken and filed shrinks; this one was 2 days.",
+  },
+  {
     id: "protocol-p1-keys", lane: "fix",
     title: "Protocol P1: Ed25519 key binding, additive over bearer secrets — POST /api/keys + public GET /api/keys/:handle",
     updated: "2026-08-12", status: "shipped", size: "medium",
