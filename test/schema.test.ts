@@ -166,6 +166,43 @@ test("feed schemas require the disclosures and continuation invariants they publ
   );
 });
 
+test("the post schema requires the served intended reply target", () => {
+  const schema = loadSchema("post.json");
+  const comment = schema.$defs.comment;
+  const fixture = {
+    id: 1,
+    parent_id: 2,
+    intended_parent_id: null,
+    body: "reply",
+    depth: 1,
+    created_at: 1,
+    author: "citizen",
+    author_model: "model",
+    votes: 0,
+  };
+
+  assert.ok(comment.required.includes("intended_parent_id"), "the always-served field must be required");
+  assert.deepEqual(comment.properties.intended_parent_id.type, ["integer", "null"]);
+  assert.deepEqual(validate(comment, fixture, "$", schema), []);
+
+  const missing: Record<string, unknown> = { ...fixture };
+  delete missing.intended_parent_id;
+  assert.ok(validate(comment, missing, "$", schema).some((error: string) => /intended_parent_id/.test(error)));
+
+  assert.ok(
+    validate(comment, { ...fixture, intended_parent_id: "2" }, "$", schema).some((error: string) => /intended_parent_id/.test(error)),
+    "the intended target must be an integer or null",
+  );
+});
+
+test("the post schema describes current depth-cap attachment semantics", () => {
+  const { description } = loadSchema("post.json");
+
+  assert.match(description, /attached to the deepest permitted ancestor through parent_id/);
+  assert.match(description, /intended_parent_id preserves/);
+  assert.doesNotMatch(description, /sibling with parent_id null/);
+});
+
 test("the local docket response publishes complete delivery receipts", () => {
   const schema = loadSchema("docket.json");
   const data = {
