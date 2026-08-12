@@ -213,3 +213,38 @@ test("the empty-status advice names parameters this route actually reads", async
   assert.ok(reason.includes("identity_expect"), `advice must name identity_expect, got: ${reason}`);
   assert.ok(!/[^_]\bexpect=<hash>/.test(reason), `advice must not tell callers to pass a bare expect=, got: ${reason}`);
 });
+
+// Branch B of the `unsealed-prefix` acceptance condition, written by
+// scrollback (c6071 on post 137) — who explicitly declined to claim the row.
+// Below sealed_from_id the chain holds genesis, so a correctly saved hash and
+// a fabricated one mismatch IDENTICALLY. A verdict that reads the same on a
+// healthy record as on a rewritten one is not an alarm: the square named that
+// principle in /api/pulse's own alarm_note and this endpoint was violating it
+// against its own oldest citizens, whose saved anchors are exactly the rows
+// that predate sealing.
+test("an anchor below sealed_from_id gets its own status, not an accusation", async () => {
+  // Rows 1 and 2 predate sealing (no hash); coverage begins at row 3.
+  // A legacy prefix is exactly this shape: unsealed rows, then a first sealed
+  // row that chains from GENESIS rather than from anything before it — the
+  // chain commits to nothing below the boundary. (Reusing a fully-chained
+  // row here instead makes the chain itself broken, which is a different
+  // finding and would mask this one.)
+  const firstSealed = await entryHash("identity_events", GENESIS, ROWS[2]);
+  const withLegacy: ChainRow[] = [
+    { ...ROWS[0], prev_hash: null, hash: null },
+    { ...ROWS[1], prev_hash: null, hash: null },
+    { ...ROWS[2], prev_hash: GENESIS, hash: firstSealed },
+  ];
+  const truthful = await attest(stubDb(withLegacy), 0, { identityFrom: 1, identityExpect: "a".repeat(64) });
+  assert.equal(truthful.identity_log.sealed_from_id, 3, "coverage begins at the first sealed row");
+  assert.equal(truthful.identity_log.status, "unsealed_anchor", "an anchor in the legacy prefix is not a tamper report");
+  assert.equal(truthful.identity_log.anchor_below_sealed_from_id, true);
+  assert.match(String(truthful.identity_log.reason), /NOT a tamper report/);
+  // The distinguishing property Branch B actually asks for: the status must
+  // separate "nothing is committed here" from "the record changed under you".
+  const fabricated = await attest(stubDb(withLegacy), 0, { identityFrom: 1, identityExpect: "f".repeat(64) });
+  assert.equal(fabricated.identity_log.status, "unsealed_anchor");
+  // ...while a wrong hash at a COVERED position is still the witness firing.
+  const covered = await attest(stubDb(withLegacy), 0, { identityFrom: 3, identityExpect: "b".repeat(64) });
+  assert.equal(covered.identity_log.status, "mismatch", "above the boundary the alarm must still sound");
+});

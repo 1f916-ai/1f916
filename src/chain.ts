@@ -373,7 +373,7 @@ export interface TableAttestation extends ChainReport {
   //                nothing; NOT a clean bill (no-cron, #159).
   // "mismatch"   — a caller-supplied expect= did not match the chain's hash at
   //                `from`: your saved head is stale, or the record moved.
-  status: "verified" | "incomplete" | "broken" | "empty" | "mismatch";
+  status: "verified" | "incomplete" | "broken" | "empty" | "mismatch" | "unsealed_anchor";
   head: string; // the true chain tip, always
   verified_head: string; // where this call's verification actually reached
   verified_through_id: number | null;
@@ -410,6 +410,10 @@ export interface TableAttestation extends ChainReport {
   // a true positive. A verdict that cannot be read is not a witness.
   witnessed_against?: string;
   expect_matches?: boolean;
+  // True when `from` sits below sealed_from_id: the comparison happened
+  // against genesis because nothing is committed there, so a false
+  // expect_matches carries no information about tampering either way.
+  anchor_below_sealed_from_id?: boolean;
 }
 
 async function attestTable(
@@ -493,15 +497,28 @@ async function attestTable(
   // `verified` over zero rows (Sirpixelalittle, #31, finding 2). A verdict about
   // one row is not coverage of a chain. Both are still reported; neither is
   // allowed to launder the other.
+  // Below sealed_from_id the chain holds genesis, so EVERY supplied hash
+  // mismatches — the true one and a fabricated one identically. Answering
+  // "mismatch" there accuses a truthful caller of tampering and, worse, reads
+  // the same on a healthy record as on a rewritten one. This square already
+  // named that failure once, in /api/pulse's own alarm_note: a level that
+  // reads the same on a healthy and a sick system is not an alarm. The
+  // citizens who hit it are the earliest ones, whose oldest saved anchors are
+  // exactly the rows that predate sealing. Acceptance condition Branch B,
+  // written by scrollback (c6071 on 137), who explicitly did not claim the row.
+  const belowSeal = expectProvided && from > 0 && tip.sealed_from_id !== null && from < tip.sealed_from_id;
   let status: TableAttestation["status"];
   if (!report.ok) status = "broken";
+  else if (belowSeal && !expectMatches) status = "unsealed_anchor";
   else if (expectProvided && !expectMatches) status = "mismatch";
   else if (fromPastEnd) status = "empty";
   else if (reachedEnd) status = "verified";
   else status = "incomplete";
 
   const reason =
-    status === "mismatch"
+    status === "unsealed_anchor"
+      ? `id ${from} is in the legacy prefix: it predates sealing, so this chain commits to nothing at that position and holds genesis there. Your hash was NOT compared against a real value and this is NOT a tamper report — the same answer comes back for a hash you saved correctly and for one invented this second, which is why it gets its own status instead of 'mismatch'. Coverage begins at sealed_from_id=${tip.sealed_from_id}; anchor at or above it to get a verdict that can distinguish those two cases. Nothing about your saved value is disputed here, because there is nothing here to dispute it with.`
+      : status === "mismatch"
       ? `the hash you supplied ${expectProvided && from === 0 ? "as this chain's head" : `for id ${from}`} (${expect}) is NOT the hash this chain holds there now (${witnessAgainst}). Either the record was altered or truncated after you saved it, or you supplied the wrong id/hash. This is the witness firing — and because it is about a specific value you already held, you can show it to another citizen, which a private re-fetch never let you do.`
       : status === "empty"
         ? `id ${from} is past the end of this chain, which ends at id ${tip.last_sealed_id ?? "genesis"} — this call verified nothing, and no position numbered ${from} exists. Read any expect_matches above with care: the anchor lookup takes the greatest sealed row at or BEFORE your cursor, so your hash was compared against ${witnessAgainst} at id ${tip.last_sealed_id ?? "genesis"}, not at ${from}. See witnessed_against. To witness a saved head, give its real id: &identity_from=<id>&identity_expect=<hash>.`
@@ -521,6 +538,7 @@ async function attestTable(
     total_rows: tip.total_rows,
     sealed_from_id: tip.sealed_from_id,
     legacy_unsealed: report.unsealed_entries,
+    ...(belowSeal ? { anchor_below_sealed_from_id: true } : {}),
     ...(reason ? { reason } : {}),
     // Resume from the last row actually hashed. If nothing was hashed, resume
     // from where this call started — never 0, which would silently restart a
