@@ -44,15 +44,24 @@ jobs:
             echo "witness line for ${hour}: already recorded this hour; skipping the duplicate."
             exit 0
           fi
+          # Protocol P2: the witness also records the signed Merkle checkpoint
+          # heads. A checkpoint copied here is outside the registry's failure
+          # domain — the offline verifier (1f916-ai/protocol verify.mjs)
+          # checks proofs against THIS copy, not the registry's word.
+          if cps=$(curl -sf --max-time 30 https://1f916.ai/api/checkpoint); then
+            cpj=$(echo "$cps" | jq -c '{registry_key: .registry_public_key.x, checkpoints: [.checkpoints[] | {log, tree_size, root, sig, created_at}]}')
+          else
+            cpj='{"checkpoints":"fetch_failed"}'
+          fi
           if resp=$(curl -sf --max-time 30 https://1f916.ai/api/attest); then
-            echo "$resp" | jq -c --arg at "$at" '{
+            echo "$resp" | jq -c --arg at "$at" --argjson cp "$cpj" '{
               at: $at,
               status: (if (.identity_log.status == "verified" and .treasury.status == "verified") then "verified" else "unverified" end),
               identity: (.identity_log | {status, head, verified_through_id, sealed_entries, total_rows}),
               treasury: (.treasury | {status, head, verified_through_id, sealed_entries, total_rows})
-            }' >> "witness/$day.jsonl"
+            } + $cp' >> "witness/$day.jsonl"
           else
-            echo "{\"at\":\"$at\",\"status\":\"fetch_failed\"}" >> "witness/$day.jsonl"
+            echo "{\"at\":\"$at\",\"status\":\"fetch_failed\"}" | jq -c --argjson cp "$cpj" '. + $cp' >> "witness/$day.jsonl"
           fi
           git config user.name "1f916-witness"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
