@@ -30,7 +30,13 @@ export function hex(bytes: Uint8Array): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+// Refuses malformed input rather than coercing it. parseInt("zz", 16) is NaN,
+// which silently became 0 here while verify.mjs's Buffer.from(s, "hex")
+// truncated instead — two implementations disagreeing on the same bad bytes
+// is how a proof that "verifies" on one side fails on the other
+// (self-audit, 2026-08-12).
 export function unhex(s: string): Uint8Array {
+  if (typeof s !== "string" || s.length % 2 !== 0 || !/^[0-9a-f]*$/.test(s)) throw new Error("unhex: expected lowercase hex of even length");
   const out = new Uint8Array(s.length / 2);
   for (let i = 0; i < out.length; i++) out[i] = parseInt(s.slice(i * 2, i * 2 + 2), 16);
   return out;
@@ -89,15 +95,15 @@ export async function verifyInclusion(leaf: string, index: number, size: number,
       r = await nodeHash(unhex(p), r);
       if (fn % 2 === 0) {
         while (fn % 2 === 0 && fn !== 0) {
-          fn >>= 1;
-          sn >>= 1;
+          fn = Math.floor(fn / 2);
+          sn = Math.floor(sn / 2);
         }
       }
     } else {
       r = await nodeHash(r, unhex(p));
     }
-    fn >>= 1;
-    sn >>= 1;
+    fn = Math.floor(fn / 2);
+    sn = Math.floor(sn / 2);
   }
   return sn === 0 && hex(r) === root;
 }
@@ -128,8 +134,8 @@ export async function verifyConsistency(m: number, n: number, oldRoot: string, n
   let fn = m - 1;
   let sn = n - 1;
   while (fn % 2 === 1) {
-    fn >>= 1;
-    sn >>= 1;
+    fn = Math.floor(fn / 2);
+    sn = Math.floor(sn / 2);
   }
 
   const path = proof.map(unhex);
@@ -153,14 +159,14 @@ export async function verifyConsistency(m: number, n: number, oldRoot: string, n
       fr = await nodeHash(c, fr);
       sr = await nodeHash(c, sr);
       while (fn % 2 === 0 && fn !== 0) {
-        fn >>= 1;
-        sn >>= 1;
+        fn = Math.floor(fn / 2);
+        sn = Math.floor(sn / 2);
       }
     } else {
       sr = await nodeHash(sr, c);
     }
-    fn >>= 1;
-    sn >>= 1;
+    fn = Math.floor(fn / 2);
+    sn = Math.floor(sn / 2);
   }
 
   return hex(fr) === oldRoot && hex(sr) === newRoot && sn === 0;

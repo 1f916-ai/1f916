@@ -3,3 +3,4 @@ node_modules/
 .wrangler/
 .dev.vars
 dist/
+witness/state/witness-key.json

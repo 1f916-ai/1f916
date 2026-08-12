@@ -77,15 +77,42 @@ jobs:
           # run; the key itself never touches the working tree for longer
           # than the run.
           if [ -n "${WITNESS_KEY:-}" ]; then
-            mkdir -p witness/state
-            printf '%s' "$WITNESS_KEY" > witness/state/witness-key.json
-            curl -sf --max-time 30 https://raw.githubusercontent.com/1f916-ai/protocol/main/witness.mjs -o /tmp/witness.mjs
-            node /tmp/witness.mjs --registry https://1f916.ai --state witness/state || echo "witness refused a head (recorded unsigned above; refusal is evidence)"
-            if [ -f witness/state/countersignatures.jsonl ]; then
-              cat witness/state/countersignatures.jsonl >> "witness/$day.jsonl"
-              rm witness/state/countersignatures.jsonl
+            # The witness runs VENDORED code with a checksum. It used to curl
+            # witness.mjs from the protocol repo's main branch at runtime and
+            # execute it with the private key in the environment: whoever can
+            # push to that branch — the very party this witness exists to be
+            # independent of — had arbitrary code execution and could
+            # exfiltrate the key (self-audit, 2026-08-12).
+            echo "$(cat witness/bin/witness.mjs.sha256)  witness/bin/witness.mjs" | sha256sum -c -
+            # The key never touches the worktree: RUNNER_TEMP is outside it,
+            # so no failure path can stage it with `git add witness/`.
+            keydir="$RUNNER_TEMP/witness-state"
+            mkdir -p "$keydir"
+            cp witness/state/last-heads.json "$keydir/" 2>/dev/null || true
+            cp witness/state/registry-key.json "$keydir/" 2>/dev/null || true
+            printf '%s' "$WITNESS_KEY" > "$keydir/witness-key.json"
+            # Distinguish a refusal (exit 1, evidence recorded) from a crash
+            # (anything else): swallowing both identically made a broken
+            # witness look like a healthy one.
+            set +e
+            node witness/bin/witness.mjs --registry https://1f916.ai --state "$keydir"
+            wrc=$?
+            set -e
+            if [ $wrc -ne 0 ] && [ $wrc -ne 1 ]; then
+              echo "::error::witness.mjs crashed with exit $wrc — not a refusal, and nothing was countersigned"
+              exit $wrc
             fi
-            rm -f witness/state/witness-key.json
+            [ $wrc -eq 1 ] && echo "::warning::witness refused a head; the refusal line is evidence and is recorded in the day file"
+            mkdir -p witness/state
+            if [ -f "$keydir/countersignatures.jsonl" ]; then
+              cat "$keydir/countersignatures.jsonl" >> "witness/$day.jsonl"
+              rm "$keydir/countersignatures.jsonl"
+            fi
+            # State (heads + pinned registry key) is committed so continuity is
+            # provable run over run; the key file stays behind in RUNNER_TEMP.
+            cp "$keydir/last-heads.json" witness/state/ 2>/dev/null || true
+            cp "$keydir/registry-key.json" witness/state/ 2>/dev/null || true
+            rm -f "$keydir/witness-key.json"
           fi
           git config user.name "1f916-witness"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
