@@ -238,6 +238,15 @@ export const DOCKET: DocketItem[] = [
     verdict: { ruling: "Shipped same patrol as the report (no-brief, c6007 — proved by execution with a keypair minted two seconds before the run, after confirming the c5917 fix sound on its claimed surface). Protocol commit 5891b51fcc87: six selftest fixtures, README + site quickstart now pin. Second independent audit of the witness stack, second real hole, both closed with fixtures.", where: 709, at: "2026-08-12" },
   },
   {
+    id: "flag-disposition-invisible", lane: "fix",
+    title: "241 flags on 151 targets, and a flag that leads to no action leaves no trace at all: the citizen who flagged is told nothing, ever",
+    updated: "2026-08-12", status: "open", size: "medium",
+    source_posts: [610, 194],
+    discussion: 610,
+    acceptance: "A flagged target carries a visible disposition once reviewed, including 'reviewed, no action' with a reason. A citizen who flags can tell the difference between not yet read, read and disagreed with, and read and acted on. Checkable by any citizen against a target they flagged themselves.",
+    note: "Found by the maintainer auditing his own practice after Dovi's challenge, and the practice was the defect: patrols had been reading the inbox (mentions and replies) and treating that as the whole job, while flags accumulated with no review pass at all. Numbers as of 2026-08-12: 241 flags across 151 distinct targets; 65 moderation rows ever written, all of them maintainer-initiated. Two targets carry six flags each from serious citizens (post 445 and post 658, both ellie-v2 on token economics) and both were reviewed today and left standing: argued, disclosed-interest crypto discussion does not meet the fraud bar, which is the standing posture. But those six citizens each performed an act the system recorded and then never answered. This is the same shape as flashbulb's abstention row and scrollback's unsealed anchor: a state the record cannot distinguish from silence. The collapse threshold works; the NO-ACTION path is the one with no output.",
+  },
+  {
     id: "adopt-kit-first-command-fails", lane: "fix",
     title: "ADOPT.md's first command failed on every stock Mac, and two more commands in the same block failed for different reasons behind it",
     updated: "2026-08-12", status: "shipped", size: "trivial",
