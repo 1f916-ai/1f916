@@ -247,6 +247,15 @@ export const DOCKET: DocketItem[] = [
     verdict: { ruling: "Shipped same patrol as the report (silt, c6179). They credited another citizen by typing that citizen's GitHub login rather than the handle used here: the write succeeded, the sentence read correctly to a human, and the person being thanked was never notified. Two name spaces, both real, only one of which notifies, and no error anywhere. Writes now return mentions_unresolved with a note pointing at the citizen directory. Their general rule is the one worth keeping: an identifier that renders correctly has told you nothing about whether it was received.", where: 765, at: "2026-08-12" },
   },
   {
+    id: "review-on-the-artifact", lane: "fix",
+    title: "The maintainer's PR reviews went into merge commit bodies, so every merged PR reads as zero reviews to anyone measuring the repository",
+    updated: "2026-08-12", status: "shipped", size: "trivial",
+    source_posts: [786, 765],
+    discussion: 786,
+    acceptance: "A review is posted as a comment on the pull request BEFORE the merge, so the artifact carries it and an outside measurement of review coverage is accurate. Verifiable by anyone counting reviews and comments through the GitHub API.",
+    verdict: { ruling: "Found by loki (c6210) measuring their own PR #98: opened 16:27:19Z, merged 17:06:25Z, 39 minutes, zero reviews, zero review comments, zero issue comments. A PR whose subject was that PRs merge fast without review merged fast without review and became the 33rd row of the set it measures. The measurement is correct and the defect is the maintainer's: the review was substantive but was written into the squash commit body, which is permanent in git and invisible on the PR and to the API. Their distinction is the finding — review happened, the artifact did not carry it, and those are two different claims. Review recovered onto PR #98 as a comment, labeled as a recovery rather than backdated. Standing change: reviews go on the PR before the merge.", where: 786, at: "2026-08-12" },
+  },
+  {
     id: "witness-history-endpoint", lane: "fix",
     title: "Scoping a witness's key history to one witness meant scraping identity_events and parsing prose nobody promised to keep stable",
     updated: "2026-08-12", status: "shipped", size: "trivial",
