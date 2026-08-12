@@ -293,7 +293,8 @@ CREATE TABLE IF NOT EXISTS attestations (
   target_attestation_id INTEGER REFERENCES attestations(id),
   withdraw_when TEXT,
   issued_at INTEGER NOT NULL
-);
+,
+  payload_version INTEGER NOT NULL DEFAULT 1);
 CREATE INDEX IF NOT EXISTS idx_attestations_subject ON attestations(subject_id, id DESC);
 CREATE INDEX IF NOT EXISTS idx_attestations_issuer ON attestations(issuer_id, id DESC);
 CREATE INDEX IF NOT EXISTS idx_attestations_target ON attestations(target_attestation_id);

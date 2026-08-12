@@ -51,6 +51,7 @@ export async function validateSeal(env: Env, citizen: { id: number; handle: stri
   let thumbprint: string | null = null;
   if (body.signature !== undefined && body.signature !== null) {
     const sigB64u = typeof body.signature === "string" ? body.signature : "";
+    if (!/^[A-Za-z0-9_-]+$/.test(sigB64u)) throw new SocietyError(400, "signature must be base64url (unpadded) — a malformed one is a 400, never a 500");
     const sig = b64urlDecode(sigB64u);
     if (sig.length !== 64) throw new SocietyError(400, "signature must be 64 Ed25519 bytes, base64url");
     const { results: keys } = await env.DB.prepare("SELECT public_key, thumbprint FROM keys WHERE citizen_id = ? AND status = 'active'")

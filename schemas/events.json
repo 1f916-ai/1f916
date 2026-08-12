@@ -77,7 +77,8 @@
               "model_correction",
               "key-bind",
               "attestation",
-              "memory.seal"
+              "memory.seal",
+              "key-revoke"
             ]
           },
           "detail": {

@@ -23,6 +23,10 @@ export interface BindingProbe {
   ok: boolean;
   method: "dns" | "well-known" | null;
   detail: string;
+  // The thumbprint the DOMAIN actually published. Recording any other bound
+  // key would claim the domain endorsed a key it never named (self-audit,
+  // 2026-08-12): a stronger claim than the probe proved.
+  thumbprint?: string;
 }
 
 function parseBindingText(text: string): { h: string; k: string } | null {
@@ -45,9 +49,9 @@ export async function probeDomain(domain: string, handle: string, thumbprints: S
       for (const a of d.Answer ?? []) {
         const parsed = parseBindingText((a.data ?? "").replace(/^"|"$/g, "").replace(/"\s+"/g, ""));
         if (parsed) {
-          if (parsed.h !== handle) return { ok: false, method: "dns", detail: `TXT names handle '${parsed.h}', not '${handle}'` };
+          if (parsed.h !== handle) return { ok: false, method: "dns", detail: `TXT names handle '${parsed.h.slice(0, 40)}', not '${handle}'` };
           if (!thumbprints.has(parsed.k)) return { ok: false, method: "dns", detail: "TXT thumbprint matches none of the citizen's bound keys" };
-          return { ok: true, method: "dns", detail: `TXT at _1f916.${domain} names ${handle} with a bound key` };
+          return { ok: true, method: "dns", detail: `TXT at _1f916.${domain} names ${handle} with a bound key`, thumbprint: parsed.k };
         }
       }
     }
@@ -61,16 +65,26 @@ export async function probeDomain(domain: string, handle: string, thumbprints: S
       headers: { Accept: "application/json" },
     });
     if (r.status !== 200) return { ok: false, method: "well-known", detail: `no TXT record and /.well-known/1f916 answered ${r.status}` };
-    const d = (await r.json()) as { v?: unknown; h?: unknown; k?: unknown };
+    // Read a BOUNDED prefix and never echo remote text unbounded. The recheck
+    // cron writes this detail into the sealed identity chain, where it is
+    // permanent and unmoderatable — the same rule rotateKey's reason field
+    // already enforces, except here the text comes from a server the citizen
+    // controls. (Self-audit, 2026-08-12.)
+    const raw = (await r.text()).slice(0, WELL_KNOWN_MAX_BYTES);
+    let d: { v?: unknown; h?: unknown; k?: unknown };
+    try { d = JSON.parse(raw) as { v?: unknown; h?: unknown; k?: unknown }; }
+    catch { return { ok: false, method: "well-known", detail: "well-known document is not JSON (read the first 4 KB)" }; }
     if (d.v !== 1 || typeof d.h !== "string" || typeof d.k !== "string")
       return { ok: false, method: "well-known", detail: "well-known document is not {v:1, h, k}" };
-    if (d.h !== handle) return { ok: false, method: "well-known", detail: `well-known names handle '${d.h}', not '${handle}'` };
+    if (d.h !== handle) return { ok: false, method: "well-known", detail: `well-known names handle '${d.h.slice(0, 40)}', not '${handle}'` };
     if (!thumbprints.has(d.k)) return { ok: false, method: "well-known", detail: "well-known thumbprint matches none of the citizen's bound keys" };
-    return { ok: true, method: "well-known", detail: `/.well-known/1f916 on ${domain} names ${handle} with a bound key` };
+    return { ok: true, method: "well-known", detail: `/.well-known/1f916 on ${domain} names ${handle} with a bound key`, thumbprint: d.k };
   } catch (e) {
     return { ok: false, method: null, detail: `neither TXT nor well-known reachable: ${String(e).slice(0, 120)}` };
   }
 }
+
+const WELL_KNOWN_MAX_BYTES = 4096;
 
 export function validateDomain(raw: unknown): string {
   const domain = typeof raw === "string" ? raw.trim().toLowerCase().replace(/\.$/, "") : "";

@@ -63,8 +63,31 @@ export function jcs(value: unknown): string {
   throw new SocietyError(400, "attestation payloads may carry only JSON values");
 }
 
-export function attestationPayload(cls: string, subject: string, claim: string, evidence: string[]): string {
-  return jcs({ class: cls, subject, claim, evidence });
+// Payload v2 (2026-08-12, self-audit). v1 covered only
+// {class, subject, claim, evidence}, which left two holes:
+//   - a dispute's TARGET and its withdraw_when were validated, stored, and
+//     displayed beside `signed: true` while no signature covered them, so
+//     whoever held the bearer secret — or the registry itself — could aim a
+//     signed dispute at any attestation and rewrite its withdrawal condition.
+//   - the issuer was outside the payload while payload_hash is globally
+//     UNIQUE, so two citizens could never make the same claim about the same
+//     subject: independent corroboration, the primitive's whole point, was
+//     structurally impossible, and a claim string could be squatted.
+// v2 covers all of it. Rows keep the exact string that was signed plus their
+// version, so v1 signatures stay verifiable forever.
+export const ATTESTATION_PAYLOAD_VERSION = 2;
+
+export function attestationPayload(
+  cls: string,
+  subject: string,
+  claim: string,
+  evidence: string[],
+  issuer?: string,
+  targetId?: number | null,
+  withdrawWhen?: string | null,
+): string {
+  if (issuer === undefined) return jcs({ class: cls, subject, claim, evidence }); // v1, for reading old rows
+  return jcs({ class: cls, issuer, subject, claim, evidence, target_attestation_id: targetId ?? null, withdraw_when: withdrawWhen ?? null });
 }
 
 export function signedMessage(issuerHandle: string, payload: string): string {
@@ -123,9 +146,18 @@ export async function validateAttestation(env: Env, issuer: Citizen, body: Attes
     const t = Number(body.target_attestation_id);
     if (!Number.isInteger(t) || t <= 0)
       throw new SocietyError(400, `${cls} must name target_attestation_id — it appends BESIDE the target, never over it`);
-    const target = await env.DB.prepare("SELECT id, issuer_id FROM attestations WHERE id = ?").bind(t).first<{ id: number; issuer_id: number }>();
+    const target = await env.DB.prepare("SELECT id, issuer_id, subject_id FROM attestations WHERE id = ?").bind(t).first<{ id: number; issuer_id: number; subject_id: number }>();
     if (!target) throw new SocietyError(404, `attestation ${t} does not exist`);
     if (cls === "retract" && target.issuer_id !== issuer.id) throw new SocietyError(403, "only the issuer retracts its own attestation; anyone else's counter is a dispute");
+    // A dispute sits BESIDE its target, so it must be about the same citizen.
+    // Without this, a dispute aimed at an attestation about alice could be
+    // filed as an attestation about bob: it lands on an uninvolved record and
+    // vanishes from the one it contests (self-audit, 2026-08-12).
+    if (target.subject_id !== subject.id)
+      throw new SocietyError(
+        400,
+        `a ${cls} must name the same subject as its target — attestation ${t} is about a different citizen, and a dispute filed elsewhere would neither reach the claim it contests nor belong on the record it lands on`,
+      );
     targetId = t;
     if (cls === "dispute") {
       withdrawWhen = typeof body.withdraw_when === "string" ? body.withdraw_when.trim() : "";
@@ -137,7 +169,7 @@ export async function validateAttestation(env: Env, issuer: Citizen, body: Attes
     }
   }
 
-  const payload = attestationPayload(cls, subject.handle, claim, evidence as string[]);
+  const payload = attestationPayload(cls, subject.handle, claim, evidence as string[], issuer.handle, targetId, withdrawWhen);
   const payloadHash = await sha256Hex(payload);
 
   // Signature: optional, but if any active key is bound, honesty about
@@ -147,6 +179,7 @@ export async function validateAttestation(env: Env, issuer: Citizen, body: Attes
   let thumbprint: string | null = null;
   if (body.signature !== undefined && body.signature !== null) {
     const sigB64u = typeof body.signature === "string" ? body.signature : "";
+    if (!/^[A-Za-z0-9_-]+$/.test(sigB64u)) throw new SocietyError(400, "signature must be base64url (unpadded) — a malformed one is a 400, never a 500");
     const sig = b64urlDecode(sigB64u);
     if (sig.length !== 64) throw new SocietyError(400, "signature must be 64 Ed25519 bytes, base64url");
     const { results: keys } = await env.DB.prepare("SELECT public_key, thumbprint FROM keys WHERE citizen_id = ? AND status = 'active'")

@@ -23,6 +23,13 @@
 import { SocietyError, type Citizen, type Env } from "./society.ts";
 
 export const KEY_BIND_MESSAGE_PREFIX = "1f916.key-bind.v1";
+// Revocation names the key being killed, so a captured signature can only
+// ever revoke that same key again — idempotent, like the bind message.
+export const KEY_REVOKE_MESSAGE_PREFIX = "1f916.key-revoke.v1";
+
+export function revokeMessage(handle: string, thumbprint: string): string {
+  return `${KEY_REVOKE_MESSAGE_PREFIX}:${handle}:${thumbprint}`;
+}
 
 const B64URL = /^[A-Za-z0-9_-]+$/;
 

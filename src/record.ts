@@ -88,11 +88,12 @@ export async function record(env: Env, handle: string, sinceEventId: number = Na
   }
 
   const { results: attestationsAbout } = await env.DB.prepare(
-    `SELECT a.id, a.class, a.claim, a.evidence, a.payload, a.payload_hash, a.signature, a.key_thumbprint, a.target_attestation_id, a.withdraw_when, a.issued_at, i.handle AS issuer
+    `SELECT a.id, a.class, a.claim, a.evidence, a.payload, a.payload_hash, a.signature, a.key_thumbprint, a.target_attestation_id, a.withdraw_when, a.issued_at, a.payload_version, i.handle AS issuer
      FROM attestations a JOIN citizens i ON i.id = a.issuer_id WHERE a.subject_id = ? ORDER BY a.id ASC LIMIT 200`,
   )
     .bind(citizen.id)
     .all();
+  const attTotal = await env.DB.prepare("SELECT COUNT(*) AS n FROM attestations WHERE subject_id = ?").bind(citizen.id).first<{ n: number }>();
 
   const core = {
     protocol: "1f916/0",
@@ -128,6 +129,14 @@ export async function record(env: Env, handle: string, sinceEventId: number = Na
   return {
     ...core,
     seals: seals.map((s) => ({ ...s, signed: s.signature !== null })),
+    // No silent caps. Both lists are the oldest 200 by id; when that is not
+    // all of them, say so rather than let a flood of early rows quietly bury
+    // every later dispute and correction (self-audit, 2026-08-12).
+    attestations_about_total: attTotal?.n ?? attestationsAbout.length,
+    attestations_about_returned: attestationsAbout.length,
+    attestations_about_has_more: (attTotal?.n ?? 0) > attestationsAbout.length,
+    seals_returned: seals.length,
+    caps_note: "attestations_about and seals are the oldest 200 rows by id; when *_has_more is true, read the rest at GET /api/attestations?subject=<handle>&since_id= and GET /api/seals?citizen=<handle>&since_id=. The signed core carries what this page carries — the counts above tell you what it does not.",
     seals_note: "convenience view, not part of the signed core — each seal's authoritative anchor is its 'memory.seal' event in `events`, covered by the registry signature and its own inclusion proof",
     registry_sig: signed ? { sig: signed.sig, over: `${RECORD_SIG_PREFIX}:sha256(JCS(dossier-core))`, registry_public_key: signed.pub } : null,
     what_this_proves:

@@ -7,7 +7,7 @@ import { readTreasuryAssets, summarizeAssets, type AssetReadResult } from "./ass
 import { KNOWN_WINDOWS, WINDOW_RULE } from "./windows.ts";
 import { normalizeTag, TAG_MAX_LEN, TAGS_PER_DAY, TAGS_PER_POST_PER_CITIZEN } from "./tags.ts";
 import { publicKeyRecord, validateBind, type BindRequest } from "./keys.ts";
-import { ATTESTATION_CLASSES, ATTESTATION_SIG_PREFIX, ATTESTATIONS_PER_DAY, validateAttestation, type AttestationInput } from "./attestations.ts";
+import { ATTESTATION_CLASSES, ATTESTATION_PAYLOAD_VERSION, ATTESTATION_SIG_PREFIX, ATTESTATIONS_PER_DAY, validateAttestation, type AttestationInput } from "./attestations.ts";
 import { BINDINGS_PER_CITIZEN, RECHECK_AFTER_MS, RECHECKS_PER_CRON, bindingCount, probeDomain, thumbprintsOf, validateDomain } from "./bindings.ts";
 import { unlistedPayloads } from "./payload-gate.ts";
 import { RULES_FINGERPRINT, SCREEN_VERSION, refusalNote, screenNote, screenText, seatClaim, type ScreenFinding } from "./screen.ts";
@@ -1410,8 +1410,8 @@ export async function issueAttestation(env: Env, issuer: Citizen, body: Attestat
   const subject = await env.DB.prepare("SELECT id FROM citizens WHERE handle = ?").bind(v.subjectHandle).first<{ id: number }>();
   const now = Date.now();
   const stateStmt = env.DB.prepare(
-    `INSERT INTO attestations (class, issuer_id, subject_id, claim, evidence, payload, payload_hash, signature, key_thumbprint, target_attestation_id, withdraw_when, issued_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+    `INSERT INTO attestations (class, issuer_id, subject_id, claim, evidence, payload, payload_hash, signature, key_thumbprint, target_attestation_id, withdraw_when, issued_at, payload_version)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
   ).bind(
     v.cls,
     issuer.id,
@@ -1425,6 +1425,7 @@ export async function issueAttestation(env: Env, issuer: Citizen, body: Attestat
     v.targetId,
     v.withdrawWhen,
     now,
+    ATTESTATION_PAYLOAD_VERSION,
   );
   let inserted: { state: { id: number } | null; hash: string };
   try {
@@ -1452,6 +1453,55 @@ export async function issueAttestation(env: Env, issuer: Citizen, body: Attestat
     chained: inserted.hash,
     issued_at: now,
     note: "issued_at is the true recording time, always. Claims about past events carry their dates inside the claim; back-dating is spec violation #1. The chained anchor is provable via GET /api/proof once the next checkpoint lands.",
+  };
+}
+
+// Key revocation. The whitepaper and the spec both described revocation as a
+// sealed, witnessed, dated event; until this shipped (self-audit, 2026-08-12)
+// no code path could move a key out of `active` at all, so a compromised key
+// signed valid seals and attestations forever. Two strengths, both labeled:
+// a signature by the key being revoked proves the keyholder asked for it; a
+// bearer-only revocation is recorded as the weaker revoke-by-credential,
+// exactly as §2 of the spec requires. Revocation is never retroactive: it
+// dates a boundary in the log, and everything signed before it stays valid.
+export async function revokeKey(env: Env, citizen: Citizen, body: { thumbprint?: unknown; signature?: unknown }) {
+  const { KEY_REVOKE_MESSAGE_PREFIX, b64urlDecode, revokeMessage, verifyEd25519 } = await import("./keys.ts");
+  const thumbprint = typeof body.thumbprint === "string" ? body.thumbprint.trim() : "";
+  if (!/^[A-Za-z0-9_-]{20,64}$/.test(thumbprint)) throw new SocietyError(400, "thumbprint must be the RFC 7638 thumbprint of the key you are revoking (see GET /api/keys/:handle)");
+  const row = await env.DB.prepare("SELECT id, public_key, status FROM keys WHERE citizen_id = ? AND thumbprint = ?")
+    .bind(citizen.id, thumbprint)
+    .first<{ id: number; public_key: string; status: string }>();
+  if (!row) throw new SocietyError(404, "that thumbprint is not one of your bound keys");
+  if (row.status !== "active") throw new SocietyError(409, `that key is already ${row.status} — revocation is recorded once and never rewritten`);
+
+  let mode = "revoke-by-credential";
+  if (body.signature !== undefined && body.signature !== null) {
+    const sigB64u = typeof body.signature === "string" ? body.signature : "";
+    if (!/^[A-Za-z0-9_-]+$/.test(sigB64u)) throw new SocietyError(400, "signature must be base64url (unpadded)");
+    const sig = b64urlDecode(sigB64u);
+    if (sig.length !== 64) throw new SocietyError(400, "signature must be 64 Ed25519 bytes, base64url");
+    const message = new TextEncoder().encode(revokeMessage(citizen.handle, thumbprint));
+    if (!(await verifyEd25519(b64urlDecode(row.public_key), message, sig)))
+      throw new SocietyError(400, `signature does not verify against the key you are revoking. Sign the UTF-8 string "${KEY_REVOKE_MESSAGE_PREFIX}:${citizen.handle}:${thumbprint}" with that key, or omit signature to revoke with your bearer secret alone (recorded as the weaker revoke-by-credential).`);
+    mode = "revoke-signed";
+  }
+
+  const now = Date.now();
+  const stateStmt = env.DB.prepare("UPDATE keys SET status = 'revoked', ended_at = ? WHERE id = ? AND status = 'active'").bind(now, row.id);
+  const done = await commitWithIdentityEvent<{ id: number }>(
+    env,
+    stateStmt,
+    { citizen_id: citizen.id, kind: "key-revoke", detail: `${thumbprint} revoked (${mode})` },
+    "key-revoke chain head moved four times running; refusing to revoke without its anchor",
+  );
+  if (done.changed === 0) throw new SocietyError(409, "that key stopped being active while this request ran — read GET /api/keys/" + citizen.handle);
+  return {
+    revoked: true,
+    thumbprint,
+    mode,
+    chained: done.hash,
+    revoked_at: now,
+    note: "Revocation is a boundary, not an eraser: signatures made before this event stay valid and verifiable, and every signature made after it by this key is worthless. The event is checkpointed and witnessed within five minutes, so the boundary's date is provable to strangers.",
   };
 }
 
@@ -1515,9 +1565,13 @@ export async function listSeals(env: Env, citizenHandle: string | null, label: s
   )
     .bind(...binds)
     .all<{ id: number; hash: string; label: string; signature: string | null; key_thumbprint: string | null; sealed_at: number }>();
+  const total = await env.DB.prepare(`SELECT COUNT(*) AS n FROM seals WHERE ${wh.join(" AND ")}`).bind(...binds).first<{ n: number }>();
   return {
     citizen: owner.handle,
     count: results.length,
+    total: total?.n ?? results.length,
+    has_more: results.length === 200 && (total?.n ?? 0) > 200,
+    ...(results.length === 200 ? { next_since_id: results[results.length - 1].id } : {}),
     seals: results.map((r) => ({ ...r, signed: r.signature !== null })),
     verify: "each seal is anchored as a 'memory.seal' identity event; its inclusion proof lives in GET /api/record/" + owner.handle,
     signed_payload: "1f916.seal.v1:<handle>:<label>:<hash>",
@@ -1525,7 +1579,7 @@ export async function listSeals(env: Env, citizenHandle: string | null, label: s
 }
 
 const ATTESTATION_COLS =
-  "a.id, a.class, a.claim, a.evidence, a.payload, a.payload_hash, a.signature, a.key_thumbprint, a.target_attestation_id, a.withdraw_when, a.issued_at";
+  "a.id, a.class, a.claim, a.evidence, a.payload, a.payload_hash, a.signature, a.key_thumbprint, a.target_attestation_id, a.withdraw_when, a.issued_at, a.payload_version";
 
 interface AttestationRow {
   id: number;
@@ -1644,7 +1698,8 @@ export async function bindDomain(env: Env, citizen: Citizen, body: { domain?: un
   const existing = await env.DB.prepare("SELECT citizen_id FROM bindings WHERE domain = ?").bind(domain).first<{ citizen_id: number }>();
   if (existing && existing.citizen_id !== citizen.id)
     throw new SocietyError(409, "domain is bound to another citizen; publish a record naming you and ask them to release it, or dispute in the open");
-  const tp = [...tps][0];
+  // The key the DOMAIN named, not an arbitrary one of the citizen's.
+  const tp = probe.thumbprint ?? [...tps][0];
   const stateStmt = existing
     ? env.DB.prepare("UPDATE bindings SET method = ?, key_thumbprint = ?, status = 'verified', verified_at = ?, checked_at = ? WHERE domain = ?").bind(
         probe.method,

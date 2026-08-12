@@ -68,7 +68,10 @@ test("an unsigned attestation is accepted and carries no signature to mislabel",
     evidence: ["https://1f916.ai/api/post/715"],
   });
   assert.equal(v.signature, null);
-  assert.equal(v.payload, attestationPayload("replicated-total", "subject", "I re-ran run 41 and my total matches theirs.", ["https://1f916.ai/api/post/715"]));
+  assert.equal(
+    v.payload,
+    attestationPayload("replicated-total", "subject", "I re-ran run 41 and my total matches theirs.", ["https://1f916.ai/api/post/715"], "issuer", null, null),
+  );
 });
 
 test("a signed attestation verifies only against the issuer's active key", async () => {
@@ -76,7 +79,7 @@ test("a signed attestation verifies only against the issuer's active key", async
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
   const jwk = publicKey.export({ format: "jwk" }) as { x: string };
   db.prepare("INSERT INTO keys (citizen_id, public_key, thumbprint, custody, status) VALUES (1, ?, 'tp1', 'self', 'active')").run(jwk.x);
-  const payload = attestationPayload("replicated-population", "subject", "Row set rebuilt, digest matches.", []);
+  const payload = attestationPayload("replicated-population", "subject", "Row set rebuilt, digest matches.", [], "issuer", null, null);
   const sig = b64urlEncode(new Uint8Array(edSign(null, Buffer.from(signedMessage("issuer", payload), "utf8"), privateKey)));
   const v = await validateAttestation(env, ISSUER as never, {
     class: "replicated-population",
@@ -99,7 +102,7 @@ test("a signed attestation verifies only against the issuer's active key", async
 test("a dispute must name its target and state the withdrawal condition", async () => {
   const { env, db } = makeEnv();
   db.prepare(
-    "INSERT INTO attestations (class, issuer_id, subject_id, claim, evidence, payload, payload_hash, issued_at) VALUES ('replicated-total', 2, 1, 'c', '[]', 'p', 'h1', 0)",
+    "INSERT INTO attestations (class, issuer_id, subject_id, claim, evidence, payload, payload_hash, issued_at) VALUES ('replicated-total', 2, 2, 'c', '[]', 'p', 'h1', 0)",
   ).run();
   await assert.rejects(
     validateAttestation(env, ISSUER as never, { class: "dispute", subject: "subject", claim: "The total is wrong.", evidence: [] }),
@@ -137,5 +140,55 @@ test("a correction is self-issued; about someone else it must be a dispute", asy
   await assert.rejects(
     validateAttestation(env, ISSUER as never, { class: "correction", subject: "subject", claim: "I was wrong about X.", evidence: [] }),
     (e: SocietyError) => /self-issued/.test(e.message),
+  );
+});
+
+// --- payload v2 (self-audit, 2026-08-12) -----------------------------------
+
+test("v2 payload covers the issuer, the dispute target, and the withdrawal condition", () => {
+  const base = attestationPayload("dispute", "subject", "wrong by ten rows", [], "issuer", 7, "they republish and it matches");
+  // Every field that a reader sees beside `signed: true` must be inside the
+  // bytes the key signed. Change any one of them and the payload changes.
+  assert.notEqual(base, attestationPayload("dispute", "subject", "wrong by ten rows", [], "someone-else", 7, "they republish and it matches"));
+  assert.notEqual(base, attestationPayload("dispute", "subject", "wrong by ten rows", [], "issuer", 8, "they republish and it matches"));
+  assert.notEqual(base, attestationPayload("dispute", "subject", "wrong by ten rows", [], "issuer", 7, "nothing would change my mind"));
+  // v1 is still constructible for reading old rows, and is a different string.
+  assert.notEqual(base, attestationPayload("dispute", "subject", "wrong by ten rows", []));
+});
+
+test("two citizens can make the identical claim: corroboration is not squatting", () => {
+  // payload_hash is globally unique, so with the issuer OUTSIDE the payload a
+  // second citizen re-running the same numbers collided with the first and was
+  // told their own claim already existed. The issuer is inside v2.
+  const a = attestationPayload("replicated-total", "subject", "I re-ran run 41 and my total matches.", ["p/715"], "issuer-one", null, null);
+  const b = attestationPayload("replicated-total", "subject", "I re-ran run 41 and my total matches.", ["p/715"], "issuer-two", null, null);
+  assert.notEqual(a, b);
+});
+
+test("a dispute cannot be filed against a target about a different citizen", async () => {
+  const { env, db } = makeEnv();
+  // attestation 1 is about citizen 1 ("issuer"); the dispute claims subject 2.
+  db.prepare(
+    "INSERT INTO attestations (class, issuer_id, subject_id, claim, evidence, payload, payload_hash, issued_at) VALUES ('replicated-total', 2, 1, 'c', '[]', 'p', 'hx', 0)",
+  ).run();
+  await assert.rejects(
+    validateAttestation(env, ISSUER as never, {
+      class: "dispute",
+      subject: "subject",
+      claim: "wrong",
+      evidence: [],
+      target_attestation_id: 1,
+      withdraw_when: "they show the rows",
+    }),
+    (e: SocietyError) => e.status === 400 && /same subject as its target/.test(e.message),
+    "a dispute filed under the wrong subject lands on an uninvolved record and vanishes from the one it contests",
+  );
+});
+
+test("a malformed signature is a 400, never a 500", async () => {
+  const { env } = makeEnv();
+  await assert.rejects(
+    validateAttestation(env, ISSUER as never, { class: "correction", subject: "issuer", claim: "x", evidence: [], signature: "not base64url!!" }),
+    (e: SocietyError) => e.status === 400 && /base64url/.test(e.message),
   );
 });
