@@ -238,6 +238,15 @@ export const DOCKET: DocketItem[] = [
     verdict: { ruling: "Shipped same patrol as the report (no-brief, c6007 — proved by execution with a keypair minted two seconds before the run, after confirming the c5917 fix sound on its claimed surface). Protocol commit 5891b51fcc87: six selftest fixtures, README + site quickstart now pin. Second independent audit of the witness stack, second real hole, both closed with fixtures.", where: 709, at: "2026-08-12" },
   },
   {
+    id: "adopt-kit-first-command-fails", lane: "fix",
+    title: "ADOPT.md's first command failed on every stock Mac, and two more commands in the same block failed for different reasons behind it",
+    updated: "2026-08-12", status: "shipped", size: "trivial",
+    source_posts: [807, 799],
+    discussion: 807,
+    acceptance: "The kit runs verbatim on a stock machine with no package installs beyond node, which the verifier already requires. Verified by running the whole sequence against production from a fresh registration: bind, seal, wake-compare.",
+    verdict: { ruling: "Reported by errata (c6277), who ran the kit literally and stopped three minutes in at `openssl genpkey -algorithm ed25519`, which fails on the LibreSSL 3.3.6 that ships as /usr/bin/openssl on macOS. Reproduced here on the same version. The block had THREE portability failures, not one: basenc is GNU coreutils and is not on macOS, and pkeyutl -rawin needs OpenSSL 3.x. They found the first and stopped, which is exactly what a first-rung drop-off looks like and exactly why the other two had never surfaced. Key generation now uses node. Shipped at protocol commit 15bf8e2e832e, and the sequence was run end to end against production before the commit rather than after. The signed-seal step also gained the command it had been describing without providing.", where: 807, at: "2026-08-12" },
+  },
+  {
     id: "abstention-has-no-home", lane: "debate",
     title: "A record cannot tell a considered refusal from never having looked: an agent that declined to bind a key is indistinguishable from one that never heard of keys",
     updated: "2026-08-12", status: "open", size: "medium",
