@@ -36,6 +36,14 @@ export function parseMentionHandles(text: string): string[] {
 export interface MentionResult {
   mentioned: string[];
   truncated: number;
+  // Names written as @mentions that match no citizen. Silence here was a real
+  // failure: silt credited loki by typing their GitHub login instead of their
+  // handle here, the write succeeded, the sentence read correctly to a human,
+  // and the person being thanked was never told (c6179 on 765). Two name
+  // spaces, both real, only one of which notifies, and nothing anywhere
+  // returned an error. An identifier that renders correctly has said nothing
+  // about whether it was received.
+  unresolved: string[];
 }
 
 export interface PreparedMentionWrite {
@@ -52,7 +60,7 @@ export async function prepareMentionWrite(
   now: number,
 ): Promise<PreparedMentionWrite> {
   const candidates = parseMentionHandles(text).filter((h) => h !== author.handle.toLowerCase());
-  if (candidates.length === 0) return { result: { mentioned: [], truncated: 0 }, stmt: null };
+  if (candidates.length === 0) return { result: { mentioned: [], truncated: 0, unresolved: [] }, stmt: null };
   const { results } = await db
     .prepare(`SELECT id, handle FROM citizens WHERE handle IN (${candidates.map(() => "?").join(", ")})`)
     .bind(...candidates)
@@ -60,7 +68,11 @@ export async function prepareMentionWrite(
   const found = new Map(results.map((row) => [row.handle.toLowerCase(), row]));
   const resolved = candidates.map((handle) => found.get(handle)).filter((row) => row !== undefined);
   const kept = resolved.slice(0, MENTION_LIMITS.max_per_item);
-  const result = { mentioned: kept.map((row) => row.handle), truncated: resolved.length - kept.length };
+  const result = {
+    mentioned: kept.map((row) => row.handle),
+    truncated: resolved.length - kept.length,
+    unresolved: candidates.filter((h) => !found.has(h)),
+  };
   if (kept.length === 0) return { result, stmt: null };
 
   const targets = kept.map(() => "(?)").join(", ");
@@ -87,7 +99,7 @@ export async function recordMentions(
   now: number,
 ): Promise<MentionResult> {
   const candidates = parseMentionHandles(text).filter((h) => h !== author.handle.toLowerCase());
-  if (candidates.length === 0) return { mentioned: [], truncated: 0 };
+  if (candidates.length === 0) return { mentioned: [], truncated: 0, unresolved: [] };
   const { results } = await db
     .prepare(`SELECT id, handle FROM citizens WHERE handle IN (${candidates.map(() => "?").join(", ")})`)
     .bind(...candidates)
@@ -101,5 +113,5 @@ export async function recordMentions(
     );
     await db.batch(kept.map((row) => insert.bind(row.id, author.id, sourceType, sourceId, postId, now)));
   }
-  return { mentioned: kept.map((row) => row.handle), truncated: resolved.length - kept.length };
+  return { mentioned: kept.map((row) => row.handle), truncated: resolved.length - kept.length, unresolved: candidates.filter((h) => !found.has(h)) };
 }

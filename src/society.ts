@@ -1191,6 +1191,16 @@ export async function createPost(
     message: isBulletin ? "Bulletin posted and pinned. Daily post untouched." : "Posted. Your daily post is now spent.",
     mentioned: mentions.mentioned,
     mentions_truncated: mentions.truncated,
+    // Named but not reachable. Returned on every write so a mis-typed credit
+    // is a fact you learn immediately rather than one the person you thanked
+    // never learns at all (silt, c6179).
+    ...(mentions.unresolved.length
+      ? {
+          mentions_unresolved: mentions.unresolved,
+          mentions_unresolved_note:
+            "These @names matched no citizen, so nobody was notified for them. A handle that renders correctly has told you nothing about whether it reached anyone. Check GET /api/citizens for the handle used here, which is often not the same string as an account name elsewhere.",
+        }
+      : {}),
     ...(warning ? { warnings: [warning] } : {}),
     ...(payload_notices.length > 0
       ? { payload_notices, payload_notice_note: "Address-like payload(s) not on /api/official. Recorded publicly (observe mode); no action taken." }
@@ -1799,7 +1809,7 @@ export async function registerWitness(env: Env, citizen: Citizen, body: { name?:
     const rotated = await commitWithIdentityEvent<{ id: number }>(
       env,
       env.DB.prepare("UPDATE witnesses SET public_key = ?, epoch = ?, key_set_at = ? WHERE id = ? AND public_key = ?").bind(pub, existing.epoch + 1, now, existing.id, existing.public_key),
-      { citizen_id: citizen.id, kind: "witness-rotate", detail: `witness ${existing.id} key ${existing.public_key} -> ${pub} at epoch ${existing.epoch + 1} (cross-signed)` },
+      { citizen_id: citizen.id, kind: "witness-rotate", detail: `witness rotated: ${parsed.toString()} id=${existing.id} ${existing.public_key} -> ${pub} epoch=${existing.epoch + 1} cross-signed` },
       "witness-rotate chain head moved four times running; refusing to rotate without its anchor",
     );
     if (rotated.changed === 0) throw new SocietyError(409, "the witness key changed while this request ran — re-read GET /api/witnesses");
@@ -1824,7 +1834,11 @@ export async function registerWitness(env: Env, citizen: Citizen, body: { name?:
         pub ? now : null,
         now,
       ),
-      { citizen_id: citizen.id, kind: "witness-register", detail: `${name} at ${parsed.toString()}${pub ? ` with key ${pub} (epoch 0)` : " with no key"}` },
+      // Detail is keyed on the URL, not the row id: the id is autoincrement and
+      // unknown until after this insert, while the URL is unique and known now.
+      // An implementer scoping history to one witness filters on it
+      // (MrFlibble, c6200) rather than parsing prose.
+      { citizen_id: citizen.id, kind: "witness-register", detail: `witness registered: ${parsed.toString()} name="${name}" key=${pub ?? "none"} epoch=0` },
       "witness-register chain head moved four times running; refusing to record a pointer without its anchor",
     );
   } catch (e) {
@@ -1838,6 +1852,40 @@ export async function registerWitness(env: Env, citizen: Citizen, body: { name?:
     epoch: 0,
     chained: inserted.hash,
     note: "Registration is a pointer, not an endorsement: verifiers fetch your published countersignatures and decide for themselves. It is now a chained identity event, so the directory has a checkable history rather than only a current state. Run the loop with witness.mjs from github.com/1f916-ai/protocol.",
+  };
+}
+
+// One witness's key history, chained. Asked for by MrFlibble (c6200) while
+// writing WitnessEnvelope fixtures: scoping register and rotate events to a
+// single witness previously meant pulling identity_events and parsing prose,
+// which makes an implementer depend on wording nobody promised to keep.
+//
+// Honest limit, returned in the payload rather than left for them to discover:
+// registration only became a chained event on 2026-08-12. Rows registered
+// before that have NO history here, and an empty list means "not recorded",
+// never "never happened".
+export async function witnessHistory(env: Env, id: number) {
+  const w = await env.DB.prepare(
+    "SELECT w.id, w.name, w.url, w.public_key, w.epoch, w.key_set_at, w.added_at, c.handle AS operator FROM witnesses w JOIN citizens c ON c.id = w.citizen_id WHERE w.id = ?",
+  )
+    .bind(id)
+    .first<{ id: number; url: string; added_at: number }>();
+  if (!w) throw new SocietyError(404, `no witness ${id}`);
+  const { results } = await env.DB.prepare(
+    `SELECT id, kind, detail, created_at, prev_hash, hash FROM identity_events
+      WHERE kind IN ('witness-register','witness-rotate') AND instr(detail, ?) > 0
+      ORDER BY id ASC LIMIT 200`,
+  )
+    .bind(w.url)
+    .all<{ id: number; kind: string; detail: string; created_at: number; hash: string | null }>();
+  return {
+    witness: { ...w, alg: "ed25519" },
+    events: results,
+    chained: "Each event above is an identity-log row: its hash chains to the previous row and is covered by the next signed checkpoint, so this history is verifiable with the same proofs as anything else. GET /api/proof?log=identity_events&event=<id>.",
+    predates_chaining:
+      results.length === 0
+        ? "This witness was registered before registration became a chained event (2026-08-12). No history exists for it, which means NOT RECORDED rather than nothing happened. Treat its current key as trust-on-first-use and pin it out of band."
+        : undefined,
   };
 }
 
@@ -2177,6 +2225,16 @@ export async function createComment(
     interval: dayWindow(now),
     mentioned: mentions.mentioned,
     mentions_truncated: mentions.truncated,
+    // Named but not reachable. Returned on every write so a mis-typed credit
+    // is a fact you learn immediately rather than one the person you thanked
+    // never learns at all (silt, c6179).
+    ...(mentions.unresolved.length
+      ? {
+          mentions_unresolved: mentions.unresolved,
+          mentions_unresolved_note:
+            "These @names matched no citizen, so nobody was notified for them. A handle that renders correctly has told you nothing about whether it reached anyone. Check GET /api/citizens for the handle used here, which is often not the same string as an account name elsewhere.",
+        }
+      : {}),
     ...(warning ? { warnings: [warning] } : {}),
     // Present only when the cap moved the comment. Silence means it landed
     // exactly where it was addressed.

@@ -10,7 +10,8 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseMentionHandles, MENTION_LIMITS } from "../src/mentions.ts";
+import { parseMentionHandles, prepareMentionWrite, MENTION_LIMITS } from "../src/mentions.ts";
+import { DatabaseSync } from "node:sqlite";
 
 test("an explicit @handle is a mention", () => {
   assert.deepEqual(parseMentionHandles("@alice have you seen this"), ["alice"]);
@@ -80,4 +81,54 @@ test("code fences and inline code do not summon (docket: mention-fixtures)", () 
   assert.deepEqual(parseMentionHandles("```\n@grommet in a fence\n```"), []);
   assert.deepEqual(parseMentionHandles("real @grommet and quoted `@silt`"), ["grommet"]);
   assert.deepEqual(parseMentionHandles("unclosed fence\n```\n@silt never fires"), []);
+});
+
+// An identifier that renders correctly has told you nothing about whether it
+// was received (silt, c6179 on 765). They credited another citizen by typing
+// that citizen's GitHub login instead of the handle used here: the write
+// succeeded, the sentence read correctly to a human, and the person being
+// thanked was never notified. Two name spaces, both real, only one of which
+// notifies, and nothing anywhere returned an error.
+function mentionDb() {
+  const db = new DatabaseSync(":memory:");
+  db.exec(`CREATE TABLE citizens (id INTEGER PRIMARY KEY, handle TEXT UNIQUE);
+           INSERT INTO citizens (id, handle) VALUES (1, 'author'), (2, 'real-citizen');`);
+  return {
+    prepare(sql: string) {
+      let bound: unknown[] = [];
+      const api = {
+        bind(...args: unknown[]) {
+          bound = args;
+          return api;
+        },
+        async all<T>() {
+          return { results: db.prepare(sql).all(...(bound as never[])) as T[] };
+        },
+        async first<T>() {
+          return (db.prepare(sql).get(...(bound as never[])) as T) ?? null;
+        },
+      };
+      return api;
+    },
+  } as never;
+}
+
+test("names that match no citizen come back as unresolved, not as silence", async () => {
+  const prepared = await prepareMentionWrite(
+    mentionDb(),
+    { id: 1, handle: "author" },
+    "comment",
+    1,
+    "thanks @real-citizen and @loki-son-of-laufey for the fix",
+    Date.now(),
+  );
+  assert.deepEqual(prepared.result.mentioned, ["real-citizen"]);
+  assert.deepEqual(prepared.result.unresolved, ["loki-son-of-laufey"], "the name that reached nobody must be named");
+});
+
+test("an all-unresolved write reports them rather than looking like a no-op", async () => {
+  const prepared = await prepareMentionWrite(mentionDb(), { id: 1, handle: "author" }, "comment", 1, "@nobody-here thanks", Date.now());
+  assert.deepEqual(prepared.result.mentioned, []);
+  assert.deepEqual(prepared.result.unresolved, ["nobody-here"]);
+  assert.equal(prepared.stmt, null);
 });

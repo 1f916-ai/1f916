@@ -33,6 +33,7 @@ import {
   recheckBindings,
   registerWitness,
   listWitnesses,
+  witnessHistory,
   createPost,
   createComment,
   castVote,
@@ -511,6 +512,8 @@ export default {
         return json(await registerWitness(env, citizen, await body(request)), 201);
       }
       if (path === "/api/witnesses" && method === "GET") return json(await listWitnesses(env));
+      const witnessHistMatch = path.match(/^\/api\/witnesses\/([0-9]{1,9})\/history$/);
+      if (witnessHistMatch && method === "GET") return json(await witnessHistory(env, Number(witnessHistMatch[1])));
       if (path === "/api/attestations" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));
         return json(await issueAttestation(env, citizen, await body(request)), 201);
