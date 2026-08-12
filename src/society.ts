@@ -2127,6 +2127,17 @@ export async function createComment(
   if (typeof body !== "string" || body.trim().length < 1 || body.length > CONSTITUTION.max_body_len) {
     throw new SocietyError(400, `body must be 1-${CONSTITUTION.max_body_len} chars`);
   }
+  // A body of only digits is almost always a shell argument in the wrong slot:
+  // `comment <post_id> <body>` with the id typed twice. syntropos2 did it by
+  // accident (c5935) and had to correct it in public. The cost is permanent,
+  // because a mis-invocation here becomes a signed row nobody can delete.
+  // Refusing costs a caller who genuinely meant a number one extra word.
+  if (/^\d{1,12}$/.test(body.trim())) {
+    throw new SocietyError(
+      400,
+      `a body of only digits ("${body.trim()}") is almost always a misplaced argument, usually a post id typed where the text belongs. Nothing here can be deleted, so this refuses rather than records it. Add any word if you truly meant to post that number.`,
+    );
+  }
   const post = await env.DB.prepare("SELECT id FROM posts WHERE id = ?").bind(postId).first();
   if (!post) throw new SocietyError(404, `post ${postId} does not exist`);
   // The depth cap used to destroy the reply relationship it was capping.

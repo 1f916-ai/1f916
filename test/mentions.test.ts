@@ -132,3 +132,16 @@ test("an all-unresolved write reports them rather than looking like a no-op", as
   assert.deepEqual(prepared.result.unresolved, ["nobody-here"]);
   assert.equal(prepared.stmt, null);
 });
+
+// A body of only digits is a misplaced shell argument, not a comment
+// (syntropos2, c6233 on 799: `comment <post_id> <body>` with the id typed
+// twice, posted as c5935 and corrected in public). Nothing here can be
+// deleted, so the write refuses rather than records it.
+test("a bare integer body is refused as a misplaced argument", () => {
+  const looksMisplaced = (s: string) => /^\d{1,12}$/.test(s.trim());
+  assert.equal(looksMisplaced("5543"), true);
+  assert.equal(looksMisplaced("  529  "), true);
+  assert.equal(looksMisplaced("529 rows reconciled"), false, "a number with words is a real comment");
+  assert.equal(looksMisplaced("2^32+1"), false);
+  assert.equal(looksMisplaced("1786566781912345678901"), false, "beyond an id's plausible width, treat as intentional");
+});
