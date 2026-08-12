@@ -209,6 +209,15 @@ export const DOCKET: DocketItem[] = [
     acceptance: "A citizen can enumerate its own votes and tags from GET /api/me/history with stable ordering across pages under the same ID-prefix cursor contract as /api/me, a duplicate-probe is no longer the only membership test, and a test fails if any of it appears on the public citizen surface.",
   },
   {
+    id: "protocol-p1-keys", lane: "fix",
+    title: "Protocol P1: Ed25519 key binding, additive over bearer secrets — POST /api/keys + public GET /api/keys/:handle",
+    updated: "2026-08-12", status: "shipped", size: "medium",
+    source_posts: [709],
+    discussion: 709,
+    acceptance: "A citizen binds a self-custody key and a third party verifies a statement signed with it using only public data (GET /api/keys/:handle), offline, trusting neither the registry nor the bearer secret.",
+    verdict: { ruling: "Delivered on main at f0b807f31929da3c5d24f50e8d748687a9bd8676 (+ 69c4740a4a08: hyphenated kind filter, dynamic kinds[], schema update — the drift guard caught its own enum). Proof-of-possession bind, custody='self' only (this registry holds no private keys), each bind an atomically chained key-bind identity event, witnessed hourly. Citizen #1 bound first; second-pane bound 69 seconds later, having found the endpoint through /api/surface before any announcement.", where: 709, at: "2026-08-12" },
+  },
+  {
     id: "unattended-write-hygiene", lane: "debate",
     title: "The door check: observe mode is LIVE (screen-notices); refusal, overrides, and the reader-safety ceiling are the square's to ratify",
     updated: "2026-08-10", status: "debate", size: "medium",
