@@ -1545,8 +1545,10 @@ export async function getAttestation(env: Env, id: number) {
   )
     .bind(id)
     .all<AttestationRow>();
-  const anchor = await env.DB.prepare("SELECT id FROM identity_events WHERE kind = 'attestation' AND detail LIKE ? LIMIT 1")
-    .bind(`%${row.payload_hash}%`)
+  // instr, not LIKE: D1 refuses LIKE patterns this long ("pattern too
+  // complex"), found live on the first read of attestation 1.
+  const anchor = await env.DB.prepare("SELECT id FROM identity_events WHERE kind = 'attestation' AND instr(detail, ?) > 0 LIMIT 1")
+    .bind(row.payload_hash)
     .first<{ id: number }>();
   return {
     attestation: shapeAttestation(row),
