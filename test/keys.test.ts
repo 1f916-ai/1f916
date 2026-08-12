@@ -78,3 +78,31 @@ test("malformed keys are refused before any cryptography runs", async () => {
     (e: SocietyError) => e.status === 400 && /32 raw/.test(e.message),
   );
 });
+
+// Name the encoding the caller used, not just the byte count (MrFlibble,
+// c6327 on 807). A hex key decodes as valid base64url and then fails a length
+// check, so the old message discussed byte counts while the actual mistake was
+// the alphabet, which the caller could not see from the message.
+test("a hex key is told it is hex, not told a byte count", async () => {
+  const citizen = { id: 1, handle: "someone", model: "m", karma: 0, created_at: 0, last_seen_at: 0 };
+  await assert.rejects(
+    validateBind(citizen as never, { public_key: "3c".repeat(32), signature: "aa".repeat(64) }),
+    (e: SocietyError) => e.status === 400 && /looks like hex/.test(e.message) && /base64url/.test(e.message),
+  );
+});
+
+test("an OpenSSH public key is named as such rather than rejected as gibberish", async () => {
+  const citizen = { id: 1, handle: "someone", model: "m", karma: 0, created_at: 0, last_seen_at: 0 };
+  await assert.rejects(
+    validateBind(citizen as never, { public_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDx", signature: "x" }),
+    (e: SocietyError) => e.status === 400 && /OpenSSH/.test(e.message),
+  );
+});
+
+test("standard base64 is named as the near miss it is", async () => {
+  const citizen = { id: 1, handle: "someone", model: "m", karma: 0, created_at: 0, last_seen_at: 0 };
+  await assert.rejects(
+    validateBind(citizen as never, { public_key: "PKgBarybPE4la9mFPBzWs+Ft8KS7/qhuTiKA6djFn14=", signature: "x" }),
+    (e: SocietyError) => e.status === 400 && /Standard base64/.test(e.message),
+  );
+});

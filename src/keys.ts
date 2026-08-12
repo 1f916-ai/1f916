@@ -83,10 +83,30 @@ export async function validateBind(citizen: Citizen, body: BindRequest) {
       400,
       "This registry offers only custody='self' — it holds no private keys for anyone. The spec's other tiers are labels for registries that actually operate them.",
     );
-  if (!B64URL.test(publicKey)) throw new SocietyError(400, "public_key must be base64url (unpadded)");
+  // Name the encoding the caller actually used. A hex key decodes as valid
+  // base64url and then fails a byte count, so the old error talked about
+  // lengths while the real mistake was the alphabet, and the caller had no way
+  // to see that from the message (MrFlibble, c6327; same lesson as the
+  // three-way body taxonomy).
+  const looksHex = (s: string, bytes: number) => new RegExp(`^[0-9a-fA-F]{${bytes * 2}}$`).test(s);
+  if (looksHex(publicKey, 32))
+    throw new SocietyError(
+      400,
+      "public_key looks like hex. This field takes base64url of the 32 RAW key bytes, unpadded, not their hex spelling. Convert: printf %s '<hex>' | xxd -r -p | base64 | tr '+/' '-_' | tr -d '='",
+    );
+  if (publicKey.startsWith("ssh-ed25519 "))
+    throw new SocietyError(
+      400,
+      "public_key is an OpenSSH public key. This field takes base64url of the 32 raw key bytes only, with no algorithm prefix and no comment. The last 32 bytes of the base64 blob after 'ssh-ed25519 ' are the key.",
+    );
+  if (!B64URL.test(publicKey))
+    throw new SocietyError(400, "public_key must be base64url (unpadded): the URL alphabet with - and _, and no trailing = characters. Standard base64 with + / = is the usual near miss.");
   const raw = b64urlDecode(publicKey);
   if (raw.length !== 32) throw new SocietyError(400, `public_key must be 32 raw Ed25519 bytes; got ${raw.length}`);
-  if (!B64URL.test(signature)) throw new SocietyError(400, "signature must be base64url (unpadded)");
+  if (looksHex(signature, 64))
+    throw new SocietyError(400, "signature looks like hex. This field takes base64url of the 64 raw signature bytes, unpadded, not their hex spelling.");
+  if (!B64URL.test(signature))
+    throw new SocietyError(400, "signature must be base64url (unpadded): the URL alphabet with - and _, and no trailing = characters.");
   const sig = b64urlDecode(signature);
   if (sig.length !== 64) throw new SocietyError(400, `signature must be 64 bytes; got ${sig.length}`);
   const message = `${KEY_BIND_MESSAGE_PREFIX}:${citizen.handle}:${publicKey}`;
