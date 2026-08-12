@@ -37,28 +37,32 @@ jobs:
           # are free; the honest cost is commit volume, which the day files
           # absorb. This closes the rewrite window from an hour to minutes.
           bucket=$(printf "%s:%02d" "$(date -u +%Y-%m-%dT%H)" $(( $(date -u +%-M) / 5 * 5 )))
+          # The bucket dedup must gate RECORDING, never exit the whole step:
+          # an early exit here once skipped countersigning entirely (run
+          # 31597491079 — the worker-cron dispatch had recorded the bucket,
+          # so the first run after WITNESS_KEY landed signed nothing).
           if [ -f "witness/$day.jsonl" ] && grep -q "\"bucket\":\"$bucket\"" "witness/$day.jsonl"; then
-            echo "witness line for ${bucket}: already recorded this window; skipping the duplicate."
-            exit 0
-          fi
-          # Protocol P2: the witness also records the signed Merkle checkpoint
-          # heads. A checkpoint copied here is outside the registry's failure
-          # domain — the offline verifier (1f916-ai/protocol verify.mjs)
-          # checks proofs against THIS copy, not the registry's word.
-          if cps=$(curl -sf --max-time 30 https://1f916.ai/api/checkpoint); then
-            cpj=$(echo "$cps" | jq -c '{registry_key: .registry_public_key.x, checkpoints: [.checkpoints[] | {log, tree_size, root, sig, created_at}]}')
+            echo "witness line for ${bucket}: already recorded this window; skipping the duplicate day line."
           else
-            cpj='{"checkpoints":"fetch_failed"}'
-          fi
-          if resp=$(curl -sf --max-time 30 https://1f916.ai/api/attest); then
-            echo "$resp" | jq -c --arg at "$at" --arg bucket "$bucket" --argjson cp "$cpj" '{
-              at: $at, bucket: $bucket,
-              status: (if (.identity_log.status == "verified" and .treasury.status == "verified") then "verified" else "unverified" end),
-              identity: (.identity_log | {status, head, verified_through_id, sealed_entries, total_rows}),
-              treasury: (.treasury | {status, head, verified_through_id, sealed_entries, total_rows})
-            } + $cp' >> "witness/$day.jsonl"
-          else
-            echo "{\"at\":\"$at\",\"bucket\":\"$bucket\",\"status\":\"fetch_failed\"}" | jq -c --argjson cp "$cpj" '. + $cp' >> "witness/$day.jsonl"
+            # Protocol P2: the witness also records the signed Merkle checkpoint
+            # heads. A checkpoint copied here is outside the registry's failure
+            # domain — the offline verifier (1f916-ai/protocol verify.mjs)
+            # checks proofs against THIS copy, not the registry's word.
+            if cps=$(curl -sf --max-time 30 https://1f916.ai/api/checkpoint); then
+              cpj=$(echo "$cps" | jq -c '{registry_key: .registry_public_key.x, checkpoints: [.checkpoints[] | {log, tree_size, root, sig, created_at}]}')
+            else
+              cpj='{"checkpoints":"fetch_failed"}'
+            fi
+            if resp=$(curl -sf --max-time 30 https://1f916.ai/api/attest); then
+              echo "$resp" | jq -c --arg at "$at" --arg bucket "$bucket" --argjson cp "$cpj" '{
+                at: $at, bucket: $bucket,
+                status: (if (.identity_log.status == "verified" and .treasury.status == "verified") then "verified" else "unverified" end),
+                identity: (.identity_log | {status, head, verified_through_id, sealed_entries, total_rows}),
+                treasury: (.treasury | {status, head, verified_through_id, sealed_entries, total_rows})
+              } + $cp' >> "witness/$day.jsonl"
+            else
+              echo "{\"at\":\"$at\",\"bucket\":\"$bucket\",\"status\":\"fetch_failed\"}" | jq -c --argjson cp "$cpj" '. + $cp' >> "witness/$day.jsonl"
+            fi
           fi
           # Countersign (fail-closed): if this repo has a WITNESS_KEY secret,
           # run the reference witness and append its SIGNED lines to the same
@@ -86,7 +90,9 @@ jobs:
           git config user.name "1f916-witness"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add witness/
-          git commit -m "witness: $at"
+          # A doubly-deduped run (day line recorded, nothing countersigned)
+          # legitimately has no changes; that is not a failure.
+          git commit -m "witness: $at" || { echo "nothing new this run"; exit 0; }
           git pull --rebase origin main
           git push
         env:
