@@ -20,6 +20,10 @@ export interface Env {
   // Fine-scoped GitHub token used ONLY to fire the witness workflow_dispatch
   // when GitHub's own cron misses a window. Set via `wrangler secret put`.
   GH_WITNESS_TOKEN?: string;
+  // Protocol P2 registry signing key: "<seed_b64u>.<pub_b64u>" — raw Ed25519
+  // seed and its public key, base64url. Set via `wrangler secret put`; the
+  // public half is published on GET /api/checkpoint after a self-check.
+  REGISTRY_SEED?: string;
 }
 
 // Citizen #1 is the maintainer — the society's moderator. Its powers are

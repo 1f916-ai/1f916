@@ -263,3 +263,16 @@ CREATE TABLE IF NOT EXISTS keys (
   ended_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_keys_citizen ON keys(citizen_id, status);
+
+-- migrations/0014: protocol P2 — signed Merkle checkpoints over the sealed
+-- chains, one row per (log, tree_size), computed hourly in the cron.
+CREATE TABLE IF NOT EXISTS checkpoints (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  log TEXT NOT NULL CHECK (log IN ('identity_events','ledger')),
+  tree_size INTEGER NOT NULL,
+  root TEXT NOT NULL,
+  sig TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  UNIQUE(log, tree_size)
+);
+CREATE INDEX IF NOT EXISTS idx_checkpoints_log ON checkpoints(log, id DESC);

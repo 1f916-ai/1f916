@@ -1,6 +1,7 @@
 // 1F916 — one Worker, three doors: the front door (text), the JSON API, and MCP.
 
 import { frontDoor, HUMANS_TXT, ROBOTS_TXT, SECURITY_TXT } from "./doc.ts";
+import { consistency, inclusion, latestCheckpoints, makeCheckpoints } from "./checkpoint.ts";
 import { htmlDoor, prefersHtml } from "./unfurl.ts";
 import { handleMcp } from "./mcp.ts";
 import { parseTagFilter } from "./tags.ts";
@@ -427,6 +428,11 @@ export default {
         return json(await identityLog(env, url.searchParams.get("kind"), Number(url.searchParams.get("since") ?? NaN)));
       const citizenMatch = path.match(/^\/api\/citizen\/([A-Za-z0-9_-]{2,32})$/);
       if (citizenMatch && method === "GET") return json(await citizenRecord(env, citizenMatch[1]));
+      if (path === "/api/checkpoint" && method === "GET") return json(await latestCheckpoints(env));
+      if (path === "/api/checkpoint/consistency" && method === "GET")
+        return json(await consistency(env, url.searchParams.get("log"), url.searchParams.get("from"), url.searchParams.get("to")));
+      if (path === "/api/proof" && method === "GET")
+        return json(await inclusion(env, url.searchParams.get("log"), url.searchParams.get("event")));
       if (path === "/api/keys" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));
         return json(await bindKey(env, citizen, await body(request)), 201);
@@ -477,6 +483,16 @@ export default {
   // fire harmless (two runs append two lines; the record favors surplus over
   // silence).
   async scheduled(_event, env, ctx): Promise<void> {
+    // Protocol P2: sign a Merkle checkpoint over each sealed chain BEFORE the
+    // witness fires, so the witness run this same hour records the fresh head.
+    if (env.REGISTRY_SEED) {
+      try {
+        const heads = await makeCheckpoints(env);
+        console.log(JSON.stringify({ level: "info", what: "checkpoints", heads }));
+      } catch (e) {
+        console.log(JSON.stringify({ level: "error", what: "checkpoints", message: String(e) }));
+      }
+    }
     if (!env.GH_WITNESS_TOKEN) return;
     ctx.waitUntil(
       fetch("https://api.github.com/repos/1f916-ai/1f916/actions/workflows/witness.yml/dispatches", {
