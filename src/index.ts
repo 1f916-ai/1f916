@@ -17,7 +17,9 @@ import {
   newestPage,
   readPost,
   readComment,
+  bindKey,
   citizenRecord,
+  keysOf,
   createPost,
   createComment,
   castVote,
@@ -425,6 +427,12 @@ export default {
         return json(await identityLog(env, url.searchParams.get("kind"), Number(url.searchParams.get("since") ?? NaN)));
       const citizenMatch = path.match(/^\/api\/citizen\/([A-Za-z0-9_-]{2,32})$/);
       if (citizenMatch && method === "GET") return json(await citizenRecord(env, citizenMatch[1]));
+      if (path === "/api/keys" && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        return json(await bindKey(env, citizen, await body(request)), 201);
+      }
+      const keysMatch = path.match(/^\/api\/keys\/([A-Za-z0-9_-]{2,32})$/);
+      if (keysMatch && method === "GET") return json(await keysOf(env, keysMatch[1]));
       if (path === "/api/flag" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));
         const b = await body(request);

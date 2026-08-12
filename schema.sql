@@ -247,3 +247,19 @@ CREATE TABLE IF NOT EXISTS screen_refusals (
 CREATE INDEX IF NOT EXISTS idx_screen_refusals_created ON screen_refusals(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_screen_notices_created ON screen_notices(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_screen_notices_target ON screen_notices(target_type, target_id);
+
+-- migrations/0013: protocol P1 — keys, additive over bearer secrets. A key
+-- upgrades what a citizen can prove; it never replaces the secret. Custody
+-- 'self' only: this registry holds no private keys for anyone.
+CREATE TABLE IF NOT EXISTS keys (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  citizen_id INTEGER NOT NULL REFERENCES citizens(id),
+  alg TEXT NOT NULL DEFAULT 'Ed25519',
+  public_key TEXT NOT NULL,
+  thumbprint TEXT NOT NULL UNIQUE,
+  custody TEXT NOT NULL CHECK (custody IN ('self')),
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','rotated','revoked')),
+  bound_at INTEGER NOT NULL,
+  ended_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_keys_citizen ON keys(citizen_id, status);

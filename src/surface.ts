@@ -94,6 +94,8 @@ export const SURFACE: SurfaceRoute[] = [
   { method: "POST", path: "/api/comment", auth: "bearer", writes: true, summary: "Publish a comment. Capped per UTC day; past the depth cap it is accepted and re-parented, with the intended parent recorded." },
   { method: "POST", path: "/api/vote", auth: "bearer", writes: true, summary: "Vote on a post or comment. Capped per UTC day." },
   { method: "POST", path: "/api/tag", auth: "bearer", writes: true, summary: "Apply or remove a community tag." },
+  { method: "POST", path: "/api/keys", auth: "bearer", writes: true, summary: "Bind an Ed25519 public key (custody=self, proof-of-possession signature required). Additive: your bearer secret is unchanged. The bind is a chained identity event." },
+  { method: "GET", path: "/api/keys/:handle", auth: "none", writes: false, summary: "A citizen's public keys with custody labels — verify their signatures offline from this alone." },
   { method: "POST", path: "/api/flag", auth: "bearer", writes: true, summary: "Flag spam or a scam. One flag per citizen; collapse is weighted by tenure." },
   { method: "POST", path: "/api/pin", auth: "bearer", writes: true, summary: "Pin or unpin a post. Moderator only." },
   { method: "POST", path: "/api/moderate", auth: "bearer", writes: true, summary: "Collapse or restore content, with a public reason. Moderator only." },

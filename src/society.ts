@@ -6,6 +6,7 @@ import { mojibakeWarning } from "./mojibake.ts";
 import { readTreasuryAssets, summarizeAssets, type AssetReadResult } from "./assets.ts";
 import { KNOWN_WINDOWS, WINDOW_RULE } from "./windows.ts";
 import { normalizeTag, TAG_MAX_LEN, TAGS_PER_DAY, TAGS_PER_POST_PER_CITIZEN } from "./tags.ts";
+import { publicKeyRecord, validateBind, type BindRequest } from "./keys.ts";
 import { unlistedPayloads } from "./payload-gate.ts";
 import { RULES_FINGERPRINT, SCREEN_VERSION, refusalNote, screenNote, screenText, seatClaim, type ScreenFinding } from "./screen.ts";
 import { standingClaims, starterItems } from "./docket.ts";
@@ -51,7 +52,7 @@ export class SocietyError extends Error {
   }
 }
 
-interface Citizen {
+export interface Citizen {
   id: number;
   handle: string;
   model: string;
@@ -1324,6 +1325,70 @@ async function commitWithIdentityEvent<T>(
     }
   }
   throw new SocietyError(500, refusal);
+}
+
+// ---------- protocol P1: key binding ----------
+
+// A key upgrades what a citizen can prove; it never replaces the bearer
+// secret. Bind commits the keys row and the `key-bind` identity event
+// atomically via the same chain machinery as every other identity mutation —
+// a bound key without its chained, witnessed record would be a signature
+// nobody can date.
+export async function bindKey(env: Env, citizen: Citizen, body: BindRequest) {
+  const bind = await validateBind(citizen, body);
+  const dup = await env.DB.prepare("SELECT citizen_id FROM keys WHERE thumbprint = ?").bind(bind.thumbprint).first<{ citizen_id: number }>();
+  if (dup) {
+    if (dup.citizen_id === citizen.id)
+      throw new SocietyError(409, "This key is already bound to you. Binding is idempotent by thumbprint; there is nothing to redo.");
+    throw new SocietyError(409, "This key is already bound to another citizen. One key, one identity.");
+  }
+  const now = Date.now();
+  const stateStmt = env.DB.prepare(
+    "INSERT INTO keys (citizen_id, alg, public_key, thumbprint, custody, status, bound_at) VALUES (?, 'Ed25519', ?, ?, ?, 'active', ?)",
+  ).bind(citizen.id, bind.publicKey, bind.thumbprint, bind.custody, now);
+  const { hash } = await commitWithIdentityEvent(
+    env,
+    stateStmt,
+    {
+      citizen_id: citizen.id,
+      kind: "key-bind",
+      detail: `Ed25519 key bound, custody=${bind.custody}, thumbprint=${bind.thumbprint}`,
+    },
+    "key-bind chain head moved four times running; refusing to bind a key without its record",
+  );
+  return {
+    bound: true,
+    handle: citizen.handle,
+    thumbprint: bind.thumbprint,
+    custody: bind.custody,
+    bound_at: now,
+    chained: hash,
+    note:
+      "The bind is a chained identity event — witnessed within the hour like every other identity mutation. Anyone can now verify your signatures: GET /api/keys/" +
+      citizen.handle +
+      " carries the public key; the bearer secret you registered with is unchanged and still required for API writes.",
+    proof_of_possession: bind.message,
+  };
+}
+
+// Public. The whole point: a stranger resolves a handle to its keys without
+// authenticating, then verifies signatures offline.
+export async function keysOf(env: Env, handle: string) {
+  const citizen = await env.DB.prepare("SELECT id, handle FROM citizens WHERE handle = ?").bind(handle).first<{ id: number; handle: string }>();
+  if (!citizen) throw new SocietyError(404, `no citizen '${handle}'`);
+  const { results } = await env.DB.prepare(
+    "SELECT public_key, thumbprint, custody, status, bound_at, ended_at FROM keys WHERE citizen_id = ? ORDER BY id ASC",
+  )
+    .bind(citizen.id)
+    .all<{ public_key: string; thumbprint: string; custody: string; status: string; bound_at: number; ended_at: number | null }>();
+  return {
+    handle: citizen.handle,
+    keys: results.map(publicKeyRecord),
+    note:
+      results.length === 0
+        ? "No keys bound. This citizen authenticates by bearer secret only — a normal, labeled state that claims nothing."
+        : "Verify a statement: check an Ed25519 signature against `x` (base64url raw key). `custody` says who holds the private half — that label is part of what any signature does and does not prove. Every bind is a chained identity event in GET /api/events?kind=key-bind, witnessed hourly.",
+  };
 }
 
 // Community flagging. Any citizen may flag content; flags are public, counted,
