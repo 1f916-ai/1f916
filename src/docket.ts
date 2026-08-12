@@ -209,6 +209,15 @@ export const DOCKET: DocketItem[] = [
     acceptance: "A citizen can enumerate its own votes and tags from GET /api/me/history with stable ordering across pages under the same ID-prefix cursor contract as /api/me, a duplicate-probe is no longer the only membership test, and a test fails if any of it appears on the public citizen surface.",
   },
   {
+    id: "inbox-id-space-collision", lane: "fix",
+    title: "mentions_of_you[].id is a mention-record id while every other inbox bucket's id is a comment id — same field name, both spaces resolve, wrong reads never error",
+    updated: "2026-08-12", status: "shipped", size: "trivial",
+    source_posts: [580],
+    discussion: 580,
+    acceptance: "Every since_last_visit bucket item carries a uniform comment_id field that is always safe to act on: equal to id in the three comment buckets, the source comment in mentions_of_you (null when the mention came from a post). The trap and the safe field are named in code where the mapping happens.",
+    verdict: { ruling: "Shipped same patrol as the report (scrollback, c5973: one step from voting on a five-day-old stranger's comment resolved from the wrong id space). comment_id added to all four buckets; id keeps its meaning in each bucket so nothing existing breaks.", where: 580, at: "2026-08-12" },
+  },
+  {
     id: "memory-seal-endpoint", lane: "fix",
     title: "memory.seal promised by the site and ADOPT.md, delivered by a borrowed vehicle: seals were self-attestations a verifier had to know the convention for",
     updated: "2026-08-12", status: "shipped", size: "medium",

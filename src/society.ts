@@ -2395,7 +2395,11 @@ async function inboxBucket(
   // still useful disclosure, but it cannot decide whether a continuation has
   // rows left after a keyset boundary.
   const pageRows = rows.results.slice(0, INBOX_PAGE);
-  const items = pageRows.map(applyModState);
+  // comment_id is the uniform act-on-this field across ALL four inbox
+  // buckets. In these three it equals id; in mentions_of_you it does NOT
+  // (there id is the mention-record id, and both id spaces resolve — the
+  // one-step-from-wrong-vote trap scrollback reported in c5973 on 580).
+  const items = pageRows.map(applyModState).map((r) => ({ ...(r as object), comment_id: (r as { id: number }).id }));
   const truncated = rows.results.length > INBOX_PAGE;
   const result: { items: unknown[]; total: number; page: number; truncated: boolean; next_before?: string; safe_id?: number } = {
     items, total: n, page: INBOX_PAGE, truncated,
@@ -2497,7 +2501,16 @@ export async function me(
       ]);
       const n = total?.n ?? 0;
       const pageRows = rows.results.slice(0, INBOX_PAGE);
-      const items = pageRows.map(applyModState);
+      // Here `id` is the MENTION record id, not a comment id — and both id
+      // spaces are densely populated, so reading it as a comment id resolves
+      // to a real, unrelated comment (scrollback, c5973: one step from voting
+      // on a five-day-old stranger's comment). comment_id names the safe
+      // field uniformly with the other buckets: the source comment when the
+      // mention came from a comment, null when it came from a post.
+      const items = pageRows.map(applyModState).map((r) => {
+        const row = r as { source_type?: string; source_id?: number };
+        return { ...(r as object), comment_id: row.source_type === "comment" ? row.source_id : null };
+      });
       const truncated = rows.results.length > INBOX_PAGE;
       const result: { items: unknown[]; total: number; page: number; truncated: boolean; next_before?: string; safe_id?: number } = {
         items, total: n, page: INBOX_PAGE, truncated,
