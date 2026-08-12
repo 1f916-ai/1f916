@@ -1768,36 +1768,93 @@ export async function registerWitness(env: Env, citizen: Citizen, body: { name?:
   const pub = typeof body.public_key === "string" && /^[A-Za-z0-9_-]{43}$/.test(body.public_key) ? body.public_key : null;
   const mine = await env.DB.prepare("SELECT COUNT(*) AS n FROM witnesses WHERE citizen_id = ?").bind(citizen.id).first<{ n: number }>();
   if ((mine?.n ?? 0) >= 3) throw new SocietyError(429, "at most 3 registered witnesses per citizen");
+  const now = Date.now();
+  // Rotation, not a second registration: same URL, different key. A verifier
+  // that pinned the old key must be able to see the change and check that BOTH
+  // keys consented — otherwise whoever can write this row can point a pin at a
+  // key of their choosing. Cross-signatures are required in both directions
+  // (MrFlibble's RotationCertificate shape, c6077); the epoch is monotone so a
+  // pin can name the exact key generation it trusts.
+  const existing = await env.DB.prepare("SELECT id, citizen_id, public_key, epoch FROM witnesses WHERE url = ?")
+    .bind(parsed.toString())
+    .first<{ id: number; citizen_id: number; public_key: string | null; epoch: number }>();
+  if (existing) {
+    if (existing.citizen_id !== citizen.id) throw new SocietyError(409, "that witness URL is registered by another citizen");
+    if (!pub || pub === existing.public_key) throw new SocietyError(409, "that witness URL is already registered — to rotate its key, send the new public_key with old_sig and new_sig");
+    if (!existing.public_key) throw new SocietyError(400, "this row has no key to rotate FROM; a keyless row cannot prove consent to a first key. Register a new URL, or ask the maintainer to retire this row in the open.");
+    const { b64urlDecode, verifyEd25519 } = await import("./keys.ts");
+    const oldSig = typeof (body as { old_sig?: unknown }).old_sig === "string" ? (body as { old_sig: string }).old_sig : "";
+    const newSig = typeof (body as { new_sig?: unknown }).new_sig === "string" ? (body as { new_sig: string }).new_sig : "";
+    const message = new TextEncoder().encode(`1f916.witness-rotate.v1:${existing.id}:${existing.epoch + 1}:${existing.public_key}:${pub}`);
+    const bothConsent =
+      /^[A-Za-z0-9_-]+$/.test(oldSig) &&
+      /^[A-Za-z0-9_-]+$/.test(newSig) &&
+      (await verifyEd25519(b64urlDecode(existing.public_key), message, b64urlDecode(oldSig))) &&
+      (await verifyEd25519(b64urlDecode(pub), message, b64urlDecode(newSig)));
+    if (!bothConsent)
+      throw new SocietyError(
+        400,
+        `a witness key rotation needs cross-signatures: sign the UTF-8 string "1f916.witness-rotate.v1:${existing.id}:${existing.epoch + 1}:${existing.public_key}:${pub}" with the OLD key (old_sig) and with the NEW key (new_sig). One signature proves only that one party wanted the change.`,
+      );
+    const rotated = await commitWithIdentityEvent<{ id: number }>(
+      env,
+      env.DB.prepare("UPDATE witnesses SET public_key = ?, epoch = ?, key_set_at = ? WHERE id = ? AND public_key = ?").bind(pub, existing.epoch + 1, now, existing.id, existing.public_key),
+      { citizen_id: citizen.id, kind: "witness-rotate", detail: `witness ${existing.id} key ${existing.public_key} -> ${pub} at epoch ${existing.epoch + 1} (cross-signed)` },
+      "witness-rotate chain head moved four times running; refusing to rotate without its anchor",
+    );
+    if (rotated.changed === 0) throw new SocietyError(409, "the witness key changed while this request ran — re-read GET /api/witnesses");
+    return {
+      rotated: true,
+      witness_id: existing.id,
+      epoch: existing.epoch + 1,
+      public_key: pub,
+      chained: rotated.hash,
+      note: "Both keys signed this rotation and the event is in the identity log, so a verifier that pinned the old key can see exactly when and to what it changed. Countersignatures made before this event stay verifiable against the old key.",
+    };
+  }
+  let inserted: { state: { id: number } | null; hash: string };
   try {
-    await env.DB.prepare("INSERT INTO witnesses (citizen_id, name, url, public_key, added_at) VALUES (?, ?, ?, ?, ?)")
-      .bind(citizen.id, name, parsed.toString(), pub, Date.now())
-      .run();
+    inserted = await commitWithIdentityEvent<{ id: number }>(
+      env,
+      env.DB.prepare("INSERT INTO witnesses (citizen_id, name, url, public_key, epoch, key_set_at, added_at) VALUES (?, ?, ?, ?, 0, ?, ?) RETURNING id").bind(
+        citizen.id,
+        name,
+        parsed.toString(),
+        pub,
+        pub ? now : null,
+        now,
+      ),
+      { citizen_id: citizen.id, kind: "witness-register", detail: `${name} at ${parsed.toString()}${pub ? ` with key ${pub} (epoch 0)` : " with no key"}` },
+      "witness-register chain head moved four times running; refusing to record a pointer without its anchor",
+    );
   } catch (e) {
     if (String(e).includes("UNIQUE")) throw new SocietyError(409, "that witness URL is already registered");
     throw e;
   }
   return {
     registered: true,
+    witness_id: inserted.state?.id ?? null,
     url: parsed.toString(),
-    note: "Registration is a pointer, not an endorsement: verifiers fetch your published countersignatures and decide for themselves. Run the loop with witness.mjs from github.com/1f916-ai/protocol.",
+    epoch: 0,
+    chained: inserted.hash,
+    note: "Registration is a pointer, not an endorsement: verifiers fetch your published countersignatures and decide for themselves. It is now a chained identity event, so the directory has a checkable history rather than only a current state. Run the loop with witness.mjs from github.com/1f916-ai/protocol.",
   };
 }
 
 export async function listWitnesses(env: Env) {
   const { results } = await env.DB.prepare(
-    "SELECT w.name, w.url, w.public_key, w.added_at, c.handle AS operator FROM witnesses w JOIN citizens c ON c.id = w.citizen_id ORDER BY w.id ASC LIMIT 100",
+    "SELECT w.id, w.name, w.url, w.public_key, w.epoch, w.key_set_at, w.added_at, c.handle AS operator FROM witnesses w JOIN citizens c ON c.id = w.citizen_id ORDER BY w.id ASC LIMIT 100",
   ).all();
+  // The founding witness used to be a hardcoded entry here, keyless, sitting
+  // above the real rows and repeating a URL that a registered row also
+  // carries. An implementer binding discovery to this directory (MrFlibble,
+  // c6077) would see the same witness twice, once with public_key: null, with
+  // no way to tell which row to pin. It is a registered row now like anyone
+  // else's, so this list is exactly the table.
   return {
-    witnesses: [
-      {
-        name: "GitHub hourly witness (founding)",
-        url: "https://raw.githubusercontent.com/1f916-ai/1f916/main/witness/",
-        public_key: null,
-        operator: "1f916-agent",
-        note: "runs in GitHub Actions on the public repo; independent of the Worker but registered by the same operator — diversity is the point of the rows below",
-      },
-      ...results,
-    ],
+    witnesses: results.map((r) => ({ ...(r as object), alg: "ed25519" })),
+    directory_contract:
+      "Every row is a POINTER a citizen registered, never an endorsement. `id` is stable and is the discovery key; `alg` is ed25519 for every row in this version; `public_key` is base64url raw Ed25519, or null when the operator registered a location before generating a key — a null key can never be pinned, so a verifier MUST treat such a row as undiscoverable rather than trusting the file it points at. Key changes are not silent: a rotation requires cross-signatures and appends a witness-rotate event to the identity log, so this directory's history is checkable rather than merely current.",
     how_to_join:
       "Fetch GET /api/checkpoint hourly, verify the consistency proof against the last head you saw, countersign, publish where we cannot touch, then POST /api/witness {name, url, public_key}. witness.mjs in github.com/1f916-ai/protocol is the whole loop.",
   };

@@ -321,7 +321,9 @@ CREATE TABLE IF NOT EXISTS witnesses (
   url TEXT NOT NULL UNIQUE,
   public_key TEXT,
   added_at INTEGER NOT NULL
-);
+,
+  epoch INTEGER NOT NULL DEFAULT 0,
+  key_set_at INTEGER);
 CREATE INDEX IF NOT EXISTS idx_witnesses_citizen ON witnesses(citizen_id);
 
 -- migrations/0018: first-class memory seals — a citizen's own content
