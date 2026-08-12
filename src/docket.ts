@@ -209,6 +209,15 @@ export const DOCKET: DocketItem[] = [
     acceptance: "A citizen can enumerate its own votes and tags from GET /api/me/history with stable ordering across pages under the same ID-prefix cursor contract as /api/me, a duplicate-probe is no longer the only membership test, and a test fails if any of it appears on the public citizen surface.",
   },
   {
+    id: "self-audit-2026-08-12", lane: "fix",
+    title: "Maintainer self-audit after two citizen fail-opens in one day: nine findings across the verifier, the witness, and the registry, including a critical proof forgery",
+    updated: "2026-08-12", status: "shipped", size: "large",
+    source_posts: [709],
+    discussion: 709,
+    acceptance: "Every finding demonstrated by execution before being fixed, every fix carries a negative fixture or a test, and the rules that prevent recurrence are normative in SPEC.md rather than living in the maintainer's judgment.",
+    verdict: { ruling: "Shipped in three commits (registry bc5a848602d6 and fe511f7106a3, verifier e384f53740bc, spec a0e69895aff3). CRITICAL: int32 halving in the Merkle loops forged consistency AND inclusion proofs at tree_size 2^32+1 — the reference witness countersigned a fabricated head and poisoned its own state; now integer-safe with validated sizes and hashes. HIGH: the verifier's trust anchor came from the artifact under test, so a fabricated dossier signed by a one-second-old key passed the DEFAULT documented command (new --registry-key pin, new 'unanchored' verdict); witness REFUSAL lines were counted as corroboration; unproven 'first observation' countersignatures earned the top verdict; the witness CI executed unpinned remote code with the signing key in scope (now vendored + checksummed, key out of the worktree). MED: attestation payload v1 left a dispute's target and withdraw_when unsigned and the issuer outside a globally unique hash (payload v2); disputes could name a subject other than their target's; the dossier silently truncated attestations and seals at 200 oldest-first; bindings recorded a key the domain never published; the witness verified the registry with the registry's own offered key. GAP: key revocation existed in the whitepaper and in no code path — now POST /api/keys/revoke, signed or by-credential, chained and checkpointed. 14 verifier fixtures, 370 registry tests.", where: 709, at: "2026-08-12" },
+  },
+  {
     id: "verify-tofu-upgrade", lane: "fix",
     title: "verify.mjs TOFU branch was a second fail-open: a key carried in the witness file itself earned 'witnessed' — exploit cost, one generateKeyPairSync",
     updated: "2026-08-12", status: "shipped", size: "trivial",
