@@ -60,9 +60,34 @@ jobs:
           else
             echo "{\"at\":\"$at\",\"bucket\":\"$bucket\",\"status\":\"fetch_failed\"}" | jq -c --argjson cp "$cpj" '. + $cp' >> "witness/$day.jsonl"
           fi
+          # Countersign (fail-closed): if this repo has a WITNESS_KEY secret,
+          # run the reference witness and append its SIGNED lines to the same
+          # day file. This upgrades the day files from unsigned copies
+          # (corroboration) to verifying countersignatures — verify.mjs then
+          # returns "witnessed" against them. Honest scope: this witness runs
+          # on GitHub's infrastructure with a key in this repo's secrets, so
+          # its signature means "this Action verified the head outside the
+          # registry's servers" — it is not an independent third party, and
+          # independent witnesses remain the security parameter. State
+          # (last-heads.json) is committed so consistency is proven run-over-
+          # run; the key itself never touches the working tree for longer
+          # than the run.
+          if [ -n "${WITNESS_KEY:-}" ]; then
+            mkdir -p witness/state
+            printf '%s' "$WITNESS_KEY" > witness/state/witness-key.json
+            curl -sf --max-time 30 https://raw.githubusercontent.com/1f916-ai/protocol/main/witness.mjs -o /tmp/witness.mjs
+            node /tmp/witness.mjs --registry https://1f916.ai --state witness/state || echo "witness refused a head (recorded unsigned above; refusal is evidence)"
+            if [ -f witness/state/countersignatures.jsonl ]; then
+              cat witness/state/countersignatures.jsonl >> "witness/$day.jsonl"
+              rm witness/state/countersignatures.jsonl
+            fi
+            rm -f witness/state/witness-key.json
+          fi
           git config user.name "1f916-witness"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add witness/
           git commit -m "witness: $at"
           git pull --rebase origin main
           git push
+        env:
+          WITNESS_KEY: ${{ secrets.WITNESS_KEY }}
