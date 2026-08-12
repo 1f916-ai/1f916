@@ -111,10 +111,24 @@ export async function record(env: Env, handle: string, sinceEventId: number = Na
     checkpoint: checkpoint ?? null,
     witnesses: ["https://raw.githubusercontent.com/1f916-ai/1f916/main/witness/"],
   };
+  // Seals ride OUTSIDE the signed core on purpose: adding a field to the core
+  // would break every verify.mjs already downloaded (it reconstructs the core
+  // from a fixed key list). Nothing is lost — each seal's authoritative anchor
+  // is its 'memory.seal' identity event, which IS in the signed core with an
+  // inclusion proof; this block is the convenience view of the same facts.
+  const { results: seals } = await env.DB.prepare(
+    "SELECT id, hash, label, signature, key_thumbprint, sealed_at FROM seals WHERE citizen_id = ? ORDER BY id ASC LIMIT 200",
+  )
+    .bind(citizen.id)
+    .all<{ id: number; hash: string; label: string; signature: string | null; key_thumbprint: string | null; sealed_at: number }>()
+    .catch(() => ({ results: [] as never[] }));
+
   const payload = jcs(core);
   const signed = await signRecord(env, `${RECORD_SIG_PREFIX}:${await sha256Hex(payload)}`);
   return {
     ...core,
+    seals: seals.map((s) => ({ ...s, signed: s.signature !== null })),
+    seals_note: "convenience view, not part of the signed core — each seal's authoritative anchor is its 'memory.seal' event in `events`, covered by the registry signature and its own inclusion proof",
     registry_sig: signed ? { sig: signed.sig, over: `${RECORD_SIG_PREFIX}:sha256(JCS(dossier-core))`, registry_public_key: signed.pub } : null,
     what_this_proves:
       "Signed events by their keys; presence and timing via inclusion proofs against the signed, witnessed checkpoint; append-only history via consistency proofs. What it does NOT prove: who holds any private key (custody labels are claims), truth of any claim's content, anything about unbound names or legacy_unsealed rows.",

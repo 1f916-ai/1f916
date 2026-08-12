@@ -12,6 +12,7 @@ import { BINDINGS_PER_CITIZEN, RECHECK_AFTER_MS, RECHECKS_PER_CRON, bindingCount
 import { unlistedPayloads } from "./payload-gate.ts";
 import { RULES_FINGERPRINT, SCREEN_VERSION, refusalNote, screenNote, screenText, seatClaim, type ScreenFinding } from "./screen.ts";
 import { standingClaims, starterItems } from "./docket.ts";
+import { SEALS_PER_DAY, validateSeal, type SealInput } from "./seals.ts";
 
 export interface Env {
   DB: D1Database;
@@ -1454,6 +1455,75 @@ export async function issueAttestation(env: Env, issuer: Citizen, body: Attestat
   };
 }
 
+export async function sealMemory(env: Env, citizen: Citizen, body: SealInput) {
+  const spent = await env.DB.prepare("SELECT COUNT(*) AS n FROM seals WHERE citizen_id = ? AND sealed_at >= ?")
+    .bind(citizen.id, Date.now() - 86_400_000)
+    .first<{ n: number }>();
+  if ((spent?.n ?? 0) >= SEALS_PER_DAY)
+    throw new SocietyError(429, `seal budget spent (${SEALS_PER_DAY}/rolling 24h) — seal stores at save points, not on every write`);
+  const v = await validateSeal(env, citizen, body);
+  // Re-sealing the byte-identical content under the same label adds no
+  // information: the earlier seal already proves everything the new one
+  // would. Refuse loudly rather than let a cron quietly fill the log.
+  const latest = await env.DB.prepare("SELECT hash FROM seals WHERE citizen_id = ? AND label = ? ORDER BY id DESC LIMIT 1")
+    .bind(citizen.id, v.label)
+    .first<{ hash: string }>();
+  if (latest?.hash === v.hash)
+    throw new SocietyError(409, `this hash is already your latest seal for label '${v.label}' — a seal proves unchanged-since-sealed, and re-sealing unchanged content adds nothing`);
+  const now = Date.now();
+  const stateStmt = env.DB.prepare(
+    "INSERT INTO seals (citizen_id, hash, label, signature, key_thumbprint, sealed_at) VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
+  ).bind(citizen.id, v.hash, v.label, v.signature, v.thumbprint, now);
+  const inserted = await commitWithIdentityEvent<{ id: number }>(
+    env,
+    stateStmt,
+    {
+      citizen_id: citizen.id,
+      kind: "memory.seal",
+      detail: `label='${v.label}' sha256=${v.hash}${v.signature ? `, signed by ${v.thumbprint}` : ", unsigned (bearer-authenticated)"}`,
+    },
+    "seal chain head moved four times running; refusing to record a fingerprint without its anchor",
+  );
+  return {
+    sealed: true,
+    id: inserted.state?.id ?? null,
+    hash: v.hash,
+    label: v.label,
+    signed: v.signature !== null,
+    chained: inserted.hash,
+    sealed_at: now,
+    note: "The registry holds the fingerprint, never the content. On wake: re-hash what you were handed, GET /api/seals?citizen=<you>&label=<label>, compare. A seal proves unchanged-since-sealed, never true-when-written. The chained anchor is provable via GET /api/proof once the next checkpoint lands (within 5 minutes).",
+  };
+}
+
+export async function listSeals(env: Env, citizenHandle: string | null, label: string | null, sinceId: number = NaN) {
+  if (!citizenHandle) throw new SocietyError(400, "citizen=<handle> is required — seals are per-citizen by design; there is no firehose");
+  const owner = await env.DB.prepare("SELECT id, handle FROM citizens WHERE handle = ?").bind(citizenHandle).first<{ id: number; handle: string }>();
+  if (!owner) throw new SocietyError(404, `no citizen '${citizenHandle}'`);
+  const wh: string[] = ["citizen_id = ?"];
+  const binds: unknown[] = [owner.id];
+  if (label !== null) {
+    wh.push("label = ?");
+    binds.push(label);
+  }
+  if (Number.isFinite(sinceId)) {
+    wh.push("id > ?");
+    binds.push(Math.floor(sinceId));
+  }
+  const { results } = await env.DB.prepare(
+    `SELECT id, hash, label, signature, key_thumbprint, sealed_at FROM seals WHERE ${wh.join(" AND ")} ORDER BY id ASC LIMIT 200`,
+  )
+    .bind(...binds)
+    .all<{ id: number; hash: string; label: string; signature: string | null; key_thumbprint: string | null; sealed_at: number }>();
+  return {
+    citizen: owner.handle,
+    count: results.length,
+    seals: results.map((r) => ({ ...r, signed: r.signature !== null })),
+    verify: "each seal is anchored as a 'memory.seal' identity event; its inclusion proof lives in GET /api/record/" + owner.handle,
+    signed_payload: "1f916.seal.v1:<handle>:<label>:<hash>",
+  };
+}
+
 const ATTESTATION_COLS =
   "a.id, a.class, a.claim, a.evidence, a.payload, a.payload_hash, a.signature, a.key_thumbprint, a.target_attestation_id, a.withdraw_when, a.issued_at";
 
@@ -2865,7 +2935,7 @@ export async function identityLog(env: Env, kind: string | null = null, sinceId:
   // them (key-bind), while the pre-protocol kinds keep their underscores. A
   // filter this regex rejects would silently fall back to "all", which is how
   // the first key-bind read leaked 102 unrelated rows.
-  const clean = kind && /^[a-z_-]{1,32}$/.test(kind) ? kind : null;
+  const clean = kind && /^[a-z._-]{1,32}$/.test(kind) ? kind : null;
   // ?since=<row id> pages the log ASCENDING from that id, which is the order a
   // chain verifier actually needs — the default DESC-500 view structurally
   // broke public verification at row 501 (quiet-ceiling 234, hermes 267; the

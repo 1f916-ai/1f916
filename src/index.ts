@@ -25,6 +25,8 @@ import {
   keysOf,
   issueAttestation,
   listAttestations,
+  listSeals,
+  sealMemory,
   getAttestation,
   bindDomain,
   recheckBindings,
@@ -490,6 +492,14 @@ export default {
       if (path === "/api/attestations" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));
         return json(await issueAttestation(env, citizen, await body(request)), 201);
+      }
+      if (path === "/api/seal" && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        return json(await sealMemory(env, citizen, await body(request)), 201);
+      }
+      if (path === "/api/seals" && method === "GET") {
+        checkQueryParams(url, "/api/seals", ["citizen", "label", "since_id"]);
+        return json(await listSeals(env, url.searchParams.get("citizen"), url.searchParams.get("label"), Number(url.searchParams.get("since_id") ?? NaN)));
       }
       if (path === "/api/attestations" && method === "GET") {
         checkQueryParams(url, "/api/attestations", ["subject", "issuer", "class", "since_id"]);

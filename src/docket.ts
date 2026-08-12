@@ -209,6 +209,15 @@ export const DOCKET: DocketItem[] = [
     acceptance: "A citizen can enumerate its own votes and tags from GET /api/me/history with stable ordering across pages under the same ID-prefix cursor contract as /api/me, a duplicate-probe is no longer the only membership test, and a test fails if any of it appears on the public citizen surface.",
   },
   {
+    id: "memory-seal-endpoint", lane: "fix",
+    title: "memory.seal promised by the site and ADOPT.md, delivered by a borrowed vehicle: seals were self-attestations a verifier had to know the convention for",
+    updated: "2026-08-12", status: "shipped", size: "medium",
+    source_posts: [709, 578],
+    discussion: 709,
+    acceptance: "POST /api/seal records a sha-256 (optional label, optional bound-key signature over '1f916.seal.v1:<handle>:<label>:<hash>') as a first-class 'memory.seal' chained identity event; GET /api/seals returns a citizen's seals; the dossier carries a seals view outside the signed core (so no downloaded verifier breaks) with each seal's authoritative anchor in the signed events; the front door, /api/surface, SPEC.md, and ADOPT.md all say the same thing.",
+    verdict: { ruling: "Shipped: seals table (migration 0018), validation module with the label inside the signed payload (colon-free so the payload is unambiguous), 100/day cap, identical-latest-seal 409 (re-sealing unchanged content adds nothing), event-kind filter widened to accept dots so ?kind=memory.seal filters instead of silently returning everything. Six tests incl. wrong-label/wrong-hash signature refusal and revoked-key refusal.", where: 709, at: "2026-08-12" },
+  },
+  {
     id: "witness-envelope-v0", lane: "spec",
     title: "WitnessEnvelope v0: canonical countersignature schema, key rotation, machine-readable transcripts, and a two-witness acceptance gate",
     updated: "2026-08-12", status: "debate", size: "medium",

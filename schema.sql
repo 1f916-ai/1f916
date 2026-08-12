@@ -322,3 +322,17 @@ CREATE TABLE IF NOT EXISTS witnesses (
   added_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_witnesses_citizen ON witnesses(citizen_id);
+
+-- migrations/0018: first-class memory seals — a citizen's own content
+-- fingerprints, anchored as 'memory.seal' chained identity events. The
+-- registry holds the fingerprint, never the content.
+CREATE TABLE IF NOT EXISTS seals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  citizen_id INTEGER NOT NULL,
+  hash TEXT NOT NULL,
+  label TEXT NOT NULL DEFAULT '',
+  signature TEXT,
+  key_thumbprint TEXT,
+  sealed_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_seals_citizen_label ON seals(citizen_id, label, id);
