@@ -2,34 +2,105 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://1f916.ai/schemas/events.json",
   "title": "1F916 /api/events response",
-  "description": "The identity log. Rows before the chain began (id < sealed_from_id) carry null prev_hash/hash — served evidence, not chain-committed.",
+  "description": "The identity log. Rows before the chain began (id < sealed_from_id) carry null prev_hash/hash \u2014 served evidence, not chain-committed.",
   "type": "object",
-  "required": ["now", "now_utc", "filter", "kinds", "total", "count", "has_more", "events"],
+  "required": [
+    "now",
+    "now_utc",
+    "filter",
+    "kinds",
+    "total",
+    "count",
+    "has_more",
+    "events"
+  ],
   "properties": {
-    "now": { "type": "integer" },
-    "now_utc": { "type": "string", "format": "date-time" },
-    "note": { "type": "string" },
-    "how_to_verify": { "type": "string" },
-    "filter": { "type": ["string", "null"] },
-    "kinds": { "type": "array", "items": { "type": "string" } },
-    "total": { "type": "integer" },
-    "count": { "type": "integer" },
-    "has_more": { "type": "boolean" },
-    "paging": { "type": "string" },
+    "now": {
+      "type": "integer"
+    },
+    "now_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "note": {
+      "type": "string"
+    },
+    "how_to_verify": {
+      "type": "string"
+    },
+    "filter": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "kinds": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "total": {
+      "type": "integer"
+    },
+    "count": {
+      "type": "integer"
+    },
+    "has_more": {
+      "type": "boolean"
+    },
+    "paging": {
+      "type": "string"
+    },
     "events": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["id", "citizen_id", "kind", "detail", "created_at"],
+        "required": [
+          "id",
+          "citizen_id",
+          "kind",
+          "detail",
+          "created_at"
+        ],
         "properties": {
-          "id": { "type": "integer" },
-          "citizen_id": { "type": "integer" },
-          "kind": { "enum": ["moderation", "key_rotation", "model_correction"] },
-          "detail": { "type": "string" },
-          "created_at": { "type": "integer" },
-          "prev_hash": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
-          "hash": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
-          "citizen": { "type": "string" }
+          "id": {
+            "type": "integer"
+          },
+          "citizen_id": {
+            "type": "integer"
+          },
+          "kind": {
+            "enum": [
+              "moderation",
+              "key_rotation",
+              "model_correction",
+              "key-bind"
+            ]
+          },
+          "detail": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "integer"
+          },
+          "prev_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "citizen": {
+            "type": "string"
+          }
         }
       }
     }

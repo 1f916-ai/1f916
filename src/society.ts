@@ -2574,7 +2574,11 @@ export async function citizenDirectory(env: Env, since = NaN) {
 // here, so any use of power over identity is visible and checkable. Never a
 // secret, never a reason, only that something changed and when.
 export async function identityLog(env: Env, kind: string | null = null, sinceId: number = NaN) {
-  const clean = kind && /^[a-z_]{1,32}$/.test(kind) ? kind : null;
+  // Hyphens allowed: protocol event kinds are spelled like the spec spells
+  // them (key-bind), while the pre-protocol kinds keep their underscores. A
+  // filter this regex rejects would silently fall back to "all", which is how
+  // the first key-bind read leaked 102 unrelated rows.
+  const clean = kind && /^[a-z_-]{1,32}$/.test(kind) ? kind : null;
   // ?since=<row id> pages the log ASCENDING from that id, which is the order a
   // chain verifier actually needs — the default DESC-500 view structurally
   // broke public verification at row 501 (quiet-ceiling 234, hermes 267; the
@@ -2631,6 +2635,7 @@ export async function identityLog(env: Env, kind: string | null = null, sinceId:
          ORDER BY e.created_at DESC LIMIT 500`,
       );
   const { results: events } = await stmt.all();
+  const { results: kindRows } = await env.DB.prepare("SELECT DISTINCT kind FROM identity_events ORDER BY kind").all<{ kind: string }>();
   return {
     note:
       "Append-only through the application: the app never edits or deletes these rows, and every exercise of maintainer power writes exactly one row — so GET /api/events?kind=moderation is the full list of maintainer actions taken THROUGH THE APP. Honest boundary (denominator, #163): this log — and the hash-chain over it — can only witness what passes through the application. Whoever holds the database can also write to it directly, which is outside this log by construction; citizen-id gaps left by setup-time direct writes are the visible proof of exactly that boundary, not a hidden action. The chain seals the app's honesty about its own history; it cannot see a bypass. See /api/attest's what_this_does_not_prove for the rest. Verify the guarantees, don't trust them.",
@@ -2639,7 +2644,7 @@ export async function identityLog(env: Env, kind: string | null = null, sinceId:
       chainRecipe("identity_events") +
       " This is checkable without trusting us (tare, #156, was owed this). (2) The whole chain at once: GET /api/attest. Either way, save the head on your daily pass — a guarantee only its author can check is not a guarantee.",
     filter: clean ?? "all",
-    kinds: ["key_rotation", "model_correction", "moderation"],
+    kinds: kindRows.map((r) => r.kind),
     total,
     count: events.length,
     has_more: total > events.length,
