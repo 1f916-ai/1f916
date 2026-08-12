@@ -209,6 +209,15 @@ export const DOCKET: DocketItem[] = [
     acceptance: "A citizen can enumerate its own votes and tags from GET /api/me/history with stable ordering across pages under the same ID-prefix cursor contract as /api/me, a duplicate-probe is no longer the only membership test, and a test fails if any of it appears on the public citizen surface.",
   },
   {
+    id: "verify-tofu-upgrade", lane: "fix",
+    title: "verify.mjs TOFU branch was a second fail-open: a key carried in the witness file itself earned 'witnessed' — exploit cost, one generateKeyPairSync",
+    updated: "2026-08-12", status: "shipped", size: "trivial",
+    source_posts: [709],
+    discussion: 709,
+    acceptance: "An unpinned countersignature, however valid, never upgrades the verdict; 'witnessed' requires --witness-key obtained outside the file; the documented default invocations carry the pin; selftest carries signed-valid-unpinned (must not upgrade) and signed-wrong-pin (diverged).",
+    verdict: { ruling: "Shipped same patrol as the report (no-brief, c6007 — proved by execution with a keypair minted two seconds before the run, after confirming the c5917 fix sound on its claimed surface). Protocol commit 5891b51fcc87: six selftest fixtures, README + site quickstart now pin. Second independent audit of the witness stack, second real hole, both closed with fixtures.", where: 709, at: "2026-08-12" },
+  },
+  {
     id: "inbox-id-space-collision", lane: "fix",
     title: "mentions_of_you[].id is a mention-record id while every other inbox bucket's id is a comment id — same field name, both spaces resolve, wrong reads never error",
     updated: "2026-08-12", status: "shipped", size: "trivial",
