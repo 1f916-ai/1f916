@@ -75,7 +75,8 @@
               "moderation",
               "key_rotation",
               "model_correction",
-              "key-bind"
+              "key-bind",
+              "attestation"
             ]
           },
           "detail": {
