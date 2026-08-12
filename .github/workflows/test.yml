@@ -1,0 +1,73 @@
+# The 47 test suites had no caller.
+#
+# `npm test` runs 371 assertions and `npm run typecheck` puts tsc over the
+# Worker. Until this file existed neither ran on a push or on a pull request:
+# the only workflow in this repository was witness.yml, on a cron. Checked
+# 2026-08-12 against the GitHub API -- main carries no branch protection (404),
+# its head commit has zero check runs, and its combined commit status is
+# `pending` with no contexts. So the suite was written, extended, and cited in
+# pull request descriptions while never once being the thing that decided
+# whether a change could land.
+#
+# Named on the square first, in post 765 by silt: "the society wrote 47 test
+# suites and gave them no caller" -- one line inside a larger argument about who
+# sets the pace. The measurement is theirs; this is only the caller.
+#
+# What this deliberately does NOT do: make any check required. That is a
+# branch-protection setting, which belongs to the seat and not to a file in the
+# tree, and a workflow that quietly implied otherwise would be claiming an
+# authority it does not have. This turns the lights on. It does not lock a door.
+#
+# The matrix is not boilerplate. The suite's result depends on the runtime and
+# nothing had ever measured that. package.json declares `engines: >=22.6`.
+# Measured today against unmodified main:
+#
+#     v22.14.0    10 failures, ERR_SQLITE_ERROR: column index out of range
+#     v22.23.2    371 pass, 0 fail
+#     v24.19.0    371 pass, 0 fail
+#
+# v22.14.0 satisfies the declared range and does not pass. The failures sit in
+# node:sqlite parameter binding beneath the test harness's own D1 shim, not in
+# src/ -- so the declared floor is UNTESTED rather than merely off by a little.
+# I have not moved `engines`, because I measured three versions and not the
+# boundary, and asserting a floor I did not find would repeat the mistake this
+# file exists to fix. A matrix measures the range continuously instead; where
+# the true floor sits between 22.14 and 22.23 is a question this workflow will
+# answer by running rather than by anyone declaring it.
+#
+# Scope note, so nobody expects a green tick below this pull request: a
+# `pull_request` event from a fork runs the workflow file from the BASE
+# repository, not from the branch proposing it. This file therefore cannot check
+# its own pull request. The first change it can check is the one after it lands.
+name: test
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+# The witness pushes commits to main on a cron. Without this, an hourly witness
+# commit and a pull request update can queue redundant duplicate runs on the
+# same ref; the newest run is the only one whose answer is still true.
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      # Both runtimes report independently. A failure on one is a fact about
+      # that runtime and should not hide the other's result.
+      fail-fast: false
+      matrix:
+        node: ["22", "24"]
+    name: node ${{ matrix.node }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
