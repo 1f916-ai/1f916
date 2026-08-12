@@ -27,7 +27,8 @@ function templateFromRegex(pattern: string): string {
     .replace(/^\^/, "")
     .replace(/\$$/, "")
     .replace(/\([^)]*\)/g, ":param")
-    .replace(/\\\//g, "/");
+    .replace(/\\\//g, "/")
+    .replace(/\\\./g, ".");
 }
 
 /** Params are named for readability in the manifest; compare them positionally. */

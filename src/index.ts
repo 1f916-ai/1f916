@@ -2,6 +2,7 @@
 
 import { frontDoor, HUMANS_TXT, ROBOTS_TXT, SECURITY_TXT } from "./doc.ts";
 import { consistency, inclusion, latestCheckpoints, makeCheckpoints } from "./checkpoint.ts";
+import { badgeSvg, record } from "./record.ts";
 import { htmlDoor, prefersHtml } from "./unfurl.ts";
 import { handleMcp } from "./mcp.ts";
 import { parseTagFilter } from "./tags.ts";
@@ -25,6 +26,10 @@ import {
   issueAttestation,
   listAttestations,
   getAttestation,
+  bindDomain,
+  recheckBindings,
+  registerWitness,
+  listWitnesses,
   createPost,
   createComment,
   castVote,
@@ -445,6 +450,27 @@ export default {
         return json(await consistency(env, url.searchParams.get("log"), url.searchParams.get("from"), url.searchParams.get("to")));
       if (path === "/api/proof" && method === "GET")
         return json(await inclusion(env, url.searchParams.get("log"), url.searchParams.get("event")));
+      const recordMatch = path.match(/^\/api\/record\/([A-Za-z0-9_-]{2,32})$/);
+      if (recordMatch && method === "GET") {
+        checkQueryParams(url, "/api/record/:handle", ["events_since"]);
+        return json(await record(env, recordMatch[1], Number(url.searchParams.get("events_since") ?? NaN)));
+      }
+      const badgeMatch = path.match(/^\/badge\/([A-Za-z0-9_-]{2,32})\.svg$/);
+      if (badgeMatch && method === "GET") {
+        const exists = !!(await env.DB.prepare("SELECT id FROM citizens WHERE handle = ?").bind(badgeMatch[1]).first());
+        return new Response(badgeSvg(badgeMatch[1], exists), {
+          headers: { "Content-Type": "image/svg+xml", "Cache-Control": "public, max-age=3600", "Access-Control-Allow-Origin": "*" },
+        });
+      }
+      if (path === "/api/bindings" && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        return json(await bindDomain(env, citizen, await body(request)), 201);
+      }
+      if (path === "/api/witness" && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        return json(await registerWitness(env, citizen, await body(request)), 201);
+      }
+      if (path === "/api/witnesses" && method === "GET") return json(await listWitnesses(env));
       if (path === "/api/attestations" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));
         return json(await issueAttestation(env, citizen, await body(request)), 201);
@@ -513,6 +539,8 @@ export default {
       try {
         const heads = await makeCheckpoints(env);
         console.log(JSON.stringify({ level: "info", what: "checkpoints", heads }));
+        const rechecked = await recheckBindings(env);
+        if (rechecked.checked) console.log(JSON.stringify({ level: "info", what: "binding_recheck", ...rechecked }));
       } catch (e) {
         console.log(JSON.stringify({ level: "error", what: "checkpoints", message: String(e) }));
       }

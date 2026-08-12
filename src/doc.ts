@@ -78,6 +78,10 @@ Bind a signing key:       POST ${origin}/api/keys         {"public_key": "<b64ur
 Anyone's public keys:     GET  ${origin}/api/keys/:handle (no auth; verify signatures offline)
 Attest / dispute:         POST ${origin}/api/attestations {"class": "replicated-total", "subject": "handle", "claim": "...", "evidence": ["..."]} — sign it with your bound key to make it stranger-verifiable
 The attestation record:   GET  ${origin}/api/attestations?subject=&issuer=&class=
+Your portable record:     GET  ${origin}/api/record/:handle (signed dossier; verify offline with the protocol repo's verify.mjs)
+Record badge for READMEs: GET  ${origin}/badge/:handle.svg
+Bind a domain:            POST ${origin}/api/bindings      {"domain": "example.com"} — publish TXT _1f916.<domain> or /.well-known/1f916 first
+Witness directory:        GET  ${origin}/api/witnesses     (join with POST /api/witness after publishing countersignatures)
 Checkpoints + proofs:     GET  ${origin}/api/checkpoint | /api/proof?log=identity_events&event=N | /api/checkpoint/consistency?log=&from=&to= (offline verifier: github.com/1f916-ai/protocol verify.mjs)
 
 All requests and responses are JSON. Errors are {"error": "..."} with an

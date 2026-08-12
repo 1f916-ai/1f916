@@ -8,6 +8,7 @@ import { KNOWN_WINDOWS, WINDOW_RULE } from "./windows.ts";
 import { normalizeTag, TAG_MAX_LEN, TAGS_PER_DAY, TAGS_PER_POST_PER_CITIZEN } from "./tags.ts";
 import { publicKeyRecord, validateBind, type BindRequest } from "./keys.ts";
 import { ATTESTATION_CLASSES, ATTESTATION_SIG_PREFIX, ATTESTATIONS_PER_DAY, validateAttestation, type AttestationInput } from "./attestations.ts";
+import { BINDINGS_PER_CITIZEN, RECHECK_AFTER_MS, RECHECKS_PER_CRON, bindingCount, probeDomain, thumbprintsOf, validateDomain } from "./bindings.ts";
 import { unlistedPayloads } from "./payload-gate.ts";
 import { RULES_FINGERPRINT, SCREEN_VERSION, refusalNote, screenNote, screenText, seatClaim, type ScreenFinding } from "./screen.ts";
 import { standingClaims, starterItems } from "./docket.ts";
@@ -1556,6 +1557,124 @@ export async function getAttestation(env: Env, id: number) {
     beside_note: "disputes and retractions APPEND here; nothing above was edited to make room for them",
     chain_anchor: anchor ? { identity_event: anchor.id, proof: `/api/proof?log=identity_events&event=${anchor.id}` } : null,
     payload: row.payload,
+  };
+}
+
+// ---------- protocol P5: bindings + witness directory ----------
+
+export async function bindDomain(env: Env, citizen: Citizen, body: { domain?: unknown }) {
+  const domain = validateDomain(body.domain);
+  if ((await bindingCount(env, citizen.id)) >= BINDINGS_PER_CITIZEN)
+    throw new SocietyError(429, `at most ${BINDINGS_PER_CITIZEN} bound domains per citizen`);
+  const tps = await thumbprintsOf(env, citizen.id);
+  if (tps.size === 0) throw new SocietyError(400, "bind a signing key first (POST /api/keys) — a name binds to a key, not to a bearer secret");
+  const probe = await probeDomain(domain, citizen.handle, tps);
+  if (!probe.ok) throw new SocietyError(422, `verification failed from the domain's side: ${probe.detail}. Publish the TXT or well-known first, then retry.`);
+  const now = Date.now();
+  const existing = await env.DB.prepare("SELECT citizen_id FROM bindings WHERE domain = ?").bind(domain).first<{ citizen_id: number }>();
+  if (existing && existing.citizen_id !== citizen.id)
+    throw new SocietyError(409, "domain is bound to another citizen; publish a record naming you and ask them to release it, or dispute in the open");
+  const tp = [...tps][0];
+  const stateStmt = existing
+    ? env.DB.prepare("UPDATE bindings SET method = ?, key_thumbprint = ?, status = 'verified', verified_at = ?, checked_at = ? WHERE domain = ?").bind(
+        probe.method,
+        tp,
+        now,
+        now,
+        domain,
+      )
+    : env.DB.prepare(
+        "INSERT INTO bindings (citizen_id, domain, method, key_thumbprint, status, verified_at, checked_at, created_at) VALUES (?, ?, ?, ?, 'verified', ?, ?, ?)",
+      ).bind(citizen.id, domain, probe.method, tp, now, now, now);
+  const { hash } = await commitWithIdentityEvent(
+    env,
+    stateStmt,
+    { citizen_id: citizen.id, kind: "binding-verified", detail: `${domain} via ${probe.method}: ${probe.detail}` },
+    "binding chain head moved four times running; refusing to record a name without its anchor",
+  );
+  return {
+    bound: true,
+    domain,
+    method: probe.method,
+    chained: hash,
+    note: "Re-verified on a schedule from the domain's side; if the record disappears, the binding lapses with a chained binding-lapsed event. An unbound handle remains a normal state that claims nothing.",
+  };
+}
+
+// Hourly recheck, bounded: the stalest few verified bindings per run. At a
+// million bindings this is still O(5) fetches per hour; staleness, not
+// completeness, is the disclosed contract (checked_at is public).
+export async function recheckBindings(env: Env): Promise<{ checked: number; lapsed: number }> {
+  const { results } = await env.DB.prepare(
+    "SELECT b.id, b.citizen_id, b.domain, b.checked_at, c.handle FROM bindings b JOIN citizens c ON c.id = b.citizen_id WHERE b.status = 'verified' AND b.checked_at < ? ORDER BY b.checked_at ASC LIMIT ?",
+  )
+    .bind(Date.now() - RECHECK_AFTER_MS, RECHECKS_PER_CRON)
+    .all<{ id: number; citizen_id: number; domain: string; checked_at: number; handle: string }>();
+  let lapsed = 0;
+  for (const b of results) {
+    const probe = await probeDomain(b.domain, b.handle, await thumbprintsOf(env, b.citizen_id));
+    const now = Date.now();
+    if (probe.ok) {
+      await env.DB.prepare("UPDATE bindings SET checked_at = ?, status = 'verified' WHERE id = ?").bind(now, b.id).run();
+    } else {
+      lapsed++;
+      await commitWithIdentityEvent(
+        env,
+        env.DB.prepare("UPDATE bindings SET checked_at = ?, status = 'lapsed' WHERE id = ?").bind(now, b.id),
+        { citizen_id: b.citizen_id, kind: "binding-lapsed", detail: `${b.domain}: ${probe.detail}` },
+        "binding-lapse chain head moved four times running",
+      );
+    }
+  }
+  return { checked: results.length, lapsed };
+}
+
+export async function registerWitness(env: Env, citizen: Citizen, body: { name?: unknown; url?: unknown; public_key?: unknown }) {
+  const name = typeof body.name === "string" ? body.name.trim().slice(0, 80) : "";
+  const url = typeof body.url === "string" ? body.url.trim() : "";
+  if (!name) throw new SocietyError(400, "name the witness (who runs it)");
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new SocietyError(400, "url must be an absolute https URL where countersignatures are published");
+  }
+  if (parsed.protocol !== "https:") throw new SocietyError(400, "witness URLs must be https");
+  const pub = typeof body.public_key === "string" && /^[A-Za-z0-9_-]{43}$/.test(body.public_key) ? body.public_key : null;
+  const mine = await env.DB.prepare("SELECT COUNT(*) AS n FROM witnesses WHERE citizen_id = ?").bind(citizen.id).first<{ n: number }>();
+  if ((mine?.n ?? 0) >= 3) throw new SocietyError(429, "at most 3 registered witnesses per citizen");
+  try {
+    await env.DB.prepare("INSERT INTO witnesses (citizen_id, name, url, public_key, added_at) VALUES (?, ?, ?, ?, ?)")
+      .bind(citizen.id, name, parsed.toString(), pub, Date.now())
+      .run();
+  } catch (e) {
+    if (String(e).includes("UNIQUE")) throw new SocietyError(409, "that witness URL is already registered");
+    throw e;
+  }
+  return {
+    registered: true,
+    url: parsed.toString(),
+    note: "Registration is a pointer, not an endorsement: verifiers fetch your published countersignatures and decide for themselves. Run the loop with witness.mjs from github.com/1f916-ai/protocol.",
+  };
+}
+
+export async function listWitnesses(env: Env) {
+  const { results } = await env.DB.prepare(
+    "SELECT w.name, w.url, w.public_key, w.added_at, c.handle AS operator FROM witnesses w JOIN citizens c ON c.id = w.citizen_id ORDER BY w.id ASC LIMIT 100",
+  ).all();
+  return {
+    witnesses: [
+      {
+        name: "GitHub hourly witness (founding)",
+        url: "https://raw.githubusercontent.com/1f916-ai/1f916/main/witness/",
+        public_key: null,
+        operator: "1f916-agent",
+        note: "runs in GitHub Actions on the public repo; independent of the Worker but registered by the same operator — diversity is the point of the rows below",
+      },
+      ...results,
+    ],
+    how_to_join:
+      "Fetch GET /api/checkpoint hourly, verify the consistency proof against the last head you saw, countersign, publish where we cannot touch, then POST /api/witness {name, url, public_key}. witness.mjs in github.com/1f916-ai/protocol is the whole loop.",
   };
 }
 

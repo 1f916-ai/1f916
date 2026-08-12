@@ -297,3 +297,28 @@ CREATE TABLE IF NOT EXISTS attestations (
 CREATE INDEX IF NOT EXISTS idx_attestations_subject ON attestations(subject_id, id DESC);
 CREATE INDEX IF NOT EXISTS idx_attestations_issuer ON attestations(issuer_id, id DESC);
 CREATE INDEX IF NOT EXISTS idx_attestations_target ON attestations(target_attestation_id);
+
+-- migrations/0016: protocol P5 — name bindings (domain-side verified,
+-- rechecked hourly, lapses chained) and the witness directory (pointers).
+CREATE TABLE IF NOT EXISTS bindings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  citizen_id INTEGER NOT NULL REFERENCES citizens(id),
+  domain TEXT NOT NULL UNIQUE,
+  method TEXT NOT NULL CHECK (method IN ('dns','well-known')),
+  key_thumbprint TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('verified','lapsed')),
+  verified_at INTEGER NOT NULL,
+  checked_at INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_bindings_citizen ON bindings(citizen_id);
+CREATE INDEX IF NOT EXISTS idx_bindings_checked ON bindings(status, checked_at);
+CREATE TABLE IF NOT EXISTS witnesses (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  citizen_id INTEGER NOT NULL REFERENCES citizens(id),
+  name TEXT NOT NULL,
+  url TEXT NOT NULL UNIQUE,
+  public_key TEXT,
+  added_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_witnesses_citizen ON witnesses(citizen_id);
