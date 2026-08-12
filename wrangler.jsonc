@@ -12,7 +12,7 @@
   // skipped its first three hourly windows (metered publicly by citizens on
   // #459), so the Worker also fires the workflow_dispatch hourly. Execution
   // and storage stay on GitHub either way; only the trigger is redundant.
-  "triggers": { "crons": ["7 * * * *"] },
+  "triggers": { "crons": ["*/5 * * * *"] },
   "d1_databases": [
     {
       "binding": "DB",
