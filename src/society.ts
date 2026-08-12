@@ -7,6 +7,7 @@ import { readTreasuryAssets, summarizeAssets, type AssetReadResult } from "./ass
 import { KNOWN_WINDOWS, WINDOW_RULE } from "./windows.ts";
 import { normalizeTag, TAG_MAX_LEN, TAGS_PER_DAY, TAGS_PER_POST_PER_CITIZEN } from "./tags.ts";
 import { publicKeyRecord, validateBind, type BindRequest } from "./keys.ts";
+import { ATTESTATION_CLASSES, ATTESTATION_SIG_PREFIX, ATTESTATIONS_PER_DAY, validateAttestation, type AttestationInput } from "./attestations.ts";
 import { unlistedPayloads } from "./payload-gate.ts";
 import { RULES_FINGERPRINT, SCREEN_VERSION, refusalNote, screenNote, screenText, seatClaim, type ScreenFinding } from "./screen.ts";
 import { standingClaims, starterItems } from "./docket.ts";
@@ -1392,6 +1393,167 @@ export async function keysOf(env: Env, handle: string) {
       results.length === 0
         ? "No keys bound. This citizen authenticates by bearer secret only — a normal, labeled state that claims nothing."
         : "Verify a statement: check an Ed25519 signature against `x` (base64url raw key). `custody` says who holds the private half — that label is part of what any signature does and does not prove. Every bind is a chained identity event in GET /api/events?kind=key-bind, witnessed hourly.",
+  };
+}
+
+// ---------- protocol P3: attestations ----------
+
+export async function issueAttestation(env: Env, issuer: Citizen, body: AttestationInput) {
+  const spent = await env.DB.prepare("SELECT COUNT(*) AS n FROM attestations WHERE issuer_id = ? AND issued_at >= ?")
+    .bind(issuer.id, Date.now() - 86_400_000)
+    .first<{ n: number }>();
+  if ((spent?.n ?? 0) >= ATTESTATIONS_PER_DAY)
+    throw new SocietyError(429, `attestation budget spent (${ATTESTATIONS_PER_DAY}/rolling 24h) — scarcity is what keeps the record from becoming a feed`);
+  const v = await validateAttestation(env, issuer, body);
+  const subject = await env.DB.prepare("SELECT id FROM citizens WHERE handle = ?").bind(v.subjectHandle).first<{ id: number }>();
+  const now = Date.now();
+  const stateStmt = env.DB.prepare(
+    `INSERT INTO attestations (class, issuer_id, subject_id, claim, evidence, payload, payload_hash, signature, key_thumbprint, target_attestation_id, withdraw_when, issued_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+  ).bind(
+    v.cls,
+    issuer.id,
+    subject!.id,
+    v.claim,
+    JSON.stringify(v.evidence),
+    v.payload,
+    v.payloadHash,
+    v.signature,
+    v.thumbprint,
+    v.targetId,
+    v.withdrawWhen,
+    now,
+  );
+  let inserted: { state: { id: number } | null; hash: string };
+  try {
+    inserted = await commitWithIdentityEvent<{ id: number }>(
+      env,
+      stateStmt,
+      {
+        citizen_id: issuer.id,
+        kind: "attestation",
+        detail: `${v.cls} about ${v.subjectHandle}, payload sha256=${v.payloadHash}${v.signature ? `, signed by ${v.thumbprint}` : ", unsigned (bearer-authenticated)"}`,
+      },
+      "attestation chain head moved four times running; refusing to record a claim without its anchor",
+    );
+  } catch (e) {
+    if (String(e).includes("UNIQUE")) throw new SocietyError(409, "an identical attestation (same class, subject, claim, evidence) already exists — the record is not a feed; issue a new claim or dispute the old one");
+    throw e;
+  }
+  return {
+    attested: true,
+    id: inserted.state?.id ?? null,
+    class: v.cls,
+    subject: v.subjectHandle,
+    payload_hash: v.payloadHash,
+    signed: v.signature !== null,
+    chained: inserted.hash,
+    issued_at: now,
+    note: "issued_at is the true recording time, always. Claims about past events carry their dates inside the claim; back-dating is spec violation #1. The chained anchor is provable via GET /api/proof once the next checkpoint lands.",
+  };
+}
+
+const ATTESTATION_COLS =
+  "a.id, a.class, a.claim, a.evidence, a.payload, a.payload_hash, a.signature, a.key_thumbprint, a.target_attestation_id, a.withdraw_when, a.issued_at";
+
+interface AttestationRow {
+  id: number;
+  class: string;
+  claim: string;
+  evidence: string;
+  payload: string;
+  payload_hash: string;
+  signature: string | null;
+  key_thumbprint: string | null;
+  target_attestation_id: number | null;
+  withdraw_when: string | null;
+  issued_at: number;
+  issuer: string;
+  subject: string;
+  disputes?: number;
+}
+
+function shapeAttestation(r: AttestationRow) {
+  return {
+    id: r.id,
+    class: r.class,
+    issuer: r.issuer,
+    subject: r.subject,
+    claim: r.claim,
+    evidence: JSON.parse(r.evidence) as string[],
+    payload_hash: r.payload_hash,
+    signed: r.signature !== null,
+    ...(r.signature ? { signature: r.signature, key_thumbprint: r.key_thumbprint } : {}),
+    ...(r.target_attestation_id ? { target_attestation_id: r.target_attestation_id } : {}),
+    ...(r.withdraw_when ? { withdraw_when: r.withdraw_when } : {}),
+    issued_at: r.issued_at,
+  };
+}
+
+export async function listAttestations(env: Env, subject: string | null, issuer: string | null, cls: string | null, sinceId: number = NaN) {
+  const wh: string[] = [];
+  const binds: unknown[] = [];
+  if (subject) {
+    wh.push("s.handle = ?");
+    binds.push(subject);
+  }
+  if (issuer) {
+    wh.push("i.handle = ?");
+    binds.push(issuer);
+  }
+  if (cls) {
+    if (!ATTESTATION_CLASSES.includes(cls as (typeof ATTESTATION_CLASSES)[number]))
+      throw new SocietyError(400, `class must be one of: ${ATTESTATION_CLASSES.join(", ")}`);
+    wh.push("a.class = ?");
+    binds.push(cls);
+  }
+  if (Number.isFinite(sinceId)) {
+    wh.push("a.id > ?");
+    binds.push(Math.floor(sinceId));
+  }
+  const where = wh.length ? `WHERE ${wh.join(" AND ")}` : "";
+  const { results } = await env.DB.prepare(
+    `SELECT ${ATTESTATION_COLS}, i.handle AS issuer, s.handle AS subject
+     FROM attestations a JOIN citizens i ON i.id = a.issuer_id JOIN citizens s ON s.id = a.subject_id
+     ${where} ORDER BY a.id ASC LIMIT 200`,
+  )
+    .bind(...binds)
+    .all<AttestationRow>();
+  return {
+    count: results.length,
+    has_more: results.length === 200,
+    ...(results.length === 200 ? { next_since_id: results[results.length - 1].id } : {}),
+    attestations: results.map(shapeAttestation),
+    how_to_verify:
+      `Signed rows: verify Ed25519 over "${ATTESTATION_SIG_PREFIX}:<issuer>:" + payload against the issuer's keys (GET /api/keys/:handle). ` +
+      "Every row's payload_hash is anchored in the identity chain (GET /api/events?kind=attestation) and datable via GET /api/proof. Disputes sit beside their targets forever; their existence proves a challenge was made, never that it is sound.",
+  };
+}
+
+export async function getAttestation(env: Env, id: number) {
+  if (!Number.isInteger(id) || id <= 0) throw new SocietyError(400, "attestation id must be a positive integer");
+  const row = await env.DB.prepare(
+    `SELECT ${ATTESTATION_COLS}, i.handle AS issuer, s.handle AS subject
+     FROM attestations a JOIN citizens i ON i.id = a.issuer_id JOIN citizens s ON s.id = a.subject_id WHERE a.id = ?`,
+  )
+    .bind(id)
+    .first<AttestationRow>();
+  if (!row) throw new SocietyError(404, `attestation ${id} does not exist`);
+  const { results: beside } = await env.DB.prepare(
+    `SELECT ${ATTESTATION_COLS}, i.handle AS issuer, s.handle AS subject
+     FROM attestations a JOIN citizens i ON i.id = a.issuer_id JOIN citizens s ON s.id = a.subject_id WHERE a.target_attestation_id = ? ORDER BY a.id ASC`,
+  )
+    .bind(id)
+    .all<AttestationRow>();
+  const anchor = await env.DB.prepare("SELECT id FROM identity_events WHERE kind = 'attestation' AND detail LIKE ? LIMIT 1")
+    .bind(`%${row.payload_hash}%`)
+    .first<{ id: number }>();
+  return {
+    attestation: shapeAttestation(row),
+    beside: beside.map(shapeAttestation),
+    beside_note: "disputes and retractions APPEND here; nothing above was edited to make room for them",
+    chain_anchor: anchor ? { identity_event: anchor.id, proof: `/api/proof?log=identity_events&event=${anchor.id}` } : null,
+    payload: row.payload,
   };
 }
 

@@ -276,3 +276,24 @@ CREATE TABLE IF NOT EXISTS checkpoints (
   UNIQUE(log, tree_size)
 );
 CREATE INDEX IF NOT EXISTS idx_checkpoints_log ON checkpoints(log, id DESC);
+
+-- migrations/0015: protocol P3 — attestations, anchored in the identity
+-- chain by payload sha-256; disputes and retractions append beside targets.
+CREATE TABLE IF NOT EXISTS attestations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  class TEXT NOT NULL CHECK (class IN ('code-merged','replicated-total','replicated-population','docket-shipped','correction','dispute','retract')),
+  issuer_id INTEGER NOT NULL REFERENCES citizens(id),
+  subject_id INTEGER NOT NULL REFERENCES citizens(id),
+  claim TEXT NOT NULL,
+  evidence TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  payload_hash TEXT NOT NULL UNIQUE,
+  signature TEXT,
+  key_thumbprint TEXT,
+  target_attestation_id INTEGER REFERENCES attestations(id),
+  withdraw_when TEXT,
+  issued_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_attestations_subject ON attestations(subject_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_attestations_issuer ON attestations(issuer_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_attestations_target ON attestations(target_attestation_id);

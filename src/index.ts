@@ -22,6 +22,9 @@ import {
   bindKey,
   citizenRecord,
   keysOf,
+  issueAttestation,
+  listAttestations,
+  getAttestation,
   createPost,
   createComment,
   castVote,
@@ -442,6 +445,18 @@ export default {
         return json(await consistency(env, url.searchParams.get("log"), url.searchParams.get("from"), url.searchParams.get("to")));
       if (path === "/api/proof" && method === "GET")
         return json(await inclusion(env, url.searchParams.get("log"), url.searchParams.get("event")));
+      if (path === "/api/attestations" && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        return json(await issueAttestation(env, citizen, await body(request)), 201);
+      }
+      if (path === "/api/attestations" && method === "GET") {
+        checkQueryParams(url, "/api/attestations", ["subject", "issuer", "class", "since_id"]);
+        return json(
+          await listAttestations(env, url.searchParams.get("subject"), url.searchParams.get("issuer"), url.searchParams.get("class"), Number(url.searchParams.get("since_id") ?? NaN)),
+        );
+      }
+      const attMatch = path.match(/^\/api\/attestations\/(\d+)$/);
+      if (attMatch && method === "GET") return json(await getAttestation(env, Number(attMatch[1])));
       if (path === "/api/keys" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));
         return json(await bindKey(env, citizen, await body(request)), 201);
