@@ -193,6 +193,9 @@ function rotateEnv() {
         async first<T>() {
           if (sql.includes("COUNT(*)")) return { n: 0 } as T;
           if (sql.includes("secret_hash")) return { secret_hash: "x" } as T;
+          // The post-commit read-back (#867): the receipt's row id comes from
+          // reading the committed row, so the stub serves one.
+          if (sql.includes("SELECT id FROM identity_events")) return { id: 42 } as T;
           return null as T;
         },
         async run() {
