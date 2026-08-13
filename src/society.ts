@@ -1525,8 +1525,12 @@ export async function createPayoutBinding(env: Env, citizen: Citizen, body: Payo
     throw new SocietyError(409, `this exact payout authorization is already recorded as binding ${duplicate.id}; one preimage is one authorization`);
 
   const now = Date.now();
-  const payload = payoutBindingPayload(binding, now);
-  const payloadHash = await payoutBindingPayloadHash(binding, now);
+  // This nonce belongs to this commit attempt, not to the authorization. It
+  // makes the identity-event guard request-unique even when two identical
+  // requests choose the same millisecond and one loses a cap/UNIQUE race.
+  const commitNonce = crypto.randomUUID();
+  const payload = payoutBindingPayload(binding, now, commitNonce);
+  const payloadHash = await payoutBindingPayloadHash(binding, now, commitNonce);
   const dayAgo = now - 86_400_000;
   const capSql = "(SELECT COUNT(*) FROM payout_bindings WHERE citizen_id = ? AND created_at > ?) < ?";
   const activeKeySql = "EXISTS (SELECT 1 FROM keys WHERE citizen_id = ? AND public_key = ? AND thumbprint = ? AND status = 'active')";
@@ -1534,8 +1538,8 @@ export async function createPayoutBinding(env: Env, citizen: Citizen, body: Payo
     `INSERT INTO payout_bindings
       (citizen_id, docket_id, version, amount_atomic, chain_id, token, payout_address, expiry,
        wallet_signature, citizen_public_key, citizen_signature, citizen_key_thumbprint,
-       docket_acceptance, docket_updated, docket_snapshot, preimage, authorization_hash, payload_hash, created_at)
-     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+       docket_acceptance, docket_updated, docket_snapshot, preimage, authorization_hash, payload_hash, commit_nonce, created_at)
+     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
       WHERE ${capSql} AND ${activeKeySql} AND ? > unixepoch()
      RETURNING id`,
   ).bind(
@@ -1557,6 +1561,7 @@ export async function createPayoutBinding(env: Env, citizen: Citizen, body: Payo
     binding.preimage,
     binding.authorizationHash,
     payloadHash,
+    commitNonce,
     now,
     citizen.id,
     dayAgo,
@@ -1578,8 +1583,8 @@ export async function createPayoutBinding(env: Env, citizen: Citizen, body: Payo
       },
       "payout-binding chain head moved four times running; refusing to record an authorization without its anchor",
       {
-        sql: "EXISTS (SELECT 1 FROM payout_bindings WHERE authorization_hash = ? AND created_at = ?)",
-        binds: [binding.authorizationHash, now],
+        sql: "EXISTS (SELECT 1 FROM payout_bindings WHERE commit_nonce = ?)",
+        binds: [commitNonce],
       },
     );
   } catch (error) {
@@ -1668,6 +1673,7 @@ function storedPayoutBindingPayload(binding: StoredPayoutBinding): Record<string
     docket_snapshot: binding.docket_snapshot,
     preimage: binding.preimage,
     authorization_hash: binding.authorization_hash,
+    commit_nonce: binding.commit_nonce,
     created_at: binding.created_at,
   };
 }

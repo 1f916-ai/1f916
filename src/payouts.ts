@@ -30,7 +30,7 @@ export type FundingRelationship = (typeof FUNDING_RELATIONSHIPS)[number];
 export const PAYOUT_BINDING_HASH_FIELDS = [
   "version", "handle", "row", "amount_atomic", "chain_id", "token", "address", "expiry",
   "wallet_signature", "citizen_public_key", "citizen_signature", "citizen_key_thumbprint",
-  "docket_acceptance", "docket_updated", "docket_snapshot", "preimage", "authorization_hash", "created_at",
+  "docket_acceptance", "docket_updated", "docket_snapshot", "preimage", "authorization_hash", "commit_nonce", "created_at",
 ] as const;
 export const PAYOUT_RECEIPT_HASH_FIELDS = [
   "version", "binding_payload_hash", "submitter_id", "docket_id", "amount_atomic", "chain_id", "token",
@@ -102,6 +102,7 @@ export interface StoredPayoutBinding {
   preimage: string;
   authorization_hash: string;
   payload_hash: string;
+  commit_nonce: string;
   created_at: number;
 }
 
@@ -247,7 +248,7 @@ export async function validatePayoutBinding(
 // snapshot and recording time. The identity-event detail anchors this value;
 // the separate authorizationHash deduplicates semantically identical ECDSA
 // signatures without pretending a preimage hash covers stored metadata.
-export function payoutBindingPayload(binding: ValidatedPayoutBinding, createdAt: number): Record<(typeof PAYOUT_BINDING_HASH_FIELDS)[number], unknown> {
+export function payoutBindingPayload(binding: ValidatedPayoutBinding, createdAt: number, commitNonce: string): Record<(typeof PAYOUT_BINDING_HASH_FIELDS)[number], unknown> {
   return {
     version: binding.version,
     handle: binding.handle,
@@ -266,12 +267,13 @@ export function payoutBindingPayload(binding: ValidatedPayoutBinding, createdAt:
     docket_snapshot: JSON.stringify(binding.docketSnapshot),
     preimage: binding.preimage,
     authorization_hash: binding.authorizationHash,
+    commit_nonce: commitNonce,
     created_at: createdAt,
   };
 }
 
-export async function payoutBindingPayloadHash(binding: ValidatedPayoutBinding, createdAt: number): Promise<string> {
-  const payload = payoutBindingPayload(binding, createdAt);
+export async function payoutBindingPayloadHash(binding: ValidatedPayoutBinding, createdAt: number, commitNonce: string): Promise<string> {
+  const payload = payoutBindingPayload(binding, createdAt, commitNonce);
   return sha256Hex(JSON.stringify(PAYOUT_BINDING_HASH_FIELDS.map((field) => payload[field])));
 }
 

@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS payout_bindings (
   preimage TEXT NOT NULL,
   authorization_hash TEXT NOT NULL UNIQUE,
   payload_hash TEXT NOT NULL UNIQUE,
+  commit_nonce TEXT NOT NULL UNIQUE,
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_payout_bindings_citizen ON payout_bindings(citizen_id, created_at);

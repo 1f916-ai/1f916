@@ -154,7 +154,7 @@ function makeFullEnv(publicKey: string, failAfterState = false) {
       id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, docket_id TEXT, version TEXT, amount_atomic TEXT,
       chain_id INTEGER, token TEXT, payout_address TEXT, expiry INTEGER, wallet_signature TEXT,
       citizen_public_key TEXT, citizen_signature TEXT, citizen_key_thumbprint TEXT, docket_acceptance TEXT,
-      docket_updated TEXT, docket_snapshot TEXT, preimage TEXT, authorization_hash TEXT UNIQUE, payload_hash TEXT UNIQUE, created_at INTEGER
+      docket_updated TEXT, docket_snapshot TEXT, preimage TEXT, authorization_hash TEXT UNIQUE, payload_hash TEXT UNIQUE, commit_nonce TEXT UNIQUE, created_at INTEGER
     );
     CREATE TABLE payout_receipts (
       id INTEGER PRIMARY KEY AUTOINCREMENT, binding_id INTEGER UNIQUE, submitter_id INTEGER, tx_hash TEXT,
@@ -320,6 +320,70 @@ test("the rolling binding cap is enforced inside the state write without a phant
   );
   assert.equal((db.prepare("SELECT COUNT(*) AS n FROM payout_bindings").get() as { n: number }).n, 5);
   assert.equal((db.prepare("SELECT COUNT(*) AS n FROM identity_events").get() as { n: number }).n, 5);
+});
+
+test("same-millisecond identical fifth requests cannot alias the event guard", async () => {
+  const fixture = await signedBinding();
+  const { env, db } = makeFullEnv(fixture.publicKey);
+  const signedAmount = async (amountAtomic: string) => {
+    const preimage = payoutPreimage({
+      handle: fixture.body.handle,
+      row: fixture.body.row,
+      amountAtomic,
+      chainId: fixture.body.chain_id,
+      token: fixture.body.token,
+      address: fixture.body.address,
+      expiry: fixture.body.expiry,
+    });
+    return {
+      ...fixture.body,
+      amount_atomic: amountAtomic,
+      preimage,
+      signature: await fixture.wallet.signMessage({ message: preimage }),
+      citizen_signature: b64urlEncode(new Uint8Array(edSign(null, Buffer.from(preimage), fixture.privateKey))),
+    };
+  };
+  for (let i = 0; i < 4; i++) await createPayoutBinding(env, CITIZEN as never, await signedAmount(String(30_000_000 + i)));
+  const fifth = await signedAmount("40000000");
+
+  // Hold both duplicate prechecks until both requests have observed absence,
+  // then let their batches serialize at the 4->5 cap boundary.
+  const dbApi = env.DB as unknown as { prepare: (sql: string) => D1Statement };
+  const originalPrepare = dbApi.prepare;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let prechecks = 0;
+  dbApi.prepare = (sql) => {
+    const stmt = originalPrepare(sql);
+    if (sql === "SELECT id FROM payout_bindings WHERE authorization_hash = ? LIMIT 1") {
+      const originalFirst = stmt.first.bind(stmt);
+      (stmt as unknown as { first: () => Promise<unknown> }).first = async () => {
+        prechecks++;
+        if (prechecks === 2) release();
+        await gate;
+        return originalFirst();
+      };
+    }
+    return stmt;
+  };
+  const realNow = Date.now;
+  Date.now = () => 1_786_637_000_000;
+  try {
+    const results = await Promise.allSettled([
+      createPayoutBinding(env, CITIZEN as never, fifth),
+      createPayoutBinding(env, CITIZEN as never, fifth),
+    ]);
+    assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
+    const loser = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+    assert.ok(loser);
+    assert.equal((loser.reason as SocietyError).status, 429);
+    assert.equal((db.prepare("SELECT COUNT(*) AS n FROM payout_bindings").get() as { n: number }).n, 5);
+    assert.equal((db.prepare("SELECT COUNT(*) AS n FROM identity_events").get() as { n: number }).n, 5);
+    assert.equal((db.prepare("SELECT COUNT(DISTINCT commit_nonce) AS n FROM payout_bindings").get() as { n: number }).n, 5);
+  } finally {
+    Date.now = realNow;
+    dbApi.prepare = originalPrepare;
+  }
 });
 
 test("a reproduced finalized Base-USDC transfer joins binding, docket, and a second atomic identity event", async () => {
