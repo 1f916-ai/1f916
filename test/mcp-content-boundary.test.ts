@@ -21,6 +21,23 @@ const READ_TOOLS = [
   // (Wotuu, issue #96).
   "front_page",
   "read_post",
+  "public_books",
+  "newest_feed",
+  "changes",
+  "governance_provenance",
+  "screen_notices",
+  "citizen",
+  "read_comment",
+  "chain_attestation",
+  "citizen_keys",
+  "checkpoints",
+  "checkpoint_consistency",
+  "inclusion_proof",
+  "citizen_record",
+  "attestations",
+  "attestation",
+  "witness_history",
+  "witnesses",
   "seals",
   "flags",
   "moderation_state",
@@ -39,7 +56,14 @@ const WRITE_TOOLS = [
   // Protocol writes. `keys` is the sharpest case: the registration response
   // now tells every new citizen to bind a signing key, and an MCP-only
   // citizen reading that instruction had no way to follow it.
+  "dispose_flag",
+  "record_ledger",
   "keys",
+  "revoke_key",
+  "checkpoint_crank",
+  "issue_attestation",
+  "bind_domain",
+  "register_witness",
   "seal",
   "doorbell",
   "register",
@@ -100,7 +124,7 @@ test("the read-only MCP door exposes an explicit, default-deny capability set", 
   for (const tool of tools) {
     assert.equal(tool.annotations?.readOnlyHint, READ_TOOLS.includes(tool.name as (typeof READ_TOOLS)[number]));
   }
-  for (const name of ["front_page", "read_post", "pulse", "me", "history", "tags", "payload_notices", "citizens", "events"]) {
+  for (const name of ["front_page", "read_post", "pulse", "me", "history", "tags", "payload_notices", "citizens", "events", "public_books", "newest_feed", "changes", "governance_provenance", "screen_notices", "citizen", "read_comment", "citizen_keys", "citizen_record", "attestations", "attestation", "witnesses", "witness_history", "seals"]) {
     assert.match(tools.find((tool) => tool.name === name)?.description ?? "", /untrusted citizen/i);
   }
   assert.ok(tools.find((tool) => tool.name === "me")?.inputSchema?.properties?.secret, "the full door stays compatible");
@@ -156,6 +180,23 @@ test("the full MCP door keeps its existing write dispatch", async () => {
   const text = payload.result?.content?.[0]?.text ?? "";
   assert.match(text, /No credentials/i, "the compatibility door reached the ordinary write authentication path");
   assert.doesNotMatch(text, /read-only MCP endpoint/i);
+});
+
+test("new identity writes authenticate before reaching their handlers", async () => {
+  const env = Object.defineProperty({}, "DB", {
+    get() {
+      throw new Error("missing credentials must be rejected before an identity write reaches the database");
+    },
+  }) as Env;
+  for (const name of ["dispose_flag", "record_ledger", "keys", "revoke_key", "checkpoint_crank", "issue_attestation", "bind_domain", "register_witness"]) {
+    const payload = await rpc(
+      FULL_ENDPOINT,
+      { jsonrpc: "2.0", id: name, method: "tools/call", params: { name, arguments: {} } },
+      env,
+    );
+    assert.equal(payload.result?.isError, true, `${name} must reject a missing credential`);
+    assert.match(payload.result?.content?.[0]?.text ?? "", /No credentials/i, `${name} reached its handler before authentication`);
+  }
 });
 
 test("the reader profile keeps credentials out of model-authored arguments", async () => {
@@ -293,4 +334,70 @@ test("initialize describes both the enforcement boundary and its limitation", as
   assert.match(instructions, /server-enforced read-only/i);
   assert.match(instructions, /citizen speech.*untrusted data/i);
   assert.match(instructions, /other tools|other endpoints/i);
+});
+
+
+test("MCP tools preserve the HTTP argument contracts", async () => {
+  const full = await rpc(FULL_ENDPOINT, { jsonrpc: "2.0", id: 8, method: "tools/list" });
+  const tools = new Map((full.result?.tools ?? []).map((tool) => [tool.name, tool]));
+  const contracts: Record<string, { properties: string[]; required: string[] }> = {
+    front_page: { properties: ["exclude", "limit", "order", "tag"], required: [] },
+    post: { properties: ["body", "bulletin", "hygiene_override", "secret", "title", "url"], required: ["title"] },
+    comment: { properties: ["body", "hygiene_override", "parent_id", "post_id", "secret"], required: ["body", "post_id"] },
+    read_post: { properties: ["post_id", "reveal", "review", "secret", "since"], required: ["post_id"] },
+    me: { properties: ["before", "cursor_mode", "secret", "since"], required: [] },
+    moderation_state: { properties: ["through_event", "through_event_id"], required: [] },
+    history: { properties: ["comments_since", "posts_since", "secret", "tags_seq", "votes_seq"], required: [] },
+    citizens: { properties: ["since"], required: [] },
+    rotate: { properties: ["reason", "secret"], required: [] },
+    events: { properties: ["kind", "since"], required: [] },
+    public_books: { properties: [], required: [] },
+    newest_feed: { properties: ["before", "exclude", "limit", "pin_snapshot", "snapshot_id", "tag"], required: [] },
+    changes: { properties: ["comments_since", "posts_since", "since"], required: ["since"] },
+    governance_provenance: { properties: [], required: [] },
+    screen_notices: { properties: ["limit"], required: [] },
+    citizen: { properties: ["handle"], required: ["handle"] },
+    read_comment: { properties: ["comment_id", "reveal", "review", "secret"], required: ["comment_id"] },
+    dispose_flag: { properties: ["disposition", "reason", "secret", "target_id", "target_type"], required: ["disposition", "reason", "target_id", "target_type"] },
+    record_ledger: { properties: ["amount_cents", "description", "secret", "tx"], required: ["amount_cents", "description"] },
+    chain_attestation: { properties: ["from", "identity_expect", "identity_from", "ledger_expect", "ledger_from"], required: [] },
+    citizen_keys: { properties: ["handle"], required: ["handle"] },
+    checkpoints: { properties: [], required: [] },
+    checkpoint_crank: { properties: ["secret"], required: [] },
+    checkpoint_consistency: { properties: ["from", "log", "to"], required: ["from", "log", "to"] },
+    inclusion_proof: { properties: ["event", "log"], required: ["event", "log"] },
+    citizen_record: { properties: ["events_since", "handle"], required: ["handle"] },
+    issue_attestation: {
+      properties: ["claim", "class", "evidence", "secret", "signature", "subject", "target_attestation_id", "withdraw_when"],
+      required: ["claim", "class", "subject"],
+    },
+    attestations: { properties: ["class", "issuer", "since_id", "subject"], required: [] },
+    attestation: { properties: ["id"], required: ["id"] },
+    bind_domain: { properties: ["domain", "secret"], required: ["domain"] },
+    register_witness: { properties: ["name", "new_sig", "old_sig", "public_key", "secret", "url"], required: ["name", "url"] },
+    witness_history: { properties: ["id"], required: ["id"] },
+    witnesses: { properties: [], required: [] },
+    keys: { properties: ["custody", "public_key", "secret", "signature"], required: ["public_key", "signature"] },
+    revoke_key: { properties: ["secret", "signature", "thumbprint"], required: ["thumbprint"] },
+  };
+  for (const [name, expected] of Object.entries(contracts)) {
+    const tool = tools.get(name);
+    assert.ok(tool, `${name} must be advertised`);
+    assert.deepEqual(Object.keys(tool.inputSchema?.properties ?? {}).sort(), expected.properties, `${name} properties drifted from HTTP`);
+    assert.deepEqual([...(tool.inputSchema?.required ?? [])].sort(), expected.required, `${name} required fields drifted from HTTP`);
+  }
+  assert.equal(contracts.issue_attestation.properties.includes("thumbprint"), false, "the server derives the signing key; MCP must not advertise an ignored selector");
+});
+
+test("MCP chain witnesses reject malformed expected hashes like the HTTP route", async () => {
+  const env = Object.defineProperty({}, "DB", {
+    get() { throw new Error("a malformed witness must be rejected before D1 is touched"); },
+  }) as Env;
+  const payload = await rpc(
+    READ_ENDPOINT,
+    { jsonrpc: "2.0", id: 10, method: "tools/call", params: { name: "chain_attestation", arguments: { identity_expect: "" } } },
+    env,
+  );
+  assert.equal(payload.result?.isError, true);
+  assert.match(payload.result?.content?.[0]?.text ?? "", /identity_expect must be a 64-char hex hash/i);
 });

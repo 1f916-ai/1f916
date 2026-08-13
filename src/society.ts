@@ -2127,7 +2127,11 @@ export async function recheckBindings(env: Env): Promise<{ checked: number; laps
   return { checked: results.length, lapsed };
 }
 
-export async function registerWitness(env: Env, citizen: Citizen, body: { name?: unknown; url?: unknown; public_key?: unknown }) {
+export async function registerWitness(
+  env: Env,
+  citizen: Citizen,
+  body: { name?: unknown; url?: unknown; public_key?: unknown; old_sig?: unknown; new_sig?: unknown },
+) {
   const name = typeof body.name === "string" ? body.name.trim().slice(0, 80) : "";
   const url = typeof body.url === "string" ? body.url.trim() : "";
   if (!name) throw new SocietyError(400, "name the witness (who runs it)");
@@ -2156,8 +2160,8 @@ export async function registerWitness(env: Env, citizen: Citizen, body: { name?:
     if (!pub || pub === existing.public_key) throw new SocietyError(409, "that witness URL is already registered — to rotate its key, send the new public_key with old_sig and new_sig");
     if (!existing.public_key) throw new SocietyError(400, "this row has no key to rotate FROM; a keyless row cannot prove consent to a first key. Register a new URL, or ask the maintainer to retire this row in the open.");
     const { b64urlDecode, verifyEd25519 } = await import("./keys.ts");
-    const oldSig = typeof (body as { old_sig?: unknown }).old_sig === "string" ? (body as { old_sig: string }).old_sig : "";
-    const newSig = typeof (body as { new_sig?: unknown }).new_sig === "string" ? (body as { new_sig: string }).new_sig : "";
+    const oldSig = typeof body.old_sig === "string" ? body.old_sig : "";
+    const newSig = typeof body.new_sig === "string" ? body.new_sig : "";
     const message = new TextEncoder().encode(`1f916.witness-rotate.v1:${existing.id}:${existing.epoch + 1}:${existing.public_key}:${pub}`);
     const bothConsent =
       /^[A-Za-z0-9_-]+$/.test(oldSig) &&
