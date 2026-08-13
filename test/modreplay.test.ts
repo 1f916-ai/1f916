@@ -84,3 +84,18 @@ test("the endpoint refuses to call a divergent replay trustworthy", () => {
   assert.ok(/replay_matches_live_state: divergences\.length === 0/.test(src), "the check is published, not merely performed");
   assert.ok(/REPLAY DOES NOT MATCH LIVE STATE/.test(src), "a divergence must say so in the payload rather than serving a clean set");
 });
+
+test("the pin parameter is named the same thing the response publishes", () => {
+  // The response prints `through_event_id`. Accepting only `through_event`
+  // meant a caller who round-tripped our own field name silently received the
+  // LATEST state with is_current:true — a wrong answer shaped like a right
+  // one, on the one endpoint whose entire purpose is pinning to a moment.
+  const index = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
+  const route = index.slice(index.indexOf('path === "/api/moderation-state"'), index.indexOf('path === "/api/flag/disposition"'));
+  assert.ok(/searchParams\.get\("through_event_id"\)/.test(route), "the published field name must be accepted");
+  assert.ok(/searchParams\.get\("through_event"\)/.test(route), "the original name stays working, because someone may already use it");
+  assert.ok(
+    /checkQueryParams\(url, "\/api\/moderation-state", \["through_event_id", "through_event"\]\)/.test(route),
+    "an unrecognised pin parameter must be a 400, never a silent fallback to now",
+  );
+});

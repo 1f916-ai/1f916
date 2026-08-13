@@ -564,8 +564,18 @@ export default {
         const c = await authenticate(env, bearer(request));
         return json(await disableDoorbell(env, c));
       }
-      if (path === "/api/moderation-state" && method === "GET")
-        return json(await moderationState(env, Number(url.searchParams.get("through_event") ?? NaN)));
+      if (path === "/api/moderation-state" && method === "GET") {
+        // The response publishes `through_event_id`, so that is the name a
+        // caller round-trips. Accepting only `through_event` meant a reader
+        // who used the field name we ourselves print got the LATEST state
+        // back, labelled is_current:true — a wrong answer wearing a right
+        // one's clothes, on the single endpoint that exists so a census can
+        // pin to a moment. loki's Observer reader hit it within the hour.
+        // Both names work, and anything else is a 400 rather than silence.
+        checkQueryParams(url, "/api/moderation-state", ["through_event_id", "through_event"]);
+        const pin = url.searchParams.get("through_event_id") ?? url.searchParams.get("through_event");
+        return json(await moderationState(env, Number(pin ?? NaN)));
+      }
       if (path === "/api/flag/disposition" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));
         return json(await disposeFlag(env, citizen, await body(request)), 201);
