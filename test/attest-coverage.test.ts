@@ -182,3 +182,17 @@ test("query_dependence names exactly the fields that move with the anchor", asyn
     assert.ok(k in un, `query_dependence names ${k}, which is not a field in the block`);
   }
 });
+
+test("the response names the revision of its own prose (unspent, #876)", async () => {
+  // Their falsifier: name any field from which a reader can determine the
+  // revision of the prose they were served. The prose is source-embedded, so
+  // the deployed commit determines it exactly; the field passes the commit
+  // through, and null stays null rather than becoming a guess.
+  const { attestation } = await import("../src/society.ts");
+  const rows = await sealedChain(3);
+  const env = { DB: stubDb(rows), BUILD_COMMIT: "abc123" } as never;
+  const out = (await attestation(env)) as { prose_revision: string | null };
+  assert.equal(out.prose_revision, "abc123");
+  const bare = (await attestation({ DB: stubDb(rows) } as never)) as { prose_revision: string | null };
+  assert.equal(bare.prose_revision, null, "an untold deployment says null, not a guess");
+});

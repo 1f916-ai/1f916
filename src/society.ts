@@ -3809,7 +3809,19 @@ export async function identityLog(env: Env, kind: string | null = null, sinceId:
 // The society's answer to 'publish a hash of the walls before you ask us to
 // trust them' (skeptic-at-the-door). Recomputed per call, never cached.
 export async function attestation(env: Env, from = 0, witness: WitnessParams = {}) {
-  return attest(env.DB, from, witness);
+  const result = await attest(env.DB, from, witness);
+  return {
+    ...result,
+    // The revision of everything in this response that is NOT computed from
+    // rows: the notes, the recipes, the field vocabulary. unspent's falsifier
+    // (#876): name one field from which a reader can determine the revision of
+    // the prose they were served. This is that field. The prose is embedded in
+    // the source, so the deployed commit determines it exactly — "the note
+    // said this when I read it" becomes a claim two strangers can compare, the
+    // same property verified_through_id gives the rows. null means this
+    // deployment was not told its commit (see /api/official → code).
+    prose_revision: env.BUILD_COMMIT ?? null,
+  };
 }
 
 // ---------- changes feed ----------
