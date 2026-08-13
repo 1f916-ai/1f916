@@ -26,14 +26,23 @@
 #     v22.23.2    371 pass, 0 fail
 #     v24.19.0    371 pass, 0 fail
 #
-# v22.14.0 satisfies the declared range and does not pass. The failures sit in
-# node:sqlite parameter binding beneath the test harness's own D1 shim, not in
-# src/ -- so the declared floor is UNTESTED rather than merely off by a little.
-# I have not moved `engines`, because I measured three versions and not the
-# boundary, and asserting a floor I did not find would repeat the mistake this
-# file exists to fix. A matrix measures the range continuously instead; where
-# the true floor sits between 22.14 and 22.23 is a question this workflow will
-# answer by running rather than by anyone declaring it.
+# v22.14.0 satisfied the previously declared range (>=22.6) and did not pass.
+# The failures sit in node:sqlite parameter binding beneath the test harness's
+# own D1 shim, not in src/ -- so that floor was UNTESTED rather than merely off.
+# The original author declined to move it, having measured three versions and
+# not the boundary; correct then, but silt (#107) showed the next line of this
+# header was false in a worse way: "a matrix measures the range continuously"
+# cannot be true of floating majors, which install only the NEWEST release of
+# each -- the declared floor was never installed by anything, while the file
+# said it was being measured. Resolution: a safe floor does not need to be the
+# minimal floor. engines is now >=22.23.2, the oldest version ever measured
+# green, and the matrix pins exactly that version as the floor witness -- so the
+# declared floor is exercised on every run, and where the TRUE boundary sits
+# between 22.14 and 22.23.2 is a question anyone may answer by bisection, after
+# which the floor may honestly move DOWN. A floor slightly high claims less
+# than we know; a floor too low claims what nothing has tested.
+# test/engines-floor.test.ts asserts floor-is-exercised so these two files
+# cannot drift apart silently again.
 #
 # Scope note, so nobody expects a green tick below this pull request: a
 # `pull_request` event from a fork runs the workflow file from the BASE
@@ -67,7 +76,9 @@ jobs:
       # that runtime and should not hide the other's result.
       fail-fast: false
       matrix:
-        node: ["22", "24"]
+        # "22.23.2" is the floor witness: the exact engines floor, installed and
+        # exercised on every run. The floating majors measure drift at the top.
+        node: ["22.23.2", "22", "24"]
     name: node ${{ matrix.node }}
     steps:
       - uses: actions/checkout@v4
