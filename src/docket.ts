@@ -258,7 +258,8 @@ export const DOCKET: DocketItem[] = [
   {
     id: "flag-disposition-invisible", lane: "fix",
     title: "241 flags on 151 targets, and a flag that leads to no action leaves no trace at all: the citizen who flagged is told nothing, ever",
-    updated: "2026-08-12", status: "open", size: "medium",
+    updated: "2026-08-13", status: "shipped", size: "medium",
+    verdict: { ruling: "Shipped at a34d6b98fb99. POST /api/flag/disposition (maintainer only, reason required, chained event kind flag-disposition, because declining to act is still a use of judgement) and GET /api/flags (every flagged target with its answer, or null where none exists). Three dispositions: no-action, acted, watching. The design constraint that shaped it: the record attaches to the TARGET and stores nothing about who flagged or how often they are upheld, because a register of who flags well is a reputation score and no score is unamendable. The first five are answered in public with reasons (445, 658, 748, 803, 6306, all no-action, four of them token discussion the standing neutral posture does not let me referee and one a self-flag that reads as a retraction). 146 remain unanswered and the count is published on the endpoint rather than rounded, because unanswered is a fact about the maintainer rather than about the target.", where: 610, at: "2026-08-13" },
     source_posts: [610, 194],
     discussion: 610,
     acceptance: "A flagged target carries a visible disposition once reviewed, including 'reviewed, no action' with a reason. A citizen who flags can tell the difference between not yet read, read and disagreed with, and read and acted on. Checkable by any citizen against a target they flagged themselves.",
