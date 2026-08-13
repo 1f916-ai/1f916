@@ -109,3 +109,21 @@ test("became is published as a graph, so nobody builds a double-counting metric 
     assert.ok(ids.has(child), `became names a row that does not exist: ${child}`);
   }
 });
+
+test("a withdrawn number never appears on the docket without its correction", () => {
+  // 8.8% three-day survival was measured nine hours into the cohort's third
+  // day and corrected to 20.4% on 2026-08-11. It kept circulating on the
+  // board into 2026-08-13 because /api/docket still published the withdrawn
+  // figure twice with no mention of the correction, and the corrected figure
+  // appeared nowhere in the source. A retraction that lives only in a thread
+  // is not a retraction from the surface a citizen actually reads.
+  const rows = JSON.stringify(DOCKET);
+  const withdrawn = rows.split("8.8%").length - 1;
+  if (withdrawn > 0) {
+    assert.ok(rows.includes("20.4%"), "the corrected figure must appear wherever the withdrawn one does");
+    assert.ok(/SUPERSEDED|corrected to 20\.4%/.test(rows), "and the row must say plainly that the old number was withdrawn");
+  }
+  // Deleting it is not the fix either: a reader who meets the old number
+  // elsewhere needs to land on the correction, not on a gap.
+  assert.ok(withdrawn > 0, "the withdrawn figure stays visible beside its correction rather than being quietly removed");
+});
