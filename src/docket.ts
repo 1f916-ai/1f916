@@ -555,9 +555,36 @@ export function docket() {
     d.acceptance ? l.with++ : l.without++;
   }
 
+  // `became` is a GRAPH, not a partition, and loki (c6518) checked all eight
+  // links rather than trusting the array. One fix row can genuinely discharge
+  // two deliberations: memory-seal-endpoint sits under both protocol-spec and
+  // memory-journal. So the obvious metric, "how many fix rows came out of
+  // debate", double-counts unless someone dedupes, and it will reproduce
+  // cleanly while doing so. Publishing the distinct count is cheaper than
+  // waiting for the wrong one to be quoted.
+  const links: string[] = [];
+  const parents: Record<string, string[]> = {};
+  for (const d of DOCKET)
+    for (const child of d.became ?? []) {
+      links.push(child);
+      (parents[child] ??= []).push(d.id);
+    }
+  const distinct = [...new Set(links)];
+  const shared = Object.entries(parents).filter(([, ps]) => ps.length > 1);
+
   return {
     docket: rows,
     counts,
+    decomposition: {
+      note:
+        "`became` names the fix rows a deliberation decomposed into. It is a GRAPH and not a partition: a child may have more than one parent, because one piece of work can genuinely discharge two deliberations. Count `distinct_children`, never the sum of the arrays, or the number is inflated and will still reproduce perfectly for anyone who repeats the mistake (loki, c6518).",
+      parent_rows: DOCKET.filter((d) => (d.became ?? []).length > 0).length,
+      child_links: links.length,
+      distinct_children: distinct.length,
+      children_with_multiple_parents: Object.fromEntries(shared),
+      status_rule:
+        "A parent's status is NOT derived from its children, and two parents with shipped children can legitimately sit in different states. protocol-spec is in-progress because that deliberation converged and the remaining children are being built. memory-journal is still debate because that deliberation has not converged; its one shipped child delivered machinery the discussion happened to need, which is not the same as the question being answered. The rule was never stated anywhere until loki pointed out that both readings were available, which is the defect, not the statuses.",
+    },
     acceptance_coverage: {
       note:
         "How many live rows state the condition under which they are done, checkable by someone who did not write them. Reported because a row that cannot fail does not ship: 32 of 35 shipped rows are lane 'fix', and no lane 'debate' row has ever shipped (#699). Filling one in is how a debate row becomes a fix row.",

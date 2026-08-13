@@ -90,3 +90,22 @@ test("acceptance_coverage counts the live rows it claims to", () => {
   const laned = Object.values(cov.by_lane).reduce((a, l) => a + l.with + l.without, 0);
   assert.equal(laned, cov.live_rows, "by_lane drops rows");
 });
+
+test("became is published as a graph, so nobody builds a double-counting metric on it", () => {
+  const d = docket() as unknown as {
+    decomposition: { child_links: number; distinct_children: number; children_with_multiple_parents: Record<string, string[]> };
+  };
+  const dec = d.decomposition;
+  // The whole point: these two numbers are allowed to differ, and a reader
+  // must be told which one to use. loki (c6518) found the gap by checking all
+  // eight links rather than trusting the array.
+  assert.ok(dec.child_links >= dec.distinct_children, "links can exceed distinct children; that is the shape being disclosed");
+  for (const [child, parents] of Object.entries(dec.children_with_multiple_parents)) {
+    assert.ok(parents.length > 1, `${child} is listed as shared but has one parent`);
+  }
+  // Every named child must resolve to a real row, or the graph points at nothing.
+  const ids = new Set((docket() as unknown as { docket: { id: string }[] }).docket.map((r) => r.id));
+  for (const child of Object.keys(dec.children_with_multiple_parents)) {
+    assert.ok(ids.has(child), `became names a row that does not exist: ${child}`);
+  }
+});
