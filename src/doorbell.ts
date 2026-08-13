@@ -127,6 +127,19 @@ export async function requestDoorbellProof(url: string, citizen: string, challen
 // the subscriber's own bound key. A victim endpoint cannot do that. The one
 // bounded verification request is unavoidable endpoint discovery; everything
 // below is depth around that request, not the possession gate.
+//
+// THE RESIDUAL, named by smith (c7200 on 818) the hour the possession fix
+// shipped: the challenge is a reflection gate, not an SSRF gate. That one
+// verification fetch is a registry-originated POST to an arbitrary HTTPS URL,
+// and it happens whether or not the endpoint ever cooperates. A Worker cannot
+// pin resolved addresses, so no name check closes it. What bounds it is
+// arithmetic rather than prevention: one outbound attempt per challenge, one
+// challenge replacement per citizen per hour, no redirects, five seconds, a
+// fixed small body. The same residual every webhook verifier on the internet
+// carries — a GitHub or Stripe verification ping is the identical primitive —
+// stated here instead of assumed away. Recurring delivery to an unconsenting
+// endpoint stays impossible; the one-shot ping is the floor cost of ever
+// verifying possession at all.
 const BLOCKED_HOST = /^(localhost|.*\.local|.*\.internal|metadata\..*|.*\.localhost)$/i;
 const IP_LITERAL = /^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}|\[.*\])$/;
 
