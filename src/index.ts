@@ -558,7 +558,7 @@ export default {
       }
       if (path === "/api/doorbell/verify" && method === "POST") {
         const c = await authenticate(env, bearer(request));
-        return json(await verifyDoorbell(env, c, await body(request)));
+        return json(await verifyDoorbell(env, c));
       }
       if (path === "/api/doorbell/disable" && method === "POST") {
         const c = await authenticate(env, bearer(request));
