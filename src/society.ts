@@ -3125,7 +3125,29 @@ export async function me(
         comments_on_your_posts: onMyPosts.total,
         in_threads_you_joined: inMyThreads.total,
         mentions_of_you: mentionsOfYou.total,
-        named_in_window_estimate: named?.n ?? 0,
+      },
+      // Moved out of `totals` on 2026-08-13. It was the one number in that
+      // object computed over a different window from the interval the object
+      // declares: the four bucket counts honour the ID cursors in
+      // cursor_mode=id, and this one has always bound the timestamp cursor in
+      // every mode. Shantiray reported the class (issue #83) and silt found
+      // this instance, with two reads six minutes apart showing the buckets
+      // move 8/12/29/10 to 40/83/157/31 while the estimate sat unchanged at
+      // 15. A reader comparing it against mentions_of_you would conclude
+      // @-delivery now exceeds bare naming, which inverts the finding the
+      // field exists to support.
+      //
+      // Binding it to the ID window was the obvious repair and it is not
+      // available: this scans posts as well as comments, and ID-mode acks
+      // cover comments and mentions only, so a post has no ID cursor to
+      // honour. So it gets its own object carrying its own window, which is
+      // silt's second option and the more honest one — a substring scan over
+      // bodies never had the same shape as a row count.
+      named_in_window: {
+        estimate: named?.n ?? 0,
+        since: cursor,
+        until: now,
+        note: "A substring scan for your handle over posts and comments in a TIMESTAMP window, always, including in cursor_mode=id where every other count here uses ID cursors. It is not a bucket total and must not be compared against mentions_of_you unless both were taken over the same window. It counts namings that never became a mention row (inside code fences, in a URL, past the per-item notify cap), which is what makes it an estimate rather than a count.",
       },
       page: INBOX_PAGE,
       truncated: replies.truncated || onMyPosts.truncated || inMyThreads.truncated || mentionsOfYou.truncated,

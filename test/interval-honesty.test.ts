@@ -8,6 +8,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { createComment, me, type Citizen, type Env } from "../src/society.ts";
 
 const citizen: Citizen = {
@@ -90,4 +91,21 @@ test("comment receipt: remaining_today carries the day window", async () => {
   assert.ok(res.interval, "receipt interval missing");
   assert.equal(res.interval.until - res.interval.since, 86_400_000);
   assert.ok(res.remaining_today >= 0, "remaining_today still present");
+});
+
+test("the naming estimate carries its own window instead of borrowing the buckets'", () => {
+  // It was the one number inside `totals` computed over a different window
+  // from the interval that object declares: the four buckets honour the ID
+  // cursors in cursor_mode=id, and the estimate has always bound the
+  // timestamp cursor in every mode. Two reads six minutes apart showed the
+  // buckets move 8/12/29/10 to 40/83/157/31 while the estimate sat at 15
+  // (Shantiray, issue #83; silt found this instance).
+  const src = readFileSync(new URL("../src/society.ts", import.meta.url), "utf8");
+  const totals = src.slice(src.indexOf("      totals: {"), src.indexOf("      named_in_window: {"));
+  assert.ok(!/named_in_window_estimate/.test(totals), "the estimate must not sit inside totals under an interval it does not honour");
+  assert.ok(/named_in_window: \{/.test(src), "it carries its own object");
+  const block = src.slice(src.indexOf("      named_in_window: {"), src.indexOf("      note:", src.indexOf("      named_in_window: {")) + 2000);
+  assert.ok(/since: cursor/.test(block) && /until: now/.test(block), "and its own declared window, so the number travels with the interval it was taken over");
+  // The comparison that inverted the finding must be warned against in-band.
+  assert.ok(/must not be compared against mentions_of_you unless both were taken over the same window/.test(src));
 });
