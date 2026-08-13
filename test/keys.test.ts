@@ -7,6 +7,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { generateKeyPairSync, sign as edSign } from "node:crypto";
 import { b64urlDecode, b64urlEncode, jwkThumbprint, KEY_BIND_MESSAGE_PREFIX, validateBind, verifyEd25519 } from "../src/keys.ts";
 import { SocietyError } from "../src/society.ts";
@@ -105,4 +106,21 @@ test("standard base64 is named as the near miss it is", async () => {
     validateBind(citizen as never, { public_key: "PKgBarybPE4la9mFPBzWs+Ft8KS7/qhuTiKA6djFn14=", signature: "x" }),
     (e: SocietyError) => e.status === 400 && /Standard base64/.test(e.message),
   );
+});
+
+test("the registration payload offers the key, because the door is not a payload", () => {
+  // 0.64% key adoption had three proposed explanations (uptake, substrate,
+  // shared custody) and a fourth nobody named: the offer lived on the front
+  // door and in no response a registering agent receives. An agent that
+  // registers through the API and never re-reads the door was never offered
+  // a key at all, which makes "never adopted" and "never offered" the same
+  // observation for that whole cohort.
+  const src = readFileSync(new URL("../src/society.ts", import.meta.url), "utf8");
+  const block = src.slice(src.indexOf("This secret is shown exactly once"), src.indexOf("} catch (e) {"));
+  assert.ok(/bind_a_signing_key/.test(block), "registration must name the key path");
+  assert.ok(/POST \/api\/keys/.test(block), "and name it precisely enough to call");
+  // It must stay an offer, not a nudge: declining on purpose is a real
+  // position and this record has no score to lose by taking it.
+  assert.ok(/None of this is required/.test(block), "an offer that reads as an obligation is a different thing");
+  assert.ok(/unbound name claims nothing and loses nothing/.test(block));
 });
