@@ -4,7 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import { createHash, generateKeyPairSync, sign as edSign } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-import { BASE_USDC, PAYOUT_BINDING_HASH_FIELDS, PAYOUT_RECEIPT_HASH_FIELDS, PAYOUT_VERSION, matchTransfer, payoutPreimage, validatePayoutBinding, validateReceiptInput, verifyBasePayment } from "../src/payouts.ts";
+import { BASE_USDC, PAYOUT_BINDING_HASH_FIELDS, PAYOUT_RECEIPT_HASH_FIELDS, PAYOUT_VERSION, matchTransfer, payoutFunderStatement, payoutPreimage, validatePayoutBinding, validateReceiptInput, verifyBasePayment, verifyFunderAttestation } from "../src/payouts.ts";
 import { b64urlEncode } from "../src/keys.ts";
 import { DOCKET } from "../src/docket.ts";
 import { createPayoutBinding, createPayoutReceipt, getPayoutBinding, listPayouts, SocietyError, type Env } from "../src/society.ts";
@@ -33,13 +33,43 @@ class D1Statement {
 
 function makeEnv(publicKey: string, status = "active", citizenId = 1) {
   const db = new DatabaseSync(":memory:");
-  db.exec("CREATE TABLE keys (citizen_id INTEGER, public_key TEXT, thumbprint TEXT, status TEXT)");
-  db.prepare("INSERT INTO keys VALUES (?, ?, 'citizen-tp', ?)").run(citizenId, publicKey, status);
+  db.exec("CREATE TABLE keys (citizen_id INTEGER, public_key TEXT, thumbprint TEXT, custody TEXT, status TEXT, bound_at INTEGER)");
+  db.prepare("INSERT INTO keys VALUES (?, ?, 'citizen-tp', 'self', ?, 0)").run(citizenId, publicKey, status);
   return { DB: { prepare: (sql: string) => new D1Statement(db, sql) } } as unknown as Env;
 }
 
 const CITIZEN = { id: 1, handle: "context-gardener", model: "test", karma: 0, created_at: 0, last_seen_at: 0 };
 const NOW = 1_786_634_000;
+const signedReceiptInput = async (fields: {
+  wallet: ReturnType<typeof privateKeyToAccount>;
+  bindingPayloadHash: string;
+  txHash: string;
+  transferLogIndex: number;
+  sourceAddress: string;
+  payoutAddress: string;
+  amountAtomic: string;
+  fundingRelationship?: "self" | "operator" | "affiliated" | "independent" | "unknown";
+}) => {
+  const fundingRelationship = fields.fundingRelationship ?? "independent";
+  const funderStatement = payoutFunderStatement({
+    bindingPayloadHash: fields.bindingPayloadHash,
+    chainId: 8453,
+    token: BASE_USDC,
+    txHash: fields.txHash,
+    transferLogIndex: fields.transferLogIndex,
+    sourceAddress: fields.sourceAddress,
+    payoutAddress: fields.payoutAddress,
+    amountAtomic: fields.amountAtomic,
+    fundingRelationship,
+  });
+  return {
+    tx_hash: fields.txHash,
+    transfer_log_index: fields.transferLogIndex,
+    funding_relationship: fundingRelationship,
+    funder_statement: funderStatement,
+    funder_signature: await fields.wallet.signMessage({ message: funderStatement }),
+  };
+};
 const hashPayload = (fields: readonly string[], payload: Record<string, unknown>) =>
   createHash("sha256").update(JSON.stringify(fields.map((field) => payload[field]))).digest("hex");
 
@@ -148,24 +178,26 @@ function makeFullEnv(publicKey: string, failAfterState = false) {
   const db = new DatabaseSync(":memory:");
   db.exec(`
     CREATE TABLE citizens (id INTEGER PRIMARY KEY, handle TEXT UNIQUE, model TEXT, secret_hash TEXT, karma INTEGER, created_at INTEGER, last_seen_at INTEGER);
-    CREATE TABLE keys (id INTEGER PRIMARY KEY, citizen_id INTEGER, public_key TEXT, thumbprint TEXT, custody TEXT, status TEXT);
+    CREATE TABLE keys (id INTEGER PRIMARY KEY, citizen_id INTEGER, public_key TEXT, thumbprint TEXT, custody TEXT, status TEXT, bound_at INTEGER);
     CREATE TABLE identity_events (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, kind TEXT, detail TEXT, created_at INTEGER, prev_hash TEXT UNIQUE, hash TEXT UNIQUE);
     CREATE TABLE payout_bindings (
       id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, docket_id TEXT, version TEXT, amount_atomic TEXT,
       chain_id INTEGER, token TEXT, payout_address TEXT, expiry INTEGER, wallet_signature TEXT,
-      citizen_public_key TEXT, citizen_signature TEXT, citizen_key_thumbprint TEXT, docket_acceptance TEXT,
+      citizen_public_key TEXT, citizen_signature TEXT, citizen_key_thumbprint TEXT, citizen_key_custody TEXT,
+      citizen_key_bound_at INTEGER, authorization_verification TEXT, authorization_verified_at INTEGER, docket_acceptance TEXT,
       docket_updated TEXT, docket_snapshot TEXT, preimage TEXT, authorization_hash TEXT UNIQUE, payload_hash TEXT UNIQUE, commit_nonce TEXT UNIQUE, created_at INTEGER
     );
     CREATE TABLE payout_receipts (
       id INTEGER PRIMARY KEY AUTOINCREMENT, binding_id INTEGER UNIQUE, submitter_id INTEGER, tx_hash TEXT,
       transfer_log_index INTEGER, source_address TEXT, transaction_sender TEXT, block_number INTEGER,
       block_hash TEXT, block_timestamp INTEGER, finalized_block_number INTEGER, confirmations_at_recording INTEGER, funding_relationship TEXT,
+      funder_address TEXT, funder_statement TEXT, funder_signature TEXT, funder_attestation_hash TEXT UNIQUE,
       payload_hash TEXT UNIQUE, checked_at INTEGER, created_at INTEGER, UNIQUE(tx_hash, transfer_log_index)
     );
     CREATE TABLE payout_receipt_attempts (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, binding_id INTEGER, attempted_at INTEGER);
     INSERT INTO citizens VALUES (1, 'context-gardener', 'test', 'secret', 0, 0, 0);
   `);
-  db.prepare("INSERT INTO keys VALUES (1, 1, ?, 'citizen-tp', 'self', 'active')").run(publicKey);
+  db.prepare("INSERT INTO keys VALUES (1, 1, ?, 'citizen-tp', 'self', 'active', 0)").run(publicKey);
   const d1 = {
     prepare: (sql: string) => new D1Statement(db, sql),
     async batch(statements: D1Statement[]) {
@@ -215,6 +247,20 @@ test("docket drift compares the complete canonical snapshot, not only its date",
   } finally {
     row.acceptance = originalAcceptance;
   }
+});
+
+test("later revocation cannot rewrite the stored as-of binding verdict or payload hash", async () => {
+  const fixture = await signedBinding();
+  const { env, db } = makeFullEnv(fixture.publicKey);
+  const created = await createPayoutBinding(env, CITIZEN as never, fixture.body);
+  const before = await getPayoutBinding(env, Number(created.id));
+  db.prepare("UPDATE keys SET status = 'revoked' WHERE citizen_id = 1").run();
+  const after = await getPayoutBinding(env, Number(created.id));
+  assert.equal(after.authorization_verification, "valid-at-binding-event");
+  assert.equal(after.citizen_key_custody, "self");
+  assert.equal(after.payload_hash, before.payload_hash);
+  assert.deepEqual(after.payload, before.payload);
+  assert.equal(hashPayload(PAYOUT_BINDING_HASH_FIELDS, after.payload as Record<string, unknown>), after.payload_hash);
 });
 
 test("key revocation and binding serialize at the atomic commit boundary", async () => {
@@ -392,7 +438,8 @@ test("a reproduced finalized Base-USDC transfer joins binding, docket, and a sec
   const binding = await createPayoutBinding(env, CITIZEN as never, fixture.body);
   const txHash = "0x" + "ab".repeat(32);
   const blockHash = "0x" + "cd".repeat(32);
-  const from = "0x2222222222222222222222222222222222222222";
+  const funder = privateKeyToAccount(generatePrivateKey());
+  const from = funder.address.toLowerCase();
   const transferTopicLocal = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
   const topic = (address: string) => "0x" + "0".repeat(24) + address.slice(2).toLowerCase();
   const amount = "0x" + BigInt(fixture.body.amount_atomic).toString(16).padStart(64, "0");
@@ -412,13 +459,43 @@ test("a reproduced finalized Base-USDC transfer joins binding, docket, and a sec
     return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result }), { status: 200 });
   }) as typeof fetch;
   try {
-    const paid = await createPayoutReceipt(env, CITIZEN as never, Number(binding.id), {
-      tx_hash: txHash,
-      funding_relationship: "independent",
+    const stranger = privateKeyToAccount(generatePrivateKey());
+    const wrong = await signedReceiptInput({
+      wallet: stranger,
+      bindingPayloadHash: String(binding.payload_hash),
+      txHash,
+      transferLogIndex: 3,
+      sourceAddress: from,
+      payoutAddress: String(fixture.body.address),
+      amountAtomic: String(fixture.body.amount_atomic),
     });
+    await assert.rejects(
+      createPayoutReceipt(env, CITIZEN as never, Number(binding.id), wrong),
+      (error: SocietyError) => error.status === 400 && /not the exact Transfer source/.test(error.message),
+    );
+    assert.equal((db.prepare("SELECT COUNT(*) AS n FROM payout_receipts").get() as { n: number }).n, 0);
+    assert.equal((db.prepare("SELECT COUNT(*) AS n FROM identity_events").get() as { n: number }).n, 1);
+
+    const paid = await createPayoutReceipt(
+      env,
+      CITIZEN as never,
+      Number(binding.id),
+      await signedReceiptInput({
+        wallet: funder,
+        bindingPayloadHash: String(binding.payload_hash),
+        txHash,
+        transferLogIndex: 3,
+        sourceAddress: from,
+        payoutAddress: String(fixture.body.address),
+        amountAtomic: String(fixture.body.amount_atomic),
+      }),
+    );
     assert.equal(paid.transfer_log_index, 3);
     assert.equal(paid.finalized_block_number, 100);
     assert.equal(paid.docket_id, "earning-economy");
+    assert.equal(paid.funder_address, from);
+    assert.equal(paid.funder_statement, paid.payload.funder_statement);
+    assert.equal(paid.funding_relationship, "independent");
     assert.equal(hashPayload(PAYOUT_RECEIPT_HASH_FIELDS, paid.payload as Record<string, unknown>), paid.payload_hash);
     for (const field of ["submitter_id", "confirmations_at_recording", "checked_at", "created_at"]) {
       const changed = { ...(paid.payload as Record<string, unknown>), [field]: Number((paid.payload as Record<string, unknown>)[field]) + 1 };
@@ -433,6 +510,8 @@ test("a reproduced finalized Base-USDC transfer joins binding, docket, and a sec
     const listed = await listPayouts(env, null);
     assert.equal(listed.bindings[0]?.record, `/api/payout-bindings/${binding.id}`);
     assert.equal(listed.bindings[0]?.receipt_payload_hash, paid.payload_hash);
+    assert.equal(listed.bindings[0]?.funder_address, from);
+    assert.equal(listed.bindings[0]?.funder_attestation_hash, paid.funder_attestation_hash);
     assert.equal(listed.bindings[0]?.docket_changed_since_binding, false);
     assert.equal((db.prepare("SELECT COUNT(*) AS n FROM payout_receipts").get() as { n: number }).n, 1);
     const events = db.prepare("SELECT kind FROM identity_events ORDER BY id").all() as { kind: string }[];
@@ -454,7 +533,10 @@ test("receipt-attempt pruning drops only expired rows and cannot reopen the hour
   globalThis.fetch = (async () => { throw new Error("RPC must not be called after the cap"); }) as typeof fetch;
   try {
     await assert.rejects(
-      createPayoutReceipt(env, CITIZEN as never, Number(binding.id), { tx_hash: "0x" + "ab".repeat(32), funding_relationship: "unknown" }),
+      createPayoutReceipt(env, CITIZEN as never, Number(binding.id), {
+        tx_hash: "0x" + "ab".repeat(32), transfer_log_index: 0, funding_relationship: "unknown",
+        funder_statement: "placeholder", funder_signature: "0x" + "11".repeat(65),
+      }),
       (error: SocietyError) => error.status === 429,
     );
     assert.equal((db.prepare("SELECT COUNT(*) AS n FROM payout_receipt_attempts").get() as { n: number }).n, 10);
@@ -490,7 +572,10 @@ test("an old orphan block hash is not accepted merely because its height is fina
   }) as typeof fetch;
   try {
     await assert.rejects(
-      createPayoutReceipt(env, CITIZEN as never, Number(binding.id), { tx_hash: txHash, funding_relationship: "unknown" }),
+      createPayoutReceipt(env, CITIZEN as never, Number(binding.id), {
+        tx_hash: txHash, transfer_log_index: 3, funding_relationship: "unknown",
+        funder_statement: "placeholder", funder_signature: "0x" + "11".repeat(65),
+      }),
       (error: SocietyError) => error.status === 409 && /not canonical/.test(error.message),
     );
     assert.equal((db.prepare("SELECT COUNT(*) AS n FROM payout_receipts").get() as { n: number }).n, 0);
@@ -503,6 +588,67 @@ test("an old orphan block hash is not accepted merely because its height is fina
 const topicAddress = (address: string) => "0x" + "0".repeat(24) + address.slice(2).toLowerCase();
 const transferTopic = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 const word = (n: bigint) => "0x" + n.toString(16).padStart(64, "0");
+
+test("the exact Transfer source must sign one canonical binding+tx+log assignment", async () => {
+  const funder = privateKeyToAccount(generatePrivateKey());
+  const stranger = privateKeyToAccount(generatePrivateKey());
+  const binding = {
+    payload_hash: "a".repeat(64), chain_id: 8453, token: BASE_USDC,
+    payout_address: "0x1111111111111111111111111111111111111111", amount_atomic: "10000000",
+  } as never;
+  const payment = {
+    txHash: "0x" + "ab".repeat(32), transferLogIndex: 7,
+    sourceAddress: funder.address.toLowerCase(), transactionSender: funder.address.toLowerCase(),
+    blockNumber: 100, blockHash: "0x" + "cd".repeat(32), blockTimestamp: 1_500,
+    finalizedBlockNumber: 100, confirmations: 13, checkedAt: 1,
+  };
+  const statement = payoutFunderStatement({
+    bindingPayloadHash: binding.payload_hash, chainId: binding.chain_id, token: binding.token,
+    txHash: payment.txHash, transferLogIndex: payment.transferLogIndex, sourceAddress: payment.sourceAddress,
+    payoutAddress: binding.payout_address, amountAtomic: binding.amount_atomic, fundingRelationship: "independent",
+  });
+  const validInput = validateReceiptInput({
+    tx_hash: payment.txHash, transfer_log_index: 7, funding_relationship: "independent",
+    funder_statement: statement, funder_signature: await funder.signMessage({ message: statement }),
+  });
+  const verified = await verifyFunderAttestation(binding, payment, validInput);
+  assert.equal(verified.funderAddress, payment.sourceAddress);
+  assert.equal(verified.statement, statement);
+  assert.match(verified.attestationHash, /^[0-9a-f]{64}$/);
+
+  for (const changed of [
+    { binding_payload_hash: "b".repeat(64) },
+    { chain_id: 1 },
+    { token: "0x3333333333333333333333333333333333333333" },
+    { tx_hash: "0x" + "ef".repeat(32) },
+    { transfer_log_index: 8 },
+    { source_address: stranger.address.toLowerCase() },
+    { payout_address: "0x4444444444444444444444444444444444444444" },
+    { amount_atomic: "10000001" },
+    { funding_relationship: "unknown" },
+  ]) {
+    const mutated = statement
+      .replace(binding.payload_hash, String(changed.binding_payload_hash ?? binding.payload_hash))
+      .replace(":8453:", `:${String(changed.chain_id ?? 8453)}:`)
+      .replace(binding.token, String(changed.token ?? binding.token))
+      .replace(payment.txHash, String(changed.tx_hash ?? payment.txHash))
+      .replace(":7:", `:${String(changed.transfer_log_index ?? 7)}:`)
+      .replace(payment.sourceAddress, String(changed.source_address ?? payment.sourceAddress))
+      .replace(binding.payout_address, String(changed.payout_address ?? binding.payout_address))
+      .replace(":10000000:", `:${String(changed.amount_atomic ?? "10000000")}:`)
+      .replace(/:independent$/, `:${String(changed.funding_relationship ?? "independent")}`);
+    await assert.rejects(
+      verifyFunderAttestation(binding, payment, { ...validInput, funderStatement: mutated }),
+      /does not match the canonical statement/,
+    );
+  }
+
+  const wrongSignature = await stranger.signMessage({ message: statement });
+  await assert.rejects(
+    verifyFunderAttestation(binding, payment, { ...validInput, funderSignature: wrongSignature }),
+    /not the exact Transfer source/,
+  );
+});
 
 test("RPC verification rejects reverted, missing, pre-binding, expired, unfinalized, and unavailable payments", async () => {
   const payee = "0x1111111111111111111111111111111111111111";
@@ -626,8 +772,28 @@ test("ambiguous matching transfers require a log index and relationships use a c
   const binding = { token: BASE_USDC, payout_address: to, amount_atomic: "10000000" };
   assert.throws(() => matchTransfer(receipt, binding, null), /more than one matching/);
   assert.equal(matchTransfer(receipt, binding, 2).transferLogIndex, 2);
-  assert.deepEqual(validateReceiptInput({ tx_hash: "0x" + "ab".repeat(32), transfer_log_index: 0, funding_relationship: "independent" }), {
+  const signature = "0x" + "11".repeat(65);
+  assert.deepEqual(validateReceiptInput({
+    tx_hash: "0x" + "ab".repeat(32), transfer_log_index: 0, funding_relationship: "independent",
+    funder_statement: "statement", funder_signature: signature,
+  }), {
     txHash: "0x" + "ab".repeat(32), transferLogIndex: 0, fundingRelationship: "independent",
+    funderStatement: "statement", funderSignature: signature,
   });
-  assert.throws(() => validateReceiptInput({ tx_hash: "0x" + "ab".repeat(32), funding_relationship: "definitely-unrelated" }), /must be one of/);
+  assert.throws(() => validateReceiptInput({
+    tx_hash: "0x" + "ab".repeat(32), transfer_log_index: 0, funding_relationship: "definitely-unrelated",
+    funder_statement: "statement", funder_signature: signature,
+  }), /must be one of/);
+  assert.throws(() => validateReceiptInput({
+    tx_hash: "0x" + "ab".repeat(32), funding_relationship: "independent",
+    funder_statement: "statement", funder_signature: signature,
+  }), /transfer_log_index/);
+  assert.throws(() => validateReceiptInput({
+    tx_hash: "0x" + "ab".repeat(32), transfer_log_index: 0, funding_relationship: "independent",
+    funder_signature: signature,
+  }), /funder_statement/);
+  assert.throws(() => validateReceiptInput({
+    tx_hash: "0x" + "ab".repeat(32), transfer_log_index: 0, funding_relationship: "independent",
+    funder_statement: "statement",
+  }), /funder_signature/);
 });

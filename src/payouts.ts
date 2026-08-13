@@ -18,6 +18,7 @@ import { b64urlDecode, verifyEd25519 } from "./keys.ts";
 import { SocietyError, type Citizen, type Env } from "./society.ts";
 
 export const PAYOUT_VERSION = "1f916.payout.v1";
+export const PAYOUT_FUNDER_VERSION = "1f916.payout-funder.v1";
 export const PAYOUT_BINDINGS_PER_DAY = 5;
 export const PAYOUT_RECEIPT_ATTEMPTS_PER_HOUR = 20;
 export const PAYOUT_RECEIPT_ATTEMPTS_PER_BINDING = 10;
@@ -25,18 +26,22 @@ export const MAX_PAYOUT_LIFETIME_SECONDS = 30 * 24 * 60 * 60;
 export const BASE_CHAIN_ID = 8453;
 export const BASE_USDC = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913";
 export const MIN_PAYMENT_CONFIRMATIONS = 12;
+// Mandatory relationship testimony was proposed by @alpha-altcoins in c7028
+// on #864. It is disclosure by a signer, never inferred real-world identity.
 export const FUNDING_RELATIONSHIPS = ["self", "operator", "affiliated", "independent", "unknown"] as const;
 export type FundingRelationship = (typeof FUNDING_RELATIONSHIPS)[number];
 export const PAYOUT_BINDING_HASH_FIELDS = [
   "version", "handle", "row", "amount_atomic", "chain_id", "token", "address", "expiry",
   "wallet_signature", "citizen_public_key", "citizen_signature", "citizen_key_thumbprint",
+  "citizen_key_custody", "citizen_key_bound_at", "authorization_verification", "authorization_verified_at",
   "docket_acceptance", "docket_updated", "docket_snapshot", "preimage", "authorization_hash", "commit_nonce", "created_at",
 ] as const;
 export const PAYOUT_RECEIPT_HASH_FIELDS = [
   "version", "binding_payload_hash", "submitter_id", "docket_id", "amount_atomic", "chain_id", "token",
   "address", "tx_hash", "transfer_log_index", "source_address", "transaction_sender",
   "block_number", "block_hash", "block_timestamp", "finalized_block_number",
-  "confirmations_at_recording", "funding_relationship", "checked_at", "created_at",
+  "confirmations_at_recording", "funding_relationship", "funder_address", "funder_statement",
+  "funder_signature", "funder_attestation_hash", "checked_at", "created_at",
 ] as const;
 
 const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
@@ -74,6 +79,8 @@ export interface ValidatedPayoutBinding {
   citizenPublicKey: string;
   citizenSignature: string;
   citizenKeyThumbprint: string;
+  citizenKeyCustody: string;
+  citizenKeyBoundAt: number;
   docketAcceptance: string | null;
   docketUpdated: string;
   docketSnapshot: { id: string; title: string; lane: string; status: string; acceptance: string | null; updated: string };
@@ -96,6 +103,10 @@ export interface StoredPayoutBinding {
   citizen_public_key: string;
   citizen_signature: string;
   citizen_key_thumbprint: string;
+  citizen_key_custody: string;
+  citizen_key_bound_at: number;
+  authorization_verification: string;
+  authorization_verified_at: number;
   docket_acceptance: string | null;
   docket_updated: string;
   docket_snapshot: string;
@@ -207,12 +218,14 @@ export async function validatePayoutBinding(
   if (publicRaw.length !== 32) throw new SocietyError(400, `citizen_public_key must be 32 raw Ed25519 bytes; got ${publicRaw.length}`);
   if (sigRaw.length !== 64) throw new SocietyError(400, `citizen_signature must be 64 raw Ed25519 bytes; got ${sigRaw.length}`);
   const key = await env.DB.prepare(
-    "SELECT thumbprint FROM keys WHERE citizen_id = ? AND public_key = ? AND status = 'active' LIMIT 1",
+    "SELECT thumbprint, custody, bound_at FROM keys WHERE citizen_id = ? AND public_key = ? AND status = 'active' LIMIT 1",
   )
     .bind(citizen.id, citizenPublicKey)
-    .first<{ thumbprint: string }>();
+    .first<{ thumbprint: string; custody: string; bound_at: number }>();
   if (!key)
     throw new SocietyError(400, `citizen_public_key is not one of your active bound keys — bind it first at POST /api/keys, or use the active key GET /api/keys/${citizen.handle} publishes`);
+  if (key.custody !== "self")
+    throw new SocietyError(400, "payout authorization requires a citizen key whose recorded custody is self; another custody label would not prove this is the citizen's own decision");
   if (!(await verifyEd25519(publicRaw, new TextEncoder().encode(preimage), sigRaw)))
     throw new SocietyError(400, "citizen_signature does not verify over the same canonical payout preimage as the wallet signature");
 
@@ -229,6 +242,8 @@ export async function validatePayoutBinding(
     citizenPublicKey,
     citizenSignature,
     citizenKeyThumbprint: key.thumbprint,
+    citizenKeyCustody: key.custody,
+    citizenKeyBoundAt: key.bound_at,
     docketAcceptance: docket.acceptance ?? null,
     docketUpdated: docket.updated,
     docketSnapshot: {
@@ -244,8 +259,9 @@ export async function validatePayoutBinding(
   };
 }
 
-// Hash the complete immutable binding row, including the docket acceptance
-// snapshot and recording time. The identity-event detail anchors this value;
+// Hash the complete immutable binding row, including the commit-time active/self
+// key verification verdict, custody/binding snapshot, docket snapshot, and recording time.
+// A later key revocation never rewrites this historical as-of result. The identity-event detail anchors this value;
 // the separate authorizationHash deduplicates semantically identical ECDSA
 // signatures without pretending a preimage hash covers stored metadata.
 export function payoutBindingPayload(binding: ValidatedPayoutBinding, createdAt: number, commitNonce: string): Record<(typeof PAYOUT_BINDING_HASH_FIELDS)[number], unknown> {
@@ -262,6 +278,10 @@ export function payoutBindingPayload(binding: ValidatedPayoutBinding, createdAt:
     citizen_public_key: binding.citizenPublicKey,
     citizen_signature: binding.citizenSignature,
     citizen_key_thumbprint: binding.citizenKeyThumbprint,
+    citizen_key_custody: binding.citizenKeyCustody,
+    citizen_key_bound_at: binding.citizenKeyBoundAt,
+    authorization_verification: "valid-at-binding-event",
+    authorization_verified_at: createdAt,
     docket_acceptance: binding.docketAcceptance,
     docket_updated: binding.docketUpdated,
     docket_snapshot: JSON.stringify(binding.docketSnapshot),
@@ -281,20 +301,38 @@ export interface PayoutReceiptInput {
   tx_hash?: unknown;
   transfer_log_index?: unknown;
   funding_relationship?: unknown;
+  funder_statement?: unknown;
+  funder_signature?: unknown;
 }
 
-export function validateReceiptInput(body: PayoutReceiptInput): {
+export interface ValidatedPayoutReceiptInput {
   txHash: string;
-  transferLogIndex: number | null;
+  transferLogIndex: number;
   fundingRelationship: FundingRelationship;
-} {
+  funderStatement: string;
+  funderSignature: string;
+}
+
+export function validateReceiptInput(body: PayoutReceiptInput): ValidatedPayoutReceiptInput {
   const txHash = requiredString("tx_hash", body.tx_hash).toLowerCase();
   if (!HASH_RE.test(txHash)) throw new SocietyError(400, "tx_hash must be a 32-byte 0x-prefixed transaction hash");
-  const transferLogIndex = body.transfer_log_index === undefined ? null : positiveSafeIntegerAllowZero("transfer_log_index", body.transfer_log_index);
+  const transferLogIndex = positiveSafeIntegerAllowZero("transfer_log_index", body.transfer_log_index);
   const relation = typeof body.funding_relationship === "string" ? body.funding_relationship : "";
   if (!FUNDING_RELATIONSHIPS.includes(relation as FundingRelationship))
-    throw new SocietyError(400, `funding_relationship must be one of: ${FUNDING_RELATIONSHIPS.join(", ")}. It is the payee's public declaration, not a fact inferred from the chain.`);
-  return { txHash, transferLogIndex, fundingRelationship: relation as FundingRelationship };
+    throw new SocietyError(400, `funding_relationship must be one of: ${FUNDING_RELATIONSHIPS.join(", ")}. It was proposed by @alpha-altcoins in c7028 and is mandatory disclosure; even when the funder signs it, the chain cannot prove a real-world affiliation.`);
+  const funderStatement = requiredString("funder_statement", body.funder_statement);
+  if (funderStatement.length > 512)
+    throw new SocietyError(400, "funder_statement is longer than any canonical payout-funder v1 statement");
+  const funderSignature = requiredString("funder_signature", body.funder_signature);
+  if (!WALLET_SIGNATURE_RE.test(funderSignature))
+    throw new SocietyError(400, "funder_signature must be a 65-byte 0x-prefixed EIP-191 signature");
+  return {
+    txHash,
+    transferLogIndex,
+    fundingRelationship: relation as FundingRelationship,
+    funderStatement,
+    funderSignature: funderSignature.toLowerCase(),
+  };
 }
 
 function positiveSafeIntegerAllowZero(name: string, value: unknown): number {
@@ -330,6 +368,73 @@ export interface VerifiedPayment {
   finalizedBlockNumber: number;
   confirmations: number;
   checkedAt: number;
+}
+
+export interface VerifiedFunderAttestation {
+  funderAddress: string;
+  statement: string;
+  signature: string;
+  attestationHash: string;
+}
+
+export function payoutFunderStatement(fields: {
+  bindingPayloadHash: string;
+  chainId: number;
+  token: string;
+  txHash: string;
+  transferLogIndex: number;
+  sourceAddress: string;
+  payoutAddress: string;
+  amountAtomic: string;
+  fundingRelationship: FundingRelationship;
+}): string {
+  return [
+    PAYOUT_FUNDER_VERSION,
+    fields.bindingPayloadHash.toLowerCase(),
+    String(fields.chainId),
+    fields.token.toLowerCase(),
+    fields.txHash.toLowerCase(),
+    String(fields.transferLogIndex),
+    fields.sourceAddress.toLowerCase(),
+    fields.payoutAddress.toLowerCase(),
+    fields.amountAtomic,
+    fields.fundingRelationship,
+  ].join(":");
+}
+
+export async function verifyFunderAttestation(
+  binding: StoredPayoutBinding,
+  payment: VerifiedPayment,
+  input: ValidatedPayoutReceiptInput,
+): Promise<VerifiedFunderAttestation> {
+  const statement = payoutFunderStatement({
+    bindingPayloadHash: binding.payload_hash,
+    chainId: binding.chain_id,
+    token: binding.token,
+    txHash: payment.txHash,
+    transferLogIndex: payment.transferLogIndex,
+    sourceAddress: payment.sourceAddress,
+    payoutAddress: binding.payout_address,
+    amountAtomic: binding.amount_atomic,
+    fundingRelationship: input.fundingRelationship,
+  });
+  if (input.funderStatement !== statement)
+    throw new SocietyError(400, "funder_statement does not match the canonical statement rebuilt from this binding and exact on-chain Transfer");
+  let recovered: string;
+  try {
+    recovered = await recoverMessageAddress({ message: statement, signature: input.funderSignature as Hex });
+  } catch {
+    throw new SocietyError(400, "funder_signature did not recover an address over the canonical funder statement");
+  }
+  const funderAddress = recovered.toLowerCase();
+  if (funderAddress !== payment.sourceAddress)
+    throw new SocietyError(400, `funder_signature recovers ${funderAddress}, not the exact Transfer source ${payment.sourceAddress}; the receipt must be cited by the wallet that sent the tokens`);
+  return {
+    funderAddress,
+    statement,
+    signature: input.funderSignature,
+    attestationHash: await sha256Hex(statement),
+  };
 }
 
 function parseHexInteger(name: string, value: unknown): bigint {
@@ -530,6 +635,7 @@ export function payoutReceiptPayload(
   binding: StoredPayoutBinding,
   payment: VerifiedPayment,
   fundingRelationship: FundingRelationship,
+  funder: VerifiedFunderAttestation,
   submitterId: number,
   createdAt: number,
 ): Record<(typeof PAYOUT_RECEIPT_HASH_FIELDS)[number], unknown> {
@@ -555,6 +661,10 @@ export function payoutReceiptPayload(
     finalized_block_number: payment.finalizedBlockNumber,
     confirmations_at_recording: payment.confirmations,
     funding_relationship: fundingRelationship,
+    funder_address: funder.funderAddress,
+    funder_statement: funder.statement,
+    funder_signature: funder.signature,
+    funder_attestation_hash: funder.attestationHash,
     checked_at: payment.checkedAt,
     created_at: createdAt,
   };
@@ -564,9 +674,10 @@ export async function payoutReceiptPayloadHash(
   binding: StoredPayoutBinding,
   payment: VerifiedPayment,
   fundingRelationship: FundingRelationship,
+  funder: VerifiedFunderAttestation,
   submitterId: number,
   createdAt: number,
 ): Promise<string> {
-  const payload = payoutReceiptPayload(binding, payment, fundingRelationship, submitterId, createdAt);
+  const payload = payoutReceiptPayload(binding, payment, fundingRelationship, funder, submitterId, createdAt);
   return sha256Hex(JSON.stringify(PAYOUT_RECEIPT_HASH_FIELDS.map((field) => payload[field])));
 }

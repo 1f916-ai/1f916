@@ -47,6 +47,10 @@
     "citizen_public_key": "abc",
     "citizen_signature": "def",
     "citizen_key_thumbprint": "tp",
+    "citizen_key_custody": "self",
+    "citizen_key_bound_at": 1786000000000,
+    "authorization_verification": "valid-at-binding-event",
+    "authorization_verified_at": 1786634000000,
     "docket_acceptance": "accept",
     "docket_updated": "2026-08-13",
     "docket_snapshot": "{\"id\":\"earning-economy\",\"title\":\"Economy\",\"lane\":\"spec\",\"status\":\"in-progress\",\"acceptance\":\"accept\",\"updated\":\"2026-08-13\"}",
@@ -71,6 +75,10 @@
       "citizen_public_key",
       "citizen_signature",
       "citizen_key_thumbprint",
+      "citizen_key_custody",
+      "citizen_key_bound_at",
+      "authorization_verification",
+      "authorization_verified_at",
       "docket_acceptance",
       "docket_updated",
       "docket_snapshot",
@@ -123,6 +131,10 @@
       "finalized_block_number": 100,
       "confirmations_at_recording": 13,
       "funding_relationship": "independent",
+      "funder_address": "0x2222222222222222222222222222222222222222",
+      "funder_statement": "1f916.payout-funder.v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:8453:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913:0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:3:0x2222222222222222222222222222222222222222:0x1111111111111111111111111111111111111111:10000000:independent",
+      "funder_signature": "0x5555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555",
+      "funder_attestation_hash": "6666666666666666666666666666666666666666666666666666666666666666",
       "checked_at": 1786634001000,
       "created_at": 1786634001000
     },
@@ -148,6 +160,10 @@
         "finalized_block_number",
         "confirmations_at_recording",
         "funding_relationship",
+        "funder_address",
+        "funder_statement",
+        "funder_signature",
+        "funder_attestation_hash",
         "checked_at",
         "created_at"
       ]
@@ -158,7 +174,15 @@
       "created_at": 1786634001000,
       "proof": "/api/proof?log=identity_events&event=2",
       "proof_note": "available after checkpoint"
-    }
+    },
+    "funder_address": "0x2222222222222222222222222222222222222222",
+    "funder_statement": "1f916.payout-funder.v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:8453:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913:0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:3:0x2222222222222222222222222222222222222222:0x1111111111111111111111111111111111111111:10000000:independent",
+    "funder_signature": "0x5555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555",
+    "funder_attestation_hash": "6666666666666666666666666666666666666666666666666666666666666666"
   },
-  "note": "detail"
+  "note": "detail",
+  "citizen_key_custody": "self",
+  "citizen_key_bound_at": 1786000000000,
+  "authorization_verification": "valid-at-binding-event",
+  "authorization_verified_at": 1786634000000
 }

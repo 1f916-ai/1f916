@@ -19,6 +19,10 @@
     "citizen_public_key",
     "citizen_signature",
     "citizen_key_thumbprint",
+    "citizen_key_custody",
+    "citizen_key_bound_at",
+    "authorization_verification",
+    "authorization_verified_at",
     "docket_at_binding",
     "docket_current",
     "docket_changed_since_binding",
@@ -126,6 +130,10 @@
           "citizen_public_key",
           "citizen_signature",
           "citizen_key_thumbprint",
+          "citizen_key_custody",
+          "citizen_key_bound_at",
+          "authorization_verification",
+          "authorization_verified_at",
           "docket_acceptance",
           "docket_updated",
           "docket_snapshot",
@@ -160,6 +168,10 @@
         "finalized_block_number",
         "confirmations_at_recording",
         "funding_relationship",
+        "funder_address",
+        "funder_statement",
+        "funder_signature",
+        "funder_attestation_hash",
         "payload_hash",
         "checked_at",
         "created_at",
@@ -256,6 +268,10 @@
               "finalized_block_number",
               "confirmations_at_recording",
               "funding_relationship",
+              "funder_address",
+              "funder_statement",
+              "funder_signature",
+              "funder_attestation_hash",
               "checked_at",
               "created_at"
             ]
@@ -263,11 +279,38 @@
         },
         "chain_anchor": {
           "$ref": "#/$defs/chain_anchor"
+        },
+        "funder_address": {
+          "type": "string",
+          "pattern": "^0x[0-9a-f]{40}$"
+        },
+        "funder_statement": {
+          "type": "string"
+        },
+        "funder_signature": {
+          "type": "string",
+          "pattern": "^0x[0-9a-f]{130}$"
+        },
+        "funder_attestation_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
         }
       }
     },
     "note": {
       "type": "string"
+    },
+    "citizen_key_custody": {
+      "const": "self"
+    },
+    "citizen_key_bound_at": {
+      "type": "integer"
+    },
+    "authorization_verification": {
+      "const": "valid-at-binding-event"
+    },
+    "authorization_verified_at": {
+      "type": "integer"
     }
   },
   "$defs": {
@@ -385,6 +428,10 @@
         "citizen_public_key",
         "citizen_signature",
         "citizen_key_thumbprint",
+        "citizen_key_custody",
+        "citizen_key_bound_at",
+        "authorization_verification",
+        "authorization_verified_at",
         "docket_acceptance",
         "docket_updated",
         "docket_snapshot",
@@ -432,6 +479,18 @@
         },
         "citizen_key_thumbprint": {
           "type": "string"
+        },
+        "citizen_key_custody": {
+          "const": "self"
+        },
+        "citizen_key_bound_at": {
+          "type": "integer"
+        },
+        "authorization_verification": {
+          "const": "valid-at-binding-event"
+        },
+        "authorization_verified_at": {
+          "type": "integer"
         },
         "docket_acceptance": {
           "type": [
@@ -483,6 +542,10 @@
         "finalized_block_number",
         "confirmations_at_recording",
         "funding_relationship",
+        "funder_address",
+        "funder_statement",
+        "funder_signature",
+        "funder_attestation_hash",
         "checked_at",
         "created_at"
       ],
@@ -558,6 +621,21 @@
             "independent",
             "unknown"
           ]
+        },
+        "funder_address": {
+          "type": "string",
+          "pattern": "^0x[0-9a-f]{40}$"
+        },
+        "funder_statement": {
+          "type": "string"
+        },
+        "funder_signature": {
+          "type": "string",
+          "pattern": "^0x[0-9a-f]{130}$"
+        },
+        "funder_attestation_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
         },
         "checked_at": {
           "type": "integer"

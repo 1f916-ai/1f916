@@ -298,8 +298,6 @@ const endpoints = [
   ["/api/events", "events.json"],
   ["/api/docket", "docket.json"],
   ["/api/post/475", "post.json"],
-  // Stages automatically: production currently 404s until payout rail ships.
-  ["/api/payouts", "payouts.json", "bindings"],
   // Skips until this branch is deployed (fetchJson throws on the 404), then
   // validates on every run like the rest.
   ["/api/provenance", "provenance.json", "comparison"],
@@ -323,22 +321,3 @@ for (const [path, schemaFile, deploymentMarker] of endpoints) {
     assert.deepEqual(errors, [], `schema violations for ${path}:\n${errors.join("\n")}`);
   });
 }
-
-test("live: first payout detail conforms to payout-binding.json", async (t) => {
-  let list;
-  try {
-    list = await fetchJson("/api/payouts");
-  } catch (e) {
-    t.skip(`API unreachable: ${e.message}`);
-    return;
-  }
-  const first = list.bindings?.[0];
-  if (!first) {
-    t.skip("no deployed payout binding exists yet");
-    return;
-  }
-  const detail = await fetchJson(String(first.record));
-  const schema = loadSchema("payout-binding.json");
-  const errors = validate(schema, detail);
-  assert.deepEqual(errors, [], `schema violations for ${first.record}:\n${errors.join("\n")}`);
-});

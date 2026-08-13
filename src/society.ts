@@ -30,6 +30,7 @@ import {
   validatePayoutBinding,
   validateReceiptInput,
   verifyBasePayment,
+  verifyFunderAttestation,
   type PayoutBindingInput,
   type PayoutReceiptInput,
   type StoredPayoutBinding,
@@ -1533,13 +1534,14 @@ export async function createPayoutBinding(env: Env, citizen: Citizen, body: Payo
   const payloadHash = await payoutBindingPayloadHash(binding, now, commitNonce);
   const dayAgo = now - 86_400_000;
   const capSql = "(SELECT COUNT(*) FROM payout_bindings WHERE citizen_id = ? AND created_at > ?) < ?";
-  const activeKeySql = "EXISTS (SELECT 1 FROM keys WHERE citizen_id = ? AND public_key = ? AND thumbprint = ? AND status = 'active')";
+  const activeKeySql = "EXISTS (SELECT 1 FROM keys WHERE citizen_id = ? AND public_key = ? AND thumbprint = ? AND custody = ? AND bound_at = ? AND status = 'active')";
   const stateStmt = env.DB.prepare(
     `INSERT INTO payout_bindings
       (citizen_id, docket_id, version, amount_atomic, chain_id, token, payout_address, expiry,
        wallet_signature, citizen_public_key, citizen_signature, citizen_key_thumbprint,
+       citizen_key_custody, citizen_key_bound_at, authorization_verification, authorization_verified_at,
        docket_acceptance, docket_updated, docket_snapshot, preimage, authorization_hash, payload_hash, commit_nonce, created_at)
-     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
       WHERE ${capSql} AND ${activeKeySql} AND ? > unixepoch()
      RETURNING id`,
   ).bind(
@@ -1555,6 +1557,10 @@ export async function createPayoutBinding(env: Env, citizen: Citizen, body: Payo
     binding.citizenPublicKey,
     binding.citizenSignature,
     binding.citizenKeyThumbprint,
+    binding.citizenKeyCustody,
+    binding.citizenKeyBoundAt,
+    "valid-at-binding-event",
+    now,
     binding.docketAcceptance,
     binding.docketUpdated,
     JSON.stringify(binding.docketSnapshot),
@@ -1569,6 +1575,8 @@ export async function createPayoutBinding(env: Env, citizen: Citizen, body: Payo
     citizen.id,
     binding.citizenPublicKey,
     binding.citizenKeyThumbprint,
+    binding.citizenKeyCustody,
+    binding.citizenKeyBoundAt,
     binding.expiry,
   );
   let committed: { state: { id: number } | null; changed: number; hash: string };
@@ -1599,8 +1607,8 @@ export async function createPayoutBinding(env: Env, citizen: Citizen, body: Payo
     if (binding.expiry <= Math.floor(Date.now() / 1000))
       throw new SocietyError(409, "the payout authorization expired before it could be recorded; no binding and no identity event were written");
     const stillActive = await env.DB.prepare(
-      "SELECT 1 AS yes FROM keys WHERE citizen_id = ? AND public_key = ? AND thumbprint = ? AND status = 'active'",
-    ).bind(citizen.id, binding.citizenPublicKey, binding.citizenKeyThumbprint).first<{ yes: number }>();
+      "SELECT 1 AS yes FROM keys WHERE citizen_id = ? AND public_key = ? AND thumbprint = ? AND custody = ? AND bound_at = ? AND status = 'active'",
+    ).bind(citizen.id, binding.citizenPublicKey, binding.citizenKeyThumbprint, binding.citizenKeyCustody, binding.citizenKeyBoundAt).first<{ yes: number }>();
     if (!stillActive)
       throw new SocietyError(409, "the citizen signing key stopped being active before this binding could be recorded; no binding and no identity event were written");
     throw new SocietyError(429, `payout-binding budget spent (${PAYOUT_BINDINGS_PER_DAY}/rolling 24h); no binding and no identity event were recorded`);
@@ -1626,7 +1634,7 @@ export async function createPayoutBinding(env: Env, citizen: Citizen, body: Payo
     chained: committed.hash,
     chain_anchor: chainAnchor,
     note:
-      "Scoped authorization only: the wallet signature proves address control and the active bound Ed25519 key proves citizen authorization over the same fields. This does not prove delivery or payment. The address is public in this structured record; no thread post is required. A public unreceipted binding is not an exclusive payment reservation: external funders must coordinate before sending.",
+      "Scoped authorization only: the wallet signature proves address control and the active self-custodied bound Ed25519 key proves citizen authorization over the same fields. This does not prove delivery or payment. The address is public in this structured record; no thread post is required. A public unreceipted binding is not an exclusive payment reservation: external funders must coordinate before sending.",
   };
 }
 
@@ -1668,6 +1676,10 @@ function storedPayoutBindingPayload(binding: StoredPayoutBinding): Record<string
     citizen_public_key: binding.citizen_public_key,
     citizen_signature: binding.citizen_signature,
     citizen_key_thumbprint: binding.citizen_key_thumbprint,
+    citizen_key_custody: binding.citizen_key_custody,
+    citizen_key_bound_at: binding.citizen_key_bound_at,
+    authorization_verification: binding.authorization_verification,
+    authorization_verified_at: binding.authorization_verified_at,
     docket_acceptance: binding.docket_acceptance,
     docket_updated: binding.docket_updated,
     docket_snapshot: binding.docket_snapshot,
@@ -1698,6 +1710,10 @@ function storedPayoutReceiptPayload(binding: StoredPayoutBinding, receipt: Recor
     finalized_block_number: receipt.finalized_block_number,
     confirmations_at_recording: receipt.confirmations_at_recording,
     funding_relationship: receipt.funding_relationship,
+    funder_address: receipt.funder_address,
+    funder_statement: receipt.funder_statement,
+    funder_signature: receipt.funder_signature,
+    funder_attestation_hash: receipt.funder_attestation_hash,
     checked_at: receipt.checked_at,
     created_at: receipt.created_at,
   };
@@ -1718,6 +1734,7 @@ export async function getPayoutBinding(env: Env, id: number) {
   const receipt = await env.DB.prepare(
     `SELECT id, submitter_id, tx_hash, transfer_log_index, source_address, transaction_sender, block_number,
             block_hash, block_timestamp, finalized_block_number, confirmations_at_recording, funding_relationship,
+            funder_address, funder_statement, funder_signature, funder_attestation_hash,
             payload_hash, checked_at, created_at
        FROM payout_receipts WHERE binding_id = ?`,
   ).bind(id).first<Record<string, unknown>>();
@@ -1746,6 +1763,10 @@ export async function getPayoutBinding(env: Env, id: number) {
     citizen_public_key: binding.citizen_public_key,
     citizen_signature: binding.citizen_signature,
     citizen_key_thumbprint: binding.citizen_key_thumbprint,
+    citizen_key_custody: binding.citizen_key_custody,
+    citizen_key_bound_at: binding.citizen_key_bound_at,
+    authorization_verification: binding.authorization_verification,
+    authorization_verified_at: binding.authorization_verified_at,
     docket_at_binding: JSON.parse(binding.docket_snapshot) as unknown,
     docket_current: currentDocket,
     docket_changed_since_binding: JSON.stringify(currentDocket) !== binding.docket_snapshot,
@@ -1773,7 +1794,8 @@ export async function listPayouts(env: Env, docketId: string | null, sinceId = 0
             pb.expiry, pb.authorization_hash, pb.payload_hash, pb.created_at,
             pb.docket_acceptance, pb.docket_updated, pb.docket_snapshot, c.handle,
             pr.id AS receipt_id, pr.tx_hash, pr.transfer_log_index, pr.block_number,
-            pr.block_timestamp, pr.funding_relationship, pr.payload_hash AS receipt_payload_hash
+            pr.block_timestamp, pr.funding_relationship, pr.funder_address, pr.funder_attestation_hash,
+            pr.payload_hash AS receipt_payload_hash
        FROM payout_bindings pb
        JOIN citizens c ON c.id = pb.citizen_id
        LEFT JOIN payout_receipts pr ON pr.binding_id = pb.id
@@ -1843,14 +1865,16 @@ export async function createPayoutReceipt(env: Env, submitter: Citizen, bindingI
     throw new SocietyError(429, `payout-receipt verification budget spent (${PAYOUT_RECEIPT_ATTEMPTS_PER_HOUR}/citizen/hour, ${PAYOUT_RECEIPT_ATTEMPTS_PER_BINDING}/binding/hour); no RPC call and no public record were made`);
   const now = Date.now();
   const payment = await verifyBasePayment(env, binding, input.txHash, input.transferLogIndex, now);
-  const payload = payoutReceiptPayload(binding, payment, input.fundingRelationship, submitter.id, now);
-  const payloadHash = await payoutReceiptPayloadHash(binding, payment, input.fundingRelationship, submitter.id, now);
+  const funder = await verifyFunderAttestation(binding, payment, input);
+  const payload = payoutReceiptPayload(binding, payment, input.fundingRelationship, funder, submitter.id, now);
+  const payloadHash = await payoutReceiptPayloadHash(binding, payment, input.fundingRelationship, funder, submitter.id, now);
   const stateStmt = env.DB.prepare(
     `INSERT INTO payout_receipts
       (binding_id, submitter_id, tx_hash, transfer_log_index, source_address, transaction_sender,
        block_number, block_hash, block_timestamp, finalized_block_number, confirmations_at_recording, funding_relationship,
+       funder_address, funder_statement, funder_signature, funder_attestation_hash,
        payload_hash, checked_at, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
   ).bind(
     bindingId,
     submitter.id,
@@ -1864,6 +1888,10 @@ export async function createPayoutReceipt(env: Env, submitter: Citizen, bindingI
     payment.finalizedBlockNumber,
     payment.confirmations,
     input.fundingRelationship,
+    funder.funderAddress,
+    funder.statement,
+    funder.signature,
+    funder.attestationHash,
     payloadHash,
     payment.checkedAt,
     now,
@@ -1908,7 +1936,11 @@ export async function createPayoutReceipt(env: Env, submitter: Citizen, bindingI
     finalized_block_number: payment.finalizedBlockNumber,
     confirmations_at_recording: payment.confirmations,
     funding_relationship: input.fundingRelationship,
-    funding_relationship_note: "Declared by the payee. The chain identifies addresses, not people or affiliations.",
+    funding_relationship_note: "Mandatory relationship testimony proposed by @alpha-altcoins in c7028. It is signed by the Transfer source but remains a real-world declaration, not an identity inferred from chain addresses.",
+    funder_address: funder.funderAddress,
+    funder_statement: funder.statement,
+    funder_signature: funder.signature,
+    funder_attestation_hash: funder.attestationHash,
     checked_at: payment.checkedAt,
     payload_hash: payloadHash,
     payload,
@@ -1917,7 +1949,7 @@ export async function createPayoutReceipt(env: Env, submitter: Citizen, bindingI
     chained: committed.hash,
     chain_anchor: chainAnchor,
     note:
-      "Payment fact only: two independent RPCs agreed on a canonical finalized Base-USDC Transfer whose transaction produced the required net inflow, after binding and before expiry. This does not itself prove the docket acceptance condition was met.",
+      "Payment fact only: two RPCs agreed on a canonical finalized net-positive Base-USDC Transfer, and that exact Transfer source signed a statement assigning its tx/log to this binding. This does not itself prove the docket acceptance condition or any declared real-world relationship.",
   };
 }
 

@@ -151,6 +151,8 @@
         "block_number",
         "block_timestamp",
         "funding_relationship",
+        "funder_address",
+        "funder_attestation_hash",
         "receipt_payload_hash"
       ],
       "properties": {
@@ -254,6 +256,18 @@
           ]
         },
         "receipt_payload_hash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "funder_address": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "funder_attestation_hash": {
           "type": [
             "string",
             "null"

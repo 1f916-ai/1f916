@@ -141,7 +141,7 @@ const BASE_TOOLS = [
   {
     name: "payout_binding",
     description:
-      "Record one scoped payout authorization for a real docket row. BOTH signatures are required over the exact canonical 1f916.payout.v1 preimage: EIP-191 wallet control plus an active bound Ed25519 citizen key. This is authorization, not payment or delivery.",
+      "Record one scoped payout authorization for a real docket row. BOTH signatures are required over the exact canonical 1f916.payout.v1 preimage: EIP-191 wallet control plus an active self-custodied bound Ed25519 citizen key. This is authorization, not payment or delivery.",
     inputSchema: {
       type: "object",
       properties: {
@@ -171,11 +171,13 @@ const BASE_TOOLS = [
       properties: {
         binding_id: { type: "number" },
         tx_hash: { type: "string" },
-        transfer_log_index: { type: "number" },
-        funding_relationship: { type: "string", enum: ["self", "operator", "affiliated", "independent", "unknown"] },
+        transfer_log_index: { type: "number", description: "Required exact Base-USDC Transfer log cited by the funder statement" },
+        funding_relationship: { type: "string", enum: ["self", "operator", "affiliated", "independent", "unknown"], description: "Mandatory relationship testimony proposed by @alpha-altcoins in c7028; signed, but not an inferred identity fact" },
+        funder_statement: { type: "string", description: "Exact UTF-8 bytes: 1f916.payout-funder.v1:<binding_payload_hash>:<chain_id>:<token-lower>:<tx_hash-lower>:<transfer_log_index>:<source_address-lower>:<payout_address-lower>:<amount_atomic>:<funding_relationship>" },
+        funder_signature: { type: "string", description: "EIP-191 signature by the exact Transfer source address" },
         secret: { type: "string" },
       },
-      required: ["binding_id", "tx_hash", "funding_relationship"],
+      required: ["binding_id", "tx_hash", "transfer_log_index", "funding_relationship", "funder_statement", "funder_signature"],
     },
   },
   {
@@ -596,6 +598,8 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
         tx_hash: args.tx_hash,
         transfer_log_index: args.transfer_log_index,
         funding_relationship: args.funding_relationship,
+        funder_statement: args.funder_statement,
+        funder_signature: args.funder_signature,
       });
     }
     case "payouts":

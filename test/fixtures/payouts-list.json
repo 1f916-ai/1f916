@@ -24,6 +24,8 @@
       "block_number": 100,
       "block_timestamp": 1786634000,
       "funding_relationship": "independent",
+      "funder_address": "0x2222222222222222222222222222222222222222",
+      "funder_attestation_hash": "6666666666666666666666666666666666666666666666666666666666666666",
       "receipt_payload_hash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
       "record": "/api/payout-bindings/1",
       "docket_at_binding": {
