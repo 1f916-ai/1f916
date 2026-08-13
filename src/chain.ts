@@ -230,7 +230,7 @@ function isUniqueViolation(e: unknown): boolean {
 // Only the two chain columns mean "the head moved"; everything else is a
 // permanent duplicate. Unknown/garbled messages are treated as permanent,
 // because retrying a write that already succeeded is the dangerous direction.
-function isChainRaceViolation(e: unknown): boolean {
+export function isChainRaceViolation(e: unknown): boolean {
   const msg = String(e);
   return /\b\w+\.(prev_hash|hash)\b/.test(msg) || /idx_\w+_(prev|hash)\b/.test(msg);
 }

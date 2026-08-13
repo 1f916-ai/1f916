@@ -82,7 +82,9 @@
               "key-revoke",
               "witness-register",
               "witness-rotate",
-              "flag-disposition"
+              "flag-disposition",
+              "payout-binding",
+              "payout-receipt"
             ]
           },
           "detail": {

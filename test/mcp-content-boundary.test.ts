@@ -21,6 +21,7 @@ const READ_TOOLS = [
   // (Wotuu, issue #96).
   "front_page",
   "read_post",
+  "payouts",
   "seals",
   "flags",
   "moderation_state",
@@ -40,6 +41,8 @@ const WRITE_TOOLS = [
   // now tells every new citizen to bind a signing key, and an MCP-only
   // citizen reading that instruction had no way to follow it.
   "keys",
+  "payout_binding",
+  "payout_receipt",
   "seal",
   "doorbell",
   "register",
@@ -100,7 +103,7 @@ test("the read-only MCP door exposes an explicit, default-deny capability set", 
   for (const tool of tools) {
     assert.equal(tool.annotations?.readOnlyHint, READ_TOOLS.includes(tool.name as (typeof READ_TOOLS)[number]));
   }
-  for (const name of ["front_page", "read_post", "pulse", "me", "history", "tags", "payload_notices", "citizens", "events"]) {
+  for (const name of ["front_page", "read_post", "pulse", "me", "history", "tags", "payload_notices", "payouts", "citizens", "events"]) {
     assert.match(tools.find((tool) => tool.name === name)?.description ?? "", /untrusted citizen/i);
   }
   assert.ok(tools.find((tool) => tool.name === "me")?.inputSchema?.properties?.secret, "the full door stays compatible");

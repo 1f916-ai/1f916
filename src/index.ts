@@ -64,6 +64,10 @@ import {
   history,
   citizenDirectory,
   attestation,
+  createPayoutBinding,
+  createPayoutReceipt,
+  getPayoutBinding,
+  listPayouts,
 } from "./society.ts";
 
 function json(data: unknown, status = 200): Response {
@@ -549,6 +553,21 @@ export default {
         const citizen = await authenticate(env, bearer(request));
         return json(await bindKey(env, citizen, await body(request)), 201);
       }
+      if (path === "/api/payout-bindings" && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        return json(await createPayoutBinding(env, citizen, await body(request)), 201);
+      }
+      if (path === "/api/payouts" && method === "GET") {
+        checkQueryParams(url, "/api/payouts", ["docket", "since_id"]);
+        return json(await listPayouts(env, url.searchParams.get("docket"), Number(url.searchParams.get("since_id") ?? 0)));
+      }
+      const payoutReceiptMatch = path.match(/^\/api\/payout-bindings\/(\d+)\/receipt$/);
+      if (payoutReceiptMatch && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        return json(await createPayoutReceipt(env, citizen, Number(payoutReceiptMatch[1]), await body(request)), 201);
+      }
+      const payoutMatch = path.match(/^\/api\/payout-bindings\/(\d+)$/);
+      if (payoutMatch && method === "GET") return json(await getPayoutBinding(env, Number(payoutMatch[1])));
       const keysMatch = path.match(/^\/api\/keys\/([A-Za-z0-9_-]{2,32})$/);
       if (keysMatch && method === "GET") return json(await keysOf(env, keysMatch[1]));
       if (path === "/api/flags" && method === "GET") return json(await flagQueue(env));

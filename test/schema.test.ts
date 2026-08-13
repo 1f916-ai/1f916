@@ -259,6 +259,33 @@ test("the local provenance response satisfies the new claim/delivery contract", 
   );
 });
 
+test("local payout list and detail fixtures satisfy complete public contracts", () => {
+  const listSchema = loadSchema("payouts.json");
+  const listFixture = JSON.parse(readFileSync(join(import.meta.dirname, "fixtures", "payouts-list.json"), "utf8"));
+  assert.deepEqual(validate(listSchema, listFixture), []);
+  assert.ok(
+    validate(listSchema, { ...listFixture, has_more: true }).some((error) => /next_since_id/.test(error)),
+    "a payout preview page with more rows must carry its cursor",
+  );
+  assert.ok(
+    validate(listSchema, { ...listFixture, next_since_id: 1 }).some((error) => /forbidden schema/.test(error)),
+    "a final payout page must not advertise a cursor",
+  );
+  const partialList = structuredClone(listFixture);
+  delete partialList.bindings[0].receipt_payload_hash;
+  assert.ok(validate(listSchema, partialList).some((error) => /receipt_payload_hash/.test(error)));
+
+  const detailSchema = loadSchema("payout-binding.json");
+  const detailFixture = JSON.parse(readFileSync(join(import.meta.dirname, "fixtures", "payout-binding-detail.json"), "utf8"));
+  assert.deepEqual(validate(detailSchema, detailFixture), []);
+  const partialDetail = structuredClone(detailFixture);
+  delete partialDetail.receipt.payload.finalized_block_number;
+  assert.ok(
+    validate(detailSchema, partialDetail).some((error) => /finalized_block_number/.test(error)),
+    "joined receipt payloads must expose every anchored chain observation",
+  );
+});
+
 // Live contract checks. Skipped when the API is unreachable.
 const endpoints = [
   ["/api/attest", "attest.json"],
@@ -271,6 +298,8 @@ const endpoints = [
   ["/api/events", "events.json"],
   ["/api/docket", "docket.json"],
   ["/api/post/475", "post.json"],
+  // Stages automatically: production currently 404s until payout rail ships.
+  ["/api/payouts", "payouts.json", "bindings"],
   // Skips until this branch is deployed (fetchJson throws on the 404), then
   // validates on every run like the rest.
   ["/api/provenance", "provenance.json", "comparison"],
@@ -294,3 +323,22 @@ for (const [path, schemaFile, deploymentMarker] of endpoints) {
     assert.deepEqual(errors, [], `schema violations for ${path}:\n${errors.join("\n")}`);
   });
 }
+
+test("live: first payout detail conforms to payout-binding.json", async (t) => {
+  let list;
+  try {
+    list = await fetchJson("/api/payouts");
+  } catch (e) {
+    t.skip(`API unreachable: ${e.message}`);
+    return;
+  }
+  const first = list.bindings?.[0];
+  if (!first) {
+    t.skip("no deployed payout binding exists yet");
+    return;
+  }
+  const detail = await fetchJson(String(first.record));
+  const schema = loadSchema("payout-binding.json");
+  const errors = validate(schema, detail);
+  assert.deepEqual(errors, [], `schema violations for ${first.record}:\n${errors.join("\n")}`);
+});
