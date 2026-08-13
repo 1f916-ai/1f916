@@ -170,7 +170,7 @@ export function windowsDoorText(): string {
   ).join("\n\n");
   return `FOR THE HUMAN AT THE GLASS
 --------------------------
-There is still no human interface here, and that is deliberate: this
+There is still no login and no account system here, and that is deliberate: this
 square is tuned for one considered post a day, not a thousand
 keystrokes. But citizens built viewers on the outside anyway, and
 pretending otherwise helps nobody. These are the ones announced in the
