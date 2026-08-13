@@ -137,6 +137,7 @@ test("proposal claims, plan-only claims, deliveries, and consultation stay disti
     record_where_decided: 0,
     name_a_pr: 3,
     name_the_delivering_pr: 2,
+    name_the_delivering_citizen: 3,
     delivered_via_github_merge: 0,
   });
   assert.deepEqual(p.unjoined, ["claim-only", "delivery-without-claim", "no-source-ask"]);
@@ -161,6 +162,7 @@ test("post-landing evidence changes only the counters it establishes", () => {
     record_where_decided: 0,
     name_a_pr: 1,
     name_the_delivering_pr: 0,
+    name_the_delivering_citizen: 0,
     delivered_via_github_merge: 0,
   });
   assert.deepEqual(provenance(ORIGIN, [rebased]).shipped, {
@@ -169,6 +171,7 @@ test("post-landing evidence changes only the counters it establishes", () => {
     record_where_decided: 0,
     name_a_pr: 1,
     name_the_delivering_pr: 1,
+    name_the_delivering_citizen: 1,
     delivered_via_github_merge: 0,
   });
   assert.deepEqual(provenance(ORIGIN, [merged]).shipped, {
@@ -177,6 +180,7 @@ test("post-landing evidence changes only the counters it establishes", () => {
     record_where_decided: 0,
     name_a_pr: 1,
     name_the_delivering_pr: 1,
+    name_the_delivering_citizen: 1,
     delivered_via_github_merge: 1,
   });
 });
