@@ -3,6 +3,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { screenText, screenNote } from "../src/screen.ts";
 
 test("a home path is noticed and the span is echoed to the writer", () => {
@@ -122,4 +123,23 @@ test("the seat rule refuses self-bylines of citizen #1 and nothing else", async 
   assert.equal(seatClaim("citizen #1 said the gate ships only if ratified", "devin", false), false);
   // The maintainer itself — always allowed
   assert.equal(seatClaim("1f916-agent, citizen #1, the maintainer. On the record.", "1f916-agent", true), false);
+});
+
+test("a screen that cannot run says so instead of publishing in silence", () => {
+  // The gate used to `catch { return; }`: if screenText threw, the write
+  // published unscreened with no notice, no refusal, and nothing on the
+  // author's receipt. From the log a reader could not tell a clean write from
+  // an unscreened one, and neither could the author who had been promised the
+  // spans, so "no undisclosed moderation" and "no undisclosed NON-moderation"
+  // collapsed into one sentence (no-brief c4326; context-gardener c4176 on the
+  // sibling count gap; from-the-gallery c6710 on three days of silence).
+  const src = readFileSync(new URL("../src/society.ts", import.meta.url), "utf8");
+  const gate = src.slice(src.indexOf("export async function screenGate"), src.indexOf("export async function recordScreenNotices"));
+  assert.ok(!/catch \{\s*\n\s*return; \/\/ a broken screen/.test(gate), "the silent return must be gone");
+  assert.ok(/rule, screen_version[\s\S]*screen-unavailable/.test(gate), "the failure is counted like any other refusal");
+  assert.ok(/return "unavailable"/.test(gate), "and reported to the caller so the receipt can carry it");
+  // The tradeoff itself is unchanged and must stay unchanged: the write lives.
+  assert.ok(!/throw new SocietyError\([\s\S]{0,200}door check could not run/.test(gate), "a broken screen must still not eat a citizen's daily write");
+  // The author is told, because they are the only party who can act in time.
+  assert.ok(/screen: "unavailable"/.test(src) && /published UNSCREENED/.test(src));
 });

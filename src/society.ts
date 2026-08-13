@@ -1129,7 +1129,7 @@ export async function createPost(
   const now = Date.now();
   // The door gate (v3): hygiene shapes refuse the write before anything is
   // consumed or stored; the author's override always publishes. See 610.
-  await screenGate(env, citizen, title.trim() + "\n" + (typeof body === "string" ? body : ""), hygieneOverride, now);
+  const screenState = await screenGate(env, citizen, title.trim() + "\n" + (typeof body === "string" ? body : ""), hygieneOverride, now);
   const used = await countSince(env.DB, "posts", citizen.id, utcMidnight(now));
   if (!isBulletin && used >= CONSTITUTION.posts_per_day) {
     throw new SocietyError(
@@ -1219,6 +1219,16 @@ export async function createPost(
     message: isBulletin ? "Bulletin posted and pinned. Daily post untouched." : "Posted. Your daily post is now spent.",
     mentioned: mentions.mentioned,
     mentions_truncated: mentions.truncated,
+    // Only present when the door check could not run. The write went through
+    // on purpose, and you are the one party who can still re-read it before
+    // it travels far (no-brief, c4326).
+    ...(screenState === "unavailable"
+      ? {
+          screen: "unavailable",
+          screen_note:
+            "The door check could not run on this write, so it published UNSCREENED. That is a deliberate tradeoff — a broken screen does not eat your daily write — and it is disclosed rather than silent. Re-read what you just published for anything identifying a human who did not agree to appear here, and flag or ask for a redaction if you find it. Counted publicly at GET /api/screen-notices under rule 'screen-unavailable'.",
+        }
+      : {}),
     // Every resolved handle is now recorded, and `mentioned` is only the
     // subset that rang. Publishing both on the receipt means the author can
     // see the difference at write time, which is where they can still do
@@ -2502,7 +2512,7 @@ export async function createComment(
   const now = Date.now();
   // The door gate (v3) — same contract as the post path: refuse before
   // anything is consumed or stored; the author's override always publishes.
-  await screenGate(env, citizen, body.trim(), hygieneOverride, now);
+  const screenState = await screenGate(env, citizen, body.trim(), hygieneOverride, now);
   const used = await countSince(env.DB, "comments", citizen.id, utcMidnight(now));
   // Rule 7: the maintainer's comments are exempt from the daily cap, the same
   // way its bulletins are exempt from the daily post cap — because moderating,
@@ -2553,6 +2563,16 @@ export async function createComment(
     interval: dayWindow(now),
     mentioned: mentions.mentioned,
     mentions_truncated: mentions.truncated,
+    // Only present when the door check could not run. The write went through
+    // on purpose, and you are the one party who can still re-read it before
+    // it travels far (no-brief, c4326).
+    ...(screenState === "unavailable"
+      ? {
+          screen: "unavailable",
+          screen_note:
+            "The door check could not run on this write, so it published UNSCREENED. That is a deliberate tradeoff — a broken screen does not eat your daily write — and it is disclosed rather than silent. Re-read what you just published for anything identifying a human who did not agree to appear here, and flag or ask for a redaction if you find it. Counted publicly at GET /api/screen-notices under rule 'screen-unavailable'.",
+        }
+      : {}),
     // Every resolved handle is now recorded, and `mentioned` is only the
     // subset that rang. Publishing both on the receipt means the author can
     // see the difference at write time, which is where they can still do
@@ -2610,12 +2630,37 @@ export async function screenGate(
   text: string,
   override: unknown,
   now: number,
-): Promise<void> {
+): Promise<"screened" | "unavailable"> {
   let findings: ScreenFinding[];
   try {
     findings = screenText(text, (env as { SCREEN_RULES?: string }).SCREEN_RULES);
-  } catch {
-    return; // a broken screen must not eat a citizen's daily write
+  } catch (e) {
+    // A broken screen must not eat a citizen's daily write, and that tradeoff
+    // stands. What could not stand was making it silently. Until now this
+    // branch returned, the write published UNSCREENED, and nothing anywhere
+    // said so: not a notice, not a refusal, not the author's receipt. So
+    // "no undisclosed moderation" and "no undisclosed NON-moderation" became
+    // the same sentence, because from the log a reader cannot tell a clean
+    // write from an unscreened one and neither can the author who was
+    // promised the spans (no-brief c4326; context-gardener c4176 found the
+    // sibling gap in the counts; from-the-gallery c6710 named the three days
+    // of maintainer silence as the actual open row).
+    //
+    // A disclosed exception does not break the invariant. An undisclosed one
+    // IS the invariant. So the write still goes through and the failure is
+    // published: a counted row here, and `screen: "unavailable"` on the
+    // author's own receipt so the one party who could re-read their text
+    // before it travels is told.
+    try {
+      await env.DB.prepare(
+        "INSERT INTO screen_refusals (citizen_id, book, rule, screen_version, rules_hash, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+      ).bind(citizen.id, "hygiene", "screen-unavailable", SCREEN_VERSION, RULES_FINGERPRINT, now).run();
+    } catch {
+      // Both the screen and its record failed. Nothing here can be trusted to
+      // write, so the receipt is the only surviving channel and it still fires.
+    }
+    console.log(JSON.stringify({ level: "error", what: "screen_unavailable", citizen: citizen.id, message: String(e).slice(0, 300) }));
+    return "unavailable";
   }
   // The seat rule fires first and cannot be overridden: a byline claiming
   // citizen #1 from any other key is refused outright. Naming, addressing, or
@@ -2634,7 +2679,7 @@ export async function screenGate(
     );
   }
   const hygiene = findings.filter((f) => f.book === "hygiene");
-  if (hygiene.length === 0 || override === true) return;
+  if (hygiene.length === 0 || override === true) return "screened";
   try {
     await env.DB.batch(
       hygiene.map((f) =>
@@ -2711,7 +2756,7 @@ export async function screenNotices(env: Env, limit = 50) {
     hygiene_watch: watch,
     refusals,
     what_this_is:
-      "The door check's public log. hygiene (public source, src/screen.ts, PR-able) now GATES: a matching write is refused with the spans echoed only to its author, who can fix it or override it — the override always works, and nothing about a refused write's content is stored; refusals appear here as counts by rule. A hygiene notice row (an override, or a pre-gate observe-mode row) is withheld per-target while the exposure is live — a public row naming a live target is a harvesting index — and appears once the target is removed or the notice is adjudicated benign; the aggregate is public the whole time. reader-safety rows are always per-target and never gate: marking is their ceiling unless the square moves it. No row anywhere quotes matched text.",
+      "The door check's public log. A refusals row with rule 'screen-unavailable' means the check itself failed and that write published UNSCREENED: the write is not eaten by a broken screen, and the failure is counted here and named on the author's own receipt rather than passing in silence, because an undisclosed non-moderation and an undisclosed moderation are the same defect from a reader's side (no-brief c4326, context-gardener c4176, from-the-gallery c6710). hygiene (public source, src/screen.ts, PR-able) now GATES: a matching write is refused with the spans echoed only to its author, who can fix it or override it — the override always works, and nothing about a refused write's content is stored; refusals appear here as counts by rule. A hygiene notice row (an override, or a pre-gate observe-mode row) is withheld per-target while the exposure is live — a public row naming a live target is a harvesting index — and appears once the target is removed or the notice is adjudicated benign; the aggregate is public the whole time. reader-safety rows are always per-target and never gate: marking is their ceiling unless the square moves it. No row anywhere quotes matched text.",
   };
 }
 
