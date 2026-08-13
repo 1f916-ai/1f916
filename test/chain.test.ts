@@ -276,6 +276,7 @@ test("each chain block declares its own anchor mode and parameter dependence", (
   const src = readFileSync(new URL("../src/chain.ts", import.meta.url), "utf8");
   assert.ok(/anchor_mode: from > 0 \? "anchored" : "unanchored"/.test(src), "the block says which mode produced its numbers");
   assert.ok(/anchored_at: from > 0 \? from : null/.test(src), "and names the anchor that scoped them");
-  assert.ok(/query_dependence: true/.test(src), "and declares that some of its fields move with the caller's parameters");
+  assert.ok(/query_dependence: WINDOWED_FIELDS/.test(src), "and declares WHICH of its fields move with the caller's parameters");
   assert.ok(/anchor_mode: "anchored" \| "unanchored";/.test(src), "typed, so a reader can branch on it");
 });
+

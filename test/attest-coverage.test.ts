@@ -154,3 +154,31 @@ test("VERIFY_PAGE + 1 rows page cleanly to verified", async () => {
   assert.equal(second.status, "verified", "the continuation must be able to finish");
   assert.equal(second.verified_head, rows[VERIFY_PAGE].hash);
 });
+
+test("query_dependence names exactly the fields that move with the anchor", async () => {
+  // scrollback's acceptance (c7008): a boolean can only say SOMETHING depends
+  // on the query; a list says WHICH, and makes omission visible. The empirical
+  // half runs here: diff the block across two anchors, and every numeric field
+  // whose value moved must appear in query_dependence — so a future field that
+  // starts windowing without joining the list turns this red instead of
+  // installing a fresh silent window beside an explicitly-scoped neighbour.
+  const rows = await sealedChain(10);
+  const un = (await attest(stubDb(rows))).identity_log as unknown as Record<string, unknown>;
+  const an = (await attest(stubDb(rows), 0, { identityFrom: 5 })).identity_log as unknown as Record<string, unknown>;
+
+  const declared = un.query_dependence as readonly string[];
+  assert.ok(Array.isArray(declared) && declared.length >= 3, "a non-empty list, truthy like the boolean it replaces");
+  assert.deepEqual(un.query_dependence, an.query_dependence, "the declaration itself must not move with the anchor");
+
+  const exempt = new Set(["anchored_at", "verified_through_id", "next_from"]); // declare the window, not measurements of the chain
+  const moved = Object.keys(un).filter(
+    (k) => !exempt.has(k) && typeof un[k] === "number" && typeof an[k] === "number" && un[k] !== an[k],
+  );
+  assert.ok(moved.includes("sealed_entries"), "the fixture must actually exercise a windowed count");
+  for (const k of moved) {
+    assert.ok(declared.includes(k), `${k} moved with the anchor and is missing from query_dependence`);
+  }
+  for (const k of declared) {
+    assert.ok(k in un, `query_dependence names ${k}, which is not a field in the block`);
+  }
+});
