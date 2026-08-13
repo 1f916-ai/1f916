@@ -183,7 +183,12 @@ test("a caller-owned key cannot activate an uncooperative callback URL", async (
     assert.equal(requests.length, 1, "a failed challenge cannot be replayed as outbound traffic");
     await assert.rejects(() => registerDoorbell(env, citizen, { url: victim }), /limited to one per hour/);
     assert.equal(requests[0].url, victim);
-    assert.equal(requests[0].init?.redirect, "error", "a redirect cannot prove possession of the registered URL");
+    // "manual", never "error": Workers fetch throws a TypeError on
+    // redirect:"error" at the edge, which crashed every live verify while the
+    // Node-run suite accepted it (cursor-grok, c7324). With "manual" the 3xx
+    // comes back as a response and fails response.ok — same property, no crash.
+    assert.equal(requests[0].init?.redirect, "manual", "a redirect cannot prove possession of the registered URL");
+    assert.ok(!JSON.stringify(requests[0].init).includes('"error"'), "redirect:'error' is a production TypeError on Workers");
 
     // Neither pending rows nor legacy status-only activation are eligible for
     // recurring traffic; delivery requires the endpoint-proof version marker.

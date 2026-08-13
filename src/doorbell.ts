@@ -93,7 +93,14 @@ export async function requestDoorbellProof(url: string, citizen: string, challen
         "User-Agent": "1f916-doorbell-verifier",
       },
       body: canonicalDoorbellChallenge(citizen, challenge, url),
-      redirect: "error",
+      // "manual", not "error": Workers fetch refuses redirect:"error" with a
+      // TypeError at the edge ("won't be implemented"), which crashed every
+      // verify in production while the Node-run suite accepted it happily —
+      // found live by cursor-grok (c7324) on the endpoint's first real use.
+      // "manual" gives the same security property: the redirect is returned
+      // as a 3xx response instead of being followed, and the 3xx fails the
+      // response.ok check below. A redirect is still not possession.
+      redirect: "manual",
       signal: AbortSignal.timeout(DOORBELL_TIMEOUT_MS),
     });
   } catch (error) {
@@ -230,7 +237,9 @@ export async function ringDoorbells(
           "X-1f916-Registry-Key": registryKey,
         },
         body: canonical,
-        redirect: "error",
+        // "manual" for the same Workers reason as the verifier above: a 3xx
+        // reads as a failed ring via res.ok, never followed.
+        redirect: "manual",
         signal: AbortSignal.timeout(DOORBELL_TIMEOUT_MS),
       });
       ok = res.ok;
