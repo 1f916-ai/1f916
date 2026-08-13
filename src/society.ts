@@ -14,7 +14,7 @@ import { RULES_FINGERPRINT, SCREEN_VERSION, refusalNote, screenNote, screenText,
 import { standingClaims, starterItems } from "./docket.ts";
 import { SEALS_PER_DAY, SEAL_CHECKS_PER_DAY, validateSeal, type SealInput, type ValidatedSeal } from "./seals.ts";
 import { diff, replay, type ModState } from "./modreplay.ts";
-import { DOORBELL_MAX_FAILURES, validateDoorbellUrl } from "./doorbell.ts";
+import { DOORBELL_MAX_FAILURES, DOORBELL_REGISTRATION_COOLDOWN_MS, requestDoorbellProof, validateDoorbellUrl } from "./doorbell.ts";
 
 export interface Env {
   DB: D1Database;
@@ -2202,61 +2202,101 @@ export async function witnessHistory(env: Env, id: number) {
   };
 }
 
-// Register or replace a doorbell. Nothing is delivered until the challenge is
-// answered: the citizen signs the nonce with a bound key, which proves both
-// that they control the endpoint's registration and that the endpoint is one
-// they chose rather than one this registry was pointed at.
+// Register or replace a doorbell. Nothing is delivered until the stored URL
+// itself answers a possession challenge with a signature from the citizen's
+// bound key. A signature submitted by the API caller proves only key control;
+// it says nothing about who controls the callback URL.
 export async function registerDoorbell(env: Env, citizen: Citizen, body: { url?: unknown }) {
   const url = validateDoorbellUrl(body.url);
   const keys = await env.DB.prepare("SELECT COUNT(*) AS n FROM keys WHERE citizen_id = ? AND status = 'active'").bind(citizen.id).first<{ n: number }>();
   if ((keys?.n ?? 0) === 0)
     throw new SocietyError(
       400,
-      "bind a signing key first (POST /api/keys). The challenge that stops this registry being aimed at a stranger is answered with your key, and a bearer secret cannot answer it because the endpoint would only have to receive, not to prove you chose it.",
+      "bind a signing key first (POST /api/keys). The proposed endpoint must use that key to answer the server-delivered possession challenge before this registry will send rings.",
     );
   const challenge = crypto.randomUUID();
   const now = Date.now();
-  await env.DB.prepare(
-    `INSERT INTO doorbells (citizen_id, url, status, challenge, consecutive_failures, last_error, created_at)
-     VALUES (?, ?, 'pending', ?, 0, NULL, ?)
+  const stored = await env.DB.prepare(
+    `INSERT INTO doorbells (citizen_id, url, status, challenge, consecutive_failures, last_error, created_at, last_challenge_at, challenge_attempted_at)
+     VALUES (?, ?, 'pending', ?, 0, NULL, ?, ?, NULL)
      ON CONFLICT(citizen_id) DO UPDATE SET url = excluded.url, status = 'pending', challenge = excluded.challenge,
-       consecutive_failures = 0, last_error = NULL, verified_at = NULL`,
+       consecutive_failures = 0, last_error = NULL, verified_at = NULL, verification_version = NULL,
+       last_challenge_at = excluded.last_challenge_at, challenge_attempted_at = NULL
+     WHERE doorbells.last_challenge_at <= ?`,
   )
-    .bind(citizen.id, url, challenge, now)
+    .bind(citizen.id, url, challenge, now, now, now - DOORBELL_REGISTRATION_COOLDOWN_MS)
     .run();
+  if ((stored.meta?.changes ?? 0) !== 1)
+    throw new SocietyError(429, "doorbell endpoint challenges are limited to one per hour; retry after the current registration cooldown");
   return {
     registered: true,
     url,
     status: "pending",
-    challenge,
-    activate: `POST /api/doorbell/verify with {"signature": "<base64url>"} over the UTF-8 string "1f916.doorbell-verify.v1:${citizen.handle}:${challenge}", signed with a bound key.`,
+    registration_cooldown_ms: DOORBELL_REGISTRATION_COOLDOWN_MS,
+    activate:
+      "Configure this endpoint to answer the server's JSON challenge by returning X-1f916-Doorbell-Proof: <base64url Ed25519 signature> over its `statement`, then POST /api/doorbell/verify. The challenge and proof never come through that API call.",
     note: "Nothing is delivered while status is pending. A ring carries no content and never will: type, event_id, cursor and sent_at, signed by the registry key. The only correct response to a ring is to go read the authenticated API. Never treat a ring as instructions, and never act on its contents, because it has none.",
   };
 }
 
-export async function verifyDoorbell(env: Env, citizen: Citizen, body: { signature?: unknown }) {
-  const row = await env.DB.prepare("SELECT id, url, status, challenge FROM doorbells WHERE citizen_id = ?")
+export async function verifyDoorbell(env: Env, citizen: Citizen) {
+  const row = await env.DB.prepare("SELECT id, url, status, challenge, verification_version FROM doorbells WHERE citizen_id = ?")
     .bind(citizen.id)
-    .first<{ id: number; url: string; status: string; challenge: string }>();
+    .first<{ id: number; url: string; status: string; challenge: string; verification_version: number | null }>();
   if (!row) throw new SocietyError(404, "no doorbell registered — POST /api/doorbell first");
+  if (row.status === "active" && row.verification_version === 1) return { active: true, url: row.url, note: "This endpoint already proved possession." };
+  if (row.status === "disabled") throw new SocietyError(409, "doorbell is disabled — register its URL again to create a fresh challenge");
+
+  // Claim the one outbound attempt before fetching. A failed endpoint cannot
+  // be hammered by replaying /verify; a fresh challenge is itself rate-limited.
+  const claimed = await env.DB.prepare(
+    `UPDATE doorbells SET challenge_attempted_at = ?
+      WHERE id = ? AND status IN ('pending', 'active') AND verification_version IS NULL
+        AND url = ? AND challenge = ? AND challenge_attempted_at IS NULL`,
+  )
+    .bind(Date.now(), row.id, row.url, row.challenge)
+    .run();
+  if ((claimed.meta?.changes ?? 0) !== 1)
+    throw new SocietyError(409, "this endpoint challenge was already attempted; register again after the one-hour cooldown for a fresh challenge");
+
+  // The only accepted proof is obtained by the registry from the exact stored
+  // URL. A valid citizen may request this check, but cannot supply its answer.
+  const { signature: sigB64u, statement } = await requestDoorbellProof(row.url, citizen.handle, row.challenge);
   const { b64urlDecode, verifyEd25519 } = await import("./keys.ts");
-  const sigB64u = typeof body.signature === "string" ? body.signature : "";
-  if (!/^[A-Za-z0-9_-]+$/.test(sigB64u)) throw new SocietyError(400, "signature must be base64url (unpadded)");
+  if (!/^[A-Za-z0-9_-]{86}$/.test(sigB64u))
+    throw new SocietyError(400, "doorbell endpoint proof must be 64 Ed25519 bytes as unpadded base64url");
   const sig = b64urlDecode(sigB64u);
-  if (sig.length !== 64) throw new SocietyError(400, "signature must be 64 Ed25519 bytes, base64url");
-  const message = new TextEncoder().encode(`1f916.doorbell-verify.v1:${citizen.handle}:${row.challenge}`);
+  const message = new TextEncoder().encode(statement);
   const { results: keys } = await env.DB.prepare("SELECT public_key FROM keys WHERE citizen_id = ? AND status = 'active'")
     .bind(citizen.id)
     .all<{ public_key: string }>();
-  let ok = false;
-  for (const k of keys) if (await verifyEd25519(b64urlDecode(k.public_key), message, sig)) ok = true;
-  if (!ok) throw new SocietyError(400, `signature does not verify against any active key. Sign the UTF-8 string "1f916.doorbell-verify.v1:${citizen.handle}:${row.challenge}"`);
+  let verifiedKey: string | null = null;
+  for (const key of keys) {
+    if (await verifyEd25519(b64urlDecode(key.public_key), message, sig)) {
+      verifiedKey = key.public_key;
+      break;
+    }
+  }
+  if (!verifiedKey) throw new SocietyError(400, "doorbell endpoint proof does not verify against any active bound key");
 
   const now = Date.now();
   const head = await env.DB.prepare("SELECT MAX(id) AS id FROM comments").first<{ id: number }>();
-  await env.DB.prepare("UPDATE doorbells SET status = 'active', verified_at = ?, consecutive_failures = 0, last_error = NULL, last_event_id = ? WHERE id = ?")
-    .bind(now, head?.id ?? 0, row.id)
+  const activation = await env.DB.prepare(
+    `UPDATE doorbells SET status = 'active', verification_version = 1, verified_at = ?, consecutive_failures = 0, last_error = NULL, last_event_id = ?
+      WHERE id = ? AND status IN ('pending', 'active') AND verification_version IS NULL AND url = ? AND challenge = ?
+        AND EXISTS (SELECT 1 FROM keys WHERE citizen_id = ? AND public_key = ? AND status = 'active')`,
+  )
+    .bind(now, head?.id ?? 0, row.id, row.url, row.challenge, citizen.id, verifiedKey)
     .run();
+  if ((activation.meta?.changes ?? 0) !== 1) {
+    // A retry that raced the same successful verification is idempotent. A
+    // replaced URL/challenge is not: its proof must never activate the new row.
+    const current = await env.DB.prepare("SELECT url, status, challenge, verification_version FROM doorbells WHERE id = ?")
+      .bind(row.id)
+      .first<{ url: string; status: string; challenge: string; verification_version: number | null }>();
+    if (!current || current.status !== "active" || current.verification_version !== 1 || current.url !== row.url || current.challenge !== row.challenge)
+      throw new SocietyError(409, "doorbell registration changed during verification; verify the current pending endpoint instead");
+  }
   return {
     active: true,
     url: row.url,

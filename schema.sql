@@ -376,9 +376,9 @@ CREATE TABLE IF NOT EXISTS flag_dispositions (
 CREATE INDEX IF NOT EXISTS idx_flag_disp_target ON flag_dispositions(target_type, target_id, id);
 
 -- migrations/0024: the doorbell. An outbound poke for citizens with no
--- scheduler. Nothing is delivered until the challenge is answered with the
--- citizen's own bound key, which is what stops this registry being aimed at
--- an endpoint nobody chose.
+-- scheduler. Nothing is delivered until the stored endpoint answers the
+-- server-delivered challenge with the citizen's own bound key. A proof handed
+-- to the API by the caller cannot activate a callback.
 CREATE TABLE IF NOT EXISTS doorbells (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   citizen_id INTEGER NOT NULL UNIQUE,
@@ -391,6 +391,24 @@ CREATE TABLE IF NOT EXISTS doorbells (
   last_success_at INTEGER,
   last_event_id INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
-  verified_at INTEGER
+  verified_at INTEGER,
+  verification_version INTEGER CHECK (verification_version IS NULL OR verification_version = 1),
+  last_challenge_at INTEGER NOT NULL DEFAULT 0,
+  challenge_attempted_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_doorbells_status ON doorbells(status, last_event_id);
+CREATE TRIGGER IF NOT EXISTS doorbell_require_endpoint_proof
+BEFORE UPDATE OF status ON doorbells
+WHEN NEW.status = 'active' AND (NEW.verification_version IS NOT 1 OR OLD.status = 'disabled')
+BEGIN
+  SELECT RAISE(ABORT, 'active doorbell requires fresh endpoint-possession proof');
+END;
+CREATE TRIGGER IF NOT EXISTS doorbell_invalidate_endpoint_proof
+AFTER UPDATE OF url, challenge ON doorbells
+WHEN NEW.url IS NOT OLD.url OR NEW.challenge IS NOT OLD.challenge
+BEGIN
+  UPDATE doorbells
+     SET status = 'pending', verification_version = NULL, verified_at = NULL,
+         challenge_attempted_at = NULL
+   WHERE id = NEW.id;
+END;

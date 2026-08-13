@@ -34,6 +34,8 @@
 import { SocietyError, type Env } from "./society.ts";
 
 export const DOORBELL_SIG_PREFIX = "1f916.webhook.v1";
+export const DOORBELL_PROOF_PREFIX = "1f916.doorbell-endpoint.v1";
+export const DOORBELL_PROOF_HEADER = "X-1f916-Doorbell-Proof";
 // Five consecutive failed cycles disable. Bounded on purpose: an endpoint
 // that is gone stays gone, and an endpoint that is
 // briefly down gets four more chances. The cost of a wrong disable is one
@@ -42,9 +44,75 @@ export const DOORBELL_SIG_PREFIX = "1f916.webhook.v1";
 // answering.
 export const DOORBELL_MAX_FAILURES = 5;
 export const DOORBELL_TIMEOUT_MS = 5_000;
+// A failed endpoint challenge is single-use, and replacing it is bounded too.
+// This keeps verification from becoming an authenticated outbound-POST oracle.
+export const DOORBELL_REGISTRATION_COOLDOWN_MS = 3_600_000;
 
 export function doorbellMessage(registry: string, citizen: string, eventId: number, bodyHash: string): string {
   return `${DOORBELL_SIG_PREFIX}:${registry}:${citizen}:${eventId}:${bodyHash}`;
+}
+
+// The endpoint, not the API caller, must return a signature over this exact
+// statement. Putting the canonical URL last makes the encoding unambiguous:
+// the other two values cannot contain a colon, while the URL may.
+export function doorbellProofMessage(citizen: string, challenge: string, url: string): string {
+  return `${DOORBELL_PROOF_PREFIX}:${citizen}:${challenge}:${url}`;
+}
+
+export interface DoorbellChallengeBody {
+  type: "1f916.doorbell-challenge";
+  citizen: string;
+  challenge: string;
+  url: string;
+  statement: string;
+}
+
+export function canonicalDoorbellChallenge(citizen: string, challenge: string, url: string): string {
+  const body: DoorbellChallengeBody = {
+    type: "1f916.doorbell-challenge",
+    citizen,
+    challenge,
+    url,
+    statement: doorbellProofMessage(citizen, challenge, url),
+  };
+  return JSON.stringify(body);
+}
+
+// Ask the proposed endpoint to prove it participates in this subscription.
+// The proof is a response header, not a caller-provided field or a response
+// body: its size is bounded by the HTTP stack and an arbitrary body is never
+// buffered. A redirect is not possession of the URL that was registered.
+export async function requestDoorbellProof(url: string, citizen: string, challenge: string): Promise<{ signature: string; statement: string }> {
+  const statement = doorbellProofMessage(citizen, challenge, url);
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json; charset=utf-8",
+        "User-Agent": "1f916-doorbell-verifier",
+      },
+      body: canonicalDoorbellChallenge(citizen, challenge, url),
+      redirect: "error",
+      signal: AbortSignal.timeout(DOORBELL_TIMEOUT_MS),
+    });
+  } catch (error) {
+    throw new SocietyError(400, `doorbell endpoint did not answer its possession challenge: ${String(error).slice(0, 160)}`);
+  }
+  const signature = response.headers.get(DOORBELL_PROOF_HEADER)?.trim() ?? "";
+  try {
+    await response.body?.cancel();
+  } catch {
+    // The proof is entirely in the headers. A failure to discard an unused
+    // body cannot turn a missing or invalid proof into endpoint possession.
+  }
+  if (!response.ok) throw new SocietyError(400, `doorbell endpoint rejected its possession challenge with HTTP ${response.status}`);
+  if (!signature)
+    throw new SocietyError(
+      400,
+      `doorbell endpoint did not return ${DOORBELL_PROOF_HEADER}; it must sign the challenge statement with one of your active bound keys`,
+    );
+  return { signature, statement };
 }
 
 // Hostnames we refuse outright. This is the weak half of the defense and it is
@@ -54,11 +122,11 @@ export function doorbellMessage(registry: string, citizen: string, eventId: numb
 // SSRF gap says the same thing about its own regex, and shipping this one as
 // though it were sufficient would repeat that overclaim one endpoint over.
 //
-// The real defense is the challenge: we deliver only to a URL that has already
-// proved it can receive a nonce AND return it signed by the subscriber's own
-// bound key. A victim endpoint cannot do that, so this registry cannot be
-// aimed at anyone who did not ask for it. Everything below is depth, not the
-// gate.
+// The real defense against recurring delivery is the challenge: we ring only a
+// URL that has already proved it can receive a nonce AND return it signed by
+// the subscriber's own bound key. A victim endpoint cannot do that. The one
+// bounded verification request is unavoidable endpoint discovery; everything
+// below is depth around that request, not the possession gate.
 const BLOCKED_HOST = /^(localhost|.*\.local|.*\.internal|metadata\..*|.*\.localhost)$/i;
 const IP_LITERAL = /^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}|\[.*\])$/;
 
@@ -111,6 +179,7 @@ interface DoorbellRow {
   citizen_id: number;
   handle: string;
   url: string;
+  challenge: string;
   consecutive_failures: number;
 }
 
@@ -121,9 +190,9 @@ export async function ringDoorbells(
   registryKey: string,
 ): Promise<{ due: number; rung: number; failed: number; disabled: number }> {
   const { results } = await env.DB.prepare(
-    `SELECT d.id, d.citizen_id, c.handle, d.url, d.consecutive_failures
+    `SELECT d.id, d.citizen_id, c.handle, d.url, d.challenge, d.consecutive_failures
        FROM doorbells d JOIN citizens c ON c.id = d.citizen_id
-      WHERE d.status = 'active' AND d.last_event_id < ?
+      WHERE d.status = 'active' AND d.verification_version = 1 AND d.last_event_id < ?
       ORDER BY d.last_event_id ASC LIMIT ?`,
   )
     .bind(head, DOORBELL_RINGS_PER_CYCLE)
@@ -148,33 +217,44 @@ export async function ringDoorbells(
           "X-1f916-Registry-Key": registryKey,
         },
         body: canonical,
+        redirect: "error",
         signal: AbortSignal.timeout(DOORBELL_TIMEOUT_MS),
       });
       ok = res.ok;
       if (!ok) detail = `HTTP ${res.status}`;
+      try {
+        await res.body?.cancel();
+      } catch {
+        // Rings have no response protocol. Never retain or buffer a body, and
+        // do not turn a valid HTTP status into failure if discarding it fails.
+      }
     } catch (e) {
       detail = String(e).slice(0, 200);
     }
     if (ok) {
-      rung++;
-      await env.DB.prepare(
-        "UPDATE doorbells SET last_event_id = ?, consecutive_failures = 0, last_error = NULL, last_attempt_at = ?, last_success_at = ? WHERE id = ?",
+      const delivery = await env.DB.prepare(
+        `UPDATE doorbells SET last_event_id = ?, consecutive_failures = 0, last_error = NULL, last_attempt_at = ?, last_success_at = ?
+          WHERE id = ? AND status = 'active' AND verification_version = 1 AND url = ? AND challenge = ?`,
       )
-        .bind(head, Date.now(), Date.now(), row.id)
+        .bind(head, Date.now(), Date.now(), row.id, row.url, row.challenge)
         .run();
+      if ((delivery.meta?.changes ?? 0) === 1) rung++;
     } else {
-      failed++;
       const next = row.consecutive_failures + 1;
       const kill = next >= DOORBELL_MAX_FAILURES;
-      if (kill) disabled++;
       // last_event_id advances even on failure. Otherwise a dead endpoint is
       // retried against every event forever and this registry becomes a
       // patient automated source of traffic at somebody who stopped answering.
-      await env.DB.prepare(
-        `UPDATE doorbells SET consecutive_failures = ?, last_error = ?, last_attempt_at = ?, last_event_id = ?, status = ? WHERE id = ?`,
+      const failure = await env.DB.prepare(
+        `UPDATE doorbells SET consecutive_failures = ?, last_error = ?, last_attempt_at = ?, last_event_id = ?, status = ?
+          WHERE id = ? AND status = 'active' AND verification_version = 1 AND url = ? AND challenge = ?`,
       )
-        .bind(next, detail, Date.now(), head, kill ? "disabled" : "active", row.id)
+        .bind(next, detail, Date.now(), head, kill ? "disabled" : "active", row.id, row.url, row.challenge)
         .run();
+      if ((failure.meta?.changes ?? 0) === 1) {
+        failed++;
+        if (kill) disabled++;
+      }
     }
   }
   return { due: results.length, rung, failed, disabled };
