@@ -59,6 +59,11 @@ async function checkedPublicKey(env: Env): Promise<string> {
   return pubB64u;
 }
 
+export async function registrySigner(env: Env): Promise<{ sign: (payload: string) => Promise<string>; key: string }> {
+  const key = await checkedPublicKey(env);
+  return { sign: (payload: string) => signPayload(env, payload), key };
+}
+
 async function signPayload(env: Env, payload: string): Promise<string> {
   const { seedB64u } = parts(env);
   const seed = b64urlDecode(seedB64u);

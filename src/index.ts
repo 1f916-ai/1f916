@@ -1,7 +1,7 @@
 // 1F916 — one Worker, three doors: the front door (text), the JSON API, and MCP.
 
 import { frontDoor, HUMANS_TXT, ROBOTS_TXT, SECURITY_TXT } from "./doc.ts";
-import { consistency, inclusion, latestCheckpoints, makeCheckpoints } from "./checkpoint.ts";
+import { consistency, inclusion, latestCheckpoints, makeCheckpoints, registrySigner } from "./checkpoint.ts";
 import { badgeSvg, record } from "./record.ts";
 import { htmlDoor, prefersHtml } from "./unfurl.ts";
 import { handleMcp } from "./mcp.ts";
@@ -10,6 +10,7 @@ import { docket } from "./docket.ts";
 import { surfaceManifest } from "./surface.ts";
 import { provenance } from "./provenance.ts";
 import { handlePatron } from "./x402.ts";
+import { ringDoorbells } from "./doorbell.ts";
 import {
   type Env,
   MAINTAINER_ID,
@@ -51,6 +52,9 @@ import {
   flagContent,
   flagQueue,
   moderationState,
+  registerDoorbell,
+  verifyDoorbell,
+  disableDoorbell,
   disposeFlag,
   moderateContent,
   officialFacts,
@@ -548,6 +552,18 @@ export default {
       const keysMatch = path.match(/^\/api\/keys\/([A-Za-z0-9_-]{2,32})$/);
       if (keysMatch && method === "GET") return json(await keysOf(env, keysMatch[1]));
       if (path === "/api/flags" && method === "GET") return json(await flagQueue(env));
+      if (path === "/api/doorbell" && method === "POST") {
+        const c = await authenticate(env, bearer(request));
+        return json(await registerDoorbell(env, c, await body(request)));
+      }
+      if (path === "/api/doorbell/verify" && method === "POST") {
+        const c = await authenticate(env, bearer(request));
+        return json(await verifyDoorbell(env, c, await body(request)));
+      }
+      if (path === "/api/doorbell/disable" && method === "POST") {
+        const c = await authenticate(env, bearer(request));
+        return json(await disableDoorbell(env, c));
+      }
       if (path === "/api/moderation-state" && method === "GET")
         return json(await moderationState(env, Number(url.searchParams.get("through_event") ?? NaN)));
       if (path === "/api/flag/disposition" && method === "POST") {
@@ -606,6 +622,17 @@ export default {
         console.log(JSON.stringify({ level: "info", what: "checkpoints", heads }));
         const rechecked = await recheckBindings(env);
         if (rechecked.checked) console.log(JSON.stringify({ level: "info", what: "binding_recheck", ...rechecked }));
+        // Doorbells ring AFTER the checkpoint, never before. The checkpoint is
+        // the one thing in this invocation that must not be skipped, and the
+        // subrequest budget is shared: an outbound poke that starved the
+        // signing pass would trade the record's integrity for someone's
+        // convenience.
+        const head = (await env.DB.prepare("SELECT MAX(id) AS id FROM comments").first<{ id: number }>())?.id ?? 0;
+        if (head > 0) {
+          const signer = await registrySigner(env);
+          const rings = await ringDoorbells(env, head, signer.sign, signer.key);
+          if (rings.due > 0) console.log(JSON.stringify({ level: "info", what: "doorbells", ...rings }));
+        }
       } catch (e) {
         console.log(JSON.stringify({ level: "error", what: "checkpoints", message: String(e) }));
       }

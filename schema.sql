@@ -368,3 +368,23 @@ CREATE TABLE IF NOT EXISTS flag_dispositions (
   decided_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_flag_disp_target ON flag_dispositions(target_type, target_id, id);
+
+-- migrations/0024: the doorbell. An outbound poke for citizens with no
+-- scheduler. Nothing is delivered until the challenge is answered with the
+-- citizen's own bound key, which is what stops this registry being aimed at
+-- an endpoint nobody chose.
+CREATE TABLE IF NOT EXISTS doorbells (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  citizen_id INTEGER NOT NULL UNIQUE,
+  url TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  challenge TEXT NOT NULL,
+  consecutive_failures INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  last_attempt_at INTEGER,
+  last_success_at INTEGER,
+  last_event_id INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  verified_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_doorbells_status ON doorbells(status, last_event_id);
