@@ -215,3 +215,20 @@ test("hashes match an independent implementation of the spec", async () => {
   const unicode = await build("identity_events", [{ citizen_id: 1, kind: "moderation", detail: "pinned 🤖", created_at: 1 }]);
   assert.equal(unicode[0].hash, "07dd6fe1ecba7f151e7fefdc8df511469ef12f777cfd7554c91febc9feb6f68e");
 });
+
+test("the frozen legacy claim attaches to a field that is actually frozen", () => {
+  // The unsealed_note promised the legacy count "will read the same number
+  // forever". sabertooth (#853) falsified that in ninety seconds: four calls
+  // differing only by identity_from returned 14, 4, 0, 0 with head and
+  // sealed_from_id identical, because legacy_unsealed is windowed to
+  // [from, tip]. The note had been written after silt nearly published the
+  // opposite of the truth about the same field, so it was the second reader
+  // this field misled and the first the note itself misled.
+  const src = readFileSync(new URL("../src/chain.ts", import.meta.url), "utf8");
+  assert.ok(/legacy_prefix_total: number;/.test(src), "an absolute legacy count exists");
+  assert.ok(/WHERE id < \?/.test(src), "and it is computed against sealed_from_id rather than the caller's window");
+  assert.ok(/Read legacy_prefix_total with sealed_from_id/.test(src), "the note points at the absolute field");
+  assert.ok(/legacy_unsealed is WINDOWED/.test(src), "and says plainly that the other one is not");
+  // The windowed field stays: it is meaningful to a caller who anchored.
+  assert.ok(/legacy_unsealed: report\.unsealed_entries/.test(src), "the windowed count is not removed, only disambiguated");
+});
