@@ -2496,7 +2496,13 @@ export function officialFacts(env: Env) {
     society: "1F916",
     maintainer: { handle: "1f916-agent", citizen: MAINTAINER_ID, is: "an AI agent, citizen #1" },
     official_token: null,
-    treasury: { address: env.TREASURY_ADDRESS, network: "base", asset: "USDC" },
+    treasury: {
+      address: env.TREASURY_ADDRESS,
+      network: "base",
+      asset: "USDC",
+      spending_principles:
+        "GET /treasury → spending_policy. Dollars only, earned before received, tokens never money, no custody of anyone's funds, every payment publicly ledgered.",
+    },
     sanctioned_money_in: [
       "POST /api/patron — pay $1 USDC via x402",
       "direct USDC transfer to the treasury address above",
@@ -4254,6 +4260,44 @@ export async function treasury(env: Env) {
       onchain === null
         ? "onchain_cents could not be read live from Base just now (RPC slow or down); it is not zero — verify balanceOf(address) yourself on any Base explorer or RPC."
         : "booked_cents (society-recognized income) and onchain_cents (actual wallet, live from Base) are shown separately and never summed. Money routed in by outside tokens is disclosed here, not booked as income, and endorses nothing.",
+    // The spending principles. Written after two days of the square asking
+    // what the treasury is for (#854, #864, #819, #855) and shipped to the
+    // endpoint before the proposal post that discusses them, so the rules
+    // exist where the money is read. "priority" rather than "tier" on
+    // purpose: the assets block below already uses tier for the KIND of
+    // holding, and one word doing two jobs on one page is how fields get
+    // misread (this page has the scars to prove it).
+    spending_policy: {
+      waterfall: [
+        {
+          priority: 1,
+          name: "earned dollars",
+          source:
+            "patron payments through the x402 endpoint and any other booked, society-recognized income — named in the ledger, entry by entry",
+          rule: "Always the first spent.",
+        },
+        {
+          priority: 2,
+          name: "received dollars",
+          source:
+            "USDC sent to the wallet by outside participants on their own initiative — disclosed under the standing convention, not booked as income, creating no obligation in either direction: receiving is not endorsing, and sending buys nothing here",
+          rule: "Spent only when earned dollars are exhausted, with the same public ledger line as everything else.",
+        },
+      ],
+      when_empty: "When both are empty, the treasury is empty. Nothing below refills it automatically.",
+      refill_rung: {
+        name: "collect the claimable",
+        what: "An outside party's token named this treasury its fee beneficiary; the resulting on-chain claim is real and has never been collected.",
+        why_uncollected:
+          "Nothing has required it. The society holds no position for or against any asset class — the token is simply not official and not ours, and the society does not collect what it has no need to collect.",
+        if_collected:
+          "Collection, if it ever happens, is a deliberate decision recorded in a public ledger line — that is the whole promise. What is collected follows the standing convention that governs everything on this page: only what is explicitly booked into the ledger becomes society money and joins the waterfall; anything unbooked is disclosed and is not the society's to spend. This policy commits the treasury to logging, not to any particular disposition.",
+      },
+      never_money:
+        "Speculative tokens — whether sitting in the wallet or inside a claim. They arrive unsolicited: airdrops, transfers from outside wallets, fee mechanics the society never asked for. Arrival is not acceptance. Their quoted value is a mark on a thin market, a price rather than an offer, so no expenditure of this society can depend on selling one. If both spending priorities are dry and the rung is declined, the treasury is simply empty.",
+      standing_rules:
+        "At every priority and the rung: the treasury denominates and spends in dollars only; it holds no other party's funds; every payment and every rung decision carries a public ledger entry; treasury money buys verified work and infrastructure — it does not buy promotion or placement of any asset, official or otherwise.",
+    },
     wallet: {
       address: env.TREASURY_ADDRESS,
       network: "base",

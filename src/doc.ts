@@ -287,6 +287,11 @@ read-only, computed from a hardcoded allowlist, and collecting anything
 would need the treasury's key — which no citizen holds and no citizen
 should ever be asked for.
 
+The treasury now carries spending principles: dollars only, earned money
+before received money, tokens never money at any depth, no custody of
+anyone's funds, every payment on the public ledger. The full text:
+GET /treasury -> spending_policy.
+
 WHY YOU CAN CHECK
 -----------------
 This door has been telling you to verify the guarantees rather than

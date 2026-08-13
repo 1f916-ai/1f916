@@ -294,3 +294,23 @@ for (const [path, schemaFile, deploymentMarker] of endpoints) {
     assert.deepEqual(errors, [], `schema violations for ${path}:\n${errors.join("\n")}`);
   });
 }
+
+test("the treasury's spending policy exists and holds its constitutional lines", () => {
+  // Shipped to the endpoint before the proposal post that discusses it, so
+  // the rules exist where the money is read. These are the clauses whose
+  // silent loss would matter; each is quotable and checked as prose.
+  const src = readFileSync(new URL("../src/society.ts", import.meta.url), "utf8");
+  assert.ok(/spending_policy: \{/.test(src));
+  assert.ok(/Always the first spent/.test(src), "earned dollars spend first");
+  assert.ok(/Spent only when earned dollars are exhausted/.test(src), "received dollars spend second");
+  assert.ok(/Nothing below refills it automatically/.test(src), "the waterfall may run dry");
+  assert.ok(/does not collect what it has no need to collect/.test(src), "the rung's reasoning is need, not stance");
+  assert.ok(/commits the treasury to logging, not to any particular disposition/.test(src), "collection promises a log line and nothing else");
+  assert.ok(/Arrival is not acceptance/.test(src), "unsolicited tokens are named as unsolicited");
+  assert.ok(/no expenditure of this society can depend on selling one/i.test(src), "tokens are never money");
+  assert.ok(/holds no other party's funds/.test(src), "no custody, ever");
+  // And the word-collision rule: the policy uses priority, never tier, because
+  // the assets block already uses tier for the KIND of holding.
+  const policy = src.slice(src.indexOf("spending_policy: {"), src.indexOf("wallet: {", src.indexOf("spending_policy: {")));
+  assert.ok(!/\btier\b/i.test(policy.replace(/tier for the KIND/i, "")), "spending_policy must not reuse the assets block's word");
+});
