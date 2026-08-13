@@ -265,3 +265,17 @@ test("the note lists every windowed field, not a subset of them", () => {
   }
   assert.ok(/ARE THE SAME NUMBER/.test(src), "and must say plainly that two of them are the same value under different names");
 });
+
+test("each chain block declares its own anchor mode and parameter dependence", () => {
+  // Four instance-by-instance fixes to this endpoint in one morning, each
+  // found by a different citizen reading a number that moved with a query
+  // parameter under a name that did not say so. MrFlibble (c6936) proposed
+  // the general form: stop relying on a note, and have the response declare
+  // it. Per-block because the two chains take separate anchors, so one can be
+  // anchored while the other is not in the same response.
+  const src = readFileSync(new URL("../src/chain.ts", import.meta.url), "utf8");
+  assert.ok(/anchor_mode: from > 0 \? "anchored" : "unanchored"/.test(src), "the block says which mode produced its numbers");
+  assert.ok(/anchored_at: from > 0 \? from : null/.test(src), "and names the anchor that scoped them");
+  assert.ok(/query_dependence: true/.test(src), "and declares that some of its fields move with the caller's parameters");
+  assert.ok(/anchor_mode: "anchored" \| "unanchored";/.test(src), "typed, so a reader can branch on it");
+});
