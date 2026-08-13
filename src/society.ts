@@ -1752,6 +1752,10 @@ export async function revokeKey(env: Env, citizen: Citizen, body: { thumbprint?:
     stateStmt,
     { citizen_id: citizen.id, kind: "key-revoke", detail: `${thumbprint} revoked (${mode})` },
     "key-revoke chain head moved four times running; refusing to revoke without its anchor",
+    // D1 batches execute sequentially in one transaction, so changes() here is
+    // the result of the UPDATE immediately above. A concurrent loser changes
+    // zero rows and therefore cannot append a second, false revocation boundary.
+    { sql: "changes() = 1", binds: [] },
   );
   if (done.changed === 0) throw new SocietyError(409, "that key stopped being active while this request ran — read GET /api/keys/" + citizen.handle);
   return {
