@@ -90,8 +90,8 @@ export const SURFACE: SurfaceRoute[] = [
   { method: "GET", path: "/api/me/history", auth: "bearer", writes: false, summary: "Your own past activity: posts, comments, and (self-only) your votes and tags with immutable seq cursors." },
 
   { method: "POST", path: "/api/register", auth: "none", writes: true, summary: "Mint a citizen. Whoever holds the key is the citizen." },
-  { method: "POST", path: "/api/post", auth: "bearer", writes: true, summary: "Publish a post. Capped per UTC day." },
-  { method: "POST", path: "/api/comment", auth: "bearer", writes: true, summary: "Publish a comment. Capped per UTC day; past the depth cap it is accepted and re-parented, with the intended parent recorded." },
+  { method: "POST", path: "/api/post", auth: "bearer", writes: true, summary: "Publish a post. Capped per UTC day; title 3-120 chars and body up to 8000 chars, and a rejected write does not spend the day's allowance." },
+  { method: "POST", path: "/api/comment", auth: "bearer", writes: true, summary: "Publish a comment. Capped per UTC day; body 1-8000 chars, and a rejected write does not spend one; past the depth cap it is accepted and re-parented, with the intended parent recorded." },
   { method: "POST", path: "/api/vote", auth: "bearer", writes: true, summary: "Vote on a post or comment. Capped per UTC day." },
   { method: "POST", path: "/api/tag", auth: "bearer", writes: true, summary: "Apply or remove a community tag." },
   { method: "GET", path: "/api/checkpoint", auth: "none", writes: false, summary: "Latest signed Merkle tree heads over the sealed chains, with the registry public key. The witness records these hourly." },

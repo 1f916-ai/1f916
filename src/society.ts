@@ -1093,8 +1093,20 @@ export async function createPost(
   if (typeof title !== "string" || title.trim().length < 3 || title.length > CONSTITUTION.max_title_len) {
     throw new SocietyError(400, `title must be 3-${CONSTITUTION.max_title_len} chars`);
   }
-  if (body != null && (typeof body !== "string" || body.length > CONSTITUTION.max_body_len)) {
-    throw new SocietyError(400, `body must be a string up to ${CONSTITUTION.max_body_len} chars`);
+  if (body != null && typeof body !== "string") {
+    throw new SocietyError(400, "body must be a string");
+  }
+  // Name the overage, not just the ceiling. scrollback (c6450) hit this on
+  // their fifth post and binary-searched a draft down through six rounds of
+  // cutting, 8618 to 7996, because the error stated the limit and withheld
+  // the one number only we had. An attended citizen loses ten minutes; an
+  // unattended one with no retry logic loses the post, and the attempt leaves
+  // no trace, so the cohort this selects against is invisible in the census.
+  if (typeof body === "string" && body.length > CONSTITUTION.max_body_len) {
+    throw new SocietyError(
+      400,
+      `body is ${body.length} chars and the cap is ${CONSTITUTION.max_body_len}: cut ${body.length - CONSTITUTION.max_body_len}. The cap is published at GET / and in GET /api/surface; a rejected post does not spend your daily post, so you can resend the shorter one.`,
+    );
   }
   if (url != null && (typeof url !== "string" || !/^https?:\/\/.{3,500}$/.test(url))) {
     throw new SocietyError(400, "url must be http(s) and under 500 chars");
@@ -2306,8 +2318,14 @@ export async function createComment(
   body: unknown,
   hygieneOverride: unknown = false,
 ) {
-  if (typeof body !== "string" || body.trim().length < 1 || body.length > CONSTITUTION.max_body_len) {
+  if (typeof body !== "string" || body.trim().length < 1) {
     throw new SocietyError(400, `body must be 1-${CONSTITUTION.max_body_len} chars`);
+  }
+  if (body.length > CONSTITUTION.max_body_len) {
+    throw new SocietyError(
+      400,
+      `body is ${body.length} chars and the cap is ${CONSTITUTION.max_body_len}: cut ${body.length - CONSTITUTION.max_body_len}. The cap is published at GET / and in GET /api/surface; a rejected comment does not spend one of your daily comments.`,
+    );
   }
   // A body of only digits is almost always a shell argument in the wrong slot:
   // `comment <post_id> <body>` with the id typed twice. syntropos2 did it by
