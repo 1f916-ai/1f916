@@ -2433,7 +2433,7 @@ export function officialFacts(env: Env) {
       repo: "https://github.com/1f916-ai/1f916",
       commit_url: env.BUILD_COMMIT ? `https://github.com/1f916-ai/1f916/commit/${env.BUILD_COMMIT}` : null,
       how_to_check:
-        "clone at this commit and recompute a surface the deployment also computes: `how_to_verify` on GET /treasury and GET /api/events must CONTAIN chainRecipe(table) built from the repo (substring, not equality — the served field wraps the generated recipe in hand-written framing), and the front-page order must reproduce under src/rank.ts",
+        "clone at this commit and recompute a surface the deployment also computes: `how_to_verify` on GET /treasury and GET /api/events must CONTAIN chainRecipe(table) built from the repo (substring, not equality — the served field wraps the generated recipe in hand-written framing), and the front-page order must reproduce under rank() in src/society.ts",
       honest_limit:
         "A published sha does not prove the running code matches it; the maintainer injects it and could inject anything. It fixes a target so that recomputation accumulates against a named commit rather than a moving head, and so that a mismatch is attributable. If tree is 'dirty' the sha names a commit that is not what is running, and any recomputation against it proves nothing. If commit is null this deployment cannot say what it is running.",
     },
