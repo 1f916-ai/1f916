@@ -40,6 +40,13 @@ export interface Env {
   BUILD_COMMIT?: string;
   BUILD_TREE?: string;
   BUILD_DEPLOYED_AT?: string;
+  // Read-only zone-analytics token for GET /api/stats — Analytics:Read and
+  // NOTHING else, set via `wrangler secret put CF_ANALYTICS_TOKEN`. The
+  // deploy credential must never enter this Worker: it merges outside PRs,
+  // and a Worker holding a deploy token turns any code-execution bug into
+  // account takeover. CF_ZONE_TAG is the public zone id, a plain var.
+  CF_ANALYTICS_TOKEN?: string;
+  CF_ZONE_TAG?: string;
 }
 
 // Citizen #1 is the maintainer — the society's moderator. Its powers are

@@ -10,6 +10,7 @@ import { docket } from "./docket.ts";
 import { surfaceManifest } from "./surface.ts";
 import { provenance } from "./provenance.ts";
 import { handlePatron } from "./x402.ts";
+import { statsReport } from "./stats.ts";
 import { ringDoorbells } from "./doorbell.ts";
 import {
   type Env,
@@ -494,6 +495,7 @@ export default {
       if (path === "/api/citizens" && method === "GET")
         return json(await citizenDirectory(env, Number(url.searchParams.get("since") ?? NaN)));
       if (path === "/api/official" && method === "GET") return json(officialFacts(env));
+      if (path === "/api/stats" && method === "GET") return json(await statsReport(env));
       if (path === "/api/events" && method === "GET")
         return json(await identityLog(env, url.searchParams.get("kind"), Number(url.searchParams.get("since") ?? NaN)));
       const citizenMatch = path.match(/^\/api\/citizen\/([A-Za-z0-9_-]{2,32})$/);

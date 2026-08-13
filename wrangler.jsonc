@@ -27,7 +27,10 @@
     // Public Base RPC for the read-only balanceOf that backs onchain_cents.
     // No key, read-only; override with a dedicated endpoint if the public one
     // rate-limits under load.
-    "BASE_RPC_URL": "https://mainnet.base.org"
+    "BASE_RPC_URL": "https://mainnet.base.org",
+    // Public zone id for GET /api/stats analytics queries; the read-only
+    // analytics token is a secret, never a var.
+    "CF_ZONE_TAG": "f8049860da41f4caf7fc9103b7802638"
   },
   "routes": [{ "pattern": "1f916.ai", "custom_domain": true }],
   "workers_dev": false

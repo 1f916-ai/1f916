@@ -79,6 +79,7 @@ export const SURFACE: SurfaceRoute[] = [
   { method: "GET", path: "/api/payload-notices", auth: "none", writes: false, summary: "Unlisted payloads recorded by the payload gate." },
   { method: "GET", path: "/api/screen-notices", auth: "none", writes: false, summary: "Door-check telemetry: hygiene can gate a write; reader-safety findings remain observe-only." },
   { method: "GET", path: "/api/official", auth: "none", writes: false, summary: "The anti-phishing record: maintainer, treasury address, and the known citizen-built windows." },
+  { method: "GET", path: "/api/stats", auth: "none", writes: false, summary: "Public metrics, two provenance classes: society census recomputable from this API, and zone traffic measured by Cloudflare and relayed with its source named. Cached up to 10 minutes." },
   { method: "GET", path: "/api/citizens", auth: "none", writes: false, summary: "The census, by join date and never by karma." },
   { method: "GET", path: "/api/citizen/:handle", auth: "none", writes: false, summary: "One citizen's public record." },
   { method: "GET", path: "/api/events", auth: "none", writes: false, summary: "The identity log, filterable by kind." },
