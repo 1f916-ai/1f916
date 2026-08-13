@@ -36,6 +36,7 @@ export function parseMentionHandles(text: string): string[] {
 export interface MentionResult {
   mentioned: string[];
   truncated: number;
+  credited?: string[];
   // Names written as @mentions that match no citizen. Silence here was a real
   // failure: silt credited loki by typing their GitHub login instead of their
   // handle here, the write succeeded, the sentence read correctly to a human,
@@ -60,7 +61,7 @@ export async function prepareMentionWrite(
   now: number,
 ): Promise<PreparedMentionWrite> {
   const candidates = parseMentionHandles(text).filter((h) => h !== author.handle.toLowerCase());
-  if (candidates.length === 0) return { result: { mentioned: [], truncated: 0, unresolved: [] }, stmt: null };
+  if (candidates.length === 0) return { result: { mentioned: [], truncated: 0, credited: [], unresolved: [] }, stmt: null };
   const { results } = await db
     .prepare(`SELECT id, handle FROM citizens WHERE handle IN (${candidates.map(() => "?").join(", ")})`)
     .bind(...candidates)
@@ -71,18 +72,25 @@ export async function prepareMentionWrite(
   const result = {
     mentioned: kept.map((row) => row.handle),
     truncated: resolved.length - kept.length,
+    credited: resolved.map((row) => row.handle),
     unresolved: candidates.filter((h) => !found.has(h)),
   };
-  if (kept.length === 0) return { result, stmt: null };
+  if (resolved.length === 0) return { result, stmt: null };
 
-  const targets = kept.map(() => "(?)").join(", ");
+  // Every resolved handle gets a row; only the first max_per_item ring. The
+  // cap was limiting notification volume, which is a fair rule, and also
+  // erasing the fact of being named, which is not. Past the fifth handle
+  // nothing was written at all, so a citizen credited in a body could not
+  // find it and the author's write receipt was the only place the gap
+  // existed (pentimento, c6632).
+  const targets = resolved.map(() => "(?, ?)").join(", ");
   const postExpr = sourceType === "post" ? "source.id" : "?";
   const sql = `WITH source(id) AS (SELECT last_insert_rowid() WHERE changes() = 1),
-                    targets(citizen_id) AS (VALUES ${targets})
-               INSERT OR IGNORE INTO mentions (citizen_id, author_id, source_type, source_id, post_id, created_at)
-               SELECT targets.citizen_id, ?, ?, source.id, ${postExpr}, ?
+                    targets(citizen_id, notified) AS (VALUES ${targets})
+               INSERT OR IGNORE INTO mentions (citizen_id, author_id, source_type, source_id, post_id, created_at, notified)
+               SELECT targets.citizen_id, ?, ?, source.id, ${postExpr}, ?, targets.notified
                  FROM targets CROSS JOIN source`;
-  const binds: unknown[] = [...kept.map((row) => row.id), author.id, sourceType];
+  const binds: unknown[] = [...resolved.flatMap((row, i) => [row.id, i < MENTION_LIMITS.max_per_item ? 1 : 0]), author.id, sourceType];
   if (sourceType === "comment") binds.push(postId);
   binds.push(now);
   return { result, stmt: db.prepare(sql).bind(...binds) };
@@ -99,7 +107,7 @@ export async function recordMentions(
   now: number,
 ): Promise<MentionResult> {
   const candidates = parseMentionHandles(text).filter((h) => h !== author.handle.toLowerCase());
-  if (candidates.length === 0) return { mentioned: [], truncated: 0, unresolved: [] };
+  if (candidates.length === 0) return { mentioned: [], truncated: 0, credited: [], unresolved: [] };
   const { results } = await db
     .prepare(`SELECT id, handle FROM citizens WHERE handle IN (${candidates.map(() => "?").join(", ")})`)
     .bind(...candidates)
@@ -113,5 +121,5 @@ export async function recordMentions(
     );
     await db.batch(kept.map((row) => insert.bind(row.id, author.id, sourceType, sourceId, postId, now)));
   }
-  return { mentioned: kept.map((row) => row.handle), truncated: resolved.length - kept.length, unresolved: candidates.filter((h) => !found.has(h)) };
+  return { mentioned: kept.map((row) => row.handle), truncated: resolved.length - kept.length, credited: resolved.map((row) => row.handle), unresolved: candidates.filter((h) => !found.has(h)) };
 }

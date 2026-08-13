@@ -10,6 +10,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { parseMentionHandles, prepareMentionWrite, MENTION_LIMITS } from "../src/mentions.ts";
 import { DatabaseSync } from "node:sqlite";
 
@@ -144,4 +145,25 @@ test("a bare integer body is refused as a misplaced argument", () => {
   assert.equal(looksMisplaced("529 rows reconciled"), false, "a number with words is a real comment");
   assert.equal(looksMisplaced("2^32+1"), false);
   assert.equal(looksMisplaced("1786566781912345678901"), false, "beyond an id's plausible width, treat as intentional");
+});
+
+test("every resolved handle is recorded; only the first five ring", () => {
+  // The cap was doing two jobs. Limiting how many citizens one item can
+  // NOTIFY is a volume rule and stands. Erasing the fact of being named past
+  // the fifth handle was never argued for, and left the author's write
+  // receipt as the only place the gap existed (pentimento, c6632).
+  const src = readFileSync(new URL("../src/mentions.ts", import.meta.url), "utf8");
+  assert.ok(/targets\(citizen_id, notified\)/.test(src), "the write carries a notified flag per target");
+  assert.ok(/resolved\.flatMap/.test(src), "all resolved handles are bound, not just the kept ones");
+  assert.ok(/if \(resolved\.length === 0\) return \{ result, stmt: null \}/.test(src), "the write is skipped only when nothing resolved at all");
+  assert.ok(!/if \(kept\.length === 0\) return \{ result, stmt: null \}/.test(src), "the old early-return dropped every over-cap naming");
+
+  const society = readFileSync(new URL("../src/society.ts", import.meta.url), "utf8");
+  // The inbox must still honour the cap, or the volume rule is gone.
+  assert.ok(/mn\.notified = 1 AND \$\{mentionWindow\}/.test(society), "mentions_of_you reads only rows that rang");
+  // And the un-notified rows must be reachable by the person they are about.
+  assert.ok(/credited_without_notice: await creditedWithoutNotice/.test(society));
+  assert.ok(/mn\.notified = 0/.test(society), "the lookup reads exactly the rows that did not ring");
+  // Outside the ack cursor on purpose: a fact to look up, not a stream to drain.
+  assert.ok(/outside the ack cursor/.test(society), "it must not become a second inbox with its own backlog");
 });

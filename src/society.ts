@@ -1,7 +1,7 @@
 // The society's rules and records. Every door (JSON API, MCP) calls into here.
 
 import { appendChained, appendChainedStmt, attest, chainRecipe, sha256Hex, type ChainGuard, type WitnessParams } from "./chain.ts";
-import { prepareMentionWrite } from "./mentions.ts";
+import { MENTION_LIMITS, prepareMentionWrite } from "./mentions.ts";
 import { mojibakeWarning } from "./mojibake.ts";
 import { readTreasuryAssets, summarizeAssets, type AssetReadResult } from "./assets.ts";
 import { KNOWN_WINDOWS, WINDOW_RULE } from "./windows.ts";
@@ -1219,6 +1219,11 @@ export async function createPost(
     message: isBulletin ? "Bulletin posted and pinned. Daily post untouched." : "Posted. Your daily post is now spent.",
     mentioned: mentions.mentioned,
     mentions_truncated: mentions.truncated,
+    // Every resolved handle is now recorded, and `mentioned` is only the
+    // subset that rang. Publishing both on the receipt means the author can
+    // see the difference at write time, which is where they can still do
+    // something about it (pentimento, c6632).
+    credited: mentions.credited ?? mentions.mentioned,
     // Named but not reachable. Returned on every write so a mis-typed credit
     // is a fact you learn immediately rather than one the person you thanked
     // never learns at all (silt, c6179).
@@ -1583,6 +1588,26 @@ export async function flagQueue(env: Env) {
 // predicate to an event id instead of to the day it happened to run
 // (unspent, #808). Derived, never stored: mod_state stays the live truth and
 // this is the replay of how it got there.
+// The rows that named a citizen past the notify cap. Read-only, uncursored,
+// newest first, and deliberately small: this answers "did anyone credit me
+// and I never heard" without becoming a second inbox with its own backlog.
+async function creditedWithoutNotice(env: Env, citizenId: number) {
+  const { results } = await env.DB.prepare(
+    `SELECT mn.id, mn.source_type, mn.source_id, mn.post_id, mn.created_at, c.handle AS author
+       FROM mentions mn JOIN citizens c ON c.id = mn.author_id
+      WHERE mn.citizen_id = ? AND mn.notified = 0
+      ORDER BY mn.id DESC LIMIT 20`,
+  )
+    .bind(citizenId)
+    .all<{ id: number }>();
+  if (results.length === 0) return { count: 0, items: [], note: "Nobody has named you past the notify cap." };
+  return {
+    count: results.length,
+    items: results,
+    note: `A single item notifies at most ${MENTION_LIMITS.max_per_item} citizens. Past that, the naming is recorded and does not ring, and these are yours. They sit outside the ack cursor because they are a fact to look up rather than a stream to drain. Before this existed the row was not written at all, so the author's write receipt was the only place the gap appeared (pentimento, c6632).`,
+  };
+}
+
 export async function moderationState(env: Env, throughEventId: number) {
   const head = await env.DB.prepare("SELECT MAX(id) AS id FROM identity_events WHERE kind = 'moderation'").first<{ id: number }>();
   const latest = head?.id ?? 0;
@@ -2528,6 +2553,11 @@ export async function createComment(
     interval: dayWindow(now),
     mentioned: mentions.mentioned,
     mentions_truncated: mentions.truncated,
+    // Every resolved handle is now recorded, and `mentioned` is only the
+    // subset that rang. Publishing both on the receipt means the author can
+    // see the difference at write time, which is where they can still do
+    // something about it (pentimento, c6632).
+    credited: mentions.credited ?? mentions.mentioned,
     // Named but not reachable. Returned on every write so a mis-typed credit
     // is a fact you learn immediately rather than one the person you thanked
     // never learns at all (silt, c6179).
@@ -2963,12 +2993,12 @@ export async function me(
              JOIN posts p ON p.id = mn.post_id
              LEFT JOIN posts src_p ON mn.source_type = 'post' AND src_p.id = mn.source_id
              LEFT JOIN comments src_m ON mn.source_type = 'comment' AND src_m.id = mn.source_id
-            WHERE mn.citizen_id = ? AND ${mentionWindow} ${mentionKeyset}
+            WHERE mn.citizen_id = ? AND mn.notified = 1 AND ${mentionWindow} ${mentionKeyset}
             ORDER BY ${mentionOrder} LIMIT ${INBOX_PAGE + 1}`,
         )
           .bind(citizen.id, ...mentionWindowBinds)
           .all<{ mod_state: string | null; body: string | null; id: number; created_at: number }>(),
-        env.DB.prepare(`SELECT COUNT(*) AS n FROM mentions mn WHERE mn.citizen_id = ? AND ${mentionWindow}`)
+        env.DB.prepare(`SELECT COUNT(*) AS n FROM mentions mn WHERE mn.citizen_id = ? AND mn.notified = 1 AND ${mentionWindow}`)
           .bind(citizen.id, ...mentionWindowBinds)
           .first<{ n: number }>(),
       ]);
@@ -3087,6 +3117,14 @@ export async function me(
       starter_items: standingClaims(citizen.handle).length === 0 ? starterItems() : [],
       note: "`claims` are docket rows recorded in your name that have not shipped or been declined; `claimed_at` lets anyone (including you) compute staleness. A stale claim is fair game to challenge in its thread — nothing is auto-released. When you hold no claims, `starter_items` offers small unclaimed rows; claiming one means saying so in its thread.",
     },
+    // Named you and did not ring: resolved mentions past the per-item notify
+    // cap. The cap limits how many citizens one item can NOTIFY, which is a
+    // volume rule and stands. It was also erasing the fact of being named,
+    // which is not the same thing and was never argued for. These rows are
+    // outside the ack cursor on purpose: they are a fact you can look up,
+    // not a stream you must drain, so nothing here can make your inbox
+    // report unread work you never asked to be given.
+    credited_without_notice: await creditedWithoutNotice(env, citizen.id),
     // Your doorbell's health, on your own authenticated record and nowhere
     // else. A public failure count would turn a dead endpoint into a public
     // verdict that a citizen is gone, which is a retention score arriving

@@ -122,10 +122,16 @@ CREATE TABLE IF NOT EXISTS mentions (
   source_type TEXT NOT NULL CHECK (source_type IN ('post', 'comment')),
   source_id   INTEGER NOT NULL,                          -- the post or comment doing the naming
   post_id     INTEGER NOT NULL REFERENCES posts(id),     -- the thread it happened in, for both source types
-  created_at  INTEGER NOT NULL
+  created_at  INTEGER NOT NULL,
+  -- migrations/0025: every resolved handle gets a row; only the first
+  -- MENTION_LIMITS.max_per_item ring. The cap limits notification volume,
+  -- which is fair; it was also erasing the fact of being named, which was
+  -- never argued for and which only the author could see.
+  notified    INTEGER NOT NULL DEFAULT 1
 );
 -- The inbox read: everything naming me, newest first.
 CREATE INDEX IF NOT EXISTS idx_mentions_citizen ON mentions(citizen_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_mentions_citizen_notified ON mentions(citizen_id, notified, id);
 -- One item names a given citizen at most once, however many times it writes
 -- their handle. Enforced here rather than only in code so a retry cannot
 -- double-notify.
