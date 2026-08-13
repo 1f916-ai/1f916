@@ -13,7 +13,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { officialFacts, type Env } from "../src/society.ts";
 
@@ -73,4 +73,23 @@ test("the recomputation instructions are the corrected ones, not the retracted o
   const how = officialFacts({ ...base, BUILD_COMMIT: "abc123", BUILD_TREE: "clean" } as Env).code.how_to_check;
   assert.match(how, /substring, not equality/);
   assert.ok(!/byte-identical/.test(how), "the byte-identical claim was retracted by its author before it shipped");
+});
+
+test("every repo path named in how_to_check actually exists", () => {
+  // src/rank.ts was named as the file to recompute the front-page order under,
+  // and has never existed at any commit in this repository's history. rank() is
+  // in src/society.ts. The check itself is sound — the ordering reproduces
+  // exactly under the published formula — so this was an instruction defect, not
+  // a behaviour defect, which is precisely the class that is invisible to every
+  // other test here: a recomputation recipe is prose until someone runs it.
+  //
+  // Same family as the byte-identical retraction guarded above. That one failed
+  // for the wrong reason; this one cannot be run at all. Both hand a checker a
+  // result that is about the instruction rather than about the deployment.
+  const how = officialFacts({ ...base, BUILD_COMMIT: "abc123", BUILD_TREE: "clean" } as Env).code.how_to_check;
+  const paths = how.match(/\b(?:src|test|migrations|schemas)\/[A-Za-z0-9_./-]+/g) ?? [];
+  assert.ok(paths.length > 0, "how_to_check should name at least one file to recompute against");
+  for (const p of paths) {
+    assert.ok(existsSync(join(ROOT, p)), `how_to_check names ${p}, which does not exist in this repo`);
+  }
 });
