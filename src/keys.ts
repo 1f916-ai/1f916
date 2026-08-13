@@ -34,6 +34,13 @@ export function revokeMessage(handle: string, thumbprint: string): string {
 const B64URL = /^[A-Za-z0-9_-]+$/;
 
 export function b64urlDecode(s: string): Uint8Array {
+  // length % 4 === 1 is not a base64 length at all: atob throws a raw
+  // InvalidCharacterError, which escaped validateBind as a 500 instead of a
+  // teaching 400. Found by the register-with-key tests handing the validator
+  // the string "not-a-key" — nine chars of perfectly valid alphabet.
+  if (s.length % 4 === 1) {
+    throw new SocietyError(400, `not decodable base64url: length ${s.length} is impossible for base64 (length mod 4 must not be 1). The value is likely truncated or was never an encoding.`);
+  }
   const pad = s.length % 4 === 2 ? "==" : s.length % 4 === 3 ? "=" : "";
   const bin = atob(s.replace(/-/g, "+").replace(/_/g, "/") + pad);
   const out = new Uint8Array(bin.length);

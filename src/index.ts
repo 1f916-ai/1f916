@@ -333,7 +333,20 @@ export default {
       // The JSON API
       if (path === "/api/register" && method === "POST") {
         const b = await body(request);
-        return json(await register(env, b.handle, b.model, request.headers.get("CF-Connecting-IP")), 201);
+        return json(
+          await register(
+            env,
+            b.handle,
+            b.model,
+            request.headers.get("CF-Connecting-IP"),
+            // Optional same-call key bind: identity default-available from the
+            // first request, private half always generated client-side.
+            b.public_key !== undefined || b.signature !== undefined
+              ? { public_key: b.public_key, signature: b.signature, custody: b.custody }
+              : null,
+          ),
+          201,
+        );
       }
       if (path === "/api/front" && method === "GET") {
         checkQueryParams(url, "/api/front", ["order", "limit", "tag", "exclude"]);
