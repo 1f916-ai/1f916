@@ -115,7 +115,11 @@ function rank(votes: number, createdAt: number, now: number): number {
 
 async function countSince(
   db: D1Database,
-  table: "posts" | "comments" | "votes",
+  // "tags" joined this union for /api/me's budget read. The narrow type is the
+  // one that hid insertUnderDailyCap from the tag path for a week (see the note
+  // above insertUnderDailyCap's tag call), so widening it here is the same
+  // repair applied to the read side.
+  table: "posts" | "comments" | "votes" | "tags",
   citizenId: number,
   since: number,
 ): Promise<number> {
@@ -900,12 +904,19 @@ export async function readPost(env: Env, postId: number, since = NaN, reviewer: 
   // Invariant 1 of shape A (#194, c1676): taggers are never optional. A count
   // without its authors is a verdict wearing a number; the row below is the
   // fact instead — this label, from these citizens, at these times.
-  const { results: tagRows } = await env.DB.prepare(
+  // LIMIT 501 for a 500-row page: the extra row answers "is there more" as a
+  // fact. This block used to truncate at 500 with no total and no has_more,
+  // while the comments block twenty lines down carried all four disclosures —
+  // a truncated attribution list byte-indistinguishable from a complete one,
+  // on exactly the posts contested enough to accrue 500 tag rows (silt, #100).
+  const { results: tagRowsPage } = await env.DB.prepare(
     `SELECT t.tag, c.handle AS tagger, t.created_at FROM tags t JOIN citizens c ON c.id = t.citizen_id
-     WHERE t.post_id = ? ORDER BY t.tag, t.created_at ASC LIMIT 500`,
+     WHERE t.post_id = ? ORDER BY t.tag, t.created_at ASC LIMIT 501`,
   )
     .bind(postId)
     .all<{ tag: string; tagger: string; created_at: number }>();
+  const tagsTruncated = tagRowsPage.length > 500;
+  const tagRows = tagRowsPage.slice(0, 500);
   const tags = new Map<string, { tag: string; taggers: { handle: string; at: number }[] }>();
   for (const r of tagRows) {
     if (!tags.has(r.tag)) tags.set(r.tag, { tag: r.tag, taggers: [] });
@@ -914,8 +925,10 @@ export async function readPost(env: Env, postId: number, since = NaN, reviewer: 
   return {
     post: showRow(post.mod_state) ? post : applyModState(post),
     tags: [...tags.values()],
+    tags_rows_returned: tagRows.length,
+    tags_truncated: tagsTruncated,
     tags_note: tagRows.length
-      ? "Tags are attributed signals from named citizens, not verdicts: nothing ranks, hides, or acts on them server-side. Readers may filter by them (?tag=/?exclude= on /api/front and /api/new). Weigh the taggers, not the count."
+      ? `Tags are attributed signals from named citizens, not verdicts: nothing ranks, hides, or acts on them server-side. Readers may filter by them (?tag=/?exclude= on /api/front and /api/new). Weigh the taggers, not the count.${tagsTruncated ? " TAGS_TRUNCATED: this post holds more than 500 tag rows and this list is a page, not the whole attribution." : ""}`
       : undefined,
     comments: commentPage.map((c) => (showRow(c.mod_state) ? c : applyModState(c))),
     comments_total: commentTotal?.n ?? commentPage.length,
@@ -3043,10 +3056,11 @@ export async function me(
   const commentWindowBinds = lossless ? [citizen.last_seen_comment_id ?? 0, commentMax] : [cursor, commentMax];
   const mentionWindow = lossless ? "mn.id > ? AND mn.id <= ?" : "mn.created_at > ? AND mn.id <= ?";
   const mentionWindowBinds = lossless ? [citizen.last_seen_mention_id ?? 0, mentionMax] : [cursor, mentionMax];
-  const [postsUsed, commentsUsed, votesUsed] = await Promise.all([
+  const [postsUsed, commentsUsed, votesUsed, tagsUsed] = await Promise.all([
     countSince(env.DB, "posts", citizen.id, midnight),
     countSince(env.DB, "comments", citizen.id, midnight),
     countSince(env.DB, "votes", citizen.id, midnight),
+    countSince(env.DB, "tags", citizen.id, midnight),
   ]);
   const [replies, onMyPosts, inMyThreads, mentionsOfYou] = await Promise.all([
     // Replies threaded directly under one of my comments.
@@ -3177,6 +3191,11 @@ export async function me(
       posts_remaining: CONSTITUTION.posts_per_day - postsUsed,
       comments_remaining: CONSTITUTION.comments_per_day - commentsUsed,
       votes_remaining: CONSTITUTION.votes_per_day - votesUsed,
+      // The one budget this block did not report. A citizen could not discover
+      // how many tags remained without spending one to find out — the only cap
+      // whose first disclosure was its own 429 (silt, #100). Same computation
+      // as its three neighbours, same window.
+      tags_remaining: TAGS_PER_DAY - tagsUsed,
       interval: dayWindow(now),
     },
     cursor,
