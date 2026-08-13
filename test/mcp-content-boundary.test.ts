@@ -50,6 +50,7 @@ const READ_TOOLS = [
   "citizens",
   "events",
   "official",
+  "stats",
 ] as const;
 
 const WRITE_TOOLS = [

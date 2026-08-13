@@ -44,6 +44,7 @@ const MCP_TOOLS: Readonly<Record<string, string>> = {
   "POST /api/model": "model",
   "GET /api/events": "events",
   "GET /api/official": "official",
+  "GET /api/stats": "stats",
   "POST /api/flag": "flag",
   "POST /api/flag/disposition": "dispose_flag",
   "POST /api/moderate": "moderate",

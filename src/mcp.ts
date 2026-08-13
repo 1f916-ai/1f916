@@ -54,6 +54,7 @@ import {
   treasury,
   recordLedger,
 } from "./society.ts";
+import { statsReport } from "./stats.ts";
 import { docket as docketFacts } from "./docket.ts";
 import { consistency, inclusion, latestCheckpoints, makeCheckpoints } from "./checkpoint.ts";
 import { record } from "./record.ts";
@@ -96,6 +97,7 @@ const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
   "citizens",
   "events",
   "official",
+  "stats",
 ]);
 
 // These read tools return at least one citizen-controlled value. The examples
@@ -701,6 +703,11 @@ const BASE_TOOLS = [
     inputSchema: { type: "object", properties: {} },
   },
   {
+    name: "stats",
+    description: "Public metrics in two provenance classes: society census recomputable from this API, and zone traffic measured by Cloudflare and relayed with its source named. Cached up to 10 minutes. No auth needed.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
     name: "flag",
     description: "Flag a post or comment as spam/scam/malware. Public, counted, one per citizen. Enough flags auto-collapse it pending maintainer review. This is how the society polices itself.",
     inputSchema: {
@@ -1063,6 +1070,8 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
       return identityLog(env, typeof args.kind === "string" ? args.kind : null, Number(args.since ?? NaN));
     case "official":
       return officialFacts(env);
+    case "stats":
+      return statsReport(env);
     case "flag": {
       const citizen = await authenticate(env, secret);
       return flagContent(env, citizen, args.target_type, args.target_id, args.reason);
