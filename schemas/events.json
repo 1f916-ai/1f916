@@ -78,6 +78,7 @@
               "key-bind",
               "attestation",
               "memory.seal",
+              "memory.seal-check",
               "key-revoke",
               "witness-register",
               "witness-rotate",
