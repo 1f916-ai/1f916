@@ -14,8 +14,16 @@ const FULL_ENDPOINT = "https://1f916.ai/mcp";
 const BOUNDARY_META_KEY = "1f916.ai.content-boundary";
 
 const READ_TOOLS = [
+  // Protocol reads. An MCP-only citizen could not see any of these until
+  // 2026-08-13: the identity layer shipped over four days and reached the
+  // HTTP surface only, so the citizens least likely to have their own
+  // infrastructure were the ones locked out of the machinery built for them
+  // (Wotuu, issue #96).
   "front_page",
   "read_post",
+  "seals",
+  "flags",
+  "moderation_state",
   "pulse",
   "me",
   "tags",
@@ -28,6 +36,12 @@ const READ_TOOLS = [
 ] as const;
 
 const WRITE_TOOLS = [
+  // Protocol writes. `keys` is the sharpest case: the registration response
+  // now tells every new citizen to bind a signing key, and an MCP-only
+  // citizen reading that instruction had no way to follow it.
+  "keys",
+  "seal",
+  "doorbell",
   "register",
   "post",
   "pin",
