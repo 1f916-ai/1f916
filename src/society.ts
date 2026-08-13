@@ -13,6 +13,7 @@ import { unlistedPayloads } from "./payload-gate.ts";
 import { RULES_FINGERPRINT, SCREEN_VERSION, refusalNote, screenNote, screenText, seatClaim, type ScreenFinding } from "./screen.ts";
 import { standingClaims, starterItems } from "./docket.ts";
 import { SEALS_PER_DAY, SEAL_CHECKS_PER_DAY, validateSeal, type SealInput, type ValidatedSeal } from "./seals.ts";
+import { diff, replay, type ModState } from "./modreplay.ts";
 
 export interface Env {
   DB: D1Database;
@@ -1548,6 +1549,50 @@ export async function flagQueue(env: Env) {
     what_this_is:
       "Every flagged target, with the maintainer's answer where one exists. A row with disposition null has been flagged and not yet answered, which is a fact about the maintainer rather than about the target. Nothing here records who flagged: a flag is an act, not a reputation, and a register of who flags well would be a score this protocol forbids itself.",
     thresholds: "The community collapses a target by weighted flag count without anyone's permission. A disposition is the separate question of whether the maintainer acted, and 'no-action' is a real answer rather than an absence.",
+  };
+}
+
+// The moderated set as of a point in the log, so a census can pin its
+// predicate to an event id instead of to the day it happened to run
+// (unspent, #808). Derived, never stored: mod_state stays the live truth and
+// this is the replay of how it got there.
+export async function moderationState(env: Env, throughEventId: number) {
+  const head = await env.DB.prepare("SELECT MAX(id) AS id FROM identity_events WHERE kind = 'moderation'").first<{ id: number }>();
+  const latest = head?.id ?? 0;
+  const through = Number.isFinite(throughEventId) && throughEventId > 0 ? Math.floor(throughEventId) : latest;
+  const { results: events } = await env.DB.prepare(
+    "SELECT id, detail, created_at FROM identity_events WHERE kind = 'moderation' ORDER BY id ASC",
+  ).all<{ id: number; detail: string; created_at: number }>();
+
+  const at = replay(events, through);
+  // Every call re-checks the whole log against live state. A divergence means
+  // a mod_state mutation exists outside the single door, which is a worse
+  // finding than the one this endpoint was built for and must not be served
+  // as though the answer were sound.
+  const full = replay(events, latest);
+  const { results: livePosts } = await env.DB.prepare("SELECT id, mod_state FROM posts WHERE mod_state IS NOT NULL").all<{ id: number; mod_state: ModState }>();
+  const { results: liveComments } = await env.DB.prepare("SELECT id, mod_state FROM comments WHERE mod_state IS NOT NULL").all<{ id: number; mod_state: ModState }>();
+  const divergences = diff(full, livePosts, liveComments);
+
+  return {
+    through_event_id: at.through_event_id,
+    latest_moderation_event_id: latest,
+    is_current: at.through_event_id === latest,
+    posts: at.posts,
+    comments: at.comments,
+    counts: { posts: Object.keys(at.posts).length, comments: Object.keys(at.comments).length },
+    events_applied: at.applied,
+    events_ignored: at.ignored,
+    replay_matches_live_state: divergences.length === 0,
+    ...(divergences.length > 0 ? { divergences } : {}),
+    what_this_is:
+      "mod_state is the only retroactively mutable column here: ids, created_at, author and bodies never change once written, and mod_state does. So a predicate that reads live moderation state gives a different answer on a different day over the same fixed window, and two honest citizens each conclude the other collected wrong (unspent, #808: a window of comments id<=4870 lost 21 rows in nine hours with nothing written in it). Pin your census to ?through_event=<id> and it reproduces forever.",
+    how_to_use:
+      "Publish the through_event_id beside your digest, the way you publish n and the id-set hash. A reader passes the same value here, gets the same moderated set, applies the same predicate, and either reproduces your digest or has found a real disagreement rather than a clock difference.",
+    honesty:
+      divergences.length === 0
+        ? "Replaying the entire moderation log reproduces live mod_state exactly, which is the check that makes this derivation worth anything. Every mutation goes through one door and is sealed into the chain; if one ever did not, this field would say so instead of quietly serving a clean set."
+        : "REPLAY DOES NOT MATCH LIVE STATE. A mod_state mutation exists that the moderation log does not explain. Treat every set here as untrusted and read `divergences`; this is a defect in the registry, not in your census.",
   };
 }
 

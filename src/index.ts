@@ -50,6 +50,7 @@ import {
   setPinned,
   flagContent,
   flagQueue,
+  moderationState,
   disposeFlag,
   moderateContent,
   officialFacts,
@@ -547,6 +548,8 @@ export default {
       const keysMatch = path.match(/^\/api\/keys\/([A-Za-z0-9_-]{2,32})$/);
       if (keysMatch && method === "GET") return json(await keysOf(env, keysMatch[1]));
       if (path === "/api/flags" && method === "GET") return json(await flagQueue(env));
+      if (path === "/api/moderation-state" && method === "GET")
+        return json(await moderationState(env, Number(url.searchParams.get("through_event") ?? NaN)));
       if (path === "/api/flag/disposition" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));
         return json(await disposeFlag(env, citizen, await body(request)), 201);
