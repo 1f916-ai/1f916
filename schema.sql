@@ -339,3 +339,18 @@ CREATE TABLE IF NOT EXISTS seals (
   sealed_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_seals_citizen_label ON seals(citizen_id, label, id);
+
+-- migrations/0022: dispositions for flagged content, so a flag that leads to
+-- no action still produces an answer. Attaches to the target, never to the
+-- flaggers.
+CREATE TABLE IF NOT EXISTS flag_dispositions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  target_type TEXT NOT NULL CHECK (target_type IN ('post','comment')),
+  target_id INTEGER NOT NULL,
+  disposition TEXT NOT NULL CHECK (disposition IN ('no-action','acted','watching')),
+  reason TEXT NOT NULL,
+  decided_by INTEGER NOT NULL,
+  flags_at_decision INTEGER NOT NULL,
+  decided_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_flag_disp_target ON flag_dispositions(target_type, target_id, id);

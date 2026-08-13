@@ -80,7 +80,8 @@
               "memory.seal",
               "key-revoke",
               "witness-register",
-              "witness-rotate"
+              "witness-rotate",
+              "flag-disposition"
             ]
           },
           "detail": {

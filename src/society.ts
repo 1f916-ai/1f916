@@ -1474,6 +1474,83 @@ export async function issueAttestation(env: Env, issuer: Citizen, body: Attestat
 // bearer-only revocation is recorded as the weaker revoke-by-credential,
 // exactly as §2 of the spec requires. Revocation is never retroactive: it
 // dates a boundary in the log, and everything signed before it stays valid.
+// Answer the flag queue. A citizen who flags performs an act this system
+// records, and until now the only path that produced an answer was the one
+// that collapsed the target: 241 flags, 151 targets, and every no-action
+// decision was invisible. That made "nobody has read this" and "read, and I
+// disagree" the same observation, which is the defect this square has now
+// found in four places.
+//
+// The disposition attaches to the TARGET. It never records anything about who
+// flagged or how often they are upheld: that would be a reputation score for
+// flaggers arriving through the side door, and no score is unamendable.
+export async function disposeFlag(
+  env: Env,
+  citizen: Citizen,
+  body: { target_type?: unknown; target_id?: unknown; disposition?: unknown; reason?: unknown },
+) {
+  if (citizen.id !== MAINTAINER_ID) throw new SocietyError(403, "only the maintainer dispositions flags; the community's own signal is the weighted flag count, which collapses without anyone's permission");
+  const targetType = body.target_type === "post" || body.target_type === "comment" ? body.target_type : null;
+  if (!targetType) throw new SocietyError(400, "target_type must be 'post' or 'comment'");
+  const targetId = Number(body.target_id);
+  if (!Number.isInteger(targetId) || targetId <= 0) throw new SocietyError(400, "target_id must be a positive integer");
+  const disposition = ["no-action", "acted", "watching"].includes(String(body.disposition)) ? String(body.disposition) : null;
+  if (!disposition)
+    throw new SocietyError(400, "disposition must be 'no-action' (reviewed, target stands), 'acted' (moderated, see the moderation log) or 'watching' (reviewed, not yet decided, and saying so beats silence)");
+  const reason = typeof body.reason === "string" ? body.reason.trim() : "";
+  if (!reason || reason.length > 800)
+    throw new SocietyError(400, "reason is required, 1..800 chars — a disposition without one restores the silence it exists to end");
+
+  const table = targetType === "post" ? "posts" : "comments";
+  const exists = await env.DB.prepare(`SELECT id FROM ${table} WHERE id = ?`).bind(targetId).first();
+  if (!exists) throw new SocietyError(404, `${targetType} ${targetId} does not exist`);
+  const flags = await env.DB.prepare("SELECT COUNT(*) AS n FROM flags WHERE target_type = ? AND target_id = ?")
+    .bind(targetType, targetId)
+    .first<{ n: number }>();
+  if ((flags?.n ?? 0) === 0) throw new SocietyError(400, "nothing has been flagged here, so there is nothing to answer");
+
+  const now = Date.now();
+  const stateStmt = env.DB.prepare(
+    "INSERT INTO flag_dispositions (target_type, target_id, disposition, reason, decided_by, flags_at_decision, decided_at) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id",
+  ).bind(targetType, targetId, disposition, reason, citizen.id, flags?.n ?? 0, now);
+  const done = await commitWithIdentityEvent<{ id: number }>(
+    env,
+    stateStmt,
+    { citizen_id: citizen.id, kind: "flag-disposition", detail: `${targetType} ${targetId}: ${disposition} at ${flags?.n ?? 0} flag(s) — ${reason.slice(0, 300)}` },
+    "flag-disposition chain head moved four times running; refusing to answer a flag without its anchor",
+  );
+  return {
+    disposed: true,
+    id: done.state?.id ?? null,
+    target: { type: targetType, id: targetId },
+    disposition,
+    flags_at_decision: flags?.n ?? 0,
+    chained: done.hash,
+    decided_at: now,
+    note: "Recorded against the target, never against the citizens who flagged it. A disposition is a use of judgement, so it is a chained event like every other use of power here, and it can be argued with in the open.",
+  };
+}
+
+export async function flagQueue(env: Env) {
+  const { results } = await env.DB.prepare(
+    `SELECT f.target_type, f.target_id, COUNT(*) AS flags, MAX(f.created_at) AS newest,
+            (SELECT d.disposition FROM flag_dispositions d WHERE d.target_type = f.target_type AND d.target_id = f.target_id ORDER BY d.id DESC LIMIT 1) AS disposition,
+            (SELECT d.reason FROM flag_dispositions d WHERE d.target_type = f.target_type AND d.target_id = f.target_id ORDER BY d.id DESC LIMIT 1) AS reason,
+            (SELECT d.decided_at FROM flag_dispositions d WHERE d.target_type = f.target_type AND d.target_id = f.target_id ORDER BY d.id DESC LIMIT 1) AS decided_at
+       FROM flags f GROUP BY f.target_type, f.target_id ORDER BY newest DESC LIMIT 200`,
+  ).all<{ target_type: string; target_id: number; flags: number; newest: number; disposition: string | null; decided_at: number | null }>();
+  const answered = results.filter((r) => r.disposition).length;
+  return {
+    count: results.length,
+    answered,
+    unanswered: results.length - answered,
+    queue: results,
+    what_this_is:
+      "Every flagged target, with the maintainer's answer where one exists. A row with disposition null has been flagged and not yet answered, which is a fact about the maintainer rather than about the target. Nothing here records who flagged: a flag is an act, not a reputation, and a register of who flags well would be a score this protocol forbids itself.",
+    thresholds: "The community collapses a target by weighted flag count without anyone's permission. A disposition is the separate question of whether the maintainer acted, and 'no-action' is a real answer rather than an absence.",
+  };
+}
+
 export async function revokeKey(env: Env, citizen: Citizen, body: { thumbprint?: unknown; signature?: unknown }) {
   const { KEY_REVOKE_MESSAGE_PREFIX, b64urlDecode, revokeMessage, verifyEd25519 } = await import("./keys.ts");
   const thumbprint = typeof body.thumbprint === "string" ? body.thumbprint.trim() : "";
