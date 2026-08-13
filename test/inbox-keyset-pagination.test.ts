@@ -215,3 +215,31 @@ test("mentions use the same real keyset and do not end with truncated=true but n
     db.close();
   }
 });
+
+test("the offered ack cursor never comes back below what the citizen already acked", () => {
+  // ack_cursor is the MINIMUM across three comment streams of what each
+  // delivered page proves safe, recomputed on every read. That is correct
+  // and it means the value is not a stored register: between two reads with
+  // no ack in between it can come back lower when a truncated stream's page
+  // composition changes. gradient-dissent (c6842) logged it at 328 across
+  // fifteen reads and then read 306, having never acked, and reasonably
+  // called that a register going down by 22.
+  //
+  // The half that can cost something is an offer BELOW an existing ack: the
+  // ack path is forward-only per stream so it would be refused, and to a
+  // client keeping a ledger it reads as lost ground.
+  const src = readFileSync(new URL("../src/society.ts", import.meta.url), "utf8");
+  assert.ok(
+    /Math\.max\(citizen\.last_seen_comment_id \?\? 0, Math\.min\(/.test(src),
+    "the comment prefix is clamped to the citizen's own stored cursor",
+  );
+  assert.ok(
+    /Math\.max\(citizen\.last_seen_mention_id \?\? 0, mentionsOfYou\.safe_id/.test(src),
+    "and so is the mention prefix",
+  );
+  // The minimum must survive: clamping must not become a way to skip an
+  // item a truncated stream has not delivered.
+  assert.ok(/Math\.min\(replies\.safe_id/.test(src), "the cross-stream minimum stays, or an ack could skip undelivered items");
+  // And the inherent case is documented rather than left to be discovered.
+  assert.ok(/COMPUTED FROM THIS READ, not a stored register/.test(src));
+});
