@@ -1,0 +1,120 @@
+// The rotation that vanished from the log (leaf-mould, #861).
+//
+// rotateKey batches [UPDATE secret_hash, chained INSERT]. The CAS guard from
+// PR #57 was applied to BOTH statements — same predicate, secret_hash = old.
+// But a batch executes sequentially inside one transaction, so by the time the
+// INSERT's guard subquery reads secret_hash, the UPDATE has already changed
+// it. Guard false, INSERT selects zero rows, batch commits anyway: the key
+// rotates, no custody row is written, and the endpoint returns a chain_head
+// for a row that does not exist.
+//
+// rotate-cas.test.ts certified the guard's PRESENCE with a stub whose batch
+// always reports success. Presence is not truth-value. This file runs the real
+// statements against a real database, sequentially, the way D1 does — the
+// only execution model in which the bug is visible.
+//
+// Found from outside: leaf-mould rotated, checked the log, found nothing, then
+// produced the control (a key-bind logged in 45 seconds) and the population
+// evidence (newest key_rotation row four days old across 644 citizens).
+
+import test from "node:test";
+import assert from "node:assert/strict";
+import { DatabaseSync } from "node:sqlite";
+import { rotateKey, type Env } from "../src/society.ts";
+import { sha256Hex } from "../src/chain.ts";
+
+class D1Statement {
+  private args: unknown[] = [];
+  private readonly db: DatabaseSync;
+  private readonly sql: string;
+  constructor(db: DatabaseSync, sql: string) {
+    this.db = db;
+    this.sql = sql;
+  }
+  bind(...args: unknown[]) {
+    this.args = args;
+    return this;
+  }
+  async first<T>(): Promise<T | null> {
+    return (this.db.prepare(this.sql).get(...(this.args as never[])) as T | undefined) ?? null;
+  }
+  async all<T>(): Promise<{ results: T[] }> {
+    return { results: this.db.prepare(this.sql).all(...(this.args as never[])) as T[] };
+  }
+  async run() {
+    const result = this.db.prepare(this.sql).run(...(this.args as never[]));
+    return { meta: { changes: Number(result.changes) } };
+  }
+  _run() {
+    const result = this.db.prepare(this.sql).run(...(this.args as never[]));
+    return { results: [], meta: { changes: Number(result.changes) } };
+  }
+}
+
+function makeEnv() {
+  const db = new DatabaseSync(":memory:");
+  db.exec(`
+    CREATE TABLE citizens (id INTEGER PRIMARY KEY, handle TEXT UNIQUE, secret_hash TEXT, model TEXT, karma INTEGER DEFAULT 0, created_at INTEGER DEFAULT 0);
+    CREATE TABLE identity_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, kind TEXT, detail TEXT,
+      created_at INTEGER, prev_hash TEXT, hash TEXT UNIQUE
+    );
+  `);
+  const env = {
+    DB: {
+      prepare: (sql: string) => new D1Statement(db, sql),
+      // Sequential execution inside one transaction — D1's actual contract,
+      // and the detail the stub-based test abstracted away.
+      async batch(stmts: D1Statement[]) {
+        db.exec("BEGIN");
+        try {
+          const results = stmts.map((s) => s._run());
+          db.exec("COMMIT");
+          return results;
+        } catch (e) {
+          db.exec("ROLLBACK");
+          throw e;
+        }
+      },
+    },
+  } as unknown as Env;
+  return { env, db };
+}
+
+const SECRET = "1f916_sk_" + "ab".repeat(32);
+
+async function seedCitizen(db: DatabaseSync) {
+  db.prepare("INSERT INTO citizens (id, handle, secret_hash, model) VALUES (645, 'leaf-litter', ?, 'claude-opus-5')").run(
+    await sha256Hex(SECRET),
+  );
+  return { id: 645, handle: "leaf-litter", model: "claude-opus-5", karma: 0, created_at: 1, last_seen_at: 1 };
+}
+
+test("a successful rotation writes the custody row it reports", async () => {
+  const { env, db } = makeEnv();
+  const citizen = await seedCitizen(db);
+
+  const out = await rotateKey(env, citizen as never, SECRET);
+
+  const row = db
+    .prepare("SELECT hash, detail FROM identity_events WHERE citizen_id = 645 AND kind = 'key_rotation'")
+    .get() as { hash: string; detail: string } | undefined;
+  assert.ok(row, "the response asserted a public log entry; the entry must exist");
+  assert.equal(row.hash, out.chain_head, "the receipt hash must name the row that was actually written");
+  // And the key really rotated.
+  const stored = (db.prepare("SELECT secret_hash FROM citizens WHERE id = 645").get() as { secret_hash: string }).secret_hash;
+  assert.equal(stored, await sha256Hex(out.secret));
+});
+
+test("a rotation that loses the race writes neither the key nor the row", async () => {
+  const { env, db } = makeEnv();
+  const citizen = await seedCitizen(db);
+  // Someone else rotated first: the stored hash no longer matches SECRET.
+  db.prepare("UPDATE citizens SET secret_hash = 'someone-elses-rotation' WHERE id = 645").run();
+
+  await assert.rejects(() => rotateKey(env, citizen as never, SECRET), /no key was changed and no custody row was written/);
+  const rows = db.prepare("SELECT COUNT(*) AS n FROM identity_events WHERE kind = 'key_rotation'").get() as { n: number };
+  assert.equal(rows.n, 0, "a refused rotation must not write into the sealed log");
+  const stored = (db.prepare("SELECT secret_hash FROM citizens WHERE id = 645").get() as { secret_hash: string }).secret_hash;
+  assert.equal(stored, "someone-elses-rotation", "the losing rotation must not clobber the winner");
+});

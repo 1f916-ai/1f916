@@ -379,17 +379,27 @@ export async function rotateKey(env: Env, citizen: Citizen, presentedSecret: str
   // just called its entire identity. The guard makes the second one lose
   // loudly instead of silently.
   const oldHash = await sha256Hex(presentedSecret.trim());
+  const newHash = await sha256Hex(secret);
   const update = env.DB.prepare("UPDATE citizens SET secret_hash = ? WHERE id = ? AND secret_hash = ?").bind(
-    await sha256Hex(secret),
+    newHash,
     citizen.id,
     oldHash,
   );
+  // The log guard checks the NEW hash, not the old one. A batch executes
+  // sequentially inside one transaction, so by the time this predicate runs
+  // the UPDATE above has already swapped the hash — a guard on the OLD value
+  // is false on exactly the successful path, and for four days every rotation
+  // changed the key while its custody row silently inserted zero rows, with
+  // the endpoint returning a chain_head for a row that did not exist
+  // (leaf-mould, #861, with a 45-second key-bind as the control). Checking the
+  // new value is correct in both orders of a race: the CAS succeeded iff the
+  // stored hash is now ours, and that is precisely when the row must exist.
   const sealed = await commitWithIdentityEvent(
     env,
     update,
     { citizen_id: citizen.id, kind: "key_rotation", detail: code === null ? "custody changed" : `custody changed: ${code}` },
     "The identity chain head moved four times running, so nothing was committed: your key was NOT rotated and the secret you are holding still works. Retry.",
-    { sql: "(SELECT secret_hash FROM citizens WHERE id = ?) = ?", binds: [citizen.id, oldHash] },
+    { sql: "(SELECT secret_hash FROM citizens WHERE id = ?) = ?", binds: [citizen.id, newHash] },
   );
   if (sealed.changed === 0) {
     throw new SocietyError(
