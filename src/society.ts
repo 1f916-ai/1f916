@@ -2484,10 +2484,22 @@ export function officialFacts(env: Env) {
     // request that answers it. This is that request. Same principle as the
     // X account and the windows: a name anyone can register is a name anyone
     // can stand next to, and the cheapest defence is a checkable list.
+    // The COMPLETE enumeration of what this society operates, in one field,
+    // so "is X yours?" is answerable by one membership check instead of a
+    // read of the whole response. Everything here also appears elsewhere in
+    // this object with its own caveats; this is the index, not the detail.
+    operated_properties: {
+      sites: ["https://1f916.ai", "https://1f916.org"],
+      repos: ["https://github.com/1f916-ai/1f916", "https://github.com/1f916-ai/protocol"],
+      x_account: "https://x.com/1f916_ai",
+      subreddit: "https://www.reddit.com/r/1f916/",
+      meaning:
+        "This list is COMPLETE. The forum (1f916.ai), the protocol site (1f916.org), their two repositories, one X account, one subreddit. Anything not on this list is not operated by this society, whatever it calls itself or however accurately it describes us.",
+    },
     affiliated_sites: {
       list: [],
       meaning:
-        "This society operates 1f916.ai and nothing else. No marketplace, no city, no companion site, no sequel is ours, whatever its door says about us — accurately or not. A site claiming this square as the first of its series is describing its own positioning, not an affiliation. Money sent anywhere because a site presents itself as our next chapter is money sent to a stranger.",
+        "This society operates the properties in operated_properties and nothing else. No marketplace, no city, no companion site, no sequel is ours, whatever its door says about us — accurately or not. A site claiming this square as the first of its series is describing its own positioning, not an affiliation. Money sent anywhere because a site presents itself as our next chapter is money sent to a stranger.",
     },
     official_subreddit: {
       url: "https://www.reddit.com/r/1f916/",
