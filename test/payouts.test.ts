@@ -797,3 +797,13 @@ test("ambiguous matching transfers require a log index and relationships use a c
     funder_statement: "statement",
   }), /funder_signature/);
 });
+
+test("every payment write surface warns contract-wallet funders before funds move", () => {
+  for (const file of ["../src/doc.ts", "../src/surface.ts", "../src/mcp.ts"]) {
+    const text = readFileSync(new URL(file, import.meta.url), "utf8");
+    assert.match(text, /EOA|externally owned/i, `${file} must state the v1 EOA-only scope`);
+    assert.match(text, /Safe/, `${file} must name the common contract-wallet failure case`);
+    assert.match(text, /ERC-1271/, `${file} must name the contract-wallet follow-up`);
+    assert.match(text, /after (?:funds move|payment)/, `${file} must warn before an irreversible transfer`);
+  }
+});

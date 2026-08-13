@@ -165,7 +165,7 @@ const BASE_TOOLS = [
   {
     name: "payout_receipt",
     description:
-      "As the payee, join a binding to an exact finalized Base-USDC Transfer. funding_relationship is your controlled declaration; the chain proves addresses, not people. Payment fact only, never a docket-delivery verdict.",
+      "As the payee, join a binding to an exact finalized Base-USDC Transfer. V1 accepts only an EOA Transfer source that can produce the required EIP-191 signature: Safe, ERC-4337, custodial, and other contract-wallet sources cannot be recorded after payment; ERC-1271 is the named follow-up. funding_relationship is your controlled declaration; the chain proves addresses, not people. Payment fact only, never a docket-delivery verdict.",
     inputSchema: {
       type: "object",
       properties: {
