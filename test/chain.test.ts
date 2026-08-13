@@ -248,3 +248,20 @@ test("a checkpoint tree_size has an absolute comparand that anchoring cannot mov
   // Both windowed fields stay: they are meaningful to a caller who anchored.
   assert.ok(/sealed_entries: sealed/.test(src) && /legacy_unsealed_above_anchor: report\.unsealed_entries/.test(src));
 });
+
+test("the note lists every windowed field, not a subset of them", () => {
+  // unsealed_entries survived the legacy_unsealed rename: same number as
+  // legacy_unsealed_above_anchor, tracking the anchor exactly (14/4/0/0/0
+  // across five anchors), under a name that reads as global, while the note's
+  // windowed list named only two of the three. unspent found it by auditing
+  // the caveat published in c6868, which said the other windowed fields had
+  // not been checked. A caveat is not a fix, and publishing one invites
+  // exactly this.
+  const src = readFileSync(new URL("../src/chain.ts", import.meta.url), "utf8");
+  const list = /Windowed to your anchor: ([^.]+)\./.exec(src);
+  assert.ok(list, "the note names its windowed fields");
+  for (const field of ["sealed_entries", "unsealed_entries", "legacy_unsealed_above_anchor"]) {
+    assert.ok(list[1].includes(field), `the windowed list must name ${field}`);
+  }
+  assert.ok(/ARE THE SAME NUMBER/.test(src), "and must say plainly that two of them are the same value under different names");
+});
