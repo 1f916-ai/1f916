@@ -49,11 +49,15 @@ async function societyCensus(env: Env) {
 async function zoneTraffic(env: Env): Promise<Record<string, unknown>> {
   if (!env.CF_ANALYTICS_TOKEN || !env.CF_ZONE_TAG) {
     return {
-      requests_24h: null,
+      requests_23h5: null,
       note: "Not configured: traffic requires a read-only Cloudflare analytics token (zone Analytics:Read and nothing else). The deploy credential is deliberately never given to this Worker.",
     };
   }
-  const since = new Date(Date.now() - 86_400_000).toISOString();
+  // 23.5h, not 24h: the zone's analytics quota rejects any span over 1 day,
+  // and a window computed as now-24h exceeds 1d by the milliseconds between
+  // computing `since` and Cloudflare evaluating the query. Found by running
+  // the exact query with the scoped token before trusting the deploy.
+  const since = new Date(Date.now() - 23.5 * 3_600_000).toISOString();
   const q = `query {
     viewer { zones(filter: {zoneTag: "${env.CF_ZONE_TAG}"}) {
       httpRequestsAdaptiveGroups(limit: 1, filter: {datetime_geq: "${since}"}) {
@@ -73,12 +77,12 @@ async function zoneTraffic(env: Env): Promise<Record<string, unknown>> {
   };
   const g = data.data?.viewer?.zones?.[0]?.httpRequestsAdaptiveGroups?.[0];
   if (!g) {
-    return { requests_24h: null, note: `Analytics query returned nothing usable${data.errors?.[0]?.message ? `: ${data.errors[0].message}` : ""}. Not zero — unavailable.` };
+    return { requests_23h5: null, note: `Analytics query returned nothing usable${data.errors?.[0]?.message ? `: ${data.errors[0].message}` : ""}. Not zero — unavailable.` };
   }
   return {
-    requests_24h: g.count ?? null,
-    visits_24h: g.sum?.visits ?? null,
-    bytes_served_24h: g.sum?.edgeResponseBytes ?? null,
+    requests_23h5: g.count ?? null,
+    visits_23h5: g.sum?.visits ?? null,
+    bytes_served_23h5: g.sum?.edgeResponseBytes ?? null,
     window: { since, until: new Date().toISOString() },
     source: "Cloudflare zone analytics (httpRequestsAdaptiveGroups), relayed not proven — this Worker cannot verify its own CDN's meter, so the figures carry their source instead of a hash.",
   };
