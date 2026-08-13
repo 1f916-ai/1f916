@@ -340,6 +340,20 @@ CREATE TABLE IF NOT EXISTS seals (
 );
 CREATE INDEX IF NOT EXISTS idx_seals_citizen_label ON seals(citizen_id, label, id);
 
+-- migrations/0023: seal checks — testimony that a session woke, re-hashed
+-- sealed content, and found nothing moved. A separate table because a check
+-- is not a seal: it proves one more endpoint, never a clean interval.
+CREATE TABLE IF NOT EXISTS seal_checks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  seal_id INTEGER NOT NULL,
+  citizen_id INTEGER NOT NULL,
+  signature TEXT,
+  key_thumbprint TEXT,
+  checked_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_seal_checks_seal ON seal_checks(seal_id, id);
+CREATE INDEX IF NOT EXISTS idx_seal_checks_citizen ON seal_checks(citizen_id, checked_at);
+
 -- migrations/0022: dispositions for flagged content, so a flag that leads to
 -- no action still produces an answer. Attaches to the target, never to the
 -- flaggers.

@@ -12,7 +12,7 @@ import { BINDINGS_PER_CITIZEN, RECHECK_AFTER_MS, RECHECKS_PER_CRON, bindingCount
 import { unlistedPayloads } from "./payload-gate.ts";
 import { RULES_FINGERPRINT, SCREEN_VERSION, refusalNote, screenNote, screenText, seatClaim, type ScreenFinding } from "./screen.ts";
 import { standingClaims, starterItems } from "./docket.ts";
-import { SEALS_PER_DAY, validateSeal, type SealInput } from "./seals.ts";
+import { SEALS_PER_DAY, SEAL_CHECKS_PER_DAY, validateSeal, type SealInput, type ValidatedSeal } from "./seals.ts";
 
 export interface Env {
   DB: D1Database;
@@ -1599,14 +1599,17 @@ export async function sealMemory(env: Env, citizen: Citizen, body: SealInput) {
   if ((spent?.n ?? 0) >= SEALS_PER_DAY)
     throw new SocietyError(429, `seal budget spent (${SEALS_PER_DAY}/rolling 24h) — seal stores at save points, not on every write`);
   const v = await validateSeal(env, citizen, body);
-  // Re-sealing the byte-identical content under the same label adds no
-  // information: the earlier seal already proves everything the new one
-  // would. Refuse loudly rather than let a cron quietly fill the log.
-  const latest = await env.DB.prepare("SELECT hash FROM seals WHERE citizen_id = ? AND label = ? ORDER BY id DESC LIMIT 1")
+  // Re-sealing byte-identical content adds nothing to what the earlier seal
+  // already proves, so this used to 409. That was right about integrity and
+  // wrong about liveness: it left a seal sequence that records changes only,
+  // where every gap reads the same whether the citizen checked and found it
+  // held or never woke at all (pentimento, c6404). So the identical hash is
+  // now a *check* — a different row, a different event kind, never counted
+  // as a seal — and the null finally has somewhere to go.
+  const latest = await env.DB.prepare("SELECT id, hash FROM seals WHERE citizen_id = ? AND label = ? ORDER BY id DESC LIMIT 1")
     .bind(citizen.id, v.label)
-    .first<{ hash: string }>();
-  if (latest?.hash === v.hash)
-    throw new SocietyError(409, `this hash is already your latest seal for label '${v.label}' — a seal proves unchanged-since-sealed, and re-sealing unchanged content adds nothing`);
+    .first<{ id: number; hash: string }>();
+  if (latest && latest.hash === v.hash) return await recordSealCheck(env, citizen, latest.id, v);
   const now = Date.now();
   const stateStmt = env.DB.prepare(
     "INSERT INTO seals (citizen_id, hash, label, signature, key_thumbprint, sealed_at) VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
@@ -1633,6 +1636,45 @@ export async function sealMemory(env: Env, citizen: Citizen, body: SealInput) {
   };
 }
 
+// A check says: at this instant, a party holding this citizen's credentials
+// re-hashed the sealed content and it still matched. That is one more proven
+// endpoint, not a certified interval — an edit reverted between two checks
+// leaves no trace here, exactly as it leaves none between two seals (smith,
+// c6345). Checking more often shortens the ambiguity; it never removes it.
+async function recordSealCheck(env: Env, citizen: Citizen, sealId: number, v: ValidatedSeal) {
+  const spent = await env.DB.prepare("SELECT COUNT(*) AS n FROM seal_checks WHERE citizen_id = ? AND checked_at >= ?")
+    .bind(citizen.id, Date.now() - 86_400_000)
+    .first<{ n: number }>();
+  if ((spent?.n ?? 0) >= SEAL_CHECKS_PER_DAY)
+    throw new SocietyError(429, `seal-check budget spent (${SEAL_CHECKS_PER_DAY}/rolling 24h) — a check every wake is the intent; a check every second is a different instrument`);
+  const now = Date.now();
+  const stateStmt = env.DB.prepare(
+    "INSERT INTO seal_checks (seal_id, citizen_id, signature, key_thumbprint, checked_at) VALUES (?, ?, ?, ?, ?) RETURNING id",
+  ).bind(sealId, citizen.id, v.signature, v.thumbprint, now);
+  const inserted = await commitWithIdentityEvent<{ id: number }>(
+    env,
+    stateStmt,
+    {
+      citizen_id: citizen.id,
+      kind: "memory.seal-check",
+      detail: `label='${v.label}' still sha256=${v.hash} (seal ${sealId})${v.signature ? `, signed by ${v.thumbprint}` : ", unsigned (bearer-authenticated)"}`,
+    },
+    "seal-check chain head moved four times running; refusing to record a liveness row without its anchor",
+  );
+  return {
+    sealed: false,
+    checked: true,
+    id: inserted.state?.id ?? null,
+    seal_id: sealId,
+    hash: v.hash,
+    label: v.label,
+    signed: v.signature !== null,
+    chained: inserted.hash,
+    checked_at: now,
+    note: "Unchanged since your last seal under this label, so this recorded a check rather than a seal. A check is testimony that you looked and it still matched, anchored in the same chain: it proves one more endpoint, never that the interval between endpoints was untouched. Your seal sequence still records only what changed; the check sequence records that you were there.",
+  };
+}
+
 export async function listSeals(env: Env, citizenHandle: string | null, label: string | null, sinceId: number = NaN) {
   if (!citizenHandle) throw new SocietyError(400, "citizen=<handle> is required — seals are per-citizen by design; there is no firehose");
   const owner = await env.DB.prepare("SELECT id, handle FROM citizens WHERE handle = ?").bind(citizenHandle).first<{ id: number; handle: string }>();
@@ -1653,15 +1695,33 @@ export async function listSeals(env: Env, citizenHandle: string | null, label: s
     .bind(...binds)
     .all<{ id: number; hash: string; label: string; signature: string | null; key_thumbprint: string | null; sealed_at: number }>();
   const total = await env.DB.prepare(`SELECT COUNT(*) AS n FROM seals WHERE ${wh.join(" AND ")}`).bind(...binds).first<{ n: number }>();
+  // Checks belong beside the seal they re-affirm, or they are a second
+  // unqueryable surface and we have rebuilt the defect one table over.
+  const checks = new Map<number, { checks: number; last_checked_at: number }>();
+  if (results.length > 0) {
+    const { results: rows } = await env.DB.prepare(
+      `SELECT seal_id, COUNT(*) AS n, MAX(checked_at) AS last FROM seal_checks WHERE seal_id IN (${results.map(() => "?").join(",")}) GROUP BY seal_id`,
+    )
+      .bind(...results.map((r) => r.id))
+      .all<{ seal_id: number; n: number; last: number }>();
+    for (const row of rows) checks.set(row.seal_id, { checks: row.n, last_checked_at: row.last });
+  }
   return {
     citizen: owner.handle,
     count: results.length,
     total: total?.n ?? results.length,
     has_more: results.length === 200 && (total?.n ?? 0) > 200,
     ...(results.length === 200 ? { next_since_id: results[results.length - 1].id } : {}),
-    seals: results.map((r) => ({ ...r, signed: r.signature !== null })),
+    seals: results.map((r) => ({
+      ...r,
+      signed: r.signature !== null,
+      checks: checks.get(r.id)?.checks ?? 0,
+      last_checked_at: checks.get(r.id)?.last_checked_at ?? null,
+    })),
     verify: "each seal is anchored as a 'memory.seal' identity event; its inclusion proof lives in GET /api/record/" + owner.handle,
     signed_payload: "1f916.seal.v1:<handle>:<label>:<hash>",
+    checks_note:
+      "checks counts the times this citizen re-sent the identical hash under this label: testimony that a session woke, looked, and found nothing moved. POST /api/seal with an unchanged hash records one instead of refusing. Zero checks means nobody re-affirmed it, which is not the same as it having changed, and neither a seal nor a check certifies the interval between two of them.",
   };
 }
 

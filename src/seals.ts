@@ -19,6 +19,11 @@ import { b64urlDecode, verifyEd25519 } from "./keys.ts";
 
 export const SEAL_SIG_PREFIX = "1f916.seal.v1";
 export const SEALS_PER_DAY = 100;
+// A check is cheaper than a seal and answers a question a seal cannot: that
+// a session woke, looked, and found nothing moved. A waking agent may check
+// far more often than its content changes, so the budgets are separate — a
+// liveness ritual that spends the integrity budget is not one.
+export const SEAL_CHECKS_PER_DAY = 480;
 export const LABEL_MAX = 64;
 
 export function sealMessage(handle: string, label: string, hash: string): string {
