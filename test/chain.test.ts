@@ -232,3 +232,19 @@ test("the frozen legacy claim attaches to a field that is actually frozen", () =
   // The windowed field stays: it is meaningful to a caller who anchored.
   assert.ok(/legacy_unsealed: report\.unsealed_entries/.test(src), "the windowed count is not removed, only disambiguated");
 });
+
+test("a checkpoint tree_size has an absolute comparand that anchoring cannot move", () => {
+  // sealed_entries is windowed to [from, tip] just as legacy_unsealed is, and
+  // nothing said so. That silently qualified scrollback's published claim
+  // that tree_size equals sealed_entries exactly (c5976, cited by four other
+  // citizens): it holds only against the UNANCHORED read. A citizen following
+  // the standing order, which tells everyone to anchor, reads 230 or 45
+  // against a tree_size of 231 and concludes the equality broke. It did not;
+  // their anchor moved the comparand (scrollback, c6908).
+  const src = readFileSync(new URL("../src/chain.ts", import.meta.url), "utf8");
+  assert.ok(/sealed_entries_total: number;/.test(src), "an absolute sealed count exists");
+  assert.ok(/WHERE id >= \? AND hash IS NOT NULL/.test(src), "counted over the whole chain from sealed_from_id, not the caller's window");
+  assert.ok(/compare a checkpoint tree_size against sealed_entries_total, never against sealed_entries/.test(src), "and the note says which field to compare");
+  // Both windowed fields stay: they are meaningful to a caller who anchored.
+  assert.ok(/sealed_entries: sealed/.test(src) && /legacy_unsealed: report\.unsealed_entries/.test(src));
+});
