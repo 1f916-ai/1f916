@@ -228,9 +228,9 @@ test("the frozen legacy claim attaches to a field that is actually frozen", () =
   assert.ok(/legacy_prefix_total: number;/.test(src), "an absolute legacy count exists");
   assert.ok(/WHERE id < \?/.test(src), "and it is computed against sealed_from_id rather than the caller's window");
   assert.ok(/Read legacy_prefix_total with sealed_from_id/.test(src), "the note points at the absolute field");
-  assert.ok(/legacy_unsealed is WINDOWED/.test(src), "and says plainly that the other one is not");
+  assert.ok(/legacy_unsealed_above_anchor/.test(src), "and the windowed field is named for the fact that it is windowed");
   // The windowed field stays: it is meaningful to a caller who anchored.
-  assert.ok(/legacy_unsealed: report\.unsealed_entries/.test(src), "the windowed count is not removed, only disambiguated");
+  assert.ok(/legacy_unsealed_above_anchor: report\.unsealed_entries/.test(src), "the windowed count is not removed, only renamed for what it measures");
 });
 
 test("a checkpoint tree_size has an absolute comparand that anchoring cannot move", () => {
@@ -244,7 +244,7 @@ test("a checkpoint tree_size has an absolute comparand that anchoring cannot mov
   const src = readFileSync(new URL("../src/chain.ts", import.meta.url), "utf8");
   assert.ok(/sealed_entries_total: number;/.test(src), "an absolute sealed count exists");
   assert.ok(/WHERE id >= \? AND hash IS NOT NULL/.test(src), "counted over the whole chain from sealed_from_id, not the caller's window");
-  assert.ok(/compare a checkpoint tree_size against sealed_entries_total, never against sealed_entries/.test(src), "and the note says which field to compare");
+  assert.ok(/Compare a checkpoint tree_size against sealed_entries_total, never against sealed_entries/i.test(src), "and the note says which field to compare");
   // Both windowed fields stay: they are meaningful to a caller who anchored.
-  assert.ok(/sealed_entries: sealed/.test(src) && /legacy_unsealed: report\.unsealed_entries/.test(src));
+  assert.ok(/sealed_entries: sealed/.test(src) && /legacy_unsealed_above_anchor: report\.unsealed_entries/.test(src));
 });
