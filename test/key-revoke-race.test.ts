@@ -4,37 +4,11 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
-import { revokeKey, SocietyError, type Env } from "../src/society.ts";
-
-class D1Statement {
-  private args: unknown[] = [];
-  private readonly db: DatabaseSync;
-  private readonly sql: string;
-  constructor(db: DatabaseSync, sql: string) {
-    this.db = db;
-    this.sql = sql;
-  }
-  bind(...args: unknown[]) { this.args = args; return this; }
-  async first<T>(): Promise<T | null> {
-    return (this.db.prepare(this.sql).get(...(this.args as never[])) as T | undefined) ?? null;
-  }
-  async all<T>(): Promise<{ results: T[] }> {
-    return { results: this.db.prepare(this.sql).all(...(this.args as never[])) as T[] };
-  }
-  async run() {
-    const result = this.db.prepare(this.sql).run(...(this.args as never[]));
-    return { meta: { changes: Number(result.changes) } };
-  }
-  _run() {
-    const result = this.db.prepare(this.sql).run(...(this.args as never[]));
-    return { results: [], meta: { changes: Number(result.changes) } };
-  }
-}
+import { revokeKey, SocietyError } from "../src/society.ts";
+import { SqliteD1Statement, sqliteTestEnv } from "./helpers/sqlite-d1.ts";
 
 function makeEnv() {
-  const db = new DatabaseSync(":memory:");
-  db.exec(`
+  return sqliteTestEnv(`
     CREATE TABLE keys (
       id INTEGER PRIMARY KEY, citizen_id INTEGER NOT NULL, public_key TEXT NOT NULL,
       thumbprint TEXT NOT NULL UNIQUE, status TEXT NOT NULL, ended_at INTEGER
@@ -44,23 +18,6 @@ function makeEnv() {
       created_at INTEGER, prev_hash TEXT, hash TEXT UNIQUE
     );
   `);
-  const env = {
-    DB: {
-      prepare: (sql: string) => new D1Statement(db, sql),
-      async batch(stmts: D1Statement[]) {
-        db.exec("BEGIN");
-        try {
-          const results = stmts.map((s) => s._run());
-          db.exec("COMMIT");
-          return results;
-        } catch (e) {
-          db.exec("ROLLBACK");
-          throw e;
-        }
-      },
-    },
-  } as unknown as Env;
-  return { env, db };
 }
 
 const citizen = { id: 7, handle: "race-witness", model: "test", karma: 0, created_at: 1, last_seen_at: 1 };
@@ -71,11 +28,11 @@ test("a losing concurrent key revocation appends no phantom identity event", asy
   db.prepare("INSERT INTO keys (id, citizen_id, public_key, thumbprint, status) VALUES (3, 7, 'unused', ?, 'active')").run(thumbprint);
 
   // Hold both initial SELECTs until both requests have observed the key active.
-  const originalPrepare = (env.DB as never as { prepare(sql: string): D1Statement }).prepare;
+  const originalPrepare = (env.DB as never as { prepare(sql: string): SqliteD1Statement }).prepare.bind(env.DB);
   let reads = 0;
   let release!: () => void;
   const bothRead = new Promise<void>((resolve) => { release = resolve; });
-  (env.DB as never as { prepare(sql: string): D1Statement }).prepare = (sql: string) => {
+  (env.DB as never as { prepare(sql: string): SqliteD1Statement }).prepare = (sql: string) => {
     const stmt = originalPrepare(sql);
     if (!sql.startsWith("SELECT id, public_key, status FROM keys")) return stmt;
     const first = stmt.first.bind(stmt);

@@ -19,66 +19,19 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
-import { rotateKey, type Env } from "../src/society.ts";
+import type { DatabaseSync } from "node:sqlite";
+import { rotateKey } from "../src/society.ts";
 import { sha256Hex } from "../src/chain.ts";
-
-class D1Statement {
-  private args: unknown[] = [];
-  private readonly db: DatabaseSync;
-  private readonly sql: string;
-  constructor(db: DatabaseSync, sql: string) {
-    this.db = db;
-    this.sql = sql;
-  }
-  bind(...args: unknown[]) {
-    this.args = args;
-    return this;
-  }
-  async first<T>(): Promise<T | null> {
-    return (this.db.prepare(this.sql).get(...(this.args as never[])) as T | undefined) ?? null;
-  }
-  async all<T>(): Promise<{ results: T[] }> {
-    return { results: this.db.prepare(this.sql).all(...(this.args as never[])) as T[] };
-  }
-  async run() {
-    const result = this.db.prepare(this.sql).run(...(this.args as never[]));
-    return { meta: { changes: Number(result.changes) } };
-  }
-  _run() {
-    const result = this.db.prepare(this.sql).run(...(this.args as never[]));
-    return { results: [], meta: { changes: Number(result.changes) } };
-  }
-}
+import { sqliteTestEnv } from "./helpers/sqlite-d1.ts";
 
 function makeEnv() {
-  const db = new DatabaseSync(":memory:");
-  db.exec(`
+  return sqliteTestEnv(`
     CREATE TABLE citizens (id INTEGER PRIMARY KEY, handle TEXT UNIQUE, secret_hash TEXT, model TEXT, karma INTEGER DEFAULT 0, created_at INTEGER DEFAULT 0);
     CREATE TABLE identity_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, kind TEXT, detail TEXT,
       created_at INTEGER, prev_hash TEXT, hash TEXT UNIQUE
     );
   `);
-  const env = {
-    DB: {
-      prepare: (sql: string) => new D1Statement(db, sql),
-      // Sequential execution inside one transaction — D1's actual contract,
-      // and the detail the stub-based test abstracted away.
-      async batch(stmts: D1Statement[]) {
-        db.exec("BEGIN");
-        try {
-          const results = stmts.map((s) => s._run());
-          db.exec("COMMIT");
-          return results;
-        } catch (e) {
-          db.exec("ROLLBACK");
-          throw e;
-        }
-      },
-    },
-  } as unknown as Env;
-  return { env, db };
 }
 
 const SECRET = "1f916_sk_" + "ab".repeat(32);
