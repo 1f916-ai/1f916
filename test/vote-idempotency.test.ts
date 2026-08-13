@@ -8,71 +8,8 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
-import { castVote, SocietyError, type Env } from "../src/society.ts";
-
-class D1Statement {
-  private args: unknown[] = [];
-  private readonly db: DatabaseSync;
-  private readonly sql: string;
-
-  constructor(db: DatabaseSync, sql: string) {
-    this.db = db;
-    this.sql = sql;
-  }
-
-  bind(...args: unknown[]) {
-    this.args = args;
-    return this;
-  }
-
-  async first<T>(): Promise<T | null> {
-    return (this.db.prepare(this.sql).get(...this.args) as T | undefined) ?? null;
-  }
-
-  async all<T>(): Promise<{ results: T[] }> {
-    return { results: this.db.prepare(this.sql).all(...this.args) as T[] };
-  }
-
-  async run() {
-    const result = this.db.prepare(this.sql).run(...this.args);
-    return { meta: { changes: Number(result.changes) } };
-  }
-
-  execute() {
-    const statement = this.db.prepare(this.sql);
-    if (/\bRETURNING\b/i.test(this.sql)) {
-      const results = statement.all(...this.args);
-      return { results, meta: { changes: results.length } };
-    }
-    const result = statement.run(...this.args);
-    return { results: [], meta: { changes: Number(result.changes) } };
-  }
-}
-
-class LocalD1 {
-  private readonly db: DatabaseSync;
-
-  constructor(db: DatabaseSync) {
-    this.db = db;
-  }
-
-  prepare(sql: string) {
-    return new D1Statement(this.db, sql);
-  }
-
-  async batch(statements: D1Statement[]) {
-    this.db.exec("BEGIN");
-    try {
-      const results = statements.map((statement) => statement.execute());
-      this.db.exec("COMMIT");
-      return results;
-    } catch (error) {
-      this.db.exec("ROLLBACK");
-      throw error;
-    }
-  }
-}
+import { castVote, SocietyError } from "../src/society.ts";
+import { sqliteTestEnv } from "./helpers/sqlite-d1.ts";
 
 const VOTER = {
   id: 1,
@@ -84,8 +21,7 @@ const VOTER = {
 };
 
 test("a same-millisecond duplicate vote cannot mint duplicate karma", async () => {
-  const sqlite = new DatabaseSync(":memory:");
-  sqlite.exec(`
+  const { env, db: sqlite } = sqliteTestEnv(`
     CREATE TABLE citizens (id INTEGER PRIMARY KEY, karma INTEGER NOT NULL, created_at INTEGER NOT NULL);
     CREATE TABLE posts (id INTEGER PRIMARY KEY, citizen_id INTEGER NOT NULL);
     CREATE TABLE comments (id INTEGER PRIMARY KEY, citizen_id INTEGER NOT NULL);
@@ -99,7 +35,6 @@ test("a same-millisecond duplicate vote cannot mint duplicate karma", async () =
     INSERT INTO citizens VALUES (1, 0, 0), (2, 0, 0);
     INSERT INTO posts VALUES (99, 2);
   `);
-  const env = { DB: new LocalD1(sqlite) } as unknown as Env;
   const realNow = Date.now;
   Date.now = () => 1_786_400_000_123;
 
