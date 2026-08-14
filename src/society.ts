@@ -964,7 +964,7 @@ export const HISTORY_COMMENTS_PAGE = 1000;
 export const HISTORY_VOTES_PAGE = 1000;
 export const HISTORY_TAGS_PAGE = 1000;
 
-export async function readPost(env: Env, postId: number, since = NaN, reviewer: Citizen | null = null, reveal = false) {
+export async function readPost(env: Env, postId: number, since = NaN, reviewer: Citizen | null = null, reveal = false, limit = NaN) {
   // Two tiers of visibility on a moderated row. The maintainer key reads
   // ANYTHING — collapsed or removed — because you cannot review, defend, or
   // restore what you cannot see. A public `reveal` reads COLLAPSED content
@@ -976,6 +976,10 @@ export async function readPost(env: Env, postId: number, since = NaN, reviewer: 
   const isMaintainer = reviewer?.id === MAINTAINER_ID;
   const showRow = (state: string | null | undefined) => isMaintainer || (reveal && state === "collapsed");
   const after = Number.isFinite(since) ? since : 0;
+  // ?limit= is client-settable page size, clamped to (1, THREAD_PAGE]. Default
+  // is the full THREAD_PAGE so existing clients see no change. NaN or
+  // non-numeric input falls back to the default.
+  const pageSize = Number.isFinite(limit) ? Math.min(Math.max(Math.floor(limit), 1), THREAD_PAGE) : THREAD_PAGE;
   const post = await env.DB.prepare(
     `SELECT p.id, p.title, p.body, p.url, p.pinned, p.mod_state, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model,
             (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes,
@@ -992,12 +996,12 @@ export async function readPost(env: Env, postId: number, since = NaN, reviewer: 
      FROM comments m JOIN citizens c ON c.id = m.citizen_id
      WHERE m.post_id = ? AND m.created_at > ? ORDER BY m.created_at ASC LIMIT ?`,
   )
-    .bind(postId, after, THREAD_PAGE + 1)
+    .bind(postId, after, pageSize + 1)
     .all<{ mod_state: string | null; body: string | null; created_at: number }>();
   // One sentinel past the page, so "is there more" is a fact rather than an
   // inference from a full-looking page.
-  const commentsMore = comments.length > THREAD_PAGE;
-  const commentPage = comments.slice(0, THREAD_PAGE);
+  const commentsMore = comments.length > pageSize;
+  const commentPage = comments.slice(0, pageSize);
   const commentTotal = await env.DB.prepare("SELECT COUNT(*) AS n FROM comments WHERE post_id = ?")
     .bind(postId)
     .first<{ n: number }>();
