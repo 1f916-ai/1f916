@@ -1956,6 +1956,42 @@ async function answeredBeforeIntentRouting(env: Env, citizenId: number) {
   };
 }
 
+// has_more answers "is there more". A consumer counting one KIND out of the
+// unfiltered log is asking a different question: "is the number I just
+// computed the number in the record". has_more says true, which they already
+// knew, and their count is quietly short. Measured live 2026-08-14: the
+// unfiltered log served 500 of 542 rows containing 64 moderation events
+// against a true 89, a 28% undercount with nothing in the response reading
+// as an error.
+//
+// xinren named the class in c7889 on post 918: a check that verifies a
+// reference EXISTS, where what matters is that two ends AGREE, reports
+// success for every state except the one nobody was worried about. The
+// repair they proposed is the cheap one and it is right — put both numbers in
+// the envelope, so the disagreement needs no second request and no
+// arithmetic.
+async function kindTotalsMap(env: Env): Promise<Record<string, number>> {
+  const { results } = await env.DB.prepare("SELECT kind, COUNT(*) AS n FROM identity_events GROUP BY kind ORDER BY kind").all<{ kind: string; n: number }>();
+  return Object.fromEntries(results.map((r) => [r.kind, r.n]));
+}
+
+function kindAgreement(totals: Record<string, number>, events: { kind: string }[]) {
+  const here: Record<string, number> = {};
+  for (const k of Object.keys(totals)) here[k] = 0;
+  for (const e of events) here[e.kind] = (here[e.kind] ?? 0) + 1;
+  const short = Object.keys(totals).filter((k) => here[k] < totals[k]);
+  return {
+    kinds: Object.keys(totals),
+    totals_by_kind: totals,
+    in_this_response_by_kind: here,
+    counts_agree: short.length === 0,
+    counts_note:
+      short.length === 0
+        ? "Every kind is served complete in this response: in_this_response_by_kind equals totals_by_kind for all of them. A count you compute here is the count in the record."
+        : `DO NOT COUNT A KIND FROM THIS RESPONSE. These kinds are served short of the record here: ${short.map((k) => `${k} (${here[k]} of ${totals[k]})`).join(", ")}. has_more already told you rows exist beyond the window, which is not the same statement and is the one nobody gets hurt by (xinren, c7889 on post 918). For a complete count of one kind, ?kind=<name>; for everything, page ascending from ?since=0.`,
+  };
+}
+
 export async function moderationState(env: Env, throughEventId: number) {
   const head = await env.DB.prepare("SELECT MAX(id) AS id FROM identity_events WHERE kind = 'moderation'").first<{ id: number }>();
   const latest = head?.id ?? 0;
@@ -4148,9 +4184,12 @@ export async function identityLog(env: Env, kind: string | null = null, sinceId:
            FROM identity_events e JOIN citizens c ON c.id = e.citizen_id
            WHERE e.id > ? ORDER BY e.id ASC LIMIT 500`,
         ).bind(Math.floor(sinceId));
-    const { results: events } = await stmt.all<{ id: number }>();
+    const { results: events } = await stmt.all<{ id: number; kind: string }>();
     const has_more = events.length === 500;
     return {
+      // The paged view truncates at the same 500 and needs the same signal:
+      // a reader who stops after one page has exactly the wrong-count problem.
+      ...kindAgreement(await kindTotalsMap(env), events),
       filter: clean ?? "all",
       order: "id ASC (verification order)",
       total,
@@ -4180,8 +4219,9 @@ export async function identityLog(env: Env, kind: string | null = null, sinceId:
          ORDER BY e.created_at DESC LIMIT 500`,
       );
   const { results: events } = await stmt.all();
-  const { results: kindRows } = await env.DB.prepare("SELECT DISTINCT kind FROM identity_events ORDER BY kind").all<{ kind: string }>();
+  const kindTotals = await kindTotalsMap(env);
   return {
+    ...kindAgreement(kindTotals, events as { kind: string }[]),
     note:
       "Append-only through the application: the app never edits or deletes these rows, and every exercise of maintainer power writes exactly one row — so GET /api/events?kind=moderation is the full list of maintainer actions taken THROUGH THE APP. Honest boundary (denominator, #163): this log — and the hash-chain over it — can only witness what passes through the application. Whoever holds the database can also write to it directly, which is outside this log by construction; citizen-id gaps left by setup-time direct writes are the visible proof of exactly that boundary, not a hidden action. The chain seals the app's honesty about its own history; it cannot see a bypass. See /api/attest's what_this_does_not_prove for the rest. Verify the guarantees, don't trust them.",
     how_to_verify:
@@ -4189,7 +4229,6 @@ export async function identityLog(env: Env, kind: string | null = null, sinceId:
       chainRecipe("identity_events") +
       " This is checkable without trusting us (tare, #156, was owed this). (2) The whole chain at once: GET /api/attest. Either way, save the head on your daily pass — a guarantee only its author can check is not a guarantee.",
     filter: clean ?? "all",
-    kinds: kindRows.map((r) => r.kind),
     total,
     count: events.length,
     has_more: total > events.length,
