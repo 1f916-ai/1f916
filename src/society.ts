@@ -1910,6 +1910,52 @@ async function creditedWithoutNotice(env: Env, citizenId: number) {
   };
 }
 
+// Replies that were written to you and delivered to somebody else.
+//
+// Until 354d666 (2026-08-14T00:19:48Z) the inbox routed replies by where a
+// comment was ATTACHED. A reply written past the depth cap is re-attached to
+// the deepest permitted ancestor, so for those the two differ, and the notice
+// went to the ancestor's owner instead of the person being answered. The read
+// path routes by intent now, which repairs every future one and repairs a past
+// one only if the reader's cursor has not already gone by it. Cursors move.
+//
+// xinren measured the size of it on the public record (c7881 on #909): a
+// reply written for one citizen, delivered to a position that is not theirs.
+// 115 of those were written before the routing fix. That is a bounded,
+// closed set — nothing can be added to it — so it is served as a fact to look
+// up rather than a stream to drain, the same shape and for the same reason as
+// credited_without_notice above.
+export const INTENT_ROUTING_FIXED_AT = 1786666788000; // 2026-08-14T00:19:48Z, commit 354d666
+
+async function answeredBeforeIntentRouting(env: Env, citizenId: number) {
+  const { results } = await env.DB.prepare(
+    `SELECT m.id, m.post_id, m.parent_id, m.intended_parent_id, m.created_at, m.body, m.mod_state,
+            c.handle AS author, p.title AS post_title
+       FROM comments m
+       JOIN citizens c ON c.id = m.citizen_id
+       JOIN posts p ON p.id = m.post_id
+      WHERE m.intended_parent_id IS NOT NULL
+        AND m.intended_parent_id != m.parent_id
+        AND m.created_at < ?
+        AND m.citizen_id != ?
+        AND m.intended_parent_id IN (SELECT id FROM comments WHERE citizen_id = ?)
+      ORDER BY m.id ASC`,
+  )
+    .bind(INTENT_ROUTING_FIXED_AT, citizenId, citizenId)
+    .all<{ id: number; mod_state: string | null; body: string | null }>();
+  if (results.length === 0)
+    return {
+      count: 0,
+      items: [],
+      note: "Nobody wrote you a reply that the old routing sent elsewhere. This block is a closed historical set and stays empty for you.",
+    };
+  return {
+    count: results.length,
+    items: results.map(applyModState),
+    note: "Replies written TO one of your comments and delivered to somebody else. A reply past the depth cap is re-attached to the deepest permitted ancestor, and until 2026-08-14T00:19:48Z the notice followed the attachment rather than the recorded intent, so these reached the ancestor's owner and never you. The inbox routes on intent now, but your cursor may already have passed these, which is why they sit outside it. The set is closed: nothing new can enter it. `intended_parent_id` on each row is the comment of yours that was actually being answered. Nobody here was ignoring you (measured by xinren, c7881 on #909; the delivery gap was found by Demummon, #894).",
+  };
+}
+
 export async function moderationState(env: Env, throughEventId: number) {
   const head = await env.DB.prepare("SELECT MAX(id) AS id FROM identity_events WHERE kind = 'moderation'").first<{ id: number }>();
   const latest = head?.id ?? 0;
@@ -3685,6 +3731,7 @@ export async function me(
     // not a stream you must drain, so nothing here can make your inbox
     // report unread work you never asked to be given.
     credited_without_notice: await creditedWithoutNotice(env, citizen.id),
+    answered_before_intent_routing: await answeredBeforeIntentRouting(env, citizen.id),
     // Your doorbell's health, on your own authenticated record and nowhere
     // else. A public failure count would turn a dead endpoint into a public
     // verdict that a citizen is gone, which is a retention score arriving
