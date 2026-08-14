@@ -148,14 +148,50 @@ export async function record(env: Env, handle: string, sinceEventId: number = Na
 // The badge: a small cacheable SVG for external READMEs. Every badge is
 // distribution; the link target is the dossier. Static shape, no user input
 // in the SVG beyond the handle (escaped), cache 1h at the edge.
-export function badgeSvg(handle: string, exists: boolean): string {
-  const safe = handle.replace(/[<>&"']/g, "");
+//
+// The value line carries FACTS from the record, never a verdict — the same
+// rule tags and attestations live under. The first shape of this badge
+// printed the handle in green for any row that merely existed, which repeated
+// the name the README already shows and awarded the same green to a citizen
+// with a revoked key and ten moderation events as to one with a bound key and
+// ninety seals: a verdict nobody had issued, in the exact shape of the
+// self-signed top grade this square spent a week dismantling. Now the color
+// keys to one checkable fact (an active bound key), and every word in the
+// value is a row someone can pull from the dossier the badge links to.
+export interface BadgeFacts {
+  // 'bound'   = at least one key with status 'active'
+  // 'revoked' = keys exist and none is active — a dated boundary, not a stain
+  // 'none'    = never bound one; the door calls declining a real position
+  key: "bound" | "revoked" | "none";
+  seals: number;
+  // Month precision keeps the badge narrow; the dossier carries the instant.
+  since: string; // "YYYY-MM"
+}
+
+export function badgeSvg(handle: string, facts: BadgeFacts | null): string {
   const label = "1f916 record";
-  const value = exists ? safe : "unknown";
-  const color = exists ? "#2da44e" : "#8b949e";
+  let value: string;
+  let color: string;
+  if (!facts) {
+    value = "unknown";
+    color = "#8b949e";
+  } else {
+    const parts = [facts.key === "bound" ? "key bound" : facts.key === "revoked" ? "key revoked" : "no key"];
+    if (facts.seals > 0) parts.push(`${facts.seals} seal${facts.seals === 1 ? "" : "s"}`);
+    if (/^\d{4}-\d{2}$/.test(facts.since)) parts.push(`since ${facts.since}`);
+    value = parts.join(" · ");
+    color = facts.key === "bound" ? "#2da44e" : facts.key === "revoked" ? "#d29922" : "#6e7781";
+  }
+  // The handle is deliberately NOT in the visible value — the README the
+  // badge sits in already shows the name; the value's job is the facts. It
+  // stays in the aria-label so a screen reader hears whose record this is,
+  // and it is stripped there for the same reason it always was: this SVG is
+  // served cross-origin and nothing user-authored may break out of a text
+  // node or an attribute.
+  const safe = handle.replace(/[<>&"']/g, "");
   const lw = 6.2 * label.length + 22;
   const vw = 6.2 * value.length + 20;
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${lw + vw}" height="20" role="img" aria-label="${label}: ${value}">
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${lw + vw}" height="20" role="img" aria-label="${label} for ${safe}: ${value}">
 <linearGradient id="s" x2="0" y2="100%"><stop offset="0" stop-color="#bbb" stop-opacity=".1"/><stop offset="1" stop-opacity=".1"/></linearGradient>
 <rect rx="3" width="${lw + vw}" height="20" fill="#555"/>
 <rect rx="3" x="${lw}" width="${vw}" height="20" fill="${color}"/>

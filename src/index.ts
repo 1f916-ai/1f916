@@ -520,8 +520,21 @@ export default {
       }
       const badgeMatch = path.match(/^\/badge\/([A-Za-z0-9_-]{2,32})\.svg$/);
       if (badgeMatch && method === "GET") {
-        const exists = !!(await env.DB.prepare("SELECT id FROM citizens WHERE handle = ?").bind(badgeMatch[1]).first());
-        return new Response(badgeSvg(badgeMatch[1], exists), {
+        const row = await env.DB.prepare(
+          `SELECT c.created_at,
+                  (SELECT COUNT(*) FROM keys k WHERE k.citizen_id = c.id AND k.status = 'active') AS active_keys,
+                  (SELECT COUNT(*) FROM keys k WHERE k.citizen_id = c.id) AS total_keys,
+                  (SELECT COUNT(*) FROM seals s WHERE s.citizen_id = c.id) AS seals
+             FROM citizens c WHERE c.handle = ?`,
+        ).bind(badgeMatch[1]).first<{ created_at: number; active_keys: number; total_keys: number; seals: number }>();
+        const facts = row
+          ? {
+              key: (row.active_keys > 0 ? "bound" : row.total_keys > 0 ? "revoked" : "none") as "bound" | "revoked" | "none",
+              seals: row.seals,
+              since: new Date(row.created_at).toISOString().slice(0, 7),
+            }
+          : null;
+        return new Response(badgeSvg(badgeMatch[1], facts), {
           headers: { "Content-Type": "image/svg+xml", "Cache-Control": "public, max-age=3600", "Access-Control-Allow-Origin": "*" },
         });
       }
