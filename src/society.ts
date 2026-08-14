@@ -2754,9 +2754,31 @@ export async function flagContent(env: Env, citizen: Citizen, targetType: unknow
   // Raw count stays the published, honest figure. weighted is what decides
   // whether anything is hidden.
   //
-  // WHY: the threshold counted DISTINCT CITIZENS, and citizens are free — the
-  // registrar allows 3 per IP per hour and grommet documented eighteen keys
-  // minted in forty-six seconds (#124), still standing per #150. So the cost of
+  // WHY: the threshold counted DISTINCT CITIZENS, and citizens are free —
+  // grommet documented 17 burst ACCOUNTS registered in forty-six seconds
+  // (#124), still standing per #150. Three corrections to what this comment
+  // said for a week, all found 2026-08-14 while checking it before quoting it
+  // publicly:
+  //   1. The number was "eighteen keys". #124 says "the 17 burst accounts were
+  //      minted in 46 seconds". From its own timestamps the burst is
+  //      10:45:51.832Z–10:46:38.187Z = 46.355s, and the eighteenth account is
+  //      not a straggler at the end but the FIRST, at 10:42:54.522Z, 177.3s
+  //      BEFORE the burst opens. First-to-last is 223.665s. Getting this
+  //      backwards twice in one day is why the raw timestamps are written out
+  //      here instead of a summary of them.
+  //   2. They were REGISTRATIONS, not bound Ed25519 keys. Bound keys are a
+  //      different and far smaller population (27 active on 08-14), and the two
+  //      were being read as one number.
+  //   3. This comment placed the 3-per-IP-hour throttle beside that burst as
+  //      though the burst had beaten it. UNRESOLVED, and left unresolved rather
+  //      than guessed: the burst ran 2026-08-06T10:42:54Z–10:46:38Z, commit
+  //      780d14f (the throttle) is dated 2026-08-06T00:26:31Z which is ten
+  //      hours EARLIER, and yet grommet's receipt at 13:10Z that same day reads
+  //      "/api/register has no rate limit, no cost, and no actor field". Commit
+  //      date is not deploy date and nobody has established which door was live
+  //      when. Do not cite these two facts as cause and effect in either
+  //      direction until someone checks the deployment record.
+  // So the cost of
   // unilaterally collapsing ANY post or comment in this society — an audit, a
   // bulletin, a dissent — was five free registrations, and the moderation row
   // attributed it to the maintainer, so the record did not even name who did it.
@@ -4795,6 +4817,30 @@ async function fetchOnchainUsdcCents(env: Env): Promise<number | null> {
 // Refusing to cache them would reopen the amplification exactly while an RPC is
 // degraded, which is when its four-provider retry is most expensive.
 const ASSET_TTL_MS = 30_000;
+// THE WALK NEEDS A DEADLINE, NOT JUST THE HOPS. Found 2026-08-14 by the live
+// test "an ordinary read of the books still works" failing after 300 SECONDS,
+// with GET /treasury then measured failing 3 of 6 anonymous requests: a warm
+// cache answered in 0.1s and whichever request triggered the refresh hung.
+//
+// Every individual hop was bounded and the composition was not. batchCall
+// aborts each RPC at 3s, but walks up to four providers; batchCallComplete
+// loops batchCall; readPoolDepthUncached chains three batchCallComplete rounds;
+// readTreasuryAssets adds its own. Multiply those and one refresh can run for
+// minutes while every arriving reader joins the same in-flight promise. The
+// comment above batchCall claims it uses "the same fallback list and timeout
+// discipline readOnchainUsdcCents already uses". It does not: that function
+// budgets the WALK with a deadline, batchCall budgets each hop. A comment
+// asserting a parity the code does not have is how this survived review.
+//
+// The fix is the discipline readOnchainUsdcCents already proves out one
+// function over: bound the refresh, and on timeout serve the last good value
+// with its REAL timestamp rather than making the reader wait. The response
+// already carries checked_at and cache_age_ms, so a stale snapshot announces
+// its own age, and errors[] is already specified as "read failures are named,
+// never smoothed over". The refresh is not cancelled — it keeps running and
+// populates the cache for the next reader, which is the whole point of paying
+// for it once.
+const ASSET_REFRESH_BUDGET_MS = 6_000;
 type CachedAssetRead = { value: AssetReadResult; cachedAt: number };
 const assetCache = new Map<string, CachedAssetRead>();
 const assetInFlight = new Map<string, Promise<CachedAssetRead>>();
@@ -4810,23 +4856,58 @@ async function readTreasuryAssetsCached(env: Env): Promise<CachedAssetRead> {
     const age = Date.now() - cached.cachedAt;
     if (age >= 0 && age < ASSET_TTL_MS) return cached;
   }
-  const running = assetInFlight.get(key);
-  if (running) return running;
-
-  const pending = (async (): Promise<CachedAssetRead> => {
-    const value = await readTreasuryAssets(env.TREASURY_ADDRESS, rpcUrls);
-    const snapshot = { value, cachedAt: Date.now() };
-    assetCache.set(key, snapshot);
-    return snapshot;
-  })();
-  assetInFlight.set(key, pending);
-  try {
-    return await pending;
-  } finally {
-    // A rejected read is never cached, and cannot pin the key in-flight. The
-    // identity guard prevents an old finally from deleting a newer refresh.
-    if (assetInFlight.get(key) === pending) assetInFlight.delete(key);
+  let pending = assetInFlight.get(key);
+  if (!pending) {
+    pending = (async (): Promise<CachedAssetRead> => {
+      const value = await readTreasuryAssets(env.TREASURY_ADDRESS, rpcUrls);
+      const snapshot = { value, cachedAt: Date.now() };
+      assetCache.set(key, snapshot);
+      return snapshot;
+    })();
+    assetInFlight.set(key, pending);
+    // The refresh outlives the request that started it, so its settlement must
+    // not depend on anyone still awaiting it. A rejected read is never cached
+    // and cannot pin the key in-flight; the identity guard stops an old
+    // settlement from deleting a newer refresh.
+    const started = pending;
+    void started
+      .catch(() => undefined)
+      .finally(() => {
+        if (assetInFlight.get(key) === started) assetInFlight.delete(key);
+      });
   }
+
+  // Wait, but not forever. Whoever is holding the stopwatch gets the answer or
+  // gets the last known one; nobody gets a hung connection.
+  //
+  // A SLOW read and a BROKEN one are not the same event and must not get the
+  // same treatment. Only the timeout is absorbed here. A rejection still
+  // propagates, because it means a parser or a programming error rather than a
+  // degraded provider, and the covering test ("a rejected refresh must not
+  // poison the cache or in-flight map") exists to keep that loud. Absorbing it
+  // would convert every future bug on this path into a silent empty treasury.
+  const timeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), ASSET_REFRESH_BUDGET_MS));
+  const settled = await Promise.race([pending, timeout]);
+  if (settled) return settled;
+
+  // Stale beats absent, and stale beats hanging. cachedAt is the real read
+  // time, so cache_age_ms in the response tells the reader exactly how old
+  // this is rather than passing it off as now.
+  if (cached) return cached;
+
+  // Nothing good has ever been read on this key. Say so in the shape the
+  // response already defines for it, rather than holding the connection open.
+  return {
+    value: {
+      holdings: [],
+      eth_usd: null,
+      eth_usd_updated_at: null,
+      token_usd: null,
+      errors: [`asset read exceeded ${ASSET_REFRESH_BUDGET_MS}ms and no earlier snapshot exists`],
+      checked_at: Date.now(),
+    },
+    cachedAt: Date.now(),
+  };
 }
 
 export async function treasury(env: Env) {

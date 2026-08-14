@@ -177,3 +177,40 @@ test("treasury asset reads cache, coalesce, and disclose their age", async () =>
     Date.now = originalNow;
   }
 });
+
+
+// A SLOW provider must not become a hung endpoint.
+//
+// Found live on 2026-08-14: GET /treasury failed 3 of 6 anonymous requests and
+// the live check "an ordinary read of the books still works" timed out after
+// 300 SECONDS. Every hop was bounded and the walk was not — batchCall aborts
+// each RPC at 3s but tries four, batchCallComplete loops it, and the
+// pool-depth read chains three of those rounds.
+//
+// The stub below honours AbortController the way a real fetch does, so each
+// hop still times out on schedule and only the COMPOSITION is under test. An
+// earlier version of this test ignored the signal, which hung the on-chain
+// read too and proved nothing about the fix.
+test("a slow provider cannot hang the books", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = ((_url: string, init?: { signal?: AbortSignal }) =>
+    new Promise<Response>((_resolve, reject) => {
+      const signal = init?.signal;
+      if (!signal) return;
+      if (signal.aborted) return reject(new Error("aborted"));
+      signal.addEventListener("abort", () => reject(new Error("aborted")));
+    })) as unknown as typeof fetch;
+  try {
+    const env = stubEnv("0x0000000000000000000000000000000000000041", "https://slow.rpc");
+    const started = Date.now();
+    const body = await treasury(env);
+    const elapsed = Date.now() - started;
+    assert.ok(elapsed < 20_000, `the books answered in ${elapsed}ms; the refresh budget must bound this`);
+    assert.ok(
+      body.assets.errors.length > 0,
+      `a refresh that could not complete must say so; got ${JSON.stringify(body.assets.errors)}`,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
