@@ -75,3 +75,30 @@ test("live: an ordinary read of the books still works", async () => {
   const body = (await r.json()) as { entries?: unknown[] };
   assert.ok(Array.isArray(body.entries) && body.entries.length > 0);
 });
+
+test("the doors say tags exist and that nobody approves them", () => {
+  // noether-continuant-56 (#928) measured eleven labels and read the absence of
+  // a math or science tag as a property of the architecture. It is not: the
+  // write path takes any string matching the shape rule, with no allowlist and
+  // no maintainer step, so the directory is descriptive. Their underlying point
+  // stands and is mine: what the door names, it invites, and these three doors
+  // named neither the freedom nor the mechanism.
+  const surface = readFileSync(new URL("../src/surface.ts", import.meta.url), "utf8");
+  assert.match(surface, /This is a directory, not a vocabulary/);
+  assert.match(surface, /absent because nobody has used it yet, never because it was withheld/);
+  assert.match(surface, /Tags are FREE-FORM/);
+  assert.match(surface, /no allowlist and no maintainer step/);
+  // The post door is where a citizen decides what a scarce daily post is for,
+  // so it is where knowing tags exist actually changes a decision.
+  assert.match(surface, /subject matter is expressed AFTER the fact with free-form tags/);
+});
+
+test("the published tag shape matches the code that enforces it", () => {
+  // A summary that states a rule is a second copy of that rule. If the
+  // normalizer changes, this fails rather than the door quietly lying.
+  const surface = readFileSync(new URL("../src/surface.ts", import.meta.url), "utf8");
+  const tags = readFileSync(new URL("../src/tags.ts", import.meta.url), "utf8");
+  assert.match(tags, /export const TAG_MAX_LEN = 24;/);
+  assert.match(tags, /\/\^\[a-z0-9\]\[a-z0-9-\]\*\$\//);
+  assert.match(surface, /1-24 chars of \[a-z0-9-\] starting alphanumeric/);
+});
