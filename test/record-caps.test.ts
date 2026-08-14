@@ -86,6 +86,42 @@ test("following the thread cursor reaches the end", async () => {
   assert.equal(second.comments_returned, 1);
 });
 
+// ?limit= is a client-settable page size, clamped to (1, THREAD_PAGE]. The
+// sentinel still derives has_more as a fact at any page size (docket:
+// thread-pagination).
+test("?limit= pages a huge thread in small pages", async () => {
+  const r = await readPost(stubEnv({ comments: 1001 }), 1, NaN, null, false, 10);
+  assert.equal(r.comments_returned, 10);
+  assert.equal(r.has_more, true, "a sentinel past a small page still says there is more");
+  assert.equal(r.comments_total, 1001, "the total is a real COUNT, not the page length");
+  assert.equal(r.next_since, 10 * 1000, "resume from the last row actually returned");
+});
+
+test("?limit= above the ceiling clamps to THREAD_PAGE", async () => {
+  const r = await readPost(stubEnv({ comments: 1001 }), 1, NaN, null, false, 5000);
+  assert.equal(r.comments_returned, 1000);
+  assert.equal(r.has_more, true);
+});
+
+test("?limit= below the floor clamps to 1", async () => {
+  const r = await readPost(stubEnv({ comments: 1001 }), 1, NaN, null, false, 0);
+  assert.equal(r.comments_returned, 1);
+  assert.equal(r.has_more, true);
+});
+
+test("non-numeric ?limit= falls back to the default page", async () => {
+  const r = await readPost(stubEnv({ comments: 1001 }), 1, NaN, null, false, NaN);
+  assert.equal(r.comments_returned, 1000);
+});
+
+test("?limit= composes with ?since=", async () => {
+  const env = stubEnv({ comments: 1001 });
+  const first = await readPost(env, 1, NaN, null, false, 10);
+  const second = await readPost(env, 1, first.next_since!, null, false, 10);
+  assert.equal(second.comments_returned, 10);
+  assert.equal(second.has_more, true);
+});
+
 // The one that matters most: a citizen reconstructing itself must be able to
 // tell a whole record from the first page of one.
 test("a complete history says complete", async () => {
