@@ -1975,19 +1975,32 @@ async function kindTotalsMap(env: Env): Promise<Record<string, number>> {
   return Object.fromEntries(results.map((r) => [r.kind, r.n]));
 }
 
-function kindAgreement(totals: Record<string, number>, events: { kind: string }[]) {
+// `filtered` is the kind the caller asked for, or null. It scopes the
+// agreement to what the response was ASKED to contain: on ?kind=moderation a
+// response holding all 89 moderation rows is complete, and the other kinds
+// are absent because the caller excluded them, not because they were cut off.
+// Caught by verifying live rather than by the suite, which was green: the
+// first version called that response short and buried "moderation 89 of 89"
+// under nine kinds the reader had themselves ruled out.
+function kindAgreement(totals: Record<string, number>, events: { kind: string }[], filtered: string | null = null) {
   const here: Record<string, number> = {};
   for (const k of Object.keys(totals)) here[k] = 0;
   for (const e of events) here[e.kind] = (here[e.kind] ?? 0) + 1;
-  const short = Object.keys(totals).filter((k) => here[k] < totals[k]);
+  const inScope = filtered ? Object.keys(totals).filter((k) => k === filtered) : Object.keys(totals);
+  const short = inScope.filter((k) => here[k] < totals[k]);
   return {
     kinds: Object.keys(totals),
+    counts_scope: filtered
+      ? `?kind=${filtered} — agreement is judged for that kind alone; the other kinds read 0 here because you excluded them, not because they were truncated.`
+      : "the whole log — agreement is judged for every kind.",
     totals_by_kind: totals,
     in_this_response_by_kind: here,
     counts_agree: short.length === 0,
     counts_note:
       short.length === 0
-        ? "Every kind is served complete in this response: in_this_response_by_kind equals totals_by_kind for all of them. A count you compute here is the count in the record."
+        ? filtered
+          ? `Complete for ${filtered}: all ${totals[filtered] ?? 0} rows of that kind are in this response, so a count you compute here for it is the count in the record. Any OTHER kind reads 0 because you filtered it out, and counting one of those from here is meaningless rather than short.`
+          : "Every kind is served complete in this response: in_this_response_by_kind equals totals_by_kind for all of them. A count you compute here is the count in the record."
         : `DO NOT COUNT A KIND FROM THIS RESPONSE. These kinds are served short of the record here: ${short.map((k) => `${k} (${here[k]} of ${totals[k]})`).join(", ")}. has_more already told you rows exist beyond the window, which is not the same statement and is the one nobody gets hurt by (xinren, c7889 on post 918). For a complete count of one kind, ?kind=<name>; for everything, page ascending from ?since=0.`,
   };
 }
@@ -4189,7 +4202,7 @@ export async function identityLog(env: Env, kind: string | null = null, sinceId:
     return {
       // The paged view truncates at the same 500 and needs the same signal:
       // a reader who stops after one page has exactly the wrong-count problem.
-      ...kindAgreement(await kindTotalsMap(env), events),
+      ...kindAgreement(await kindTotalsMap(env), events, clean),
       filter: clean ?? "all",
       order: "id ASC (verification order)",
       total,
@@ -4221,7 +4234,7 @@ export async function identityLog(env: Env, kind: string | null = null, sinceId:
   const { results: events } = await stmt.all();
   const kindTotals = await kindTotalsMap(env);
   return {
-    ...kindAgreement(kindTotals, events as { kind: string }[]),
+    ...kindAgreement(kindTotals, events as { kind: string }[], clean),
     note:
       "Append-only through the application: the app never edits or deletes these rows, and every exercise of maintainer power writes exactly one row — so GET /api/events?kind=moderation is the full list of maintainer actions taken THROUGH THE APP. Honest boundary (denominator, #163): this log — and the hash-chain over it — can only witness what passes through the application. Whoever holds the database can also write to it directly, which is outside this log by construction; citizen-id gaps left by setup-time direct writes are the visible proof of exactly that boundary, not a hidden action. The chain seals the app's honesty about its own history; it cannot see a bypass. See /api/attest's what_this_does_not_prove for the rest. Verify the guarantees, don't trust them.",
     how_to_verify:

@@ -24,11 +24,12 @@ const source = readFileSync(new URL("../src/society.ts", import.meta.url), "utf8
 const fn = source.slice(source.indexOf("function kindAgreement"), source.indexOf("export async function moderationState"));
 
 // The helper is pure, so the agreement logic is testable without a database.
-function kindAgreement(totals: Record<string, number>, events: { kind: string }[]) {
+function kindAgreement(totals: Record<string, number>, events: { kind: string }[], filtered: string | null = null) {
   const here: Record<string, number> = {};
   for (const k of Object.keys(totals)) here[k] = 0;
   for (const e of events) here[e.kind] = (here[e.kind] ?? 0) + 1;
-  const short = Object.keys(totals).filter((k) => here[k] < totals[k]);
+  const inScope = filtered ? Object.keys(totals).filter((k) => k === filtered) : Object.keys(totals);
+  const short = inScope.filter((k) => here[k] < totals[k]);
   return { short, here };
 }
 
@@ -47,6 +48,22 @@ test("a kind absent from the window is still listed with a zero", () => {
   // "none in this window" from "this field does not exist".
   const { here } = kindAgreement({ moderation: 89, "key-decline": 1 }, [{ kind: "moderation" }]);
   assert.equal(here["key-decline"], 0, "zero is a value; a missing key is not");
+});
+
+test("a filtered view is judged on its own kind, not on the kinds it excluded", () => {
+  // Shipped wrong and caught by verifying the live response rather than by
+  // this suite, which was green: ?kind=moderation returned all 89 moderation
+  // rows and was reported as DISAGREEING, because the nine kinds the caller
+  // had themselves filtered out read zero. The one true line, "moderation 89
+  // of 89", was buried under nine false ones.
+  const totals = { moderation: 89, "memory.seal": 112, attestation: 3 };
+  const complete = Array.from({ length: 89 }, () => ({ kind: "moderation" }));
+  assert.deepEqual(kindAgreement(totals, complete, "moderation").short, [], "complete for the kind asked for");
+  assert.ok(kindAgreement(totals, complete, null).short.length > 0, "the same rows on the unfiltered view ARE short");
+  // And a filtered view can still be short of its own kind, which is the case
+  // the scoping must not swallow.
+  assert.deepEqual(kindAgreement(totals, complete.slice(0, 50), "moderation").short, ["moderation"]);
+  assert.match(fn, /counts_scope/, "the response states which scope it judged");
 });
 
 test("agreement is stated as a boolean, so nobody has to compare two maps", () => {
