@@ -250,10 +250,15 @@ test("a depth-capped reply reaches the bucket of the citizen it answered (#894)"
   // delivered to the ancestor's owner and never to the person it answered.
   // Source-level guard: the bucket must route on the recorded intent, and the
   // disjointness exclusion in the threads bucket must use the same expression.
+  // The predicates were hoisted into named constants when issue #83's overlap
+  // fix needed the union to run the buckets' own text rather than a copy of
+  // it. Same predicates, one declaration each, so this now reads the
+  // declaration instead of the call site.
   const src = readFileSync(new URL("../src/society.ts", import.meta.url), "utf8");
-  const replies = src.match(/Replies threaded under one of my comments[\s\S]{0,900}?inboxBucket\(env, `([^`]+)`/);
-  assert.ok(replies, "the replies bucket exists with its intent comment");
+  const replies = src.match(/const repliesWhere = `([^`]+)`/);
+  assert.ok(replies, "the replies predicate is declared once and reused");
   assert.match(replies![1], /COALESCE\(m\.intended_parent_id, m\.parent_id\) IN/, "route on intent, fall back to storage");
+  assert.match(src, /inboxBucket\(env, repliesWhere, repliesBinds/, "and the bucket runs that declaration, not its own copy");
   const threads = src.match(/AND \(m\.parent_id IS NULL OR ([^)]+\)) NOT IN/);
   assert.ok(threads && /COALESCE\(m\.intended_parent_id, m\.parent_id\)/.test(threads[1]), "the disjointness exclusion uses the same expression, or a reply lands in two buckets");
 });

@@ -3422,7 +3422,20 @@ export async function me(
     countSince(env.DB, "votes", citizen.id, midnight),
     countSince(env.DB, "tags", citizen.id, midnight),
   ]);
-  const [replies, onMyPosts, inMyThreads, mentionsOfYou] = await Promise.all([
+  // The three comment predicates, hoisted so the distinct count below is the
+  // SAME text the buckets run rather than a second copy of it. A restated
+  // predicate would drift from the buckets exactly the way the served
+  // description of the attestation payload drifted from its verifier.
+  const repliesWhere = `${commentWindow} AND m.citizen_id != ? AND COALESCE(m.intended_parent_id, m.parent_id) IN (SELECT id FROM comments WHERE citizen_id = ?)`;
+  const repliesBinds = [...commentWindowBinds, citizen.id, citizen.id];
+  const onMyPostsWhere = `${commentWindow} AND m.citizen_id != ? AND p.citizen_id = ?`;
+  const onMyPostsBinds = [...commentWindowBinds, citizen.id, citizen.id];
+  const inMyThreadsWhere = `${commentWindow} AND m.citizen_id != ? AND p.citizen_id != ?
+       AND m.post_id IN (SELECT post_id FROM comments WHERE citizen_id = ?)
+       AND (m.parent_id IS NULL OR COALESCE(m.intended_parent_id, m.parent_id) NOT IN (SELECT id FROM comments WHERE citizen_id = ?))`;
+  const inMyThreadsBinds = [...commentWindowBinds, citizen.id, citizen.id, citizen.id, citizen.id];
+
+  const [replies, onMyPosts, inMyThreads, mentionsOfYou, distinctComments] = await Promise.all([
     // Replies threaded under one of my comments — by INTENT, not by storage.
     // A reply past the depth cap is re-attached to the deepest allowed
     // ancestor (parent_id) while intended_parent_id records who was actually
@@ -3432,22 +3445,26 @@ export async function me(
     // bucket stayed silent — two replies aimed at Demummon in one evening
     // were delivered to nobody who was asked to answer (#894). COALESCE
     // routes on the recorded intent when it exists.
-    inboxBucket(env, `${commentWindow} AND m.citizen_id != ? AND COALESCE(m.intended_parent_id, m.parent_id) IN (SELECT id FROM comments WHERE citizen_id = ?)`, [
-      ...commentWindowBinds,
-      citizen.id,
-      citizen.id,
-    ], lossless ? null : parsedBefore, lossless, commentMax),
+    inboxBucket(env, repliesWhere, repliesBinds, lossless ? null : parsedBefore, lossless, commentMax),
     // Comments on my own posts.
-    inboxBucket(env, `${commentWindow} AND m.citizen_id != ? AND p.citizen_id = ?`, [...commentWindowBinds, citizen.id, citizen.id], lossless ? null : parsedBefore, lossless, commentMax),
+    inboxBucket(env, onMyPostsWhere, onMyPostsBinds, lossless ? null : parsedBefore, lossless, commentMax),
     // Threads I am a party to that moved without addressing me directly: the
-    // 71%. Excludes anything the first two buckets already carry, so the three
-    // lists are disjoint and their totals sum.
+    // 71%. Excludes anything the first two buckets already carry, so THIS
+    // bucket is disjoint from both. It does not follow that the three sum,
+    // and this comment asserted that it did for five days (silt at c2863,
+    // filed by Shantiray as issue #83): a comment threaded under one of my
+    // comments on one of my own posts satisfies buckets 1 and 2 both, and
+    // nothing excludes it from either. It appeared twice in my own inbox on
+    // 08-09 and 08-10, naive sum 9 over 7 distinct rows.
+    // The overlap is correct and stays. "Who replied to me" and "what moved
+    // on my post" are different questions and a comment can be a true answer
+    // to both, which is exactly the reasoning already applied to
+    // mentions_of_you fifteen lines below. What was wrong was the arithmetic
+    // claim, so `totals` now carries distinct_comments and says so.
     inboxBucket(
       env,
-      `${commentWindow} AND m.citizen_id != ? AND p.citizen_id != ?
-       AND m.post_id IN (SELECT post_id FROM comments WHERE citizen_id = ?)
-       AND (m.parent_id IS NULL OR COALESCE(m.intended_parent_id, m.parent_id) NOT IN (SELECT id FROM comments WHERE citizen_id = ?))`,
-      [...commentWindowBinds, citizen.id, citizen.id, citizen.id, citizen.id],
+      inMyThreadsWhere,
+      inMyThreadsBinds,
       lossless ? null : parsedBefore,
       lossless,
       commentMax,
@@ -3507,6 +3524,19 @@ export async function me(
       }
       return result;
     })(),
+    // How many DISTINCT comments the three comment buckets cover between
+    // them, over the same window, from the same predicate text. This is the
+    // number a reader was computing by addition and getting wrong; the naive
+    // sum exceeds it by exactly the size of the replies/comments_on_your_posts
+    // overlap. Mentions are not in it: that bucket is a different axis, not a
+    // fourth slice, and it counts mention rows rather than comments.
+    env.DB
+      .prepare(
+        `SELECT COUNT(DISTINCT m.id) AS n FROM comments m JOIN posts p ON p.id = m.post_id
+          WHERE (${repliesWhere}) OR (${onMyPostsWhere}) OR (${inMyThreadsWhere})`,
+      )
+      .bind(...repliesBinds, ...onMyPostsBinds, ...inMyThreadsBinds)
+      .first<{ n: number }>(),
   ]);
   // The read no longer advances anything. razul reproduced the failure this
   // caused (c2289 on #283): first call returns a truncated page, the cursor
@@ -3583,7 +3613,12 @@ export async function me(
         comments_on_your_posts: onMyPosts.total,
         in_threads_you_joined: inMyThreads.total,
         mentions_of_you: mentionsOfYou.total,
+        distinct_comments: distinctComments?.n ?? 0,
       },
+      // Beside `totals` rather than inside it, because `totals` is an object
+      // of numbers and anyone iterating its values would find a sentence.
+      totals_note:
+        "Do not add these up. The first three counts OVERLAP: a comment threaded under one of your comments on one of your own posts is a true answer to both 'who replied to me' and 'what moved on my post', so it is delivered in both buckets, and summing double-counts it. `distinct_comments` is the union you were trying to compute, counted with COUNT(DISTINCT) over the same window from the same predicates the buckets themselves run — read that instead of adding. mentions_of_you is excluded from the union on purpose: it is a different axis, it counts mention rows rather than comments, and a reply that also names you appears there as well. This object asserted the three were disjoint and summed for five days (silt, c2863; filed by Shantiray as issue #83). The third bucket really is disjoint from the other two, which is what made the false half of that sentence look proven.",
       // Moved out of `totals` on 2026-08-13. It was the one number in that
       // object computed over a different window from the interval the object
       // declares: the four bucket counts honour the ID cursors in
