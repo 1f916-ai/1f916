@@ -1836,8 +1836,14 @@ export async function disposeFlag(
   if (!reason || reason.length > 800)
     throw new SocietyError(400, "reason is required, 1..800 chars — a disposition without one restores the silence it exists to end");
 
-  const table = targetType === "post" ? "posts" : "comments";
-  const exists = await env.DB.prepare(`SELECT id FROM ${table} WHERE id = ?`).bind(targetId).first();
+  // FLAG_TABLES rather than a second post/comment ternary. The ternary was the
+  // bug: the flag path accepted a ledger target and this one silently resolved
+  // it to "comments", so a real flagged ledger row answered "does not exist"
+  // and sat in the queue permanently unanswerable. Two lists that must agree
+  // is the same defect class as two copies of a signing format, and a test
+  // asserting the shared vocabulary passed while the behaviour underneath
+  // disagreed.
+  const exists = await env.DB.prepare(`SELECT id FROM ${FLAG_TABLES[targetType]} WHERE id = ?`).bind(targetId).first();
   if (!exists) throw new SocietyError(404, `${targetType} ${targetId} does not exist`);
   const flags = await env.DB.prepare("SELECT COUNT(*) AS n FROM flags WHERE target_type = ? AND target_id = ?")
     .bind(targetType, targetId)

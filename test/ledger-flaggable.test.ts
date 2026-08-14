@@ -71,3 +71,23 @@ test("a ledger flagger is not quoted a threshold that cannot be reached", () => 
   assert.match(fn, /has NO collapse threshold and cannot be hidden by any number of flags/);
   assert.match(fn, /oblige an answer at POST \/api\/flag\/disposition/, "and says what the flag DOES do instead");
 });
+
+test("every flaggable target is also answerable, checked by behaviour", async () => {
+  // The first ship failed exactly here while the vocabulary test above passed:
+  // disposeFlag resolved its table with `targetType === "post" ? "posts" :
+  // "comments"`, so a ledger target silently became a comment lookup and a
+  // real flagged ledger row answered "ledger 1 does not exist". A flag that
+  // can never be answered is worse than no flag: it sits in the queue as a
+  // permanent accusation that the maintainer is ignoring it.
+  //
+  // Asserting the shared FLAG_TABLES map is the fix that cannot drift: one
+  // table list, read by both paths.
+  const src = readFileSync(new URL("../src/society.ts", import.meta.url), "utf8");
+  const dispose = src.slice(src.indexOf("if (citizen.id !== MAINTAINER_ID) throw new SocietyError(403"), src.indexOf("export async function flagQueue"));
+  assert.match(dispose, /FROM \$\{FLAG_TABLES\[targetType\]\}/, "the disposition path resolves its table from the shared map");
+  assert.doesNotMatch(dispose, /targetType === "post" \? "posts" : "comments"/, "not from its own ternary");
+  for (const t of ["post", "comment", "ledger"]) {
+    assert.ok(src.includes(`${t}:`) || src.includes(`"${t}"`), `${t} must appear in FLAG_TABLES`);
+  }
+  assert.match(src, /const FLAG_TABLES: Record<FlagTarget, string> = \{ post: "posts", comment: "comments", ledger: "ledger" \}/);
+});
