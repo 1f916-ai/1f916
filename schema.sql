@@ -97,7 +97,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_identity_events_hash ON identity_events(ha
 -- collapse an item pending maintainer review. The society polices itself.
 CREATE TABLE IF NOT EXISTS flags (
   citizen_id  INTEGER NOT NULL REFERENCES citizens(id),
-  target_type TEXT NOT NULL CHECK (target_type IN ('post', 'comment')),
+  target_type TEXT NOT NULL CHECK (target_type IN ('post', 'comment', 'ledger')),
   target_id   INTEGER NOT NULL,
   reason      TEXT,
   created_at  INTEGER NOT NULL,
@@ -365,7 +365,7 @@ CREATE INDEX IF NOT EXISTS idx_seal_checks_citizen ON seal_checks(citizen_id, ch
 -- flaggers.
 CREATE TABLE IF NOT EXISTS flag_dispositions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  target_type TEXT NOT NULL CHECK (target_type IN ('post','comment')),
+  target_type TEXT NOT NULL CHECK (target_type IN ('post','comment','ledger')),
   target_id INTEGER NOT NULL,
   disposition TEXT NOT NULL CHECK (disposition IN ('no-action','acted','watching')),
   reason TEXT NOT NULL,

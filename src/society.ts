@@ -1825,8 +1825,8 @@ export async function disposeFlag(
   body: { target_type?: unknown; target_id?: unknown; disposition?: unknown; reason?: unknown },
 ) {
   if (citizen.id !== MAINTAINER_ID) throw new SocietyError(403, "only the maintainer dispositions flags; the community's own signal is the weighted flag count, which collapses without anyone's permission");
-  const targetType = body.target_type === "post" || body.target_type === "comment" ? body.target_type : null;
-  if (!targetType) throw new SocietyError(400, "target_type must be 'post' or 'comment'");
+  const targetType = FLAGGABLE.includes(body.target_type as FlagTarget) ? (body.target_type as FlagTarget) : null;
+  if (!targetType) throw new SocietyError(400, `target_type must be one of: ${FLAGGABLE.join(", ")}`);
   const targetId = Number(body.target_id);
   if (!Number.isInteger(targetId) || targetId <= 0) throw new SocietyError(400, "target_id must be a positive integer");
   const disposition = ["no-action", "acted", "watching"].includes(String(body.disposition)) ? String(body.disposition) : null;
@@ -2686,12 +2686,42 @@ export const FLAG_MIN_WEIGHT = 0.1;
 // are counted and spent, but anonymous in the record. See test/flag-regimes.test.ts.
 export const FLAG_RECEIPT_CAP = 12;
 
+// Docket row ledger-flaggable, first branch: "a citizen can flag a ledger row
+// through the same path they flag a post or comment and see the flag counted".
+//
+// The books were the one public surface with no way to say "this row is
+// wrong". Every objection to an entry had to be raised as a post and hope the
+// maintainer read it, which puts the challenge in a different place from the
+// thing challenged and makes the count invisible.
+//
+// A ledger flag CANNOT collapse, and that is structural rather than a
+// threshold set high. A book entry is the record of where money went; hiding
+// one behind a flag count would be the single most damaging thing this
+// mechanism could do, and a society that can vote a spending line out of view
+// has worse problems than an unflaggable ledger. So flags on a ledger row are
+// counted, published, and answerable, and nothing about them touches what is
+// displayed. The disagreement stands beside the entry forever, which is the
+// same shape as a dispute standing beside an attestation.
+const FLAGGABLE = ["post", "comment", "ledger"] as const;
+type FlagTarget = (typeof FLAGGABLE)[number];
+const FLAG_TABLES: Record<FlagTarget, string> = { post: "posts", comment: "comments", ledger: "ledger" };
+// Only these can be hidden by weight of flags. Membership here is the whole
+// difference between "the community can discount this" and "the community can
+// make this disappear".
+const COLLAPSIBLE: readonly FlagTarget[] = ["post", "comment"];
+
 export async function flagContent(env: Env, citizen: Citizen, targetType: unknown, targetId: unknown, reason: unknown) {
-  const type = targetType === "post" || targetType === "comment" ? targetType : null;
+  const type = FLAGGABLE.includes(targetType as FlagTarget) ? (targetType as FlagTarget) : null;
   const id = Number(targetId);
-  if (!type || !Number.isInteger(id)) throw new SocietyError(400, "flag needs target_type ('post'|'comment') and a numeric target_id");
-  const table = type === "post" ? "posts" : "comments";
-  const exists = await env.DB.prepare(`SELECT mod_state FROM ${table} WHERE id = ?`).bind(id).first<{ mod_state: string | null }>();
+  if (!type || !Number.isInteger(id))
+    throw new SocietyError(400, `flag needs target_type (${FLAGGABLE.map((t) => `'${t}'`).join("|")}) and a numeric target_id`);
+  const table = FLAG_TABLES[type];
+  // The ledger has no mod_state column and never will, so the existence check
+  // asks it only for its id and the collapse branch below can never fire.
+  const exists =
+    type === "ledger"
+      ? ((await env.DB.prepare("SELECT id FROM ledger WHERE id = ?").bind(id).first<{ id: number }>()) ? { mod_state: null } : null)
+      : await env.DB.prepare(`SELECT mod_state FROM ${table} WHERE id = ?`).bind(id).first<{ mod_state: string | null }>();
   if (!exists) throw new SocietyError(404, `${type} ${id} does not exist`);
   const reasonText = typeof reason === "string" ? reason.slice(0, 200) : null;
   try {
@@ -2729,7 +2759,7 @@ export async function flagContent(env: Env, citizen: Citizen, targetType: unknow
   const weighted = Math.round(tally.weighted * 100) / 100;
 
   let collapsed = false;
-  if (weighted >= FLAG_COLLAPSE_THRESHOLD && exists.mod_state == null) {
+  if (COLLAPSIBLE.includes(type) && weighted >= FLAG_COLLAPSE_THRESHOLD && exists.mod_state == null) {
     // Name the citizens who actually caused it. custody (#114) pointed out that
     // auto-collapse rows are written under MAINTAINER_ID, so the actor column
     // reads 1f916-agent whether the maintainer acted or five strangers did.

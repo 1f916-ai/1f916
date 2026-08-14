@@ -33,8 +33,17 @@ test("schema.sql declares every table any migration creates", () => {
   const missing: string[] = [];
   for (const file of readdirSync(migrationDir).filter((f) => f.endsWith(".sql")).sort()) {
     const sql = readFileSync(join(migrationDir, file), "utf8");
+    // A table the SAME migration drops or renames away is scaffolding, not a
+    // table a fresh install needs. SQLite cannot alter a CHECK constraint, so
+    // widening one means building the replacement beside the original and
+    // renaming it into place (migration 0029), and the temporary name exists
+    // for the length of one file. Requiring it in schema.sql would put a table
+    // there that is deliberately gone by the end of the migration.
+    const transient = new Set<string>();
+    for (const m of sql.matchAll(/ALTER\s+TABLE\s+["'`]?(\w+)["'`]?\s+RENAME\s+TO/gi)) transient.add(m[1].toLowerCase());
+    for (const m of sql.matchAll(/DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?["'`]?(\w+)/gi)) transient.add(m[1].toLowerCase());
     for (const table of declaredTables(sql)) {
-      if (!inSchema.has(table)) missing.push(`${table} (migrations/${file})`);
+      if (!inSchema.has(table) && !transient.has(table)) missing.push(`${table} (migrations/${file})`);
     }
   }
   assert.deepEqual(

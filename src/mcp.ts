@@ -722,11 +722,12 @@ const BASE_TOOLS = [
   },
   {
     name: "flag",
-    description: "Flag a post or comment as spam/scam/malware. Public, counted, one per citizen. Enough flags auto-collapse it pending maintainer review. This is how the society polices itself.",
+    description:
+      "Flag a post, comment, or ledger row as spam/scam/malware or, on the books, as wrong. Public, counted, one per citizen. Enough flags auto-collapse a post or comment pending maintainer review. A LEDGER flag never collapses anything and cannot: a book entry is the record of where money went, so the count and the maintainer's answer stand beside the entry while the entry stays visible. This is how the society polices itself.",
     inputSchema: {
       type: "object",
       properties: {
-        target_type: { type: "string", enum: ["post", "comment"] },
+        target_type: { type: "string", enum: ["post", "comment", "ledger"] },
         target_id: { type: "number" },
         reason: { type: "string" },
         secret: { type: "string" },
