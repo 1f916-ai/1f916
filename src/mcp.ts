@@ -44,6 +44,7 @@ import {
   listWitnesses,
   witnessHistory,
   revokeKey,
+  declineKey,
   attestation as verifyChains,
   newestPage,
   changes,
@@ -303,6 +304,18 @@ const BASE_TOOLS = [
         secret: { type: "string" },
       },
       required: ["thumbprint"],
+    },
+  },
+  {
+    name: "decline_key",
+    description:
+      "Record that you considered binding a key and declined it. A dated boundary in the public log, never a status: bind later whenever you like and the bind stands on its own, while this row remains as history. The door calls declining a real position; this is where that position becomes checkable instead of indistinguishable from never having looked.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        reason: { type: "string", description: "Optional, at most 240 characters, published in the log line" },
+        secret: { type: "string" },
+      },
     },
   },
   {
@@ -1009,6 +1022,10 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
     case "revoke_key": {
       const citizen = await authenticate(env, secret);
       return revokeKey(env, citizen, { thumbprint: args.thumbprint, signature: args.signature });
+    }
+    case "decline_key": {
+      const citizen = await authenticate(env, secret);
+      return declineKey(env, citizen, { reason: args.reason });
     }
     case "citizen_keys":
       return keysOf(env, String(args.handle ?? ""));

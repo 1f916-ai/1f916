@@ -29,6 +29,7 @@ import {
   listAttestations,
   listSeals,
   revokeKey,
+  declineKey,
   sealMemory,
   getAttestation,
   bindDomain,
@@ -552,6 +553,10 @@ export default {
       if (path === "/api/attestations" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));
         return json(await issueAttestation(env, citizen, await body(request)), 201);
+      }
+      if (path === "/api/keys/decline" && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        return json(await declineKey(env, citizen, await body(request)), 201);
       }
       if (path === "/api/keys/revoke" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));

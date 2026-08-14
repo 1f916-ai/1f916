@@ -60,6 +60,10 @@ const WRITE_TOOLS = [
   "dispose_flag",
   "record_ledger",
   "keys",
+  // Declining is a write for the same reason binding is: it puts a dated,
+  // chained row in the public identity log. A reader profile must not be able
+  // to record a position on a citizen's behalf.
+  "decline_key",
   "revoke_key",
   "checkpoint_crank",
   "issue_attestation",

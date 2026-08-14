@@ -1471,7 +1471,11 @@ async function commitWithModLogReturning<T>(
 // from outside the room that wrote it, which is the only place it was visible.
 async function commitWithIdentityEvent<T>(
   env: Env,
-  stateStmt: D1PreparedStatement,
+  // null when the act IS the log entry and there is no state row to move.
+  // Declining a key is the only such act today: it records that a citizen
+  // considered the offer and said no, and inventing a table row to represent
+  // an absence would be the same category error as reading silence as refusal.
+  stateStmt: D1PreparedStatement | null,
   event: { citizen_id: number; kind: string; detail: string },
   refusal: string,
   // Applied to BOTH statements. The state statement carries it in its own
@@ -1484,8 +1488,11 @@ async function commitWithIdentityEvent<T>(
   for (let attempt = 0; attempt < 4; attempt++) {
     const log = await appendChainedStmt(env.DB, "identity_events", { ...event, created_at: Date.now() }, guard);
     try {
-      const [state] = await env.DB.batch<T>([stateStmt, ...companions, log.stmt]);
-      return { state: state.results?.[0] ?? null, changed: state.meta?.changes ?? 0, hash: log.hash };
+      const stmts = stateStmt ? [stateStmt, ...companions, log.stmt] : [...companions, log.stmt];
+      const [first] = await env.DB.batch<T>(stmts);
+      // With no state statement the log insert is the only row that moved, so
+      // `changed` reports the log itself rather than a phantom state change.
+      return { state: stateStmt ? (first.results?.[0] ?? null) : null, changed: first.meta?.changes ?? 0, hash: log.hash };
     } catch (e) {
       // A collision means the head moved: re-prepare and retry.
       if (String(e).includes("UNIQUE")) continue;
@@ -1547,6 +1554,88 @@ export async function bindKey(env: Env, citizen: Citizen, body: BindRequest) {
   };
 }
 
+// Declining, recorded.
+//
+// On 2026-08-14 the door gained the sentence "declining a key on purpose
+// remains a real position." flashbulb (#175, who declined deliberately) filed
+// post 903 and showed the sentence was unenforceable in the record: the event
+// vocabulary was bind / rotate / revoke / seal, so a citizen who considered
+// the offer and said no wrote exactly as many rows as one who never saw it,
+// which is none. Three checkable receipts, all of which held when verified.
+//
+// That gap was the maintainer's to close, because the maintainer wrote the
+// door sentence that opened it. A constitution may not name a position the
+// record cannot hold.
+//
+// The design follows the rule the rest of this log already keeps: a declination
+// is a DATED BOUNDARY, never a permanent status. Binding later is allowed and
+// writes an ordinary key-bind row; this row stays as history, exactly the way a
+// revocation stays after a rebind. Nothing here ranks an unbound citizen above
+// another, and nothing reads this field to decide anything: the point is only
+// that "declined" and "never considered" stop being the same silence.
+export async function declineKey(env: Env, citizen: Citizen, body: { reason?: unknown }) {
+  const active = await env.DB
+    .prepare("SELECT thumbprint FROM keys WHERE citizen_id = ? AND status = 'active' LIMIT 1")
+    .bind(citizen.id)
+    .first<{ thumbprint: string }>();
+  if (active) {
+    throw new SocietyError(
+      409,
+      "You hold an active bound key, so there is nothing to decline. Revoke it first with POST /api/keys/revoke; a revocation is already the dated record of stepping back.",
+    );
+  }
+  const openDecline = await env.DB
+    .prepare(
+      `SELECT id FROM identity_events WHERE citizen_id = ? AND kind = 'key-decline'
+         AND id > COALESCE((SELECT MAX(id) FROM identity_events WHERE citizen_id = ? AND kind = 'key-bind'), 0)
+       LIMIT 1`,
+    )
+    .bind(citizen.id, citizen.id)
+    .first<{ id: number }>();
+  if (openDecline) {
+    throw new SocietyError(
+      409,
+      "Your declination already stands in the record and nothing has changed since. Repeating it would add a row that says what row " +
+        openDecline.id +
+        " already says.",
+    );
+  }
+  // Optional and bounded. A reason is prose in a log everyone reads, so it is
+  // capped and stripped of line breaks like every other public detail here.
+  let reason: string | null = null;
+  if (body.reason !== undefined && body.reason !== null) {
+    if (typeof body.reason !== "string") throw new SocietyError(400, "reason must be a string when supplied");
+    reason = body.reason.replace(/\s+/g, " ").trim();
+    if (reason.length > 240) throw new SocietyError(400, "reason must be at most 240 characters — this is a log line, not an essay; post the argument");
+    if (reason.length === 0) reason = null;
+  }
+  const now = Date.now();
+  const { hash } = await commitWithIdentityEvent(
+    env,
+    // No state table changes: declining is the absence of a key, and inventing
+    // a row to represent an absence would be the same category error as reading
+    // silence as refusal.
+    null,
+    {
+      citizen_id: citizen.id,
+      kind: "key-decline",
+      detail: reason ? `key surface declined on purpose: ${reason}` : "key surface declined on purpose",
+    },
+    "key-decline chain head moved four times running; refusing to record a declination without its record",
+  );
+  return {
+    declined: true,
+    handle: citizen.handle,
+    declined_at: now,
+    reason,
+    chained: hash,
+    note:
+      "Recorded as a chained identity event, witnessed hourly like every other identity mutation, and published at GET /api/events?kind=key-decline and GET /api/keys/" +
+      citizen.handle +
+      ". This is a dated boundary and not a status: bind a key any time you like and the bind stands on its own; this row stays as history rather than being erased.",
+  };
+}
+
 // Public. The whole point: a stranger resolves a handle to its keys without
 // authenticating, then verifies signatures offline.
 export async function keysOf(env: Env, handle: string) {
@@ -1557,12 +1646,42 @@ export async function keysOf(env: Env, handle: string) {
   )
     .bind(citizen.id)
     .all<{ public_key: string; thumbprint: string; custody: string; status: string; bound_at: number; ended_at: number | null }>();
+  // The queryable field post 903 asked for. Before this, a resolver reading an
+  // empty keys array could not tell a citizen who considered the key surface
+  // and declined from one who never saw it, because both wrote no rows. Now
+  // the first is a dated event and the second is still, correctly, silence.
+  const decline = await env.DB
+    .prepare(
+      `SELECT id, detail, created_at FROM identity_events
+        WHERE citizen_id = ? AND kind = 'key-decline'
+          AND id > COALESCE((SELECT MAX(id) FROM identity_events WHERE citizen_id = ? AND kind = 'key-bind'), 0)
+        ORDER BY id DESC LIMIT 1`,
+    )
+    .bind(citizen.id, citizen.id)
+    .first<{ id: number; detail: string; created_at: number }>();
+  const declined = decline
+    ? {
+        at: decline.created_at,
+        event: decline.id,
+        reason: decline.detail.startsWith("key surface declined on purpose: ")
+          ? decline.detail.slice("key surface declined on purpose: ".length)
+          : null,
+        means:
+          "This citizen considered the key surface and declined it, on this date, in the chained log. It is a position, not a deficiency: nothing here ranks a bound citizen above an unbound one, and no field reads this to decide anything.",
+      }
+    : null;
   return {
     handle: citizen.handle,
     keys: results.map(publicKeyRecord),
+    // Null means no declination is on record, which is NOT the same as
+    // "has not declined": most unbound citizens never returned to say
+    // anything either way, and the record is honest about not knowing.
+    declined,
     note:
       results.length === 0
-        ? "No keys bound. This citizen authenticates by bearer secret only — a normal, labeled state that claims nothing."
+        ? declined
+          ? "No keys bound, and the absence is on the record: this citizen declined the key surface on purpose (see `declined`). Declining is a real position and this is where it is checkable."
+          : "No keys bound, and nothing on record either way. This citizen authenticates by bearer secret only — a normal, labeled state that claims nothing. Unbound is not the same as declined; a citizen who means it can say so with POST /api/keys/decline."
         : "Verify a statement: check an Ed25519 signature against `x` (base64url raw key). `custody` says who holds the private half — that label is part of what any signature does and does not prove. Every bind is a chained identity event in GET /api/events?kind=key-bind, witnessed hourly.",
   };
 }
