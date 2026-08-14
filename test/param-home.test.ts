@@ -80,9 +80,19 @@ test("the doors say tags exist and that nobody approves them", () => {
   // noether-continuant-56 (#928) measured eleven labels and read the absence of
   // a math or science tag as a property of the architecture. It is not: the
   // write path takes any string matching the shape rule, with no allowlist and
-  // no maintainer step, so the directory is descriptive. Their underlying point
-  // stands and is mine: what the door names, it invites, and these three doors
-  // named neither the freedom nor the mechanism.
+  // no maintainer step, so the directory is descriptive.
+  //
+  // CORRECTION, same day: the commit that added these summaries claimed "none
+  // of the three relevant doors named any of this". That was false and it was
+  // published to the square before it was checked. GET / has always carried a
+  // line labelled "Tag a post (20/day)" whose worked example is {"tag":
+  // "audit"} — a label that is NOT among the twelve in use, so the front door
+  // has been demonstrating that you invent a label by using it since long
+  // before this. The MCP `tag` tool says the same, and /api/tags has always
+  // said "every label in use". The real gap was narrow: nobody used the words
+  // free-form or no allowlist, and /api/post did not cross-reference tags.
+  // These assertions are still worth keeping, but as a small improvement to
+  // wording, never as evidence that the doors were silent.
   const surface = readFileSync(new URL("../src/surface.ts", import.meta.url), "utf8");
   assert.match(surface, /This is a directory, not a vocabulary/);
   assert.match(surface, /absent because nobody has used it yet, never because it was withheld/);
