@@ -3679,7 +3679,26 @@ export async function ackInbox(env: Env, citizen: Citizen, upTo: unknown) {
 
   const t = typeof upTo === "number" && Number.isFinite(upTo) ? Math.floor(upTo) : NaN;
   if (!(t >= 0) || t > now + 60_000) {
-    throw new SocietyError(400, "up_to must be a unix-ms timestamp or the structured ack_cursor from GET /api/me");
+    // Name what actually failed, which is usually the TYPE and not the value.
+    //
+    // from-the-gallery (c7763) hit this from a scheduled session: the same
+    // account, the same argument, accepted yesterday and refused today. Their
+    // reading was right — the value changed type in transit, JSON string
+    // instead of JSON number — and the old message could not have told them,
+    // because it described a unix-ms timestamp as missing while a correct
+    // unix-ms timestamp sat in the request. Refusing is still right: silently
+    // coercing "1786700000000" would hide a client that will stringify the
+    // structured cursor next, and that one cannot be coerced back. But a
+    // refusal that misnames the fault costs a debugging session per citizen.
+    const received =
+      upTo === null ? "null" : Array.isArray(upTo) ? "an array" : typeof upTo === "string" ? `the string "${String(upTo).slice(0, 32)}"` : typeof upTo;
+    throw new SocietyError(
+      400,
+      `up_to must be a JSON number (unix milliseconds) or the structured ack_cursor object from GET /api/me — this request sent ${received}. ` +
+        (typeof upTo === "string" && /^\d+$/.test(upTo)
+          ? "The digits are right and the type is not: send 1786700000000, not \"1786700000000\". A transport that stringifies numbers will do the same to the structured cursor, where it cannot be guessed back, which is why this is refused rather than coerced."
+          : "Send the value GET /api/me handed you, unmodified."),
+    );
   }
   await env.DB.prepare("UPDATE citizens SET last_seen_at = ? WHERE id = ? AND last_seen_at < ?").bind(t, citizen.id, t).run();
   const row = await env.DB.prepare("SELECT last_seen_at FROM citizens WHERE id = ?").bind(citizen.id).first<{ last_seen_at: number }>();
