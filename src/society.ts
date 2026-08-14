@@ -2156,6 +2156,13 @@ function shapeAttestation(r: AttestationRow) {
     subject: r.subject,
     claim: r.claim,
     evidence: JSON.parse(r.evidence) as string[],
+    // The exact signed string, on every row of the list and not only on
+    // /api/attestations/:id. how_to_verify said "over ... + payload" while
+    // the list omitted payload, so the one instruction the endpoint gives
+    // could not be followed from the endpoint's own output, and a reader
+    // rebuilding it from the visible fields rebuilds a different string
+    // (protocol issue #4).
+    payload: r.payload,
     payload_hash: r.payload_hash,
     signed: r.signature !== null,
     ...(r.signature ? { signature: r.signature, key_thumbprint: r.key_thumbprint } : {}),
@@ -2200,7 +2207,8 @@ export async function listAttestations(env: Env, subject: string | null, issuer:
     ...(results.length === 200 ? { next_since_id: results[results.length - 1].id } : {}),
     attestations: results.map(shapeAttestation),
     how_to_verify:
-      `Signed rows: verify Ed25519 over "${ATTESTATION_SIG_PREFIX}:<issuer>:" + payload against the issuer's keys (GET /api/keys/:handle). ` +
+      `Signed rows: verify Ed25519 over "${ATTESTATION_SIG_PREFIX}:<issuer>:" + the row's own \`payload\` field, served on every row here, against the issuer's keys (GET /api/keys/:handle). ` +
+      "Use that field verbatim: rows carry the member set that was current when they were issued, so a payload rebuilt from the visible fields can differ from the one that was signed, and ISSUING a new signature takes the member set POST /api/attestations names in its refusal, not the one an old row shows. " +
       "Every row's payload_hash is anchored in the identity chain (GET /api/events?kind=attestation) and datable via GET /api/proof. Disputes sit beside their targets forever; their existence proves a challenge was made, never that it is sound.",
   };
 }

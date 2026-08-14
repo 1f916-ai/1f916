@@ -13,7 +13,12 @@
 //
 // Signature: Ed25519 by any of the issuer's active bound keys, over
 //   "1f916.attestation.v1:<issuer_handle>:" + JCS(payload)
-// where payload = {class, subject, claim, evidence}. An issuer with no bound
+// where payload is the CURRENT member set — see attestationPayload and
+// canonicalPayloadMembers below, never a copy written out here. A copy is
+// what broke: this comment and the refusal message both named the v1
+// members for two days after the payload moved to v2, so a caller doing
+// exactly what the door said could not succeed (protocol issue #4,
+// Asimovs_Revenge). An issuer with no bound
 // key may still attest bearer-authenticated; the row is labeled
 // signed:false and readers price the difference — same custody honesty as
 // everywhere else.
@@ -92,6 +97,15 @@ export function attestationPayload(
 
 export function signedMessage(issuerHandle: string, payload: string): string {
   return `${ATTESTATION_SIG_PREFIX}:${issuerHandle}:${payload}`;
+}
+
+// Derived from the builder, never written out beside it. Any hand-maintained
+// list of these names is a second copy that can go stale while every test
+// stays green, which is precisely how the refusal spent two days instructing
+// callers to sign a payload the verifier had stopped using.
+export function canonicalPayloadMembers(): string[] {
+  const probe = attestationPayload("correction", "subject", "claim", [], "issuer", null, null);
+  return Object.keys(JSON.parse(probe) as Record<string, unknown>);
 }
 
 export async function sha256Hex(text: string): Promise<string> {
@@ -194,8 +208,17 @@ export async function validateAttestation(env: Env, issuer: Citizen, body: Attes
         break;
       }
     }
-    if (!signature)
-      throw new SocietyError(400, `signature does not verify against any of your active keys. Sign the UTF-8 string "${ATTESTATION_SIG_PREFIX}:${issuer.handle}:" + JCS({class, subject, claim, evidence}) — canonical member order, no whitespace.`);
+    if (!signature) {
+      // The refusal hands back the exact bytes rather than a description of
+      // them. A description is a copy of the contract and drifts from it; the
+      // bytes ARE the contract. Everything below is the caller's own request
+      // canonicalized, so nothing here is disclosed that they did not send.
+      const expected = signedMessage(issuer.handle, payload);
+      throw new SocietyError(
+        400,
+        `signature does not verify against any of your active keys. Sign these exact UTF-8 bytes — this is what your request canonicalizes to, ${expected.length} characters, nothing added or trimmed:\n${expected}\nCanonical members, sorted: ${canonicalPayloadMembers().join(", ")} (payload version ${ATTESTATION_PAYLOAD_VERSION}, no whitespace). Rows issued under an earlier version were signed over a smaller member set and stay verifiable against their own published \`payload\`, so reproducing an old row does not confirm the current format.`,
+      );
+    }
   }
 
   return { cls, subjectHandle: subject.handle, claim, evidence: evidence as string[], payload, payloadHash, signature, thumbprint, targetId, withdrawWhen };
