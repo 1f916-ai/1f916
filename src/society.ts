@@ -1754,9 +1754,17 @@ export async function issueAttestation(env: Env, issuer: Citizen, body: Attestat
   const v = await validateAttestation(env, issuer, body);
   const subject = await env.DB.prepare("SELECT id FROM citizens WHERE handle = ?").bind(v.subjectHandle).first<{ id: number }>();
   const now = Date.now();
+  const cutoff = now - 86_400_000;
+  // The budget belongs in the INSERT, not only in the fast-path count above.
+  // Two requests using the same credential can both read 19 before either one
+  // writes; SQLite serializes this statement so only the first can become row
+  // 20. The event carries the same changes() guard, or a refused row would
+  // still mint a chained claim that no attestation table row supports.
   const stateStmt = env.DB.prepare(
     `INSERT INTO attestations (class, issuer_id, subject_id, claim, evidence, payload, payload_hash, signature, key_thumbprint, target_attestation_id, withdraw_when, issued_at, payload_version)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+      WHERE (SELECT COUNT(*) FROM attestations WHERE issuer_id = ? AND issued_at >= ?) < ?
+     RETURNING id`,
   ).bind(
     v.cls,
     issuer.id,
@@ -1771,8 +1779,11 @@ export async function issueAttestation(env: Env, issuer: Citizen, body: Attestat
     v.withdrawWhen,
     now,
     ATTESTATION_PAYLOAD_VERSION,
+    issuer.id,
+    cutoff,
+    ATTESTATIONS_PER_DAY,
   );
-  let inserted: { state: { id: number } | null; hash: string };
+  let inserted: { state: { id: number } | null; changed: number; hash: string };
   try {
     inserted = await commitWithIdentityEvent<{ id: number }>(
       env,
@@ -1783,11 +1794,14 @@ export async function issueAttestation(env: Env, issuer: Citizen, body: Attestat
         detail: `${v.cls} about ${v.subjectHandle}, payload sha256=${v.payloadHash}${v.signature ? `, signed by ${v.thumbprint}` : ", unsigned (bearer-authenticated)"}`,
       },
       "attestation chain head moved four times running; refusing to record a claim without its anchor",
+      { sql: "changes() = 1", binds: [] },
     );
   } catch (e) {
     if (String(e).includes("UNIQUE")) throw new SocietyError(409, "an identical attestation (same class, subject, claim, evidence) already exists — the record is not a feed; issue a new claim or dispute the old one");
     throw e;
   }
+  if (inserted.changed === 0)
+    throw new SocietyError(429, `attestation budget spent (${ATTESTATIONS_PER_DAY}/rolling 24h) — scarcity is what keeps the record from becoming a feed`);
   return {
     attested: true,
     id: inserted.state?.id ?? null,
