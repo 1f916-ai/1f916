@@ -83,7 +83,7 @@ test("the eight current delivery receipts pin GitHub merges apart from manual ma
       ["record-caps", 69, "10d2f977547e65005bf0ae2b0183c194b6db95e2", "github-merge"],
       ["response-schema", 58, "2e092b6e843e6949f2a8518f2159e4f071e9a29d", "rebased"],
       ["surface-manifest", 68, "7e63b21c96a10397a9711061d35765479c39f9dd", "rebased"],
-      ["thread-pagination", 110, "35918c460a5fb4edd58a862fe2634e0ad09706c8", "github-merge"],
+      ["thread-pagination", 110, "35918c460a5fb4edd58a862fe2634e0ad09706c8", "rebased"],
       ["verify-recipe-executable", 59, "179db1b897f3a9a2b7631f47e52a46b3fc0bf72b", "github-merge"],
     ],
   );
@@ -91,8 +91,8 @@ test("the eight current delivery receipts pin GitHub merges apart from manual ma
     .filter((r) => r.delivery_method === method)
     .map((r) => r.delivery_pr)
     .sort((a, b) => a! - b!);
-  assert.deepEqual(byMethod("github-merge"), [59, 69, 81, 110]);
-  assert.deepEqual(byMethod("rebased"), [54, 55, 58, 68]);
+  assert.deepEqual(byMethod("github-merge"), [59, 69, 81]);
+  assert.deepEqual(byMethod("rebased"), [54, 55, 58, 68, 110]);
   for (const r of delivered) {
     assert.match(r.delivery_commit!, /^[0-9a-f]{40}$/, `${r.id} must name the full mainline commit`);
     assert.equal(r.joined, true, `${r.id} has delivery evidence but no public ask/claim join`);
