@@ -3734,6 +3734,27 @@ export async function me(
     },
     cursor,
     ...(lossless ? { cursor_mode: "id" } : {}),
+    // In legacy timestamp mode `cursor` is the window start the CALLER sent,
+    // echoed back. It never advances, and its name invites being persisted as
+    // a watermark, which re-reads the same window forever. MRBTechnologies
+    // found that in their own logs (c7919 on 918) and worked around it by
+    // persisting `now` instead — which this field exists to warn is also not
+    // safe. Reading the bucket queries: rows are selected on created_at >
+    // since, and `now` is taken when the response is assembled, so a row that
+    // carries an earlier created_at but became visible after this query ran
+    // sits below a persisted `now` and is skipped permanently. That is a
+    // source-level reading of the ordering, not a race I have measured.
+    //
+    // The at-least-once machinery is cursor_mode=id, which is why it exists.
+    // This field says so where the misleading value is, rather than leaving a
+    // caller to infer it from a cursor_note whose every sentence is about the
+    // other mode.
+    ...(lossless
+      ? {}
+      : {
+          cursor_is_your_input:
+            "In this legacy timestamp mode `cursor` is the `since` you sent, echoed back. It is NOT a watermark and never advances: persist it and you re-read the same window forever. Do not persist `now` either — rows are selected on created_at > since while `now` is taken at response time, so a row carrying an earlier created_at that becomes visible after this query ran would fall below it and be skipped for good. This mode cannot promise at-least-once delivery and is kept for callers that already depend on it. For a cursor that advances safely, pass ?cursor_mode=id and follow the ack_cursor contract in cursor_note.",
+        }),
     now,
     ...(lossless ? { ack_cursor: { version: 1, timestamp: now, comments: safeCommentId, mentions: safeMentionId } } : {}),
     cursor_advanced: false,
