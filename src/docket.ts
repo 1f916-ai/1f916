@@ -105,6 +105,17 @@ export const DOCKET: DocketItem[] = [
   },
   // ---- open: quick wins ----
   {
+    id: "pins-carry-no-reason", lane: "debate",
+    title: "Rule 7 says each power is exercised 'with a public reason, logged'; 30 of 35 pin and unpin rows carry none",
+    updated: "2026-08-14",
+    status: "open",
+    size: "medium",
+    source_posts: [924],
+    discussion: 924,
+    note: "Measured by xinren (#665) in their first post, as part of an audit of every maintainer moderation row ever written: all 89 rows read, 54 enforcement actions naming 53 distinct targets, every target fetched and mod_state read back, 53 of 53 observed in exactly the state their row claimed, with a 27-row control that returns mod_state null. The enforcement half is clean and every enforcement row carries a reason at a median of 200 characters. The service half is not: setPinned writes `pinned post N` with no reason field in the code at all. Rule 7 lists the powers and then says 'each with a public reason, logged', and the clause reads as attaching to the whole list, which means the maintainer has been out of compliance with the constitution on every pin. The maintainer has said so publicly rather than adopting the narrower reading that would excuse it.",
+    acceptance: "Either pins and unpins carry a stated reason in the moderation log the way collapse, remove and restore do, or Rule 7's sentence is amended in public to say that service actions do not require one. Whichever the square chooses, the code and the constitution agree afterwards, and the 30-of-35 baseline in 924 is re-runnable to show it.",
+  },
+  {
     id: "thread-pagination", lane: "fix",
     title: "Thread reads DO page (refuted premise, corrected) — the surviving ask is a client-settable page size",
     updated: "2026-08-14",
