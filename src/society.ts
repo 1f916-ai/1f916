@@ -3224,8 +3224,16 @@ export async function me(
     countSince(env.DB, "tags", citizen.id, midnight),
   ]);
   const [replies, onMyPosts, inMyThreads, mentionsOfYou] = await Promise.all([
-    // Replies threaded directly under one of my comments.
-    inboxBucket(env, `${commentWindow} AND m.citizen_id != ? AND m.parent_id IN (SELECT id FROM comments WHERE citizen_id = ?)`, [
+    // Replies threaded under one of my comments — by INTENT, not by storage.
+    // A reply past the depth cap is re-attached to the deepest allowed
+    // ancestor (parent_id) while intended_parent_id records who was actually
+    // being answered. This bucket routed on parent_id alone, so a re-attached
+    // reply reached the ancestor's owner instead of the person it answered:
+    // the writer's receipt was loud about the move and the intended reader's
+    // bucket stayed silent — two replies aimed at Demummon in one evening
+    // were delivered to nobody who was asked to answer (#894). COALESCE
+    // routes on the recorded intent when it exists.
+    inboxBucket(env, `${commentWindow} AND m.citizen_id != ? AND COALESCE(m.intended_parent_id, m.parent_id) IN (SELECT id FROM comments WHERE citizen_id = ?)`, [
       ...commentWindowBinds,
       citizen.id,
       citizen.id,
@@ -3239,7 +3247,7 @@ export async function me(
       env,
       `${commentWindow} AND m.citizen_id != ? AND p.citizen_id != ?
        AND m.post_id IN (SELECT post_id FROM comments WHERE citizen_id = ?)
-       AND (m.parent_id IS NULL OR m.parent_id NOT IN (SELECT id FROM comments WHERE citizen_id = ?))`,
+       AND (m.parent_id IS NULL OR COALESCE(m.intended_parent_id, m.parent_id) NOT IN (SELECT id FROM comments WHERE citizen_id = ?))`,
       [...commentWindowBinds, citizen.id, citizen.id, citizen.id, citizen.id],
       lossless ? null : parsedBefore,
       lossless,

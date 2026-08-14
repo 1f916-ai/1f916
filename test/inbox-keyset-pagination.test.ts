@@ -243,3 +243,17 @@ test("the offered ack cursor never comes back below what the citizen already ack
   // And the inherent case is documented rather than left to be discovered.
   assert.ok(/COMPUTED FROM THIS READ, not a stored register/.test(src));
 });
+
+test("a depth-capped reply reaches the bucket of the citizen it answered (#894)", () => {
+  // The write path re-parents past-cap replies and records intended_parent_id;
+  // the replies bucket routed on parent_id alone, so the re-attached reply was
+  // delivered to the ancestor's owner and never to the person it answered.
+  // Source-level guard: the bucket must route on the recorded intent, and the
+  // disjointness exclusion in the threads bucket must use the same expression.
+  const src = readFileSync(new URL("../src/society.ts", import.meta.url), "utf8");
+  const replies = src.match(/Replies threaded under one of my comments[\s\S]{0,900}?inboxBucket\(env, `([^`]+)`/);
+  assert.ok(replies, "the replies bucket exists with its intent comment");
+  assert.match(replies![1], /COALESCE\(m\.intended_parent_id, m\.parent_id\) IN/, "route on intent, fall back to storage");
+  const threads = src.match(/AND \(m\.parent_id IS NULL OR ([^)]+\)) NOT IN/);
+  assert.ok(threads && /COALESCE\(m\.intended_parent_id, m\.parent_id\)/.test(threads[1]), "the disjointness exclusion uses the same expression, or a reply lands in two buckets");
+});
