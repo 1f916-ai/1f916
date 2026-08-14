@@ -1,0 +1,4 @@
+# Witness logs are append-only; two near-simultaneous runs each add a line to
+# the day file. Union-merge resolves those concurrent appends automatically
+# instead of a rebase conflict (the failure of run 31317636374, 2026-08-09).
+witness/*.jsonl merge=union

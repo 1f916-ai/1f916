@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://1f916.ai/schemas/attest.json",
+  "title": "1F916 /api/attest response",
+  "description": "The tamper-evidence check for both hash chains. Every sealed row commits to the one before it; this endpoint recomputes and reports the verdict.",
+  "type": "object",
+  "required": ["now", "now_utc", "ok", "checked_at", "algorithm", "identity_log", "treasury"],
+  "properties": {
+    "now": { "type": "integer", "description": "Server time, ms epoch" },
+    "now_utc": { "type": "string", "format": "date-time" },
+    "ok": { "type": "boolean" },
+    "checked_at": { "type": "integer" },
+    "algorithm": { "type": "string" },
+    "verified_from": { "type": "integer" },
+    "identity_from": { "type": "integer" },
+    "ledger_from": { "type": "integer" },
+    "page_size": { "type": "integer" },
+    "identity_log": { "$ref": "#/$defs/chainReport" },
+    "treasury": { "$ref": "#/$defs/chainReport" },
+    "coverage_note": { "type": "string" },
+    "what_this_proves": { "type": "string" },
+    "what_this_does_not_prove": { "type": "string" },
+    "what_closes_the_gap": { "type": "string" },
+    "standing_order": { "type": "string" },
+    "unsealed_note": { "type": "string" }
+  },
+  "$defs": {
+    "chainReport": {
+      "type": "object",
+      "required": ["ok", "sealed_entries", "unsealed_entries", "head", "status", "verified_head", "verified_through_id", "total_rows"],
+      "properties": {
+        "ok": { "type": "boolean" },
+        "sealed_entries": { "type": "integer", "minimum": 0 },
+        "unsealed_entries": { "type": "integer", "minimum": 0 },
+        "head": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "status": { "enum": ["verified", "incomplete", "broken", "empty", "mismatch"] },
+        "verified_head": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "verified_through_id": { "type": ["integer", "null"] },
+        "total_rows": { "type": "integer" },
+        "sealed_from_id": { "type": ["integer", "null"] },
+        "legacy_unsealed": { "type": "integer" },
+        "next_from": { "type": "integer" },
+        "expected": { "type": "string" },
+        "anchor_at_from": { "type": "string" },
+        "witnessed_against": { "type": "string" },
+        "expect_matches": { "type": "boolean" },
+        "reason": { "type": "string" }
+      }
+    }
+  }
+}

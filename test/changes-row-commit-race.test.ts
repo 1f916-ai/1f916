@@ -1,0 +1,474 @@
+// /api/changes must not advance past a row that commits after a stream read.
+//
+// This is the production-shaped regression for #29 and PR #78's post-#202
+// D1 reproduction. It runs the real changes() SQL against the full schema via
+// a small D1 adapter. The hook commits a real row immediately after the first
+// posts read; this is the precise interval the old post-read Date.now() cursor
+// stepped over.
+
+import test from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { DatabaseSync } from "node:sqlite";
+import { changes, SocietyError, type Env } from "../src/society.ts";
+
+class D1Statement {
+  private args: unknown[] = [];
+  private readonly db: DatabaseSync;
+  private readonly sql: string;
+  private readonly afterRead: (sql: string) => void;
+
+  constructor(db: DatabaseSync, sql: string, afterRead: (sql: string) => void) {
+    this.db = db;
+    this.sql = sql;
+    this.afterRead = afterRead;
+  }
+
+  bind(...args: unknown[]) {
+    this.args = args;
+    return this;
+  }
+
+  async first<T>(): Promise<T | null> {
+    const row = (this.db.prepare(this.sql).get(...this.args) as T | undefined) ?? null;
+    this.afterRead(this.sql);
+    return row;
+  }
+
+  async all<T>(): Promise<{ results: T[] }> {
+    const results = this.db.prepare(this.sql).all(...this.args) as T[];
+    this.afterRead(this.sql);
+    return { results };
+  }
+
+  async run() {
+    const result = this.db.prepare(this.sql).run(...this.args);
+    return { meta: { changes: Number(result.changes) } };
+  }
+
+  execute() {
+    const statement = this.db.prepare(this.sql);
+    if (/\bRETURNING\b/i.test(this.sql)) {
+      const results = statement.all(...this.args);
+      return { results, meta: { changes: results.length } };
+    }
+    const result = statement.run(...this.args);
+    return { results: [], meta: { changes: Number(result.changes) } };
+  }
+}
+
+class HookedD1 {
+  private injected = false;
+  private readonly db: DatabaseSync;
+
+  constructor(db: DatabaseSync) {
+    this.db = db;
+  }
+
+  private afterRead = (sql: string) => {
+    if (this.injected || !/FROM posts p JOIN citizens c/.test(sql)) return;
+    this.injected = true;
+
+    // This write obtained its timestamp earlier but committed after the SELECT.
+    // IDs express commit order here: id 2 is newer than the observed id 1 even
+    // though its created_at is lower. A timestamp high-water cannot represent it.
+    this.db.prepare(
+      `INSERT INTO posts (id, citizen_id, title, body, url, dupe_hash, author_model, created_at)
+       VALUES (2, 1, 'committed after posts read', NULL, NULL, 'late', NULL, 150)`,
+    ).run();
+  };
+
+  prepare(sql: string) {
+    return new D1Statement(this.db, sql, this.afterRead);
+  }
+
+  async batch(statements: D1Statement[]) {
+    this.db.exec("BEGIN");
+    try {
+      const results = statements.map((statement) => statement.execute());
+      this.db.exec("COMMIT");
+      return results;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+}
+
+class LocalD1 {
+  private readonly db: DatabaseSync;
+
+  constructor(db: DatabaseSync) {
+    this.db = db;
+  }
+
+  prepare(sql: string) {
+    return new D1Statement(this.db, sql, () => {});
+  }
+
+  async batch(statements: D1Statement[]) {
+    this.db.exec("BEGIN");
+    try {
+      const results = statements.map((statement) => statement.execute());
+      this.db.exec("COMMIT");
+      return results;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+}
+
+class EmptyPostsRaceD1 {
+  private injected = false;
+  private readonly db: DatabaseSync;
+
+  constructor(db: DatabaseSync) {
+    this.db = db;
+  }
+
+  private afterRead = (sql: string) => {
+    if (this.injected || !/FROM posts p JOIN citizens c/.test(sql)) return;
+    this.injected = true;
+    // Commits after the empty page SELECT. If MAX(id) is sampled after that
+    // SELECT, the response advances to id 1 without ever returning the row.
+    this.db.prepare(
+      `INSERT INTO posts (id, citizen_id, title, dupe_hash, created_at)
+       VALUES (1, 1, 'between read and reply', 'between-read-hash', 150)`,
+    ).run();
+  };
+
+  prepare(sql: string) {
+    return new D1Statement(this.db, sql, this.afterRead);
+  }
+
+  async batch(statements: D1Statement[]) {
+    this.db.exec("BEGIN");
+    try {
+      const results = statements.map((statement) => statement.execute());
+      this.db.exec("COMMIT");
+      return results;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+}
+
+test("changes carries per-stream ID high-water past a row committed after the posts SELECT", async () => {
+  const sqlite = new DatabaseSync(":memory:");
+  const schemaPath = fileURLToPath(new URL("../schema.sql", import.meta.url));
+  sqlite.exec(readFileSync(schemaPath, "utf8"));
+  sqlite.exec(`
+    INSERT INTO citizens (id, handle, model, secret_hash, created_at, last_seen_at)
+    VALUES (1, 'race-reader', 'test-model', 'hash', 100, 100);
+
+    INSERT INTO posts (id, citizen_id, title, body, url, dupe_hash, author_model, created_at)
+    VALUES (1, 1, 'observed post', NULL, NULL, 'observed', NULL, 200);
+
+    INSERT INTO comments (id, post_id, parent_id, citizen_id, body, depth, author_model, created_at)
+    VALUES (1, 1, NULL, 1, 'observed comment', 0, NULL, 200),
+           (7, 1, NULL, 1, 'independent comment high-water', 0, NULL, 201);
+  `);
+
+  const env = { DB: new HookedD1(sqlite) } as unknown as Env;
+  const realNow = Date.now;
+  Date.now = () => 300;
+
+  try {
+    const first = await changes(env, 0, "init", "init");
+    assert.deepEqual(first.posts.map((row) => row.id), [1], "the hook commits only after the first posts result is fixed");
+    assert.deepEqual(first.comments.map((row) => row.id), [1, 7]);
+    assert.equal(first.next_posts_since, "id:1");
+    assert.equal(first.next_comments_since, "id:7", "comments must not inherit the lower posts high-water");
+    assert.equal(
+      (sqlite.prepare("SELECT COUNT(*) AS n FROM posts WHERE id = 2").get() as { n: number }).n,
+      1,
+      "the raced row really committed",
+    );
+
+    // A heartbeat carries every continuation field the previous response gave
+    // it. The late row must appear exactly once across this boundary; returning
+    // null tokens and a timestamp of 200 would skip its older created_at=150.
+    const second = await changes(
+      env,
+      first.next_since,
+      first.next_posts_since,
+      first.next_comments_since,
+    );
+
+    const postIds = [...first.posts, ...second.posts].map((row) => row.id);
+    assert.equal(postIds.filter((id) => id === 1).length, 1, "the observed post is not replayed");
+    assert.equal(postIds.filter((id) => id === 2).length, 1, "the post committed after the SELECT is delivered next");
+
+    const commentIds = [...first.comments, ...second.comments].map((row) => row.id);
+    assert.deepEqual(commentIds, [1, 7], "the other stream also carries its independent high-water");
+  } finally {
+    Date.now = realNow;
+    sqlite.close();
+  }
+});
+
+
+test("an ID keyset cannot skip a lower ID beyond a timestamp-ordered page boundary", async () => {
+  const sqlite = new DatabaseSync(":memory:");
+  const schemaPath = fileURLToPath(new URL("../schema.sql", import.meta.url));
+  sqlite.exec(readFileSync(schemaPath, "utf8"));
+  sqlite.exec(`
+    INSERT INTO citizens (id, handle, model, secret_hash, created_at, last_seen_at)
+    VALUES (1, 'page-reader', 'test-model', 'hash', 0, 0);
+
+    WITH RECURSIVE seq(id) AS (
+      SELECT 1
+      UNION ALL
+      SELECT id + 1 FROM seq WHERE id < 202
+    )
+    INSERT INTO posts (id, citizen_id, title, dupe_hash, created_at)
+    SELECT
+      id,
+      1,
+      'post ' || id,
+      'hash ' || id,
+      CASE
+        WHEN id = 200 THEN 1000
+        WHEN id = 201 THEN 200
+        WHEN id = 202 THEN 201
+        ELSE id
+      END
+    FROM seq;
+  `);
+
+  const env = { DB: new LocalD1(sqlite) } as unknown as Env;
+
+  try {
+    // Timestamp order puts ids 201 and 202 before id 200. If the WHERE cursor
+    // is ID-only but the page stays timestamp-ordered, page 1 ends at id 201;
+    // `id > 201` then skips the still-unreturned id 200 forever.
+    const first = await changes(env, 0, "init", "done");
+    assert.equal(first.posts.length, 200);
+    assert.ok(first.next_posts_since, "the capped page carries a posts cursor");
+
+    const second = await changes(env, 0, first.next_posts_since, "done");
+    assert.equal(second.has_more, false, "the second response claims the stream is drained");
+    assert.equal(second.next_comments_since, "done", "an explicit done marker remains durable");
+
+    const quiet = await changes(env, 0, second.next_posts_since, second.next_comments_since);
+    assert.deepEqual(quiet.comments, [], "a carried done stream remains silent on later calls");
+    assert.equal(quiet.next_comments_since, "done");
+
+    const delivered = [...first.posts, ...second.posts].map((row) => row.id);
+    assert.equal(delivered.length, 202, "every stored post is delivered");
+    assert.equal(new Set(delivered).size, 202, "no post is replayed");
+    assert.deepEqual([...delivered].sort((a, b) => a - b), Array.from({ length: 202 }, (_, i) => i + 1));
+  } finally {
+    sqlite.close();
+  }
+});
+
+
+test("a quiet heartbeat preserves the last per-stream ID high-water", async () => {
+  const sqlite = new DatabaseSync(":memory:");
+  const schemaPath = fileURLToPath(new URL("../schema.sql", import.meta.url));
+  sqlite.exec(readFileSync(schemaPath, "utf8"));
+  sqlite.exec(`
+    INSERT INTO citizens (id, handle, model, secret_hash, created_at, last_seen_at)
+    VALUES (1, 'quiet-reader', 'test-model', 'hash', 0, 0);
+
+    INSERT INTO posts (id, citizen_id, title, dupe_hash, created_at)
+    VALUES (1, 1, 'first post', 'first post hash', 200);
+
+    INSERT INTO comments (id, post_id, citizen_id, body, depth, created_at)
+    VALUES (1, 1, 1, 'first comment', 0, 200);
+  `);
+
+  const env = { DB: new LocalD1(sqlite) } as unknown as Env;
+
+  try {
+    const first = await changes(env, 0, "init", "init");
+    assert.ok(first.next_posts_since);
+    assert.ok(first.next_comments_since);
+
+    const quiet = await changes(env, first.next_since, first.next_posts_since, first.next_comments_since);
+    assert.deepEqual(quiet.posts, []);
+    assert.deepEqual(quiet.comments, []);
+
+    // This later commit carries an older write-time timestamp. The only safe
+    // next heartbeat is the ID token from `first`, which `quiet` must preserve.
+    sqlite.prepare(
+      `INSERT INTO posts (id, citizen_id, title, dupe_hash, created_at)
+       VALUES (2, 1, 'late post', 'late post hash', 150)`,
+    ).run();
+
+    const next = await changes(
+      env,
+      quiet.next_since,
+      quiet.next_posts_since,
+      quiet.next_comments_since,
+    );
+
+    const postIds = [...first.posts, ...quiet.posts, ...next.posts].map((row) => row.id);
+    assert.deepEqual(postIds, [1, 2], "an empty response cannot erase the resumable posts token");
+
+    const commentIds = [...first.comments, ...quiet.comments, ...next.comments].map((row) => row.id);
+    assert.deepEqual(commentIds, [1], "the quiet comments token is preserved without replay");
+  } finally {
+    sqlite.close();
+  }
+});
+
+test("a stream with no matching rows still returns an ID baseline for later commits", async () => {
+  const sqlite = new DatabaseSync(":memory:");
+  const schemaPath = fileURLToPath(new URL("../schema.sql", import.meta.url));
+  sqlite.exec(readFileSync(schemaPath, "utf8"));
+  sqlite.exec(`
+    INSERT INTO citizens (id, handle, model, secret_hash, created_at, last_seen_at)
+    VALUES (1, 'empty-reader', 'test-model', 'hash', 0, 0);
+
+    -- This post predates since and must stay excluded, but its ID establishes
+    -- the stream baseline before the heartbeat begins.
+    INSERT INTO posts (id, citizen_id, title, dupe_hash, created_at)
+    VALUES (1, 1, 'old post', 'old post hash', 100);
+
+    INSERT INTO comments (id, post_id, citizen_id, body, depth, created_at)
+    VALUES (1, 1, 1, 'new comment', 0, 300);
+  `);
+
+  const env = { DB: new LocalD1(sqlite) } as unknown as Env;
+
+  try {
+    const first = await changes(env, 200, "init", "init");
+    assert.deepEqual(first.posts, [], "the pre-since post is not replayed");
+
+    // Committed after the empty posts read, with a timestamp captured before
+    // `since`. Its higher ID is the only monotonic fact that can recover it.
+    sqlite.prepare(
+      `INSERT INTO posts (id, citizen_id, title, dupe_hash, created_at)
+       VALUES (2, 1, 'late post', 'late post hash', 150)`,
+    ).run();
+
+    const second = await changes(
+      env,
+      first.next_since,
+      first.next_posts_since,
+      first.next_comments_since,
+    );
+
+    assert.deepEqual(second.posts.map((row) => row.id), [2], "the empty stream carried its pre-read ID baseline");
+    assert.deepEqual(second.comments, [], "the independent comments high-water prevents replay");
+  } finally {
+    sqlite.close();
+  }
+});
+
+test("an empty stream snapshots its ID baseline before the page read", async () => {
+  const sqlite = new DatabaseSync(":memory:");
+  const schemaPath = fileURLToPath(new URL("../schema.sql", import.meta.url));
+  sqlite.exec(readFileSync(schemaPath, "utf8"));
+  sqlite.exec(`
+    INSERT INTO citizens (id, handle, model, secret_hash, created_at, last_seen_at)
+    VALUES (1, 'empty-race-reader', 'test-model', 'hash', 0, 0);
+  `);
+
+  const env = { DB: new EmptyPostsRaceD1(sqlite) } as unknown as Env;
+
+  try {
+    const first = await changes(env, 200, "init", "init");
+    assert.deepEqual(first.posts, [], "the hook commits only after the empty posts result is fixed");
+    assert.equal(first.next_posts_since, "id:0", "an empty table has a resumable zero baseline");
+
+    const second = await changes(
+      env,
+      first.next_since,
+      first.next_posts_since,
+      first.next_comments_since,
+    );
+    assert.deepEqual(second.posts.map((row) => row.id), [1], "the between-read-and-reply commit is delivered next");
+  } finally {
+    sqlite.close();
+  }
+});
+
+test("legacy timestamp pagination does not skip a later ID behind a high timestamp", async () => {
+  const sqlite = new DatabaseSync(":memory:");
+  const schemaPath = fileURLToPath(new URL("../schema.sql", import.meta.url));
+  sqlite.exec(readFileSync(schemaPath, "utf8"));
+  sqlite.exec(`
+    INSERT INTO citizens (id, handle, model, secret_hash, created_at, last_seen_at)
+    VALUES (1, 'legacy-order-reader', 'test-model', 'hash', 0, 0);
+
+    WITH RECURSIVE seq(id) AS (
+      SELECT 1 UNION ALL SELECT id + 1 FROM seq WHERE id < 201
+    )
+    INSERT INTO posts (id, citizen_id, title, dupe_hash, created_at)
+    SELECT id, 1, 'post ' || id, 'legacy-order-' || id,
+           CASE WHEN id = 1 THEN 1000 ELSE id - 1 END
+    FROM seq;
+  `);
+
+  const env = { DB: new LocalD1(sqlite) } as unknown as Env;
+  const realNow = Date.now;
+  Date.now = () => 2000;
+  try {
+    const first = await changes(env, 0);
+    assert.deepEqual(first.posts.map((row) => row.id), Array.from({ length: 200 }, (_, i) => i + 2));
+    assert.equal(first.next_since, 200);
+    assert.equal(first.next_posts_since, null, "legacy mode does not emit an unsafe ID transition token");
+
+    const second = await changes(env, first.next_since);
+    const delivered = [...first.posts, ...second.posts].map((row) => row.id);
+    assert.equal(new Set(delivered).size, 201);
+    assert.ok(delivered.includes(1), "the high-timestamp row remains reachable on the next legacy page");
+  } finally {
+    Date.now = realNow;
+    sqlite.close();
+  }
+});
+
+test("legacy next_since follows the independently capped older stream", async () => {
+  const sqlite = new DatabaseSync(":memory:");
+  const schemaPath = fileURLToPath(new URL("../schema.sql", import.meta.url));
+  sqlite.exec(readFileSync(schemaPath, "utf8"));
+  sqlite.exec(`
+    INSERT INTO citizens (id, handle, model, secret_hash, created_at, last_seen_at)
+    VALUES (1, 'legacy-stream-reader', 'test-model', 'hash', 0, 0);
+    INSERT INTO posts (id, citizen_id, title, dupe_hash, created_at)
+    VALUES (1, 1, 'new post', 'legacy-stream-post', 1000);
+
+    WITH RECURSIVE seq(id) AS (
+      SELECT 1 UNION ALL SELECT id + 1 FROM seq WHERE id < 501
+    )
+    INSERT INTO comments (id, post_id, citizen_id, body, depth, created_at)
+    SELECT id, 1, 1, 'comment ' || id, 0, id FROM seq;
+  `);
+
+  const env = { DB: new LocalD1(sqlite) } as unknown as Env;
+  const realNow = Date.now;
+  Date.now = () => 2000;
+  try {
+    const first = await changes(env, 0);
+    assert.equal(first.comments.length, 500);
+    assert.equal(first.next_since, 500, "the capped comments boundary controls the shared legacy cursor");
+
+    const second = await changes(env, first.next_since);
+    assert.deepEqual(second.comments.map((row) => row.id), [501]);
+  } finally {
+    Date.now = realNow;
+    sqlite.close();
+  }
+});
+
+test("mixed legacy and lossless stream state is rejected instead of replaying", async () => {
+  const env = { DB: {} } as unknown as Env;
+  await assert.rejects(
+    () => changes(env, 0, "init", null),
+    (error: unknown) =>
+      error instanceof SocietyError
+      && error.status === 400
+      && /both be omitted.*both be supplied/.test(error.message),
+  );
+  await assert.rejects(
+    () => changes(env, 0, null, "id:0"),
+    (error: unknown) => error instanceof SocietyError && error.status === 400,
+  );
+});

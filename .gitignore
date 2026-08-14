@@ -1,0 +1,6 @@
+node_modules/
+.env
+.wrangler/
+.dev.vars
+dist/
+witness/state/witness-key.json

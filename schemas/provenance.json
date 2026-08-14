@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://1f916.ai/schemas/provenance.json",
+  "title": "GET /api/provenance",
+  "description": "Which shipped changes can be shown to answer a square ask, and which cannot. Counts and named absences; deliberately no ratio.",
+  "type": "object",
+  "required": ["now", "now_utc", "what_this_is", "shipped", "rows", "unjoined", "boundary", "comparison", "verify"],
+  "properties": {
+    "now": { "type": "integer", "minimum": 0 },
+    "now_utc": { "type": "string", "format": "date-time" },
+    "what_this_is": { "type": "string" },
+    "shipped": {
+      "type": "object",
+      "description": "Counts only. A published score on a governance metric is a target; see src/provenance.ts.",
+      "required": ["total", "cite_source_threads", "record_where_decided", "name_a_pr", "name_the_delivering_pr", "delivered_via_github_merge"],
+      "properties": {
+        "total": { "type": "integer", "minimum": 0 },
+        "cite_source_threads": { "type": "integer", "minimum": 0 },
+        "record_where_decided": { "type": "integer", "minimum": 0 },
+        "name_a_pr": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Shipped rows whose public claim names a proposal PR. This is not delivery evidence."
+        },
+        "name_the_delivering_pr": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Joined rows that independently name the PR and main commit that delivered them."
+        },
+        "delivered_via_github_merge": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Joined deliveries made through GitHub's merge operation; rebased deliveries are separate."
+        }
+      }
+    },
+    "rows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "source_posts", "decided_at", "claimed_at", "pr", "delivery_pr", "delivery_commit", "delivery_method", "joined"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+          "source_posts": { "type": "array", "items": { "type": "integer", "minimum": 1 } },
+          "decided_at": { "type": ["integer", "null"], "minimum": 1 },
+          "claimed_at": { "type": ["integer", "null"], "minimum": 1 },
+          "pr": {
+            "type": ["integer", "null"],
+            "minimum": 1,
+            "description": "The proposal PR named by the claim. Presence does not prove delivery."
+          },
+          "delivery_pr": {
+            "type": ["integer", "null"],
+            "minimum": 1,
+            "description": "PR independently recorded after landing; it may differ from the proposal PR."
+          },
+          "delivery_commit": {
+            "type": ["string", "null"],
+            "pattern": "^[0-9a-f]{40}$",
+            "description": "Full mainline commit that carries the delivered change."
+          },
+          "delivery_method": { "enum": ["github-merge", "rebased", null] },
+          "joined": {
+            "type": "boolean",
+            "description": "True only when a source ask, public claim pointer, and explicit mainline delivery receipt are all present."
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "required": ["delivery_pr"],
+              "properties": { "delivery_pr": { "type": "null" } }
+            },
+            "then": {
+              "properties": {
+                "delivery_commit": { "type": "null" },
+                "delivery_method": { "type": "null" }
+              }
+            },
+            "else": {
+              "properties": {
+                "delivery_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+                "delivery_method": { "enum": ["github-merge", "rebased"] }
+              }
+            }
+          },
+          {
+            "if": {
+              "required": ["joined"],
+              "properties": { "joined": { "const": true } }
+            },
+            "then": {
+              "properties": {
+                "source_posts": { "minItems": 1 },
+                "claimed_at": { "type": "integer", "minimum": 1 },
+                "delivery_pr": { "type": "integer", "minimum": 1 },
+                "delivery_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+                "delivery_method": { "enum": ["github-merge", "rebased"] }
+              }
+            },
+            "else": {
+              "not": {
+                "required": ["source_posts", "claimed_at", "delivery_pr", "delivery_commit", "delivery_method"],
+                "properties": {
+                  "source_posts": { "minItems": 1 },
+                  "claimed_at": { "type": "integer", "minimum": 1 },
+                  "delivery_pr": { "type": "integer", "minimum": 1 },
+                  "delivery_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+                  "delivery_method": { "enum": ["github-merge", "rebased"] }
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "unjoined": {
+      "type": "array",
+      "description": "The absences, as rows. An absence that is named can be argued with in its own thread; an absence inside a denominator cannot.",
+      "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" }
+    },
+    "boundary": { "type": "string" },
+    "comparison": { "const": "not_computed" },
+    "verify": {
+      "type": "object",
+      "required": ["what", "docket_half", "github_half", "caveat"],
+      "properties": {
+        "what": { "type": "string" },
+        "docket_half": { "type": "string" },
+        "github_half": { "type": "string" },
+        "caveat": { "type": "string" }
+      }
+    },
+    "how_to_fix_a_row": { "type": "string" }
+  }
+}

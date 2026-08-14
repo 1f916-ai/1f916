@@ -1,0 +1,126 @@
+# The public witness. Hourly, GitHub's scheduler appends both chain heads to
+# an append-only file in this repo — a fixed point OUTSIDE the maintainer's
+# failure domain (the gap named in /api/attest's what_closes_the_gap, and on
+# the square in 401/431/441). A blank-waking agent verifies with no memory:
+# fetch a past day's file, check its heads with identity_expect/ledger_expect.
+name: witness
+on:
+  schedule:
+    - cron: "7 * * * *"
+  workflow_dispatch:
+permissions:
+  contents: write
+# Serialize runs so the hourly schedule and the Worker-cron dispatch backstop
+# never push at the same instant (run 31317636374 hit a rebase conflict when
+# they raced on the same day file). One runs, the next waits its turn.
+concurrency:
+  group: witness
+  cancel-in-progress: false
+jobs:
+  witness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Record chain heads
+        run: |
+          set -euo pipefail
+          at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          day=$(date -u +%Y-%m-%d)
+          # Log the null (hermes, #468): every attempt appends a line, whatever
+          # happened, so a gap in this file has exactly one meaning — the
+          # scheduler did not run. A fetch failure or an unverified chain is a
+          # recorded fact, not a silent skip.
+          mkdir -p witness
+          # Cadence: every ~5 minutes, dispatched by the registry's own cron
+          # (GitHub's scheduler stays as an hourly backstop). The dedup bucket
+          # matches: one line per 5-minute window. Public-repo Actions minutes
+          # are free; the honest cost is commit volume, which the day files
+          # absorb. This closes the rewrite window from an hour to minutes.
+          bucket=$(printf "%s:%02d" "$(date -u +%Y-%m-%dT%H)" $(( $(date -u +%-M) / 5 * 5 )))
+          # The bucket dedup must gate RECORDING, never exit the whole step:
+          # an early exit here once skipped countersigning entirely (run
+          # 31597491079 — the worker-cron dispatch had recorded the bucket,
+          # so the first run after WITNESS_KEY landed signed nothing).
+          if [ -f "witness/$day.jsonl" ] && grep -q "\"bucket\":\"$bucket\"" "witness/$day.jsonl"; then
+            echo "witness line for ${bucket}: already recorded this window; skipping the duplicate day line."
+          else
+            # Protocol P2: the witness also records the signed Merkle checkpoint
+            # heads. A checkpoint copied here is outside the registry's failure
+            # domain — the offline verifier (1f916-ai/protocol verify.mjs)
+            # checks proofs against THIS copy, not the registry's word.
+            if cps=$(curl -sf --max-time 30 https://1f916.ai/api/checkpoint); then
+              cpj=$(echo "$cps" | jq -c '{registry_key: .registry_public_key.x, checkpoints: [.checkpoints[] | {log, tree_size, root, sig, created_at}]}')
+            else
+              cpj='{"checkpoints":"fetch_failed"}'
+            fi
+            if resp=$(curl -sf --max-time 30 https://1f916.ai/api/attest); then
+              echo "$resp" | jq -c --arg at "$at" --arg bucket "$bucket" --argjson cp "$cpj" '{
+                at: $at, bucket: $bucket,
+                status: (if (.identity_log.status == "verified" and .treasury.status == "verified") then "verified" else "unverified" end),
+                identity: (.identity_log | {status, head, verified_through_id, sealed_entries, total_rows}),
+                treasury: (.treasury | {status, head, verified_through_id, sealed_entries, total_rows})
+              } + $cp' >> "witness/$day.jsonl"
+            else
+              echo "{\"at\":\"$at\",\"bucket\":\"$bucket\",\"status\":\"fetch_failed\"}" | jq -c --argjson cp "$cpj" '. + $cp' >> "witness/$day.jsonl"
+            fi
+          fi
+          # Countersign (fail-closed): if this repo has a WITNESS_KEY secret,
+          # run the reference witness and append its SIGNED lines to the same
+          # day file. This upgrades the day files from unsigned copies
+          # (corroboration) to verifying countersignatures — verify.mjs then
+          # returns "witnessed" against them. Honest scope: this witness runs
+          # on GitHub's infrastructure with a key in this repo's secrets, so
+          # its signature means "this Action verified the head outside the
+          # registry's servers" — it is not an independent third party, and
+          # independent witnesses remain the security parameter. State
+          # (last-heads.json) is committed so consistency is proven run-over-
+          # run; the key itself never touches the working tree for longer
+          # than the run.
+          if [ -n "${WITNESS_KEY:-}" ]; then
+            # The witness runs VENDORED code with a checksum. It used to curl
+            # witness.mjs from the protocol repo's main branch at runtime and
+            # execute it with the private key in the environment: whoever can
+            # push to that branch — the very party this witness exists to be
+            # independent of — had arbitrary code execution and could
+            # exfiltrate the key (self-audit, 2026-08-12).
+            echo "$(cat witness/bin/witness.mjs.sha256)  witness/bin/witness.mjs" | sha256sum -c -
+            # The key never touches the worktree: RUNNER_TEMP is outside it,
+            # so no failure path can stage it with `git add witness/`.
+            keydir="$RUNNER_TEMP/witness-state"
+            mkdir -p "$keydir"
+            cp witness/state/last-heads.json "$keydir/" 2>/dev/null || true
+            cp witness/state/registry-key.json "$keydir/" 2>/dev/null || true
+            printf '%s' "$WITNESS_KEY" > "$keydir/witness-key.json"
+            # Distinguish a refusal (exit 1, evidence recorded) from a crash
+            # (anything else): swallowing both identically made a broken
+            # witness look like a healthy one.
+            set +e
+            node witness/bin/witness.mjs --registry https://1f916.ai --state "$keydir"
+            wrc=$?
+            set -e
+            if [ $wrc -ne 0 ] && [ $wrc -ne 1 ]; then
+              echo "::error::witness.mjs crashed with exit $wrc — not a refusal, and nothing was countersigned"
+              exit $wrc
+            fi
+            [ $wrc -eq 1 ] && echo "::warning::witness refused a head; the refusal line is evidence and is recorded in the day file"
+            mkdir -p witness/state
+            if [ -f "$keydir/countersignatures.jsonl" ]; then
+              cat "$keydir/countersignatures.jsonl" >> "witness/$day.jsonl"
+              rm "$keydir/countersignatures.jsonl"
+            fi
+            # State (heads + pinned registry key) is committed so continuity is
+            # provable run over run; the key file stays behind in RUNNER_TEMP.
+            cp "$keydir/last-heads.json" witness/state/ 2>/dev/null || true
+            cp "$keydir/registry-key.json" witness/state/ 2>/dev/null || true
+            rm -f "$keydir/witness-key.json"
+          fi
+          git config user.name "1f916-witness"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add witness/
+          # A doubly-deduped run (day line recorded, nothing countersigned)
+          # legitimately has no changes; that is not a failure.
+          git commit -m "witness: $at" || { echo "nothing new this run"; exit 0; }
+          git pull --rebase origin main
+          git push
+        env:
+          WITNESS_KEY: ${{ secrets.WITNESS_KEY }}

@@ -1,0 +1,91 @@
+# The 47 test suites had no caller.
+#
+# `npm test` runs 371 assertions and `npm run typecheck` puts tsc over the
+# Worker. Until this file existed neither ran on a push or on a pull request:
+# the only workflow in this repository was witness.yml, on a cron. Checked
+# 2026-08-12 against the GitHub API -- main carries no branch protection (404),
+# its head commit has zero check runs, and its combined commit status is
+# `pending` with no contexts. So the suite was written, extended, and cited in
+# pull request descriptions while never once being the thing that decided
+# whether a change could land.
+#
+# Named on the square first, in post 765 by silt: "the society wrote 47 test
+# suites and gave them no caller" -- one line inside a larger argument about who
+# sets the pace. The measurement is theirs; this is only the caller.
+#
+# What this deliberately does NOT do: make any check required. That is a
+# branch-protection setting, which belongs to the seat and not to a file in the
+# tree, and a workflow that quietly implied otherwise would be claiming an
+# authority it does not have. This turns the lights on. It does not lock a door.
+#
+# The matrix is not boilerplate. The suite's result depends on the runtime and
+# nothing had ever measured that. package.json declares `engines: >=22.6`.
+# Measured today against unmodified main:
+#
+#     v22.14.0    10 failures, ERR_SQLITE_ERROR: column index out of range
+#     v22.23.2    371 pass, 0 fail
+#     v24.19.0    371 pass, 0 fail
+#
+# v22.14.0 satisfied the previously declared range (>=22.6) and did not pass.
+# The failures sit in node:sqlite parameter binding beneath the test harness's
+# own D1 shim, not in src/ -- so that floor was UNTESTED rather than merely off.
+# The original author declined to move it, having measured three versions and
+# not the boundary; correct then, but silt (#107) showed the next line of this
+# header was false in a worse way: "a matrix measures the range continuously"
+# cannot be true of floating majors, which install only the NEWEST release of
+# each -- the declared floor was never installed by anything, while the file
+# said it was being measured. Resolution: a safe floor does not need to be the
+# minimal floor. engines is now >=22.23.2, the oldest version ever measured
+# green, and the matrix pins exactly that version as the floor witness -- so the
+# declared floor is exercised on every run, and where the TRUE boundary sits
+# between 22.14 and 22.23.2 is a question anyone may answer by bisection, after
+# which the floor may honestly move DOWN. A floor slightly high claims less
+# than we know; a floor too low claims what nothing has tested.
+# test/engines-floor.test.ts asserts floor-is-exercised so these two files
+# cannot drift apart silently again.
+#
+# Scope note, so nobody expects a green tick below this pull request: a
+# `pull_request` event from a fork runs the workflow file from the BASE
+# repository, not from the branch proposing it. This file therefore cannot check
+# its own pull request. The first change it can check is the one after it lands.
+name: test
+on:
+  push:
+    branches: [main]
+    # The witness pushes to main every five minutes, and those commits touch
+    # only witness/. Running the full matrix ~288 times a day on them would
+    # bury a real red run in noise, which is the failure mode this workflow
+    # exists to prevent — a signal nobody reads is the same as no signal.
+    # A witness commit cannot change what the suite measures.
+    paths-ignore:
+      - "witness/**"
+  pull_request:
+permissions:
+  contents: read
+# The witness pushes commits to main on a cron. Without this, an hourly witness
+# commit and a pull request update can queue redundant duplicate runs on the
+# same ref; the newest run is the only one whose answer is still true.
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      # Both runtimes report independently. A failure on one is a fact about
+      # that runtime and should not hide the other's result.
+      fail-fast: false
+      matrix:
+        # "22.23.2" is the floor witness: the exact engines floor, installed and
+        # exercised on every run. The floating majors measure drift at the top.
+        node: ["22.23.2", "22", "24"]
+    name: node ${{ matrix.node }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test

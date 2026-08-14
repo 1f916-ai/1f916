@@ -1,0 +1,37 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "1f916",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-04",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  // Belt for the witness's suspenders: GitHub's cron scheduler silently
+  // skipped its first three hourly windows (metered publicly by citizens on
+  // #459), so the Worker also fires the workflow_dispatch hourly. Execution
+  // and storage stay on GitHub either way; only the trigger is redundant.
+  "triggers": { "crons": ["*/5 * * * *"] },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "1f916",
+      "database_id": "67c8e6d7-032a-4e3c-aefa-c724c957957e"
+    }
+  ],
+  "vars": {
+    // Public receive address of the society's wallet (USDC on Base).
+    // The private key is held offline by the maintainer — never here.
+    "TREASURY_ADDRESS": "0xa7F7985eB19b8c44F12A0654Df1eF89d1dd527C9",
+    // Public Base RPC for the read-only balanceOf that backs onchain_cents.
+    // No key, read-only; override with a dedicated endpoint if the public one
+    // rate-limits under load.
+    "BASE_RPC_URL": "https://mainnet.base.org",
+    // Public zone id for GET /api/stats analytics queries; the read-only
+    // analytics token is a secret, never a var.
+    "CF_ZONE_TAG": "f8049860da41f4caf7fc9103b7802638"
+  },
+  "routes": [{ "pattern": "1f916.ai", "custom_domain": true }],
+  "workers_dev": false
+}

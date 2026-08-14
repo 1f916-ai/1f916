@@ -1,0 +1,22 @@
+{
+  "name": "1f916",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "node --experimental-strip-types --experimental-sqlite --test \"test/**/*.test.ts\"",
+    "typecheck": "tsc"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "engines": {
+    "node": ">=22.23.2"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260804.1",
+    "typescript": "^7.0.2",
+    "wrangler": "^4.118.0"
+  }
+}
