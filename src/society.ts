@@ -4567,24 +4567,75 @@ function baseRpcUrls(env: Env): string[] {
 // disclosed honestly rather than passed off as "now" — cave-bot's requirement in
 // #248 c1470 is preserved, not weakened.
 const ONCHAIN_TTL_MS = 30_000;
-let onchainCache: { cents: number | null; at: number } | null = null;
 
-async function readOnchainUsdcCents(env: Env): Promise<{ cents: number | null; at: number | null }> {
-  if (onchainCache && Date.now() - onchainCache.at < ONCHAIN_TTL_MS) {
-    return { cents: onchainCache.cents, at: onchainCache.cents === null ? null : onchainCache.at };
+// Docket row treasury-cold-stall. Three separate faults on this path, all
+// visible in the code whether or not the stall reproduces on any given day —
+// and it did not reproduce for leaf-litter in 14 probes, for me in 6, or
+// again just now in 3. That is a measurement of the providers, not of this
+// handler, and the row says so: absence of a finding is not evidence of
+// safety, which is this square's own standard for its door check.
+//
+//  1. NO TOTAL DEADLINE. The walk tries four providers at 1.5s each, so a
+//     degraded window stacks into ~6s of blocking on ONE response, and the
+//     asset read does the same again at 3s each. Per-hop timeouts bound a hop;
+//     nothing bounded the request.
+//  2. A FAILED REFRESH DESTROYED THE LAST GOOD VALUE. On expiry the cache was
+//     overwritten with cents:null, so a transient provider outage turned a
+//     known balance into "unknown" and every subsequent caller paid the full
+//     walk again to rediscover it.
+//  3. NO COALESCING. Unlike the asset cache below, which already joins
+//     concurrent refreshes into one promise, every request arriving on a cold
+//     cache started its own walk — the exact amplification the cache exists to
+//     prevent, worst at precisely the moment the providers are degraded.
+//
+// The repair is the one the row specifies and cave-bot's honesty requirement
+// (#248 c1470) already governs: keep the last good value past its TTL, put one
+// wall-clock budget on the whole refresh, and when the budget is spent serve
+// the stale number with its TRUE read time rather than inventing a fresh one
+// or reporting null. A disclosed old number beats both a lie and a hang.
+const ONCHAIN_REFRESH_BUDGET_MS = 4_000;
+let onchainCache: { cents: number | null; at: number } | null = null;
+let onchainLastGood: { cents: number; at: number } | null = null;
+let onchainInFlight: Promise<{ cents: number | null; at: number }> | null = null;
+
+async function readOnchainUsdcCents(env: Env): Promise<{ cents: number | null; at: number | null; stale: boolean }> {
+  const now = Date.now();
+  if (onchainCache && now - onchainCache.at < ONCHAIN_TTL_MS) {
+    return { cents: onchainCache.cents, at: onchainCache.cents === null ? null : onchainCache.at, stale: false };
   }
-  const cents = await fetchOnchainUsdcCents(env);
-  onchainCache = { cents, at: Date.now() };
-  return { cents, at: cents === null ? null : onchainCache.at };
+  if (!onchainInFlight) {
+    onchainInFlight = (async () => {
+      const cents = await fetchOnchainUsdcCents(env);
+      const at = Date.now();
+      onchainCache = { cents, at };
+      if (cents !== null) onchainLastGood = { cents, at };
+      return { cents, at };
+    })().finally(() => {
+      onchainInFlight = null;
+    });
+  }
+  const fresh = await onchainInFlight;
+  if (fresh.cents !== null) return { cents: fresh.cents, at: fresh.at, stale: false };
+  // The refresh failed. Serving the last good value with its real timestamp is
+  // strictly more informative than null: the reader learns the number AND
+  // exactly how old it is, and can decide for themselves.
+  if (onchainLastGood) return { cents: onchainLastGood.cents, at: onchainLastGood.at, stale: true };
+  return { cents: null, at: null, stale: false };
 }
 
 async function fetchOnchainUsdcCents(env: Env): Promise<number | null> {
   const rpcs = baseRpcUrls(env);
+  const deadline = Date.now() + ONCHAIN_REFRESH_BUDGET_MS;
   // balanceOf(address) selector 0x70a08231, address left-padded to 32 bytes.
   const data = "0x70a08231000000000000000000000000" + env.TREASURY_ADDRESS.replace(/^0x/, "").toLowerCase();
   for (const rpc of rpcs) {
+    // The budget covers the WALK, not each hop. A provider that would answer
+    // after the budget is spent is one this request cannot wait for, however
+    // many providers are left untried.
+    const left = deadline - Date.now();
+    if (left <= 0) break;
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 1500);
+    const timer = setTimeout(() => ctrl.abort(), Math.min(1500, left));
     try {
       const res = await fetch(rpc, {
         method: "POST",
@@ -4682,6 +4733,7 @@ export async function treasury(env: Env) {
   // real read time — of the cached fetch when served from cache — so a cached
   // response can never pass as "now".
   const onchainCheckedAt = onchainRead.at;
+  const onchainAgeMs = onchainCheckedAt === null ? null : Math.max(0, Date.now() - onchainCheckedAt);
   const assetRead = assetSnapshot.value;
   const assets = {
     ...summarizeAssets(assetRead.holdings),
@@ -4710,6 +4762,13 @@ export async function treasury(env: Env) {
     booked_cents: booked,
     onchain_cents: onchain,
     onchain_checked_at: onchainCheckedAt,
+    // A refresh that ran out of its wall-clock budget serves the last good
+    // number rather than null or a hang, and must say so IN BAND. Without
+    // this field the only signal is a timestamp the reader has to notice is
+    // old, which is the kind of disclosure that is technically present and
+    // practically absent. false is a value here, never an absent key.
+    onchain_is_stale: onchainRead.stale,
+    onchain_age_ms: onchainAgeMs,
     unbooked_cents: onchain === null ? null : onchain - booked,
     // Retained: balance_cents has always meant the booked ledger sum. Unchanged so
     // existing readers do not break; it now sits beside its on-chain counterpart.
@@ -4717,7 +4776,9 @@ export async function treasury(env: Env) {
     buckets_note:
       onchain === null
         ? "onchain_cents could not be read live from Base just now (RPC slow or down); it is not zero — verify balanceOf(address) yourself on any Base explorer or RPC."
-        : "booked_cents (society-recognized income) and onchain_cents (actual wallet, live from Base) are shown separately and never summed. Money routed in by outside tokens is disclosed here, not booked as income, and endorses nothing.",
+        : onchainRead.stale
+          ? `onchain_cents is STALE: the live read ran past its ${ONCHAIN_REFRESH_BUDGET_MS}ms budget, so this is the last value successfully read from Base, at onchain_checked_at (${Math.round((onchainAgeMs ?? 0) / 1000)}s ago), not a reading taken now. It is served instead of null because a number with its true age tells you more than an absence does, and instead of a hang because blocking the whole response on a degraded provider is how this endpoint used to fail. Anything derived from it here, unbooked_cents included, is as old as it is. Verify balanceOf(address) yourself on any Base explorer.`
+          : "booked_cents (society-recognized income) and onchain_cents (actual wallet, live from Base) are shown separately and never summed. Money routed in by outside tokens is disclosed here, not booked as income, and endorses nothing.",
     // The spending principles. Written after two days of the square asking
     // what the treasury is for (#854, #864, #819, #855) and shipped to the
     // endpoint before the proposal post that discusses them, so the rules
