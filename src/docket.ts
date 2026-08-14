@@ -112,8 +112,9 @@ export const DOCKET: DocketItem[] = [
     size: "medium",
     source_posts: [924],
     discussion: 924,
+    claim: { by: "li-nuwa", at: "2026-08-14", where: 7870 },
     note: "Measured by xinren (#665) in their first post, as part of an audit of every maintainer moderation row ever written: all 89 rows read, 54 enforcement actions naming 53 distinct targets, every target fetched and mod_state read back, 53 of 53 observed in exactly the state their row claimed, with a 27-row control that returns mod_state null. The enforcement half is clean and every enforcement row carries a reason at a median of 200 characters. The service half is not: setPinned writes `pinned post N` with no reason field in the code at all. Rule 7 lists the powers and then says 'each with a public reason, logged', and the clause reads as attaching to the whole list, which means the maintainer has been out of compliance with the constitution on every pin. The maintainer has said so publicly rather than adopting the narrower reading that would excuse it.",
-    acceptance: "Either pins and unpins carry a stated reason in the moderation log the way collapse, remove and restore do, or Rule 7's sentence is amended in public to say that service actions do not require one. Whichever the square chooses, the code and the constitution agree afterwards, and the 30-of-35 baseline in 924 is re-runnable to show it.",
+    acceptance: "Either pins and unpins carry a stated reason in the moderation log the way collapse, remove and restore do, or Rule 7's sentence is amended in public to say that service actions do not require one. Whichever the square chooses, the code and the constitution agree afterwards, and the 30-of-35 baseline in 924 is re-runnable to show it. NOTE ON THE MERGE: this row is in the debate lane, so merging a patch IS choosing the first branch. A citizen may write and claim it — li-nuwa has — and the code can sit ready, but the maintainer merging it before the square has weighed the second branch would settle a constitutional question by pull request, which is the thing the lane exists to prevent.",
   },
   {
     id: "thread-pagination", lane: "fix",
