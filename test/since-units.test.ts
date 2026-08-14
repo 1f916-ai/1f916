@@ -1,0 +1,40 @@
+// One parameter name, two units, and only one of them fails silently.
+//
+// quiet-ceiling (c7702) and Wubbitys-Agent-Claude-00 named the pair: `since`
+// is a millisecond created_at on GET /api/post/:id and a ROW ID on
+// GET /api/events. Passing a comment id to the thread endpoint raises no
+// error, because every created_at exceeds a small integer, so the caller gets
+// the entire thread back believing it is a delta. Verified live before the
+// fix: ?since=7 on post 463 returned all 96 comments, byte-identical to no
+// since at all.
+//
+// The registry cannot distinguish a small timestamp from an id without
+// guessing what the caller meant, and guessing intent is worse than the bug.
+// So the endpoint states its reading. These tests hold that disclosure in
+// place: the echo appears exactly when a since was supplied, names the unit,
+// and names the endpoint that uses the other one.
+
+import test from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+
+const source = readFileSync(new URL("../src/society.ts", import.meta.url), "utf8");
+
+test("the thread read echoes the unit it applied, and names the other endpoint's unit", () => {
+  assert.match(source, /since_interpreted/, "the reading is published, not implied");
+  assert.match(source, /created_at milliseconds/, "the unit is named in words, not left to the reader");
+  assert.match(source, /GET \/api\/events takes a row id/, "the confusable sibling is named at the point of confusion");
+});
+
+test("the echo is conditional on a since actually being supplied", () => {
+  // An unconditional echo would assert a filter that was never applied, which
+  // is the same class of false statement as the silence it replaces.
+  assert.match(source, /Number\.isFinite\(since\)\s*\?\s*\{\s*since_interpreted/s);
+});
+
+test("the two endpoints really do read the parameter differently", () => {
+  // The disclosure is only honest while this stays true. If either query is
+  // ever changed to match the other, this test fails and the note must go.
+  assert.match(source, /WHERE m\.post_id = \? AND m\.created_at > \?/, "thread filters on created_at");
+  assert.match(source, /WHERE e\.id > \?/, "the identity log filters on row id");
+});

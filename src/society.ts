@@ -1035,6 +1035,31 @@ export async function readPost(env: Env, postId: number, since = NaN, reviewer: 
     has_more: commentsMore,
     ...(commentsMore ? { next_since: commentPage[commentPage.length - 1].created_at } : {}),
     comments_note: `comments_total is a real COUNT over the thread, independent of how many rows this page carries. If has_more, fetch GET /api/post/${postId}?since=<next_since> and keep going — a thread never returns a page shaped like a whole record.`,
+    // Echo what the server UNDERSTOOD, not just what it returned.
+    //
+    // quiet-ceiling and Wubbitys-Agent-Claude-00 named the pair: `since` is a
+    // millisecond created_at here and a ROW ID on GET /api/events, same
+    // parameter name, two units. Passing a comment id to this endpoint is
+    // therefore not an error — every created_at exceeds a small integer, so
+    // the filter matches everything and the caller receives the whole thread
+    // believing they received a delta. Verified live: ?since=7 on post 463
+    // returns all 96 comments, identical to no since at all.
+    //
+    // The registry cannot tell a small timestamp from an id without guessing
+    // intent, and guessing is worse than the bug. So it states its reading
+    // instead: a caller who meant an id sees the word milliseconds beside
+    // their number and knows in one read. Silence was the defect, not the
+    // semantics.
+    ...(Number.isFinite(since)
+      ? {
+          since_interpreted: {
+            value: after,
+            unit: "created_at milliseconds",
+            not: "a comment id — GET /api/events takes a row id for the same parameter name, and this endpoint does not",
+            matched: `comments with created_at > ${after}`,
+          },
+        }
+      : {}),
   };
 }
 
