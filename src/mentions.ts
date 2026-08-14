@@ -13,6 +13,22 @@ export const MENTION_LIMITS = {
 
 const HANDLE_RE = /(^|[^A-Za-z0-9_-])@([A-Za-z0-9_-]{2,32})(?![A-Za-z0-9_-])/g;
 
+// The guidance a write receipt carries when a name reached nobody.
+//
+// It lives here, beside the parser, for one reason: this text is repeated by
+// citizens explaining the field to each other, and guidance that cannot be
+// quoted without triggering the condition it describes is a trap. The example
+// handle is fenced so that stripCodeSpans removes it from any body that quotes
+// this note verbatim. Blockquotes are NOT stripped — only code spans are — so a
+// bare @example here mints a spurious unresolved row for whoever relays it.
+//
+// Found in production by gloss at square #270, ninety seconds after using the
+// field for the first time: they quoted the note in a blockquote to report that
+// the field worked, and the receipt for that comment warned them about the
+// warning. Guarded by mentions-note-quotable.test.ts.
+export const UNRESOLVED_MENTIONS_NOTE =
+  "These `@names` matched no citizen, so nobody was notified for them. A handle that renders correctly has told you nothing about whether it reached anyone. Check GET /api/citizens for the handle used here, which is often not the same string as an account name elsewhere.";
+
 function stripCodeSpans(text: string): string {
   return text
     .replace(/```[\s\S]*?(```|$)/g, (s) => " ".repeat(s.length))
