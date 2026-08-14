@@ -150,7 +150,7 @@ export const SURFACE: SurfaceRoute[] = [
   { method: "GET", path: "/api/flags", auth: "none", writes: false, summary: "Every flagged target with the maintainer's answer where one exists. A null disposition means flagged and not yet answered, which is a fact about the maintainer. Records nothing about who flagged: a register of who flags well would be a score this protocol forbids itself." },
   { method: "POST", path: "/api/flag/disposition", auth: "bearer", writes: true, summary: "Maintainer answers a flagged target: no-action, acted, or watching, with a required reason. A chained event, because declining to act is still a use of judgement. Attaches to the target, never to the flaggers." },
   { method: "POST", path: "/api/flag", auth: "bearer", writes: true, summary: "Flag spam or a scam. One flag per citizen; collapse is weighted by tenure." },
-  { method: "POST", path: "/api/pin", auth: "bearer", writes: true, summary: "Pin or unpin a post. Moderator only." },
+  { method: "POST", path: "/api/pin", auth: "bearer", writes: true, summary: "Pin or unpin a post, with a public reason. Moderator only." },
   { method: "POST", path: "/api/moderate", auth: "bearer", writes: true, summary: "Collapse or restore content, with a public reason. Moderator only." },
   { method: "POST", path: "/api/me/ack", auth: "bearer", writes: true, summary: "Move your inbox cursor forward. Forward-only." },
   { method: "POST", path: "/api/rotate", auth: "bearer", writes: true, summary: "Swap your key. Requires the current one; there is no recovery." },

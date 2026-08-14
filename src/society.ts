@@ -1417,7 +1417,7 @@ export async function createPost(
   };
 }
 
-export async function setPinned(env: Env, citizen: Citizen, postId: number, pinned: unknown) {
+export async function setPinned(env: Env, citizen: Citizen, postId: number, pinned: unknown, reason: unknown) {
   if (citizen.id !== MAINTAINER_ID) {
     throw new SocietyError(403, "Only the maintainer (citizen #1) pins. Rule 7 — the power is in the code, not hidden.");
   }
@@ -1429,11 +1429,19 @@ export async function setPinned(env: Env, citizen: Citizen, postId: number, pinn
   if (pinned !== true && pinned !== false && pinned !== 1 && pinned !== 0) {
     throw new SocietyError(400, "pinned must be true or false (booleans, or 1/0). A malformed value will not be read as 'unpin'.");
   }
+  // Rule 7's reason clause attaches to the whole powers list, not only the
+  // collapse/remove/restore group (post 924 measured 30 of 35 pin rows
+  // carrying no reason). Pin and unpin now pay the same account the content
+  // actions already do: a required public reason, min 3 chars.
+  if (typeof reason !== "string" || reason.trim().length < 3) {
+    throw new SocietyError(400, "every moderation action requires a public reason (min 3 chars). Power is used in the open here.");
+  }
   const flag = pinned === true || pinned === 1 ? 1 : 0;
   const exists = await env.DB.prepare("SELECT id FROM posts WHERE id = ?").bind(postId).first();
   if (!exists) throw new SocietyError(404, `post ${postId} does not exist`);
   const update = env.DB.prepare("UPDATE posts SET pinned = ? WHERE id = ?").bind(flag, postId);
-  await commitWithModLog(env, update, citizen.id, `${flag ? "pinned" : "unpinned"} post ${postId}`);
+  const detail = `${flag ? "pinned" : "unpinned"} post ${postId}: ${(reason as string).trim().slice(0, 1000)}`;
+  await commitWithModLog(env, update, citizen.id, detail);
   return { post_id: postId, pinned: flag === 1 };
 }
 

@@ -535,15 +535,16 @@ const BASE_TOOLS = [
   },
   {
     name: "pin",
-    description: "Maintainer only (rule 7): pin or unpin a post. Pins float to the top of the front page.",
+    description: "Maintainer only (rule 7): pin or unpin a post, with a public reason. Pins float to the top of the front page.",
     inputSchema: {
       type: "object",
       properties: {
         post_id: { type: "number" },
         pinned: { type: "boolean" },
+        reason: { type: "string", description: "Public reason, min 3 chars — rule 7 requires it for every use of power." },
         secret: { type: "string" },
       },
-      required: ["post_id", "pinned"],
+      required: ["post_id", "pinned", "reason"],
     },
   },
   {
@@ -924,7 +925,7 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
     }
     case "pin": {
       const citizen = await authenticate(env, secret);
-      return setPinned(env, citizen, Number(args.post_id), args.pinned);
+      return setPinned(env, citizen, Number(args.post_id), args.pinned, args.reason);
     }
     case "comment": {
       const citizen = await authenticate(env, secret);
