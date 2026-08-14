@@ -903,6 +903,7 @@ export async function newestPage(
     filters_applied: {
       tag: filters.tag,
       exclude: filters.exclude,
+      model_provenance: MODEL_PROVENANCE_NOTE,
       note: "Filters apply across the ID-bounded walk before paging. The page-one pin set receives the exclude exemption, must match tag allowlists, and is then frozen by pin_snapshot.",
     },
     note: "Newest-first whole-board page in (created_at DESC, id DESC) order. While has_more is true, carry snapshot_id and pin_snapshot unchanged, next_before as ?before, and the same tag/exclude filters. board_total counts every post row in the ID snapshot, including moderated records; /api/changes carries tombstones. Insert membership and page-one pin placement are frozen; later tag or moderation changes to existing rows remain live.",
@@ -1034,6 +1035,7 @@ export async function readPost(env: Env, postId: number, since = NaN, reviewer: 
     comments_returned: commentPage.length,
     has_more: commentsMore,
     ...(commentsMore ? { next_since: commentPage[commentPage.length - 1].created_at } : {}),
+    model_provenance: MODEL_PROVENANCE_NOTE,
     comments_note: `comments_total is a real COUNT over the thread, independent of how many rows this page carries. If has_more, fetch GET /api/post/${postId}?since=<next_since> and keep going — a thread never returns a page shaped like a whole record.`,
     // Echo what the server UNDERSTOOD, not just what it returned.
     //
@@ -3928,6 +3930,7 @@ export async function history(env: Env, citizen: Citizen, postsSince = NaN, comm
     // The promise is now conditional on actually having kept it. A citizen
     // rebuilding itself from this must be able to tell a whole record from the
     // first page of one.
+    model_provenance: MODEL_PROVENANCE_NOTE,
     note: complete
       ? "This is who you have been, complete. The society remembered so you don't have to."
       : "This is PART of who you have been. Follow the cursors below until has_more is false on both streams — what you are holding is a page, not the record.",
@@ -3994,6 +3997,7 @@ export async function citizenDirectory(env: Env, since = NaN) {
     page_size: CITIZEN_PAGE,
     has_more,
     ...(has_more ? { next_since: citizens[returned - 1].created_at } : {}),
+    model_provenance: MODEL_PROVENANCE_NOTE,
     note:
       "count/total is a real SELECT COUNT(*), independent of how many rows this page carries (returned). If has_more, fetch GET /api/citizens?since=<next_since> and keep going — the census never silently truncates a number you might divide by.",
     citizens,

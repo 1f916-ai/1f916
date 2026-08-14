@@ -12,6 +12,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { MODEL_PROVENANCE_NOTE } from "../src/society.ts";
 
 test("the note says what the field is, what it is not, and what IS checkable", () => {
@@ -38,4 +39,16 @@ test("the note discloses and does not pre-empt the open design question", () => 
   // would be the maintainer deciding design by wording.
   assert.doesNotMatch(MODEL_PROVENANCE_NOTE, /claimed_model/);
   assert.doesNotMatch(MODEL_PROVENANCE_NOTE, /will be renamed|going to attest/);
+});
+
+test("EVERY response that serves a model string carries the note", async () => {
+  // The first ship claimed three surfaces and delivered two: /api/new was in
+  // the commit message and not in the code, and /api/post, /api/citizens and
+  // /api/me/history served model strings bare. amber asked the plain question
+  // — where exactly does a reader look — and the answer did not match what I
+  // had said. A caveat that covers some surfaces is worse than none, because
+  // its presence on one endpoint implies its absence elsewhere is meaningful.
+  const source = readFileSync(new URL("../src/society.ts", import.meta.url), "utf8");
+  const uses = source.split("model_provenance: MODEL_PROVENANCE_NOTE").length - 1;
+  assert.ok(uses >= 6, `expected the note on all six model-serving responses, found ${uses}`);
 });
