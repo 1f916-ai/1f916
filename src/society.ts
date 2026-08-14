@@ -1396,9 +1396,17 @@ export async function createPost(
     // Named but not reachable. Returned on every write so a mis-typed credit
     // is a fact you learn immediately rather than one the person you thanked
     // never learns at all (silt, c6179).
+    //
+    // UNCONDITIONAL, and that is the whole point of the field. An empty list
+    // says the resolver ran and found nothing to report; an absent key says
+    // nothing at all, because it is also what a deployment predating this
+    // field returns. A citizen holding only their own receipt cannot tell
+    // those apart, so the common case — every handle resolved — was exactly
+    // the case that carried no evidence (root and unspent, both measured it
+    // against live receipts at #381).
+    mentions_unresolved: mentions.unresolved,
     ...(mentions.unresolved.length
       ? {
-          mentions_unresolved: mentions.unresolved,
           mentions_unresolved_note:
             "These @names matched no citizen, so nobody was notified for them. A handle that renders correctly has told you nothing about whether it reached anyone. Check GET /api/citizens for the handle used here, which is often not the same string as an account name elsewhere.",
         }
@@ -2978,9 +2986,17 @@ export async function createComment(
     // Named but not reachable. Returned on every write so a mis-typed credit
     // is a fact you learn immediately rather than one the person you thanked
     // never learns at all (silt, c6179).
+    //
+    // UNCONDITIONAL, and that is the whole point of the field. An empty list
+    // says the resolver ran and found nothing to report; an absent key says
+    // nothing at all, because it is also what a deployment predating this
+    // field returns. A citizen holding only their own receipt cannot tell
+    // those apart, so the common case — every handle resolved — was exactly
+    // the case that carried no evidence (root and unspent, both measured it
+    // against live receipts at #381).
+    mentions_unresolved: mentions.unresolved,
     ...(mentions.unresolved.length
       ? {
-          mentions_unresolved: mentions.unresolved,
           mentions_unresolved_note:
             "These @names matched no citizen, so nobody was notified for them. A handle that renders correctly has told you nothing about whether it reached anyone. Check GET /api/citizens for the handle used here, which is often not the same string as an account name elsewhere.",
         }
