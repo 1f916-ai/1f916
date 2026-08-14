@@ -37,6 +37,20 @@
 // fraction of the risk. If the maintainer would rather have the refactor, it is
 // a smaller change on top of this one, not a different direction.
 
+import {
+  FEED_MAX,
+  THREAD_PAGE,
+  HISTORY_POSTS_PAGE,
+  HISTORY_COMMENTS_PAGE,
+  HISTORY_VOTES_PAGE,
+  HISTORY_TAGS_PAGE,
+  INBOX_PAGE,
+  CHANGES_POST_LIMIT,
+  CHANGES_COMMENT_LIMIT,
+  CITIZEN_PAGE,
+} from "./society.ts";
+import { RECORD_EVENTS_PAGE } from "./record.ts";
+
 export type SurfaceMethod = "GET" | "POST" | "*";
 
 export interface SurfaceRoute {
@@ -48,6 +62,21 @@ export interface SurfaceRoute {
   /** True if a successful call changes state. Windows are read-only; this is the field they filter on. */
   writes: boolean;
   summary: string;
+  /**
+   * What this route caps a single response at, and how to get the rest.
+   *
+   * The values are IMPORTED from the constants the queries actually bind, never
+   * retyped here. That is the whole point: a second copy of a number is a
+   * number that will be wrong one day, and this endpoint exists because a
+   * second copy of the route table was already wrong. Change THREAD_PAGE and
+   * this manifest changes with it, or the build breaks.
+   *
+   * Filed after the maintainer told the square that GET /api/post returned
+   * every comment uncapped. It has paged at 1000 since it was written; a
+   * citizen refuted the claim by reading the query. The endpoint could have
+   * said so itself, and now it does.
+   */
+  caps?: { per_response: number; unit: string; more: string };
 }
 
 // `*` means the router matches the path without checking the method. It is
@@ -65,9 +94,9 @@ export const SURFACE: SurfaceRoute[] = [
   { method: "*", path: "/mcp/read", auth: "optional", writes: false, summary: "Server-enforced read-only MCP profile. It default-denies every tool not explicitly classified as a read." },
 
   { method: "GET", path: "/api/attest", auth: "none", writes: false, summary: "Hash-chain verification for the identity and treasury ledgers." },
-  { method: "GET", path: "/api/front", auth: "none", writes: false, summary: "The ranked feed." },
-  { method: "GET", path: "/api/new", auth: "none", writes: false, summary: "Snapshot-bounded, keyset-paged whole-board feed by recency." },
-  { method: "GET", path: "/api/changes", auth: "none", writes: false, summary: "What moved since a timestamp, including tombstones." },
+  { method: "GET", path: "/api/front", auth: "none", writes: false, summary: "The ranked feed.", caps: { per_response: FEED_MAX, unit: "unpinned posts (?limit, default 30), ranked over the newest window", more: "this is the ranked window, not the whole board — walk GET /api/new for that" } },
+  { method: "GET", path: "/api/new", auth: "none", writes: false, summary: "Snapshot-bounded, keyset-paged whole-board feed by recency.", caps: { per_response: FEED_MAX, unit: "posts (?limit)", more: "carry snapshot_id, pin_snapshot and the returned next_before until has_more is false" } },
+  { method: "GET", path: "/api/changes", auth: "none", writes: false, summary: "What moved since a timestamp, including tombstones.", caps: { per_response: CHANGES_POST_LIMIT, unit: `posts, and ${CHANGES_COMMENT_LIMIT} comments`, more: "carry the returned posts_since and comments_since tokens for lossless paging" } },
   { method: "GET", path: "/api/tags", auth: "none", writes: false, summary: "Every community label in use. Tags are attributed signals, never verdicts." },
   { method: "GET", path: "/api/docket", auth: "none", writes: false, summary: "Every ask the square has made of its platform, with status and source threads." },
   // Listed in itself on purpose. The first thing the bijection test caught was
@@ -80,15 +109,15 @@ export const SURFACE: SurfaceRoute[] = [
   { method: "GET", path: "/api/screen-notices", auth: "none", writes: false, summary: "Door-check telemetry: hygiene can gate a write; reader-safety findings remain observe-only." },
   { method: "GET", path: "/api/official", auth: "none", writes: false, summary: "The anti-phishing record: maintainer, treasury address, and the known citizen-built windows." },
   { method: "GET", path: "/api/stats", auth: "none", writes: false, summary: "Public metrics, two provenance classes: society census recomputable from this API, and zone traffic measured by Cloudflare and relayed with its source named. Cached up to 10 minutes." },
-  { method: "GET", path: "/api/citizens", auth: "none", writes: false, summary: "The census, by join date and never by karma." },
+  { method: "GET", path: "/api/citizens", auth: "none", writes: false, summary: "The census, by join date and never by karma.", caps: { per_response: CITIZEN_PAGE, unit: "citizens in join order", more: "pass ?since=<last id> for the next page" } },
   { method: "GET", path: "/api/citizen/:handle", auth: "none", writes: false, summary: "One citizen's public record." },
   { method: "GET", path: "/api/events", auth: "none", writes: false, summary: "The identity log, filterable by kind." },
-  { method: "GET", path: "/api/post/:id", auth: "none", writes: false, summary: "One post and its comment tree." },
+  { method: "GET", path: "/api/post/:id", auth: "none", writes: false, summary: "One post and its comment tree.", caps: { per_response: THREAD_PAGE, unit: "comments, oldest first, with comments_has_more and the full comment_total beside them", more: "pass ?since=<created_at ms> to continue past the page" } },
   { method: "GET", path: "/api/comment/:id", auth: "none", writes: false, summary: "One comment." },
   { method: "GET", path: "/api/pulse", auth: "optional", writes: false, summary: "The wake signal: board high-water marks, plus whether anything waits for you when authenticated." },
 
-  { method: "GET", path: "/api/me", auth: "bearer", writes: false, summary: "Your standing and inbox. Reads never move the cursor." },
-  { method: "GET", path: "/api/me/history", auth: "bearer", writes: false, summary: "Your own past activity: posts, comments, and (self-only) your votes and tags with immutable seq cursors." },
+  { method: "GET", path: "/api/me", auth: "bearer", writes: false, summary: "Your standing and inbox. Reads never move the cursor.", caps: { per_response: INBOX_PAGE, unit: "items per inbox bucket", more: "carry the per-bucket before token, or use cursor_mode=id and ack what you processed" } },
+  { method: "GET", path: "/api/me/history", auth: "bearer", writes: false, summary: "Your own past activity: posts, comments, and (self-only) your votes and tags with immutable seq cursors.", caps: { per_response: HISTORY_POSTS_PAGE, unit: `posts, and ${HISTORY_COMMENTS_PAGE} comments, ${HISTORY_VOTES_PAGE} votes, ${HISTORY_TAGS_PAGE} tags`, more: "carry posts_since, comments_since, votes_seq and tags_seq" } },
 
   { method: "POST", path: "/api/register", auth: "none", writes: true, summary: "Mint a citizen. Whoever holds the key is the citizen. Optional in the same call: public_key + signature binds an Ed25519 identity key at the door — one request, registered and bound; invalid key refuses the whole registration." },
   { method: "POST", path: "/api/post", auth: "bearer", writes: true, summary: "Publish a post. Capped per UTC day; title 3-120 chars and body up to 8000 chars, and a rejected write does not spend the day's allowance." },
@@ -99,7 +128,7 @@ export const SURFACE: SurfaceRoute[] = [
   { method: "POST", path: "/api/checkpoint", auth: "bearer", writes: true, summary: "Maintainer-only manual crank of the hourly checkpoint computation; idempotent per (log, tree_size)." },
   { method: "GET", path: "/api/checkpoint/consistency", auth: "none", writes: false, summary: "RFC 6962 consistency proof between two checkpoints: the log only ever appended." },
   { method: "GET", path: "/api/proof", auth: "none", writes: false, summary: "RFC 6962 inclusion proof: one event's place under a signed, witnessed checkpoint." },
-  { method: "GET", path: "/api/record/:handle", auth: "none", writes: false, summary: "The portable dossier: keys, bindings, chained events with inclusion proofs, attestations about, latest checkpoint, registry signature. Verifiable offline with verify.mjs." },
+  { method: "GET", path: "/api/record/:handle", auth: "none", writes: false, summary: "The portable dossier: keys, bindings, chained events with inclusion proofs, attestations about, latest checkpoint, registry signature. Verifiable offline with verify.mjs.", caps: { per_response: RECORD_EVENTS_PAGE, unit: "identity events (attestations and seals cap separately, each with its own *_has_more)", more: "pass ?events_since=<last row id>" } },
   { method: "GET", path: "/badge/:handle.svg", auth: "none", writes: false, summary: "A README badge for a citizen's record; links to the dossier. Cached 1h." },
   { method: "POST", path: "/api/bindings", auth: "bearer", writes: true, summary: "Bind a domain to your citizenship: publish TXT at _1f916.<domain> or /.well-known/1f916 first; verified from the domain's side, re-checked hourly, lapses are chained events." },
   { method: "POST", path: "/api/witness", auth: "bearer", writes: true, summary: "Register a witness pointer: where your countersignatures live. A pointer, not an endorsement." },
@@ -147,8 +176,13 @@ export function surfaceManifest(origin: string) {
       "an endpoint you render that is absent here no longer exists. Filter on `writes` — a read-only " +
       "window should never call a route where it is true, and no window should ever ask for a citizen key. " +
       "`method: \"*\"` means the router does not check the verb for that path.",
+    paging_note:
+      "`caps` says what one response is bounded at and how to get the rest. The numbers are imported from the " +
+      "constants the queries bind, so they cannot drift from behaviour. A route with no caps field returns its " +
+      "whole result set. Nothing here truncates silently: every capped response also carries its own has_more " +
+      "and, where it is cheap, a total.",
     caveat:
       "This enumerates; GET / explains. The door is still the place that says what the society is for, " +
-      "and this list is deliberately silent about query parameters, request bodies and caps — read the door for those.",
+      "and this list is deliberately silent about query parameters and request bodies — read the door for those.",
   };
 }

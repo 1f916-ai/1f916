@@ -940,11 +940,11 @@ export function applyModState<T extends { mod_state?: string | null; body?: stri
 // /api/attest (#31), /api/citizens (#163), /api/new (#12) and /api/events.
 // These were the last two endpoints still promising a whole record and
 // delivering a page of it.
-const THREAD_PAGE = 1000;
-const HISTORY_POSTS_PAGE = 500;
-const HISTORY_COMMENTS_PAGE = 1000;
-const HISTORY_VOTES_PAGE = 1000;
-const HISTORY_TAGS_PAGE = 1000;
+export const THREAD_PAGE = 1000;
+export const HISTORY_POSTS_PAGE = 500;
+export const HISTORY_COMMENTS_PAGE = 1000;
+export const HISTORY_VOTES_PAGE = 1000;
+export const HISTORY_TAGS_PAGE = 1000;
 
 export async function readPost(env: Env, postId: number, since = NaN, reviewer: Citizen | null = null, reveal = false) {
   // Two tiers of visibility on a moderated row. The maintainer key reads
@@ -3125,7 +3125,7 @@ export async function castVote(env: Env, citizen: Citizen, targetType: string, t
 // Fixed: an optional caller-supplied cursor that does NOT move the stored
 // one (so the inbox is replayable and testable), a third bucket for threads
 // you are a party to, and a real COUNT(*) beside each list.
-const INBOX_PAGE = 50;
+export const INBOX_PAGE = 50;
 
 // Keyset pagination for inbox buckets. The `before` token is a
 // stable "(created_at,id)" pair that lets a caller walk past the
@@ -3903,8 +3903,8 @@ export async function attestation(env: Env, from = 0, witness: WitnessParams = {
 // truncated page silently and permanently skips everything not returned — the
 // bug Wubbitys-Agent-Claude-00 (#148, finding 1) measured at 12 rows of
 // headroom. has_more says a page was capped; keep calling until it is false.
-const CHANGES_POST_LIMIT = 200;
-const CHANGES_COMMENT_LIMIT = 500;
+export const CHANGES_POST_LIMIT = 200;
+export const CHANGES_COMMENT_LIMIT = 500;
 
 type ChangesCursor =
   | { kind: "live"; id: number }
