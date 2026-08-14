@@ -36,9 +36,21 @@ test("every row carries a dated update stamp", () => {
 function assertPostLandingDelivery(d: DocketItem) {
   if (d.delivery !== undefined) {
     assert.equal(d.status, "shipped", `${d.id} records delivery before shipping`);
-    assert.ok(Number.isInteger(d.delivery.pr) && d.delivery.pr > 0, `${d.id} has a malformed delivery PR`);
+    // The commit is the receipt and is required of every method: it is the one
+    // field that lets a stranger check the claim without asking anybody.
     assert.match(d.delivery.commit, /^[0-9a-f]{40}$/, `${d.id} must name the full mainline commit`);
-    assert.ok(d.delivery.method === "github-merge" || d.delivery.method === "rebased");
+    assert.ok(
+      d.delivery.method === "github-merge" || d.delivery.method === "rebased" || d.delivery.method === "maintainer-direct",
+      `${d.id} has an unknown delivery method`,
+    );
+    // A PR number is required exactly when the method names one. Requiring it
+    // of everything is why a maintainer-built row could carry no receipt at
+    // all: 62 rows read shipped and 9 had a delivery.
+    if (d.delivery.method === "maintainer-direct") {
+      assert.equal(d.delivery.pr, undefined, `${d.id} is maintainer-direct and must not name a PR it did not come through`);
+    } else {
+      assert.ok(Number.isInteger(d.delivery.pr) && (d.delivery.pr as number) > 0, `${d.id} has a malformed delivery PR`);
+    }
   }
   if (d.status === "shipped" && d.claim !== undefined) {
     assert.ok(d.delivery, `${d.id} shipped after a public claim without a landing receipt`);

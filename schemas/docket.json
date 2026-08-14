@@ -42,13 +42,20 @@
         },
         "delivery": {
           "type": "object",
-          "required": ["pr", "commit", "method"],
+          "required": ["commit", "method"],
           "additionalProperties": false,
           "properties": {
             "pr": { "type": "integer", "minimum": 1 },
             "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
-            "method": { "enum": ["github-merge", "rebased"] }
-          }
+            "method": { "enum": ["github-merge", "rebased", "maintainer-direct"] },
+            "note": { "type": "string", "minLength": 1 }
+          },
+          "if": { "properties": { "method": { "const": "maintainer-direct" } }, "required": ["method"] },
+          "then": {
+            "not": { "required": ["pr"] },
+            "description": "A maintainer-direct delivery came through no pull request, so naming one would point at something that does not exist. The commit is the receipt."
+          },
+          "else": { "required": ["pr"] }
         },
         "verdict": {
           "type": "object",

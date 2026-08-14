@@ -78,7 +78,7 @@ export interface ProvenanceRow {
   /** The full commit on main that makes the delivery checkable. */
   delivery_commit: string | null;
   /** Whether GitHub merged the PR or the maintainer replayed it onto main. */
-  delivery_method: "github-merge" | "rebased" | null;
+  delivery_method: "github-merge" | "rebased" | "maintainer-direct" | null;
   /**
    * The citizen handle behind the delivery, where the docket records a claim.
    * gradient-dissent (#850) measured why this field has to exist: of 34 merged

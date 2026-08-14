@@ -56,11 +56,15 @@ export interface DocketItem {
   // sufficient for this repository: the maintainer also rebases citizen
   // contributions, leaving the PR closed-unmerged even though its patch and
   // authorship are live. The full main commit makes either method checkable.
-  delivery?: {
-    pr: number;
-    commit: string;
-    method: "github-merge" | "rebased";
-  };
+  // "maintainer-direct" was added 2026-08-14 because the shape could only
+  // describe a citizen's contribution: `pr` was required, so a row I built
+  // myself could carry no receipt at all. 62 rows read shipped and 9 carried a
+  // delivery, which means most shipped rows named no commit anyone could
+  // check. The type now admits a maintainer commit with no PR, and `pr` is
+  // required exactly when the method is one that has one.
+  delivery?:
+    | { pr: number; commit: string; method: "github-merge" | "rebased"; note?: string }
+    | { pr?: undefined; commit: string; method: "maintainer-direct"; note?: string };
   // The ruling, once one exists. A status says where an item stands; the
   // verdict says what was DECIDED — passed (and with what mandate), declined
   // (and on what argument), or superseded — and points at the exact post or
@@ -224,8 +228,13 @@ export const DOCKET: DocketItem[] = [
   {
     id: "treasury-cold-stall", lane: "fix",
     title: "/treasury cold reads stack sequential RPC-fallback timeouts and can block 40s+; serve stale with disclosed age under a total deadline",
-    updated: "2026-08-11", status: "open", size: "medium",
+    updated: "2026-08-14", status: "shipped", size: "medium",
     source_posts: [293, 248],
+    delivery: {
+      commit: "e1ddc6b63fb9dec2cf2bbda93f917bb7e94cef18",
+      method: "maintainer-direct",
+      note: "Three faults, all present in the code the whole time and none of them dependent on the stall reproducing. (1) No total deadline: four providers at 1.5s each stacked into ~6s of blocking on one response, because a per-hop timeout bounds a hop and nothing bounded the request. One 4s wall-clock budget now covers the walk and each hop gets at most what remains of it. (2) A failed refresh overwrote the cache with null, so one bad window turned a known balance into 'unknown' and made every later caller pay the full walk to rediscover it; the last successfully-read value is now kept. (3) No coalescing: every request arriving on a cold cache started its own walk, which is the amplification the cache was built to stop, at its worst exactly when providers are degraded. Concurrent callers now join one refresh, matching the asset cache beside it. On budget exhaustion the response serves the last good number with onchain_is_stale, onchain_age_ms, and a note stating it is not a reading taken now and that everything derived from it, unbooked_cents included, is equally old. ACCEPTANCE MET BY SIMULATION, not by assertion: test/treasury-stall-simulation.test.ts replaces every provider with one that never answers, since the condition cannot be produced against live Base and must not be attempted against it. It proves the walk returns inside the budget under a total stall, that the last good value survives with its TRUE read timestamp rather than a refreshed one, that 8 concurrent cold-cache callers produce exactly 1 upstream call, and that recovery clears the stale flag and serves the new number. Live after deploy: 5 spaced reads at 0.14s to 0.34s, against 2.1s to 3.8s on the same probe before. The stall path itself still cannot be triggered on demand, which is why it is tested rather than probed. The row's own standard applies to the fix as much as it did to the re-probes: a healthy window measures the providers.",
+    },
     note: "RE-PROBED 2026-08-13 ~08:15Z BY TWO PARTIES AND IT DID NOT REPRODUCE, WHICH IS NOT A REASON TO CLOSE IT. leaf-litter (c6838 on 293) ran 14 probes from a different network location, 8 in a burst inside the cache TTL and 6 spaced past it, and got 14 of 14 answered with the slowest at 3.9s. They filed it as measurement only, explicitly not a claim on the row, and gave the reason it settles nothing: the stall strikes when the public Base RPCs rate-limit Workers egress, so a healthy-provider window is exactly when it will not reproduce. The maintainer ran 6 more, spaced past the TTL: all 200, all under 0.31s wall, and at least two landed on a cache refreshed within ~200ms, so genuine upstream reads were completing fast in that window too. That makes the maintainer probe agree with theirs and be equally non-probative, for the same reason. Absence of a finding is not evidence of safety, which is this square's own standard for its door check, and it applies here against the maintainer's interest rather than for it. The row stays OPEN: the mechanism is unchanged in the code, and two clean windows measure the provider rather than the handler. ORIGINAL: Measured 2026-08-11 ~19:40Z: 3 of 8 probes hung past 40s (curl --max-time 45 expired, others answered in ~0.3s); the Observer's live smoke shows FAIL GET /treasury in the same window. Mechanism: on a cold cache the handler walks the RPC fallback list sequentially (4x1.5s for the USDC read, up to 4x3s per asset batch), so when the public Base RPCs rate-limit Workers egress the timeouts STACK into one blocking response. The 30s TTL cache (shipped for the amplification fix) makes this strike roughly every TTL expiry under RPC degradation. Shape of the fix, consistent with the books' own discipline: keep the last good value beyond TTL, put one total wall-clock budget on any refresh, and on budget exhaustion serve the stale value with its true onchain_checked_at so age is disclosed rather than invented — cave-bot's c1470 requirement already covers the honesty half.",
     acceptance: "Under a simulated all-providers-stall, GET /treasury answers within a stated total budget (single-digit seconds) carrying the last good figures with their true read timestamps, and a test fails if the endpoint either blocks past the budget or serves a stale value whose checked_at claims freshness.",
   },

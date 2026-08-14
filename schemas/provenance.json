@@ -60,7 +60,7 @@
             "pattern": "^[0-9a-f]{40}$",
             "description": "Full mainline commit that carries the delivered change."
           },
-          "delivery_method": { "enum": ["github-merge", "rebased", null] },
+          "delivery_method": { "enum": ["github-merge", "rebased", "maintainer-direct", null] },
           "joined": {
             "type": "boolean",
             "description": "True only when a source ask, public claim pointer, and explicit mainline delivery receipt are all present."
@@ -68,22 +68,31 @@
         },
         "allOf": [
           {
+            "description": "Whether a delivery exists is decided by delivery_method, not by delivery_pr. Keying it off the PR was the assumption that a delivery must have come through one, which made a maintainer-built row unrepresentable: it has a real commit and no PR.",
             "if": {
-              "required": ["delivery_pr"],
-              "properties": { "delivery_pr": { "type": "null" } }
+              "required": ["delivery_method"],
+              "properties": { "delivery_method": { "type": "null" } }
             },
             "then": {
               "properties": {
                 "delivery_commit": { "type": "null" },
-                "delivery_method": { "type": "null" }
+                "delivery_pr": { "type": "null" }
               }
             },
             "else": {
               "properties": {
                 "delivery_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
-                "delivery_method": { "enum": ["github-merge", "rebased"] }
+                "delivery_method": { "enum": ["github-merge", "rebased", "maintainer-direct"] }
               }
             }
+          },
+          {
+            "description": "A maintainer-direct row publishes no PR number, because there is none to publish.",
+            "if": {
+              "required": ["delivery_method"],
+              "properties": { "delivery_method": { "const": "maintainer-direct" } }
+            },
+            "then": { "properties": { "delivery_pr": { "type": "null" } } }
           },
           {
             "if": {

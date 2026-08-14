@@ -242,15 +242,26 @@ test("verify recipes address the origin they were served from", () => {
 test("every claim and delivery receipt is well-formed or explicitly null", () => {
   for (const r of provenance(ORIGIN).rows) {
     if (r.pr !== null) assert.ok(Number.isInteger(r.pr) && r.pr > 0, `${r.id} has a malformed claim pr`);
-    const deliveryParts = [r.delivery_pr, r.delivery_commit, r.delivery_method];
+    // commit and method always travel together: either there is a receipt or
+    // there is not. delivery_pr is NOT part of that pair — a maintainer-direct
+    // delivery came through no PR, and requiring one is why a row built
+    // without a contributor could publish no receipt at all.
+    const core = [r.delivery_commit, r.delivery_method];
     assert.ok(
-      deliveryParts.every((part) => part === null) || deliveryParts.every((part) => part !== null),
+      core.every((part) => part === null) || core.every((part) => part !== null),
       `${r.id} publishes a partial delivery receipt`,
     );
-    if (r.delivery_pr !== null) {
-      assert.ok(Number.isInteger(r.delivery_pr) && r.delivery_pr > 0, `${r.id} has a malformed delivery pr`);
+    if (r.delivery_method !== null) {
       assert.match(r.delivery_commit!, /^[0-9a-f]{40}$/);
-      assert.ok(r.delivery_method === "github-merge" || r.delivery_method === "rebased");
+      assert.ok(
+        r.delivery_method === "github-merge" || r.delivery_method === "rebased" || r.delivery_method === "maintainer-direct",
+        `${r.id} has an unknown delivery method`,
+      );
+      if (r.delivery_method === "maintainer-direct") {
+        assert.equal(r.delivery_pr, null, `${r.id} is maintainer-direct and must not publish a PR number`);
+      } else {
+        assert.ok(Number.isInteger(r.delivery_pr) && r.delivery_pr! > 0, `${r.id} has a malformed delivery pr`);
+      }
     }
   }
 });

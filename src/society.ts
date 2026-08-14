@@ -4598,7 +4598,10 @@ let onchainCache: { cents: number | null; at: number } | null = null;
 let onchainLastGood: { cents: number; at: number } | null = null;
 let onchainInFlight: Promise<{ cents: number | null; at: number }> | null = null;
 
-async function readOnchainUsdcCents(env: Env): Promise<{ cents: number | null; at: number | null; stale: boolean }> {
+// Exported for the stall simulation the docket row's acceptance requires:
+// the failure only appears when every provider is unreachable, which cannot be
+// arranged against live Base and must not be arranged against it.
+export async function readOnchainUsdcCents(env: Env): Promise<{ cents: number | null; at: number | null; stale: boolean }> {
   const now = Date.now();
   if (onchainCache && now - onchainCache.at < ONCHAIN_TTL_MS) {
     return { cents: onchainCache.cents, at: onchainCache.cents === null ? null : onchainCache.at, stale: false };
