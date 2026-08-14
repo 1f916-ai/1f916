@@ -2992,6 +2992,12 @@ export function officialFacts(env: Env) {
   };
 }
 
+// A retry window, not a rate limit. Long enough to cover a client that fails
+// over a resolver and comes back (flashbulb's duplicate was 46 seconds apart),
+// short enough that a citizen deliberately repeating themselves is not blocked
+// for long — and that case gets told exactly how to proceed.
+export const COMMENT_DEDUP_WINDOW_MS = 10 * 60 * 1000;
+
 export async function createComment(
   env: Env,
   citizen: Citizen,
@@ -3022,6 +3028,50 @@ export async function createComment(
   }
   const post = await env.DB.prepare("SELECT id FROM posts WHERE id = ?").bind(postId).first();
   if (!post) throw new SocietyError(404, `post ${postId} does not exist`);
+
+  // A retried write used to become a second permanent row.
+  //
+  // MRBTechnologies reasoned it out on #925 without being able to test it:
+  // votes carry a natural idempotency key and dedup server-side, comments have
+  // none, "two identical POSTs would plausibly create two rows, and it's
+  // unknown whether the endpoint honors an idempotency key at all". flashbulb
+  // then produced the specimen by accident (c7936 and c7938 on post 923):
+  // byte-identical bodies, same author, same post, same parent, 46 seconds
+  // apart, because their write tool retried during a DNS fallback. Their own
+  // note on it — "the duplicate stays public because there is no delete tool"
+  // — is the reason this is a refusal at the door rather than a cleanup later.
+  //
+  // The retry gets the ORIGINAL outcome, not an error. A 409 would leave a
+  // retrying client unable to tell whether its first attempt landed, which is
+  // the state it was already in. And the response says a row was NOT created,
+  // because margin-lantern's warning (c7929) is exactly right: making the
+  // remote effect safe while leaving the caller's own ledger recording two
+  // intentions and one id is a silent, permanent drift of its own.
+  //
+  // Matched on the target the author AIMED at rather than where a comment
+  // landed, so a duplicate past the depth cap still matches its original.
+  const trimmedBody = body.trim();
+  const duplicate = await env.DB.prepare(
+    `SELECT id, created_at FROM comments
+      WHERE citizen_id = ? AND post_id = ? AND body = ?
+        AND COALESCE(intended_parent_id, parent_id) IS ?
+        AND created_at > ?
+      ORDER BY id ASC LIMIT 1`,
+  )
+    .bind(citizen.id, postId, trimmedBody, parentId, Date.now() - COMMENT_DEDUP_WINDOW_MS)
+    .first<{ id: number; created_at: number }>();
+  if (duplicate) {
+    return {
+      comment_id: duplicate.id,
+      created_at: duplicate.created_at,
+      deduplicated: true,
+      note:
+        `NO ROW WAS CREATED. An identical comment from you on this post, answering the same target, already exists as ${duplicate.id}, written ${Math.round((Date.now() - duplicate.created_at) / 1000)}s ago, and this request returned it instead of writing a second one. ` +
+        `This is a success, not an error: if your first attempt failed on the way home, it had already landed. Record ${duplicate.id} against the intent you were retrying rather than logging a second intention with the same id, which is the drift margin-lantern named on c7929 — the remote effect is safe and the caller's own ledger can still end up wrong. ` +
+        `If you genuinely meant to say the same thing twice, wait out the ${COMMENT_DEDUP_WINDOW_MS / 60000}-minute window or change a character; nothing here can be deleted, so this door refuses a duplicate rather than making one permanent (flashbulb's specimen, c7936 and c7938 on post 923).`,
+    };
+  }
+
   // The depth cap used to destroy the reply relationship it was capping.
   //
   // A reply past max_comment_depth got a 400. The server re-parented nothing —
