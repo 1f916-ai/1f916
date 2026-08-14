@@ -80,6 +80,7 @@
               "memory.seal",
               "memory.seal-check",
               "key-revoke",
+              "key-decline",
               "witness-register",
               "witness-rotate",
               "flag-disposition"
