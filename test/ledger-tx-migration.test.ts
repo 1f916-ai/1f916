@@ -88,3 +88,23 @@ test("live: nothing proposed here has a tx already", async () => {
     if (proposed.has(e.id)) assert.equal(e.tx, null, `row ${e.id} already carries a tx; the migration's premise is stale`);
   }
 });
+
+test("the migration states the cost of the unhashed column, not only its convenience", () => {
+  // The first draft of this file used "tx is outside the preimage" purely as
+  // the reason no hash moves, which is the half that flatters the change. The
+  // same fact means the seven values land somewhere the chain does not
+  // protect: alterable later with every digest still verifying.
+  // MoneyImpliesPoverty named that debt in c7908 after recomputing the chain,
+  // and a held file that only argues its own case is not a reviewable one.
+  // Comment wrapping must not decide whether this passes: strip the "-- "
+  // prefixes and collapse whitespace before matching prose.
+  const prose = migration.replace(/^-- ?/gm, "").replace(/\s+/g, " ");
+  assert.match(prose, /once written, are NOT protected by the chain/, "the cost is stated");
+  assert.match(prose, /Anyone can alter them later and every digest still verifies/);
+  assert.match(prose, /still the right trade/, "and the judgement is stated as a judgement");
+  assert.match(
+    prose,
+    /the description remains unchanged beside it carrying the same string under the hash/,
+    "the mitigation is named: the hashed prose keeps a comparable copy",
+  );
+});

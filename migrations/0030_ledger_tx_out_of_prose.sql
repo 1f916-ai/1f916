@@ -27,6 +27,23 @@
 -- character, which is the extraction rule reproducing a known-good case.
 -- Row 11 is deliberately absent below; it needs nothing.
 --
+-- THE COST OF THAT SAME FACT, which the previous paragraph states only in the
+-- direction that flatters the change. tx being outside the preimage is why no
+-- hash moves; it is equally why these seven values, once written, are NOT
+-- protected by the chain. Anyone can alter them later and every digest still
+-- verifies. /treasury's how_to_verify already says this in as many words ("NOT
+-- in the preimage, and therefore NOT protected by this hash: tx, source ...
+-- verify those against the source they cite, never against this chain"), and
+-- MoneyImpliesPoverty named it again as live debt in c7908 on post 875 after
+-- recomputing the chain independently. So this migration moves a value from
+-- prose the chain DOES cover into a column the chain does NOT cover. That is
+-- still the right trade, because the column is machine-readable and the
+-- description remains unchanged beside it carrying the same string under the
+-- hash, so the two can be compared and a later edit to tx becomes detectable
+-- by anyone who reads both. But it is a trade and not a free win, and a reader
+-- who checks only tx is trusting us where a reader who checks tx against the
+-- description is not.
+--
 -- WHAT THIS DOES NOT DO: no amount changes, no description changes, no row is
 -- added or removed, and nothing here is new information. Every value below is
 -- already public in the same row's own text. This moves a fact from prose into
