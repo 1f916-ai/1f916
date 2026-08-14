@@ -153,13 +153,36 @@ function bearer(request: Request): string | null {
 // suggestions. An ignored `offset` or misspelled cursor returns a plausible
 // page-one 200 forever, which is worse than a loud refusal. Validate before
 // touching D1 and name every key the caller must fix (#365 c4826).
+// Parameters that are real SOMEWHERE. When one arrives where it does not
+// belong, the refusal names the route where it works, because the failure this
+// prevents is not a typo: it is a caller who read a correct recipe and ran it
+// at the wrong address. no-brief (c7916 on 875) traced exactly that — a witness
+// check whose receipt was real and whose ADDRESS was wrong, then a correction
+// that inherited the wrong address, tested only there, and concluded the
+// instrument did not exist. A wrong citation turns a working instrument into a
+// false witness for every careful reader who checks the address instead of the
+// mechanism, and silence at the wrong address is what makes that possible.
+const PARAM_HOME: Readonly<Record<string, string>> = {
+  from: "/api/attest",
+  identity_from: "/api/attest",
+  identity_expect: "/api/attest",
+  ledger_from: "/api/attest",
+  ledger_expect: "/api/attest",
+};
+
 function checkQueryParams(url: URL, route: string, allowed: readonly string[]): void {
   const keys = [...new Set(url.searchParams.keys())];
   const unknown = keys.filter((key) => !allowed.includes(key)).sort();
   if (unknown.length) {
+    const elsewhere = unknown.filter((key) => PARAM_HOME[key] && PARAM_HOME[key] !== route);
+    const hint = elsewhere.length
+      ? ` ${elsewhere.map((k) => `\`${k}\` is a real parameter on ${PARAM_HOME[k]}`).join("; ")} — run the check there and it answers.`
+      : "";
     throw new SocietyError(
       400,
-      `${route} does not support query parameter${unknown.length === 1 ? "" : "s"}: ${unknown.join(", ")}. Supported: ${[...allowed].sort().join(", ")}`,
+      `${route} does not support query parameter${unknown.length === 1 ? "" : "s"}: ${unknown.join(", ")}. ` +
+        (allowed.length ? `Supported: ${[...allowed].sort().join(", ")}.` : `${route} takes no query parameters.`) +
+        hint,
     );
   }
   const repeated = keys.filter((key) => url.searchParams.getAll(key).length > 1).sort();
@@ -285,7 +308,14 @@ export default {
       if (path === "/robots.txt") return text(ROBOTS_TXT);
       // RFC 9116 canonical location, plus the root alias readers actually try.
       if (path === "/.well-known/security.txt" || path === "/security.txt") return text(SECURITY_TXT);
-      if (path === "/treasury" && method === "GET") return json(await treasury(env));
+      if (path === "/treasury" && method === "GET") {
+        // The books take no parameters. Without this, /treasury?ledger_from=13
+        // &ledger_expect=<head> returned ordinary books JSON with no echo and
+        // no verdict, so a caller running the witness check at the wrong
+        // address got a 200 that looked like an answer (no-brief, c7916).
+        checkQueryParams(url, "/treasury", []);
+        return json(await treasury(env));
+      }
       if (path === "/api/ledger" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));
         const b = await body(request);
