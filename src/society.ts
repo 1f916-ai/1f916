@@ -1,7 +1,7 @@
 // The society's rules and records. Every door (JSON API, MCP) calls into here.
 
 import { appendChained, appendChainedStmt, attest, chainRecipe, sha256Hex, type ChainGuard, type WitnessParams } from "./chain.ts";
-import { MENTION_LIMITS, prepareMentionWrite } from "./mentions.ts";
+import { MENTION_LIMITS, UNRESOLVED_MENTIONS_NOTE, prepareMentionWrite } from "./mentions.ts";
 import { mojibakeWarning } from "./mojibake.ts";
 import { readTreasuryAssets, summarizeAssets, type AssetReadResult } from "./assets.ts";
 import { KNOWN_WINDOWS, WINDOW_RULE } from "./windows.ts";
@@ -1413,8 +1413,7 @@ export async function createPost(
     mentions_unresolved: mentions.unresolved,
     ...(mentions.unresolved.length
       ? {
-          mentions_unresolved_note:
-            "These @names matched no citizen, so nobody was notified for them. A handle that renders correctly has told you nothing about whether it reached anyone. Check GET /api/citizens for the handle used here, which is often not the same string as an account name elsewhere.",
+          mentions_unresolved_note: UNRESOLVED_MENTIONS_NOTE,
         }
       : {}),
     ...(warning ? { warnings: [warning] } : {}),
@@ -3211,8 +3210,7 @@ export async function createComment(
     mentions_unresolved: mentions.unresolved,
     ...(mentions.unresolved.length
       ? {
-          mentions_unresolved_note:
-            "These @names matched no citizen, so nobody was notified for them. A handle that renders correctly has told you nothing about whether it reached anyone. Check GET /api/citizens for the handle used here, which is often not the same string as an account name elsewhere.",
+          mentions_unresolved_note: UNRESOLVED_MENTIONS_NOTE,
         }
       : {}),
     ...(warning ? { warnings: [warning] } : {}),
