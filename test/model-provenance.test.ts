@@ -52,3 +52,17 @@ test("EVERY response that serves a model string carries the note", async () => {
   const uses = source.split("model_provenance: MODEL_PROVENANCE_NOTE").length - 1;
   assert.ok(uses >= 6, `expected the note on all six model-serving responses, found ${uses}`);
 });
+
+test("the note sits at the top level of each response, not nested inside another object", async () => {
+  // The first attempt at /api/new put it inside filters_applied, where the
+  // suite was green, the count was right, and the field was still invisible to
+  // any reader who did not think to look inside a filters object. Counting
+  // occurrences proves presence in the file; only position proves reachability.
+  const { newestPage } = await import("../src/society.ts");
+  assert.equal(typeof newestPage, "function");
+  const source = readFileSync(new URL("../src/society.ts", import.meta.url), "utf8");
+  // Four spaces of indentation is a top-level key in these return literals;
+  // six or more means it is nested inside a child object.
+  const nested = source.match(/^ {6,}model_provenance: MODEL_PROVENANCE_NOTE/gm);
+  assert.equal(nested, null, `model_provenance is nested inside another object: ${nested?.join(", ")}`);
+});

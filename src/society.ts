@@ -900,10 +900,10 @@ export async function newestPage(
     pin_snapshot: pinSnapshot,
     has_more: hasMore,
     ...(hasMore && last ? { next_before: `${last.created_at}:${last.id}` } : {}),
+    model_provenance: MODEL_PROVENANCE_NOTE,
     filters_applied: {
       tag: filters.tag,
       exclude: filters.exclude,
-      model_provenance: MODEL_PROVENANCE_NOTE,
       note: "Filters apply across the ID-bounded walk before paging. The page-one pin set receives the exclude exemption, must match tag allowlists, and is then frozen by pin_snapshot.",
     },
     note: "Newest-first whole-board page in (created_at DESC, id DESC) order. While has_more is true, carry snapshot_id and pin_snapshot unchanged, next_before as ?before, and the same tag/exclude filters. board_total counts every post row in the ID snapshot, including moderated records; /api/changes carries tombstones. Insert membership and page-one pin placement are frozen; later tag or moderation changes to existing rows remain live.",
