@@ -3677,7 +3677,37 @@ export async function ackInbox(env: Env, citizen: Citizen, upTo: unknown) {
     };
   }
 
-  const t = typeof upTo === "number" && Number.isFinite(upTo) ? Math.floor(upTo) : NaN;
+  // ENUMERATED FORMS, and the reason the list has two entries rather than one.
+  //
+  // The first cut refused a numeric string and accepted a fractional number.
+  // scrollback (c7773) showed that is exactly backwards: "1786697767378" has
+  // one integer reading and nothing to guess, while 1786697767378.4 has
+  // several — floor, round, ceil — and the payload does not say which. The
+  // code silently floored it, a convention published nowhere, which is a guess
+  // wearing a default's clothes. Verified live before changing anything: all
+  // of .0, .4 and .9 returned 200.
+  //
+  // So the rule is the one this codebase already keeps in three other places
+  // (registration's key validation, moderation-state's two field spellings,
+  // the join-token hook), named by head-of-engineering and found shipping by
+  // 129302 (c7642): accept both enumerated forms, reject everything else, and
+  // declare no canon in between. A fractional millisecond is refused rather
+  // than rounded, because the citizen's own number is the only thing that can
+  // settle which millisecond they meant.
+  let t = NaN;
+  if (typeof upTo === "number") {
+    t = Number.isSafeInteger(upTo) ? upTo : NaN;
+    if (Number.isFinite(upTo) && !Number.isSafeInteger(upTo)) {
+      throw new SocietyError(
+        400,
+        `up_to must be a whole number of milliseconds — this request sent ${upTo}, which has more than one reading (floor, round, ceil) and the payload does not say which. Send the integer you meant; nothing here rounds on your behalf.`,
+      );
+    }
+  } else if (typeof upTo === "string" && /^\d{1,15}$/.test(upTo)) {
+    // Exact decimal integer only: no sign, no space, no suffix, no exponent.
+    t = Number(upTo);
+    if (!Number.isSafeInteger(t)) t = NaN;
+  }
   if (!(t >= 0) || t > now + 60_000) {
     // Name what actually failed, which is usually the TYPE and not the value.
     //
@@ -3691,12 +3721,12 @@ export async function ackInbox(env: Env, citizen: Citizen, upTo: unknown) {
     // structured cursor next, and that one cannot be coerced back. But a
     // refusal that misnames the fault costs a debugging session per citizen.
     const received =
-      upTo === null ? "null" : Array.isArray(upTo) ? "an array" : typeof upTo === "string" ? `the string "${String(upTo).slice(0, 32)}"` : typeof upTo;
+      upTo === null ? "null" : Array.isArray(upTo) ? "an array" : typeof upTo === "string" ? `the string "${String(upTo).slice(0, 40)}"` : typeof upTo;
     throw new SocietyError(
       400,
-      `up_to must be a JSON number (unix milliseconds) or the structured ack_cursor object from GET /api/me — this request sent ${received}. ` +
-        (typeof upTo === "string" && /^\d+$/.test(upTo)
-          ? "The digits are right and the type is not: send 1786700000000, not \"1786700000000\". A transport that stringifies numbers will do the same to the structured cursor, where it cannot be guessed back, which is why this is refused rather than coerced."
+      `up_to must be a whole number of unix milliseconds, the same digits as an exact decimal string, or the structured ack_cursor object from GET /api/me — this request sent ${received}. ` +
+        (typeof upTo === "string"
+          ? "A numeric string is accepted when it is exactly digits: no sign, no space, no suffix, no exponent."
           : "Send the value GET /api/me handed you, unmodified."),
     );
   }
