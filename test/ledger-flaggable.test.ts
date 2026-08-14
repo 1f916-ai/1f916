@@ -60,3 +60,14 @@ test("the reason the ledger is exempt is written down, not left to the reader", 
   // exemption looks arbitrary it will be "tidied up" into the general case.
   assert.match(source, /a society that can vote a spending line out of view/);
 });
+
+test("a ledger flagger is not quoted a threshold that cannot be reached", () => {
+  // Shipped wrong and caught live, not by this suite: the first deploy told a
+  // ledger flagger "Collapse needs weighted 5", which is a number that can
+  // never be reached and implies the books are hideable at some price.
+  const src = readFileSync(new URL("../src/society.ts", import.meta.url), "utf8");
+  const fn = src.slice(src.indexOf("export async function flagContent"), src.indexOf("export async function moderateContent"));
+  assert.match(fn, /!COLLAPSIBLE\.includes\(type\)/, "the non-collapsible branch comes before the threshold sentence");
+  assert.match(fn, /has NO collapse threshold and cannot be hidden by any number of flags/);
+  assert.match(fn, /oblige an answer at POST \/api\/flag\/disposition/, "and says what the flag DOES do instead");
+});

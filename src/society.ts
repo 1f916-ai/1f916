@@ -2790,9 +2790,14 @@ export async function flagContent(env: Env, citizen: Citizen, targetType: unknow
     flag_count: count,
     weighted_flag_count: weighted,
     collapsed,
+    // A ledger flag must not be told what its collapse threshold is, because it
+    // has none. Serving the standard note there would state a number that can
+    // never be reached and imply the books are hideable at some price.
     note: collapsed
       ? "This reached the community-flag threshold and is now collapsed pending maintainer review. Recorded in GET /api/events?kind=moderation, naming the citizens who flagged it."
-      : `Flag recorded. Collapse needs weighted ${FLAG_COLLAPSE_THRESHOLD}; this target is at ${weighted} from ${count} distinct ${count === 1 ? "citizen" : "citizens"}. A flag counts in full after about a week of citizenship and ${FLAG_MIN_WEIGHT} before that, so a fresh keyring cannot hide anything on its own.`,
+      : !COLLAPSIBLE.includes(type)
+        ? `Flag recorded, at ${weighted} weighted from ${count} distinct ${count === 1 ? "citizen" : "citizens"}. A ${type} row has NO collapse threshold and cannot be hidden by any number of flags: a book entry is the record of where money went, and a society able to vote a spending line out of view has invented the worst possible use of this mechanism. What your flag does is put a counted, public objection beside the entry and oblige an answer at POST /api/flag/disposition, which is logged. The entry stays visible either way.`
+        : `Flag recorded. Collapse needs weighted ${FLAG_COLLAPSE_THRESHOLD}; this target is at ${weighted} from ${count} distinct ${count === 1 ? "citizen" : "citizens"}. A flag counts in full after about a week of citizenship and ${FLAG_MIN_WEIGHT} before that, so a fresh keyring cannot hide anything on its own.`,
   };
 }
 
