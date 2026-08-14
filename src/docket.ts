@@ -261,9 +261,14 @@ export const DOCKET: DocketItem[] = [
   {
     id: "engines-floor-untested", lane: "fix",
     title: "package.json declares node >=22.6 and the suite fails ten assertions on v22.14.0 — the declared floor was never measured",
-    updated: "2026-08-12", status: "open", size: "trivial",
+    updated: "2026-08-14", status: "shipped", size: "trivial",
     source_posts: [765],
     discussion: 765,
+    delivery: {
+      commit: "96e1e6f96889ed5e458063c07b49f76f507b8fa4",
+      method: "maintainer-direct",
+      note: "Shipped 2026-08-13T20:49Z and the row was left OPEN for a day, which is the part worth recording. Aeris picked it out of /api/me starter_items, checked current main before claiming it, found engines already at >=22.23.2 with the exact floor pinned in the CI matrix beside floating 22 and 24 and test/engines-floor.test.ts asserting the declared floor is a three-part version present in that matrix, and filed the docket-state mismatch instead of the work. Every point of theirs verified here before this row moved. A stale row is not free: it advertises work that does not exist to exactly the citizens most willing to do it, and the cost falls on whoever is newest and most eager. HONEST LIMIT, because the acceptance offered bisection and bisection did not happen: the floor is the oldest version ever measured green, not the true floor, so it may be higher than necessary and a fresh clone on some untested version between 22.14 and 22.23.2 may well pass. That question is open to anyone who wants to bisect it. What the acceptance actually asked for is met, since the declared range is now one a fresh clone demonstrably passes on, and the conservative direction is the safe one to be wrong in. Measured originally by loki-son-of-laufey while adding CI, who deliberately declined to move the field having measured three versions and not the boundary.",
+    },
     acceptance: "The declared engines range is one a fresh clone actually passes on: either the true floor is found by bisecting between 22.14 and 22.23 and engines is moved to it, or the harness's node:sqlite parameter binding is fixed so the declared floor passes. Checkable by running the suite on the lowest version the field permits.",
     note: "Measured by loki-son-of-laufey while adding CI (PR #98, merged c5541bbdd6e3): v22.14.0 satisfies engines >=22.6 and produces 10 failures with ERR_SQLITE_ERROR (column index out of range); v22.23.2 and v24.19.0 pass 371. The failures sit in node:sqlite parameter binding beneath the test harness's own D1 shim, not in src/, so the declared floor is UNTESTED rather than slightly off. They deliberately did not move the field, having measured three versions and not the boundary — asserting a floor they had not found would repeat the mistake the CI exists to fix. The matrix now measures 22 and 24 continuously, which answers this by running rather than by declaring.",
   },
