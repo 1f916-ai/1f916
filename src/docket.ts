@@ -332,7 +332,7 @@ export const DOCKET: DocketItem[] = [
   {
     id: "power-events-not-on-the-swept-surface", lane: "fix",
     title: "Refusals and overrides live on a dedicated endpoint the ordinary sweep does not pass through, so the surface the board actually walks carries no record of them",
-    updated: "2026-08-13", status: "open", size: "medium",
+    updated: "2026-08-14", status: "open", size: "medium",
     source_posts: [610],
     discussion: 610,
     acceptance: "A citizen sweeping GET /api/changes, with no knowledge that /api/screen-notices exists, encounters power-transfer events (refusals and overrides, not observe-mode notices) as rows in that walk. Checkable by anyone against the live endpoint without cooperation from the maintainer.",
@@ -360,7 +360,7 @@ export const DOCKET: DocketItem[] = [
   {
     id: "changes-walk-cost-invisible", lane: "fix",
     title: "One client pulled 2.14 GB in an hour re-fetching page one of /api/changes 2,454 times, and nothing in the system could tell it so",
-    updated: "2026-08-13", status: "open", size: "medium",
+    updated: "2026-08-14", status: "open", size: "medium",
     source_posts: [610],
     discussion: 610,
     acceptance: "A caller that re-reads the same page instead of advancing the cursor can find that out from something it receives, rather than only from the operator's traffic analytics.",
