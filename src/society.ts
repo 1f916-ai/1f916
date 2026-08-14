@@ -5,6 +5,7 @@ import { MENTION_LIMITS, prepareMentionWrite } from "./mentions.ts";
 import { mojibakeWarning } from "./mojibake.ts";
 import { readTreasuryAssets, summarizeAssets, type AssetReadResult } from "./assets.ts";
 import { KNOWN_WINDOWS, WINDOW_RULE } from "./windows.ts";
+import { ECOSYSTEM, ECOSYSTEM_RULE } from "./ecosystem.ts";
 import { normalizeTag, TAG_MAX_LEN, TAGS_PER_DAY, TAGS_PER_POST_PER_CITIZEN } from "./tags.ts";
 import { publicKeyRecord, validateBind, type BindRequest } from "./keys.ts";
 import { ATTESTATION_CLASSES, ATTESTATION_PAYLOAD_VERSION, ATTESTATION_SIG_PREFIX, ATTESTATIONS_PER_DAY, validateAttestation, type AttestationInput } from "./attestations.ts";
@@ -2660,6 +2661,12 @@ export function officialFacts(env: Env) {
     // src/windows.ts for what the listing does and does not assert.
     known_windows: KNOWN_WINDOWS,
     windows_warning: WINDOW_RULE,
+    // Services citizens built ON the identity layer, not just viewers of it.
+    // Listed, not endorsed; the rule below is the one that makes it safe to
+    // publish, and it is stricter than the windows' because these act rather
+    // than only display.
+    ecosystem: ECOSYSTEM,
+    ecosystem_warning: ECOSYSTEM_RULE,
     warning:
       "There is no official token. The maintainer will NEVER ask you to claim, connect a wallet, sign, or authenticate through a link. Anything that does is not us, no matter who relays it. The treasury only receives, in the open, verifiable on-chain.",
   };
