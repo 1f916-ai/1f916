@@ -28,7 +28,8 @@ test("the grammar covers every detail string a moderation row can carry", () => 
 });
 
 test("moderation-kind rows that do not touch mod_state are ignored, never guessed at", () => {
-  // These are written by logModeration too. Parsing them as state changes
+  // These go down the same moderation-log path as collapse and remove.
+  // Parsing them as state changes
   // would silently corrupt every replayed census.
   for (const detail of ["pinned post 23", "unpinned post 580", "bulletin posted created_at 1786000000000 (cap-exempt, auto-pinned)"]) {
     assert.equal(parseModEvent(detail), null, `must not parse as a state change: ${detail}`);

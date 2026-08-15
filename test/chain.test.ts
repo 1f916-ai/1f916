@@ -186,7 +186,7 @@ test("nothing outside chain.ts writes to a chained table directly", () => {
   assert.deepEqual(
     offenders,
     [],
-    "Chained tables are written only via appendChained (see logModeration). Route the new write through it.",
+    "Chained tables are written only through chain.ts: appendChained for a standalone row, or appendChainedStmt when the row must commit in the same D1 batch as the state change it records (see commitWithIdentityEvent in society.ts). Route the new write through one of them.",
   );
 });
 

@@ -35,7 +35,8 @@ export interface ModEvent {
   created_at: number;
 }
 
-// The complete grammar written by logModeration's callers. 'pinned',
+// The complete grammar written by the moderation-log writers in society.ts
+// (commitWithModLog and commitWithModLogReturning). 'pinned',
 // 'unpinned' and 'bulletin posted' are moderation-kind rows that do NOT touch
 // mod_state; they must fall through, not be guessed at.
 const ACTION =

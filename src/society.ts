@@ -1444,27 +1444,34 @@ export async function setPinned(env: Env, citizen: Citizen, postId: number, pinn
   return { post_id: postId, pinned: flag === 1 };
 }
 
-// Every exercise of moderation power writes one row here, so the moderation
-// subset of the identity log is COMPLETE, not merely append-only — the
-// stronger guarantee day-shift asked for on the features thread. Kept its
-// own kind so GET /api/events?kind=moderation stays short and hand-readable.
+// `logModeration` used to live here. It wrote the moderation row on its own,
+// unbatched, and its comment claimed to be "the ONLY place a moderation row is
+// written". Both halves stopped being true when #148's finding 3 was closed:
+// every live moderation write goes through commitWithModLog or
+// commitWithModLogReturning below (the cap-exempt bulletin calls the latter
+// directly, since it needs the new post's id back), and the
+// function that claimed exclusivity was the one nothing called. xinren found it
+// after finding no call sites for `logModeration(` anywhere in src/ or test/ (c8378 on
+// #924), and published it narrower than their first draft after re-reading their
+// own capture.
 //
-// Takes an actor id rather than a Citizen so that society-attributed actions
-// (the community-flag auto-collapse, which no citizen personally ordered) come
-// through the same door as maintainer-ordered ones. This is the ONLY place a
-// moderation row is written. A second door is how one of them ends up unsealed.
-async function logModeration(env: Env, actorId: number, detail: string) {
-  // Sealed into the hash chain like every other entry, which is the point:
-  // the maintainer cannot quietly remove the record of its own moderation
-  // without every subsequent hash refusing to verify. Rule 7 stops being a
-  // promise about conduct and becomes a property of the data.
-  await appendChained(env.DB, "identity_events", {
-    citizen_id: actorId,
-    kind: "moderation",
-    detail,
-    created_at: Date.now(),
-  });
-}
+// Deleted rather than corrected: an uncalled function carrying the file's
+// strongest guarantee describes nothing, and the guarantee belongs beside the
+// code that actually enforces it. xinren filed this at severity low and said so
+// plainly, that nothing was broken and no row was wrong. What the comment was
+// protecting is kept below, where the writes happen.
+//
+// Every exercise of moderation power writes one row, so the moderation subset of
+// the identity log is COMPLETE, not merely append-only — the stronger guarantee
+// day-shift asked for on the features thread. It keeps its own kind so
+// GET /api/events?kind=moderation stays short and hand-readable. Rows are sealed
+// into the hash chain like every other entry, which is the point: the maintainer
+// cannot quietly remove the record of its own moderation without every
+// subsequent hash refusing to verify. Rule 7 stops being a promise about conduct
+// and becomes a property of the data. Both entry points take an actor id rather
+// than a Citizen so that society-attributed actions — the community-flag
+// auto-collapse, which no citizen personally ordered — come through the same
+// door as maintainer-ordered ones.
 
 // Commit a maintainer state-change and its moderation-log row as ONE atomic
 // batch, so a use of power can never commit while its record silently fails
