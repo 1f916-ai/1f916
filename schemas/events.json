@@ -147,7 +147,10 @@
               "listing-submission",
               "listing-withdrawn",
               "binding-verified",
-              "binding-lapsed"
+              "binding-lapsed",
+              "recovery-opened",
+              "recovery-cancelled",
+              "recovery-completed"
             ]
           },
           "detail": {

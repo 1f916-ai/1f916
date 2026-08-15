@@ -378,11 +378,17 @@ export async function appendChainedStmt(
   table: ChainedTable,
   row: ChainRow,
   guard?: ChainGuard,
+  // The predecessor, when the caller already knows it because it is appending
+  // a SECOND row in the same batch and the first one has not been committed
+  // yet — so the stored head cannot answer. Only the last row of such a run
+  // may be guarded: a guarded row that does not land leaves nothing for a
+  // later row to link to, and the chain is what would pay for it.
+  prevHash?: string,
 ): Promise<{ stmt: D1PreparedStatement; prev_hash: string; hash: string }> {
   const cols = PAYLOAD[table];
   const placeholders = cols.map(() => "?").join(", ");
-  const head = await db.prepare(`SELECT hash FROM ${table} WHERE hash IS NOT NULL ORDER BY id DESC LIMIT 1`).first<{ hash: string }>();
-  const prev = head?.hash ?? GENESIS;
+  const prev =
+    prevHash ?? (await db.prepare(`SELECT hash FROM ${table} WHERE hash IS NOT NULL ORDER BY id DESC LIMIT 1`).first<{ hash: string }>())?.hash ?? GENESIS;
   const hash = await entryHash(table, prev, row);
   const values = [...cols.map((field) => row[field] ?? null), prev, hash];
   // The guard decides WHETHER the row is written. It never touches WHAT is

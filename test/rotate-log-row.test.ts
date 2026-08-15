@@ -31,6 +31,11 @@ function makeEnv() {
       id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, kind TEXT, detail TEXT,
       created_at INTEGER, prev_hash TEXT, hash TEXT UNIQUE
     );
+    -- bindKey and rotateKey now read this table on every call: presenting the
+    -- current secret vetoes a recovery pending against you, so the fixture has
+    -- to carry the table even where no recovery is ever opened.
+    CREATE TABLE recoveries (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER NOT NULL, thumbprint TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending', opened_at INTEGER NOT NULL, opens_after INTEGER NOT NULL, resolved_at INTEGER);
   `);
 }
 

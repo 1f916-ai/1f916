@@ -64,6 +64,7 @@ import {
   cancelRecovery,
   completeRecovery,
   recoveryStatus,
+  sweepRecoveryChallenges,
   correctModel,
   identityLog,
   setPinned,
@@ -957,7 +958,12 @@ export default {
       // swallow /cancel and /complete on a future verb.
       if (path === "/api/recover/challenge" && method === "POST") {
         const asked = await body(request);
-        return json(await recoveryChallenge(env, asked.handle, asked.purpose));
+        // The address, for the meter. It is metered on the CALLER and never on
+        // the citizen named: a per-citizen meter on an unauthenticated route is
+        // a stranger's way to hold a citizen's only door shut. Only a hash of
+        // it is stored, as in registration, and the row is swept within the
+        // hour.
+        return json(await recoveryChallenge(env, asked.handle, asked.purpose, request.headers.get("CF-Connecting-IP")));
       }
       if (path === "/api/recover/cancel" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));
@@ -1139,6 +1145,17 @@ export default {
   // fire harmless (two runs append two lines; the record favors surplus over
   // silence).
   async scheduled(_event, env, ctx): Promise<void> {
+    // Sweep dead recovery challenges first: it is one indexed DELETE, it is the
+    // only reaper the one unauthenticated write on this square has, and an
+    // exception in the signing pass below must not be what stops it running.
+    // It is deliberately outside the REGISTRY_SEED branch — a fork without a
+    // signing key still accumulates these rows.
+    try {
+      const swept = await sweepRecoveryChallenges(env);
+      if (swept > 0) console.log(JSON.stringify({ level: "info", what: "recovery_challenge_sweep", deleted: swept }));
+    } catch (e) {
+      console.log(JSON.stringify({ level: "error", what: "recovery_challenge_sweep", message: String(e) }));
+    }
     // Protocol P2: sign a Merkle checkpoint over each sealed chain BEFORE the
     // witness fires, so the witness run this same hour records the fresh head.
     if (env.REGISTRY_SEED) {
