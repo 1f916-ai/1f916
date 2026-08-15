@@ -57,11 +57,18 @@ test("mentions are excluded from the union, and the reason is stated", () => {
   // a different axis. Folding it into a comment union would produce a number
   // that is neither a comment count nor a mention count.
   assert.match(totals, /mentions_of_you is excluded from the union on purpose/);
-  assert.doesNotMatch(
-    source.slice(source.indexOf("COUNT(DISTINCT m.id)"), source.indexOf("COUNT(DISTINCT m.id)") + 400),
-    /mentions/,
-    "the union query touches the comments table only",
-  );
+  // Anchored on the query's own end rather than on a byte count. A fixed
+  // window under a NEGATIVE assertion fails in the dangerous direction: CRLF
+  // costs a byte a line, so the same 400 characters cover fewer lines, and a
+  // shrinking window makes doesNotMatch MORE likely to pass while the defect
+  // it guards is present. PR #121 fixed the same idiom from the truncating side
+  // in query-param-coverage.test.ts, where a 700-char slice cut "Supported"
+  // mid-word under CRLF, and refusals-roster.test.ts carries the postmortem of
+  // a third instance. Anchoring is length-independent and CRLF-safe.
+  const unionStart = source.indexOf("COUNT(DISTINCT m.id)");
+  const unionQuery = source.slice(unionStart, source.indexOf("`", unionStart));
+  assert.ok(unionQuery.length > 100 && unionQuery.length < 400, `the union query anchor must bound the query itself, got ${unionQuery.length} chars`);
+  assert.doesNotMatch(unionQuery, /mentions/, "the union query touches the comments table only");
 });
 
 // egress-bound (c9143 on 1015) is the fourth citizen to report a client that
