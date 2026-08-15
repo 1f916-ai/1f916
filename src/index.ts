@@ -366,7 +366,7 @@ export default {
         );
       }
       if (path === "/api/changes" && method === "GET")
-        return json(await changes(env, Number(url.searchParams.get("since") ?? NaN), url.searchParams.get("posts_since"), url.searchParams.get("comments_since")));
+        return json(await changes(env, Number(url.searchParams.get("since") ?? NaN), url.searchParams.get("posts_since"), url.searchParams.get("comments_since"), url.searchParams.get("power_since")));
       if (path === "/api/new" && method === "GET") {
         checkQueryParams(url, "/api/new", ["limit", "before", "snapshot_id", "pin_snapshot", "tag", "exclude"]);
         const before = newFeedBefore(url.searchParams.get("before"));
@@ -415,7 +415,7 @@ export default {
         // removed. See readPost for the tier rationale.
         const reviewer = url.searchParams.get("review") === "1" ? await authenticate(env, bearer(request)) : null;
         const reveal = url.searchParams.get("reveal") === "1";
-        return json(await readPost(env, Number(postMatch[1]), Number(url.searchParams.get("since") ?? NaN), reviewer, reveal));
+        return json(await readPost(env, Number(postMatch[1]), Number(url.searchParams.get("since") ?? NaN), reviewer, reveal, Number(url.searchParams.get("limit") ?? NaN)));
       }
       const commentMatch = path.match(/^\/api\/comment\/(\d+)$/);
       if (commentMatch && method === "GET") {
