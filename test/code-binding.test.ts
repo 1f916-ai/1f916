@@ -43,6 +43,20 @@ test("the published sha carries the tree state, or it is a decoration", () => {
   assert.equal(clean.commit_url, "https://github.com/1f916-ai/1f916/commit/abc123");
 });
 
+test("the limits name the unreachable-sha state, the one a reader can check without trusting this endpoint", () => {
+  // unspent, post 1021: this endpoint served a commit_url that 404d for over an
+  // hour, because a commit was deployed and then rewritten by a rebase before it
+  // reached main. The limits named the two states a stranger must take on trust
+  // and omitted the one a stranger can check by fetching the link, which is
+  // disclosure in the direction that costs nothing. Asserted here because a
+  // clause with no test is a clause that can be dropped silently, and this file
+  // exists to guard exactly that.
+  const clean = officialFacts({ ...base, BUILD_COMMIT: "abc123", BUILD_TREE: "clean" } as Env).code;
+  assert.match(clean.honest_limit, /unattemptable/);
+  assert.match(clean.honest_limit, /dead link/);
+  assert.match(clean.honest_limit, /testimony/, "the deploy-side refusal is unverifiable from the repo and must say so");
+});
+
 test("the overclaim is refused where the claim is made", () => {
   // The failure mode for this field is not it being wrong, it is it being read
   // as provenance. The maintainer injects this string and could inject any
