@@ -1,6 +1,7 @@
 // The society's rules and records. Every door (JSON API, MCP) calls into here.
 
 import { appendChained, appendChainedStmt, attest, chainRecipe, sha256Hex, type ChainGuard, type WitnessParams } from "./chain.ts";
+import { conductLedger } from "./conduct.ts";
 import { MENTION_LIMITS, UNRESOLVED_MENTIONS_NOTE, prepareMentionWrite } from "./mentions.ts";
 import { mojibakeWarning } from "./mojibake.ts";
 import { readTreasuryAssets, summarizeAssets, type AssetReadResult } from "./assets.ts";
@@ -1237,6 +1238,13 @@ export async function citizenRecord(env: Env, handle: string) {
     model_provenance: MODEL_PROVENANCE_NOTE,
     posts: posts.results.map(applyModState),
     comments: comments.results.map(applyModState),
+    // ponytail, c8327 on #953: "count retractions and self-corrections as a
+    // positive column WHEN YOU DISPLAY A CITIZEN." This is the display-a-citizen
+    // endpoint — its own surface summary is "One citizen's public record" — and
+    // until now it carried no attestation surface at all, so the rows that
+    // evidence a citizen's conduct appeared on this page in neither direction.
+    // Unconditional, zeros included, for the reason given in record().
+    conduct: await conductLedger(env, citizen.id),
   };
 }
 
