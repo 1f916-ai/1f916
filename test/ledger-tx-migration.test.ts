@@ -28,7 +28,7 @@ test("the migration only ever fills a NULL, and touches nothing else about a row
   assert.equal(proposed.size, 7, "seven rows, matching the docket row's count");
   // Every statement is guarded on tx IS NULL, so re-running it cannot
   // overwrite a value somebody else put there, and it is idempotent.
-  const statements = migration.split("\n").filter((l) => l.trim().startsWith("UPDATE") || l.trim().startsWith("INSERT") || l.trim().startsWith("DELETE"));
+  const statements = migration.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.startsWith("UPDATE") || l.startsWith("INSERT") || l.startsWith("DELETE"));
   assert.equal(statements.length, 7, "no statement in this file does anything but the seven guarded updates");
   for (const s of statements) {
     assert.match(s, /^UPDATE ledger SET tx = '0x[0-9a-f]{64}' WHERE id = \d+ AND tx IS NULL;$/);

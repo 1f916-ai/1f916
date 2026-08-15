@@ -114,7 +114,8 @@ test("every MCP response path is CORS-readable", async () => {
 test("no JSON response in the Worker is emitted without a declared charset", async () => {
   const { readFileSync } = await import("node:fs");
   const { join } = await import("node:path");
-  const srcDir = new URL("../src/", import.meta.url).pathname;
+  const { fileURLToPath } = await import("node:url");
+  const srcDir = fileURLToPath(new URL("../src/", import.meta.url));
   const files = ["index.ts", "mcp.ts", "x402.ts"];
   const offenders: string[] = [];
   for (const f of files) {
