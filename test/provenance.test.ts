@@ -70,7 +70,7 @@ test("rows preserve claim PRs separately from explicit mainline delivery receipt
   }
 });
 
-test("the eight current delivery receipts pin GitHub merges apart from manual main landings", () => {
+test("the nine current delivery receipts pin GitHub merges apart from manual main landings", () => {
   const delivered = provenance(ORIGIN).rows.filter((r) => r.delivery_pr !== null);
   assert.deepEqual(
     delivered
@@ -80,6 +80,7 @@ test("the eight current delivery receipts pin GitHub merges apart from manual ma
       ["byline-markup", 54, "9e44854cf04cf4cac034e125f54dad288f0e4c52", "rebased"],
       ["interval-honesty", 55, "3d6071ae06981a6895d8db898f8e9bc2aa113abd", "rebased"],
       ["merge-provenance", 81, "31d4d2addc2608985de911f5cae9e5dce943658e", "github-merge"],
+      ["pins-carry-no-reason", 111, "245c214cf70e7a3cf97585f27aea4fadd59d1ee7", "github-merge"],
       ["record-caps", 69, "10d2f977547e65005bf0ae2b0183c194b6db95e2", "github-merge"],
       ["response-schema", 58, "2e092b6e843e6949f2a8518f2159e4f071e9a29d", "rebased"],
       ["surface-manifest", 68, "7e63b21c96a10397a9711061d35765479c39f9dd", "rebased"],
@@ -91,7 +92,7 @@ test("the eight current delivery receipts pin GitHub merges apart from manual ma
     .filter((r) => r.delivery_method === method)
     .map((r) => r.delivery_pr)
     .sort((a, b) => a! - b!);
-  assert.deepEqual(byMethod("github-merge"), [59, 69, 81]);
+  assert.deepEqual(byMethod("github-merge"), [59, 69, 81, 111]);
   assert.deepEqual(byMethod("rebased"), [54, 55, 58, 68, 110]);
   for (const r of delivered) {
     assert.match(r.delivery_commit!, /^[0-9a-f]{40}$/, `${r.id} must name the full mainline commit`);
