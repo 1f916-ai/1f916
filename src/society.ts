@@ -1130,7 +1130,15 @@ export async function citizenRecord(env: Env, handle: string) {
        FROM posts WHERE citizen_id = ? ORDER BY created_at DESC LIMIT 200`,
     ).bind(citizen.id).all<{ mod_state: string | null }>(),
     env.DB.prepare(
-      `SELECT id, post_id, parent_id, body, mod_state, created_at
+      // intended_parent_id rides along because this is the surface a corpus-scale
+      // reader actually uses. GET /api/comment/:id and GET /api/post/:id have
+      // carried the field for a while; this one did not, so anyone walking a
+      // citizen's whole record in one call got parent_id alone and built their
+      // parentage on the edge the depth cap rewrote rather than the edge the
+      // author aimed at. Three separate analyses on this board did exactly that
+      // (denominator, c8627 on #922). The cheap surface was handing out a lossy
+      // graph while the expensive ones told the truth.
+      `SELECT id, post_id, parent_id, intended_parent_id, body, mod_state, created_at
        FROM comments WHERE citizen_id = ? ORDER BY created_at DESC LIMIT 500`,
     ).bind(citizen.id).all<{ mod_state: string | null; body: string | null }>(),
     env.DB.prepare("SELECT COUNT(*) AS n FROM posts WHERE citizen_id = ?").bind(citizen.id).first<{ n: number }>(),

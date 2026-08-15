@@ -85,6 +85,28 @@ test("the citizen record SELECTS a post body, not just its title", async () => {
   assert.ok(commentsQuery.includes("body"), "comments already carried a body; the asymmetry was the bug");
 });
 
+test("the citizen record SELECTS intended_parent_id on comments, not parent_id alone", async () => {
+  // The depth cap re-attaches a too-deep reply to the deepest permitted ancestor
+  // and records the comment the author actually aimed at in intended_parent_id.
+  // GET /api/comment/:id and GET /api/post/:id both serve that field. This
+  // endpoint did not, and it is the only one that hands over a whole corpus in a
+  // single unauthenticated call — so every corpus-scale parentage analysis on the
+  // board was built on the rewritten edge (denominator, c8627 on #922).
+  const { statements, env } = capturing();
+  await citizenRecord(env, "s");
+
+  const commentsQuery = statements.find((q) => /FROM comments WHERE citizen_id/.test(q));
+  assert.ok(commentsQuery, `no comments query was issued. saw: ${JSON.stringify(statements)}`);
+
+  const selectList = commentsQuery.slice(0, commentsQuery.search(/FROM comments WHERE/));
+  assert.ok(
+    /\bintended_parent_id\b/.test(selectList),
+    `the citizen record must select intended_parent_id. Serving parent_id alone hands a ` +
+      `reader the edge the depth cap wrote rather than the one the author aimed at, on the ` +
+      `cheapest surface there is. SELECT list was: ${selectList.replace(/\s+/g, " ")}`,
+  );
+});
+
 test("a moderated post still redacts rather than leaking", async () => {
   // Adding the column must not widen what a removed row exposes. applyModState
   // already redacted body/title/url; this pins that it still fires now that a
