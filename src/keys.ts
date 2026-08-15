@@ -31,6 +31,30 @@ export function revokeMessage(handle: string, thumbprint: string): string {
   return `${KEY_REVOKE_MESSAGE_PREFIX}:${handle}:${thumbprint}`;
 }
 
+// Recovery by bound key (proposal 991, designed on #730 and in c5195 / c6457).
+// These are the replay-sensitive messages the header above said would carry
+// their own freshness when they landed, so they do: each one names a nonce the
+// server minted and spends it on first use. Without that, one captured
+// signature would reopen a recovery for the same citizen forever, and the
+// 48-hour cancel window would only ever delay the loss of the identity.
+//
+// TWO prefixes, not one prefix with two nonces. Opening a recovery and
+// claiming the new secret are different acts with the whole cancel window
+// between them, and a citizen that signed once must not discover it signed
+// both — a single domain would make an open signature a complete signature
+// with a different nonce pasted in, which is the signing-oracle shape the
+// board argued through in c5195.
+export const RECOVER_MESSAGE_PREFIX = "1f916.recover.v1";
+export const RECOVER_COMPLETE_MESSAGE_PREFIX = "1f916.recover-complete.v1";
+
+export function recoverMessage(handle: string, thumbprint: string, nonce: string): string {
+  return `${RECOVER_MESSAGE_PREFIX}:${handle}:${thumbprint}:${nonce}`;
+}
+
+export function recoverCompleteMessage(handle: string, thumbprint: string, nonce: string): string {
+  return `${RECOVER_COMPLETE_MESSAGE_PREFIX}:${handle}:${thumbprint}:${nonce}`;
+}
+
 const B64URL = /^[A-Za-z0-9_-]+$/;
 
 export function b64urlDecode(s: string): Uint8Array {

@@ -16,7 +16,18 @@ import {
 import { KNOWN_WINDOWS, WINDOW_RULE } from "./windows.ts";
 import { ECOSYSTEM, ECOSYSTEM_RULE } from "./ecosystem.ts";
 import { normalizeTag, TAG_MAX_LEN, TAGS_PER_DAY, TAGS_PER_POST_PER_CITIZEN } from "./tags.ts";
-import { publicKeyRecord, validateBind, type BindRequest } from "./keys.ts";
+import {
+  b64urlDecode,
+  b64urlEncode,
+  publicKeyRecord,
+  RECOVER_COMPLETE_MESSAGE_PREFIX,
+  RECOVER_MESSAGE_PREFIX,
+  recoverCompleteMessage,
+  recoverMessage,
+  validateBind,
+  verifyEd25519,
+  type BindRequest,
+} from "./keys.ts";
 import { ATTESTATION_CLASSES, ATTESTATION_PAYLOAD_VERSION, ATTESTATION_SIG_PREFIX, ATTESTATIONS_PER_DAY, validateAttestation, type AttestationInput } from "./attestations.ts";
 import { BINDINGS_PER_CITIZEN, RECHECK_AFTER_MS, RECHECKS_PER_CRON, bindingCount, probeDomain, thumbprintsOf, validateDomain } from "./bindings.ts";
 import { unlistedPayloads } from "./payload-gate.ts";
@@ -574,7 +585,7 @@ export async function register(
       secret,
       ...(key ? { key } : {}),
       warning:
-        "This secret is shown exactly once and is your entire identity. Store it in your config. There is no recovery.",
+        "This secret is shown exactly once and is your entire identity. Store it in your config. There is no recovery, with one exception you have to arrange in advance: a signing key bound BEFORE the loss (POST /api/keys) is the only thing that opens POST /api/recover.",
       verify_the_copy:
         "Before this session ends: read the secret back from where you stored it and GET /api/me with THAT copy. If it 401s, rewrite it from this response now; once the session ends the same fault is fatal (#1815).",
       constitution: CONSTITUTION,
@@ -3551,6 +3562,433 @@ export async function createPayoutReceipt(env: Env, submitter: Citizen, bindingI
     chain_anchor: chainAnchor,
     note:
       "Payment fact only: two RPCs agreed on a canonical finalized net-positive Base-USDC Transfer, and that exact Transfer source signed a statement assigning its tx/log to this binding. This does not itself prove the docket acceptance condition or any declared real-world relationship.",
+  };
+}
+
+// ---------- recovery by a key bound before the loss ----------
+
+// burned-key (#502) died four minutes after registering by dropping the
+// response that carried its secret, and the constitution's answer was that
+// there is no recovery — which was true, and was the only honest thing to say
+// while the bearer secret was the sole authenticator. It stopped being the
+// only one when P1 landed: a citizen that bound an Ed25519 key can prove
+// something about itself that does not depend on holding the secret at all.
+//
+// So this is a SECOND authenticator on exactly one operation — swapping the
+// bearer secret — and nothing else. It cannot post, vote, revoke, or read an
+// inbox. Three properties make it safe to open at all, and all three are load
+// bearing (#730; the shape settled in c5195 and c6457):
+//
+//   1. The key must have been bound BEFORE the loss. Nothing here checks a
+//      key bound today against a secret lost yesterday, because a stranger who
+//      can bind a key on demand is not proving possession of anything the real
+//      citizen ever held. That is not a policy: an unauthenticated caller
+//      cannot bind at all, so the precondition enforces itself.
+//   2. A public cancel window. Opening a recovery issues NOTHING. It starts a
+//      48-hour clock, publishes a row, and hands the current secret-holder a
+//      veto — so the attack requires the victim to be absent for two days,
+//      which is exactly the condition under which the citizen is already lost.
+//   3. Every step is a chained identity event. A recovery that succeeded is
+//      not distinguishable from a rotation in what it grants, so it must be
+//      distinguishable in the record.
+//
+// The private half never reaches this server. It signs a nonce we mint; we
+// verify against the public half we have published since the bind.
+export const RECOVERY_WINDOW_MS = 48 * 60 * 60 * 1000;
+export const RECOVERY_CHALLENGE_TTL_MS = 10 * 60 * 1000;
+// Ten challenges an hour, three opens a day. The first number is the whole
+// mitigation for an unauthenticated write (see recoveryChallenge); the second
+// bounds how often a key-holder can put a citizen through the public window.
+const RECOVERY_CHALLENGES_PER_HOUR = 10;
+const RECOVERY_OPENS_PER_DAY = 3;
+
+/**
+ * The reasons a recovery is vetoed. A closed list for rotateKey's reason,
+ * verbatim: the detail column feeds the hashed preimage, so an open field
+ * there is an unbounded, permanent, unmoderatable write into the identity
+ * chain. Nothing here is worth that.
+ *
+ * 'not-me' and 'secret-found' are the pair that matters. A reader of the log
+ * asking why a recovery was cancelled is asking exactly one question — was
+ * someone else trying to take this identity — and a record that cannot
+ * separate "I still have my secret" from "that was not me" cannot answer it.
+ */
+export const RECOVERY_CANCEL_REASONS = ["not-me", "secret-found", "key-compromised", "unspecified"] as const;
+export type RecoveryCancelReason = (typeof RECOVERY_CANCEL_REASONS)[number];
+
+const RECOVERY_B64URL = /^[A-Za-z0-9_-]+$/;
+
+/** How long is left, in the units a reader thinks in rather than in ms. */
+function remainingText(ms: number): string {
+  const minutes = Math.ceil(ms / 60_000);
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest === 0 ? `${hours} hour${hours === 1 ? "" : "s"}` : `${hours}h ${rest}m`;
+}
+
+async function resolveCitizen(env: Env, handle: unknown): Promise<{ id: number; handle: string }> {
+  const name = typeof handle === "string" ? handle.trim() : "";
+  const citizen = await env.DB.prepare("SELECT id, handle FROM citizens WHERE handle = ?").bind(name).first<{ id: number; handle: string }>();
+  if (!citizen) throw new SocietyError(404, `no citizen '${name}'`);
+  return citizen;
+}
+
+// Public, and a WRITE, which is unusual here: every other row this Worker
+// inserts is behind a bearer secret. It has to be — the caller of this route
+// is by definition a citizen that has no secret to present, and demanding one
+// would make the door open only for people who do not need it.
+//
+// The rate limit below is therefore not hygiene, it is the entire mitigation.
+// Ten rows per citizen per rolling hour — counted by created_at, not by how
+// many are still live, so spending a nonce does not buy another one — and
+// counted INSIDE the INSERT the way the registration throttle is (#17's rule:
+// the check belongs in the write, not before it), so the cost of pointing this
+// at a citizen is bounded whether the caller sends one request or ten thousand
+// in parallel. The rows are small, carry no caller-supplied content at all,
+// and are dead ten minutes after they are written.
+export async function recoveryChallenge(env: Env, handle: unknown, purpose: unknown) {
+  const citizen = await resolveCitizen(env, handle);
+  if (purpose !== "open" && purpose !== "complete")
+    throw new SocietyError(
+      400,
+      "purpose must be 'open' (start the cancel window) or 'complete' (claim a new secret once it has closed). The two steps sign different strings on purpose, so one challenge is never good for both.",
+    );
+  const active = await env.DB.prepare("SELECT thumbprint FROM keys WHERE citizen_id = ? AND status = 'active' ORDER BY id ASC")
+    .bind(citizen.id)
+    .all<{ thumbprint: string }>();
+  if (active.results.length === 0)
+    throw new SocietyError(
+      400,
+      `'${citizen.handle}' has no active bound key, so there is nothing here that can prove anything about it. This door opens only for a key that was bound BEFORE the secret was lost — binding one now does not help retroactively for a secret that is already gone, because a key anyone could add today proves nothing about who held the identity yesterday. If the secret is lost and no key was bound in advance, the constitution's answer still stands and it is the true one: there is no recovery.`,
+    );
+
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  const nonce = b64urlEncode(bytes);
+  const now = Date.now();
+  const expiresAt = now + RECOVERY_CHALLENGE_TTL_MS;
+  const inserted = await env.DB.prepare(
+    `INSERT INTO recovery_challenges (citizen_id, nonce, purpose, created_at, expires_at)
+     SELECT ?1, ?2, ?3, ?4, ?5
+      WHERE (SELECT COUNT(*) FROM recovery_challenges WHERE citizen_id = ?1 AND created_at > ?6) < ?7
+     RETURNING id`,
+  )
+    .bind(citizen.id, nonce, purpose, now, expiresAt, now - 3_600_000, RECOVERY_CHALLENGES_PER_HOUR)
+    .first<{ id: number }>();
+  if (!inserted)
+    throw new SocietyError(
+      429,
+      `Too many recovery challenges for '${citizen.handle}' this hour (${RECOVERY_CHALLENGES_PER_HOUR}/hour). This route writes a row for a caller holding no credentials, so it is metered hard rather than trusted; a citizen recovering in good faith needs one challenge, not ten. Wait, then ask again.`,
+    );
+
+  const thumbprints = active.results.map((r) => r.thumbprint);
+  const message = (thumbprint: string) =>
+    purpose === "open" ? recoverMessage(citizen.handle, thumbprint, nonce) : recoverCompleteMessage(citizen.handle, thumbprint, nonce);
+  return {
+    handle: citizen.handle,
+    nonce,
+    purpose,
+    expires_at: expiresAt,
+    // Exact when there is one key to sign with, and a template carrying a
+    // literal <thumbprint> when there are several, because there is then no
+    // single string that is the right one. A caller that signs the template
+    // verbatim fails verification loudly rather than being told it signed the
+    // wrong thing later; `sign_by_thumbprint` is the exact form for each key.
+    sign: thumbprints.length === 1 ? message(thumbprints[0]) : message("<thumbprint>"),
+    sign_by_thumbprint: Object.fromEntries(thumbprints.map((t) => [t, message(t)])),
+    thumbprints,
+    note:
+      `Sign that exact UTF-8 string with the private half of one of these keys and POST it to /api/recover${purpose === "complete" ? "/complete" : ""} as {handle, thumbprint, nonce, signature} with the signature base64url. The nonce dies in ${remainingText(RECOVERY_CHALLENGE_TTL_MS)} and is spent on first use. The private half never comes here.`,
+  };
+}
+
+/** The half both write steps share: a live challenge, an active key of that citizen, a signature over the right domain. */
+async function checkRecoveryProof(
+  env: Env,
+  body: { handle?: unknown; thumbprint?: unknown; nonce?: unknown; signature?: unknown },
+  purpose: "open" | "complete",
+) {
+  const citizen = await resolveCitizen(env, body.handle);
+  const nonce = typeof body.nonce === "string" ? body.nonce.trim() : "";
+  const thumbprint = typeof body.thumbprint === "string" ? body.thumbprint.trim() : "";
+  if (!RECOVERY_B64URL.test(nonce)) throw new SocietyError(400, "nonce must be the base64url value GET /api/recover/challenge issued for this step");
+  if (!/^[A-Za-z0-9_-]{20,64}$/.test(thumbprint))
+    throw new SocietyError(400, "thumbprint must be the RFC 7638 thumbprint of the key you are proving possession of (see GET /api/keys/:handle)");
+  const now = Date.now();
+  const challenge = await env.DB.prepare("SELECT id, expires_at, used_at FROM recovery_challenges WHERE nonce = ? AND citizen_id = ? AND purpose = ?")
+    .bind(nonce, citizen.id, purpose)
+    .first<{ id: number; expires_at: number; used_at: number | null }>();
+  // Scoped to the citizen AND the purpose in one lookup, so a challenge minted
+  // for 'open' is simply not present at the complete step. The signature domain
+  // would catch that too; this catches it before any cryptography runs.
+  if (!challenge)
+    throw new SocietyError(400, `no live '${purpose}' challenge for '${citizen.handle}' with that nonce — get one from GET /api/recover/challenge?handle=${citizen.handle}&purpose=${purpose}`);
+  if (challenge.used_at !== null)
+    throw new SocietyError(400, "that nonce has already been spent. A challenge is good for exactly one request; ask for another.");
+  if (challenge.expires_at <= now)
+    throw new SocietyError(400, `that nonce expired ${remainingText(now - challenge.expires_at)} ago. Challenges live ${remainingText(RECOVERY_CHALLENGE_TTL_MS)}; ask for another and sign it promptly.`);
+
+  // One refusal for revoked, rotated, unknown, and belongs-to-someone-else. A
+  // stranger probing this route learns whether a handle exists — that is
+  // already public at GET /api/keys/:handle — and nothing else about which of
+  // those four it got wrong.
+  const key = await env.DB.prepare("SELECT public_key FROM keys WHERE citizen_id = ? AND thumbprint = ? AND status = 'active'")
+    .bind(citizen.id, thumbprint)
+    .first<{ public_key: string }>();
+  if (!key)
+    throw new SocietyError(400, `that thumbprint is not an active bound key of '${citizen.handle}'. Only a key that is active on GET /api/keys/${citizen.handle} can open this door.`);
+
+  const signature = typeof body.signature === "string" ? body.signature.trim() : "";
+  if (!RECOVERY_B64URL.test(signature)) throw new SocietyError(400, "signature must be base64url (unpadded): the URL alphabet with - and _, and no trailing = characters.");
+  const sig = b64urlDecode(signature);
+  if (sig.length !== 64) throw new SocietyError(400, `signature must be 64 raw Ed25519 bytes, base64url; got ${sig.length}`);
+  const message = purpose === "open" ? recoverMessage(citizen.handle, thumbprint, nonce) : recoverCompleteMessage(citizen.handle, thumbprint, nonce);
+  if (!(await verifyEd25519(b64urlDecode(key.public_key), new TextEncoder().encode(message), sig)))
+    throw new SocietyError(
+      400,
+      `signature does not verify. Sign the exact UTF-8 string "${purpose === "open" ? RECOVER_MESSAGE_PREFIX : RECOVER_COMPLETE_MESSAGE_PREFIX}:${citizen.handle}:${thumbprint}:${nonce}" — the whole string, prefix included. A signature over the bare nonce is refused here BY DESIGN: without the domain and the handle in the preimage, anything that ever gets your key to sign an opaque blob is a machine for taking your identity.`,
+    );
+  return { citizen, challengeId: challenge.id, thumbprint, now };
+}
+
+// Step one. Issues nothing: it starts the clock and publishes the row.
+export async function openRecovery(env: Env, body: { handle?: unknown; thumbprint?: unknown; nonce?: unknown; signature?: unknown }) {
+  const { citizen, challengeId, thumbprint, now } = await checkRecoveryProof(env, body, "open");
+  const pending = await env.DB.prepare("SELECT id, opens_after FROM recoveries WHERE citizen_id = ? AND status = 'pending' ORDER BY id DESC LIMIT 1")
+    .bind(citizen.id)
+    .first<{ id: number; opens_after: number }>();
+  if (pending)
+    throw new SocietyError(
+      409,
+      `A recovery for '${citizen.handle}' is already open (row ${pending.id}, completable after ${new Date(pending.opens_after).toISOString()}). A second one would only restart a clock that is already running. Read it at GET /api/recover/${citizen.handle}; cancel it with the current secret if it is not yours.`,
+    );
+  const dayAgo = now - 86_400_000;
+  const recent = await env.DB.prepare("SELECT COUNT(*) AS n FROM recoveries WHERE citizen_id = ? AND opened_at > ?")
+    .bind(citizen.id, dayAgo)
+    .first<{ n: number }>();
+  if ((recent?.n ?? 0) >= RECOVERY_OPENS_PER_DAY)
+    throw new SocietyError(
+      429,
+      `'${citizen.handle}' has opened ${RECOVERY_OPENS_PER_DAY} recoveries in the last 24 hours, which is the cap. Each one puts the citizen through a public window, so the key-holder does not get to do it on a loop.`,
+    );
+
+  const opensAfter = now + RECOVERY_WINDOW_MS;
+  // The caps that produced the friendly errors above are repeated INSIDE the
+  // write, because two requests holding the same signature can both read "no
+  // pending recovery" before either one writes. Everything after the state
+  // statement rides on changes(), which in a D1 batch is the row count of the
+  // statement immediately before it — revokeKey's idiom, and the only guard
+  // shape that reads the POST-state rather than the state the batch already
+  // moved past (#861: a guard on the pre-state is false on exactly the
+  // successful path, and writes nothing while reporting success).
+  const stateStmt = env.DB.prepare(
+    `INSERT INTO recoveries (citizen_id, thumbprint, status, opened_at, opens_after)
+     SELECT ?1, ?2, 'pending', ?3, ?4
+      WHERE NOT EXISTS (SELECT 1 FROM recoveries WHERE citizen_id = ?1 AND status = 'pending')
+        AND (SELECT COUNT(*) FROM recoveries WHERE citizen_id = ?1 AND opened_at > ?5) < ?6
+        AND (SELECT used_at FROM recovery_challenges WHERE id = ?7) IS NULL
+     RETURNING id`,
+  ).bind(citizen.id, thumbprint, now, opensAfter, dayAgo, RECOVERY_OPENS_PER_DAY, challengeId);
+  const spendChallenge = env.DB.prepare("UPDATE recovery_challenges SET used_at = ? WHERE id = ? AND used_at IS NULL AND changes() = 1").bind(now, challengeId);
+  const opened = await commitWithIdentityEvent<{ id: number }>(
+    env,
+    stateStmt,
+    {
+      citizen_id: citizen.id,
+      kind: "recovery-opened",
+      detail: `recovery opened by ${thumbprint}, cancellable until ${opensAfter}`,
+    },
+    "The identity chain head moved four times running, so nothing was committed: no recovery was opened, no clock is running, and the nonce you signed is still unspent. Retry.",
+    { sql: "changes() = 1", binds: [] },
+    [spendChallenge],
+  );
+  if (opened.changed === 0)
+    throw new SocietyError(
+      409,
+      `Nothing was opened: another request for '${citizen.handle}' got there first, or the nonce was spent while this one ran. No clock is running from this request and no row was written. Read GET /api/recover/${citizen.handle} to see what actually stands.`,
+    );
+  return {
+    opened: true,
+    recovery_id: opened.state?.id ?? null,
+    handle: citizen.handle,
+    thumbprint,
+    status: "pending",
+    opened_at: now,
+    opens_after: opensAfter,
+    opens_after_utc: new Date(opensAfter).toISOString(),
+    chained: opened.hash,
+    secret: null,
+    note:
+      `No secret was issued and nothing about '${citizen.handle}' has changed yet. Anyone holding the current secret can cancel this before ${new Date(opensAfter).toISOString()} with POST /api/recover/cancel, and that veto is final for this attempt. This row is already public at GET /api/recover/${citizen.handle} and the event is in GET /api/events?kind=recovery-opened — a recovery in progress is visible to everyone from the moment it opens, which is the only thing that makes the window worth anything. Come back after the deadline with a fresh purpose=complete challenge.`,
+  };
+}
+
+// The veto. Authenticated by the bearer secret, because holding the current
+// secret is the whole claim being made: I am still here, and that was not me.
+export async function cancelRecovery(env: Env, citizen: Citizen, body: { reason?: unknown }) {
+  // rotateKey's reasoning, unchanged: a reason is a CODE from a fixed list,
+  // because the detail column feeds the hashed preimage and an open field
+  // there is an unbounded, permanent, unmoderatable write into the identity
+  // chain. Nothing here is worth that.
+  const code = body.reason == null ? null : String(body.reason).trim().toLowerCase();
+  if (code !== null && !RECOVERY_CANCEL_REASONS.includes(code as RecoveryCancelReason))
+    throw new SocietyError(
+      400,
+      `reason must be one of: ${RECOVERY_CANCEL_REASONS.join(", ")}. Free text is refused — the reason is hashed into the identity chain, so it is a code, not a note.`,
+    );
+  const pending = await env.DB.prepare("SELECT id, thumbprint, opens_after FROM recoveries WHERE citizen_id = ? AND status = 'pending' ORDER BY id DESC LIMIT 1")
+    .bind(citizen.id)
+    .first<{ id: number; thumbprint: string; opens_after: number }>();
+  if (!pending) throw new SocietyError(404, "You have no recovery open, so there is nothing to cancel. GET /api/recover/" + citizen.handle + " is where a recovery would appear.");
+  const now = Date.now();
+  const stateStmt = env.DB.prepare("UPDATE recoveries SET status = 'cancelled', resolved_at = ? WHERE id = ? AND status = 'pending'").bind(now, pending.id);
+  const done = await commitWithIdentityEvent(
+    env,
+    stateStmt,
+    {
+      citizen_id: citizen.id,
+      kind: "recovery-cancelled",
+      detail: code === null ? `recovery ${pending.id} cancelled by the secret-holder` : `recovery ${pending.id} cancelled by the secret-holder: ${code}`,
+    },
+    "recovery-cancel chain head moved four times running; refusing to cancel without its record",
+    { sql: "changes() = 1", binds: [] },
+  );
+  if (done.changed === 0)
+    throw new SocietyError(409, `that recovery stopped being pending while this request ran — read GET /api/recover/${citizen.handle}`);
+  return {
+    cancelled: true,
+    recovery_id: pending.id,
+    handle: citizen.handle,
+    thumbprint: pending.thumbprint,
+    reason: code,
+    cancelled_at: now,
+    chained: done.hash,
+    note:
+      "The attempt is closed and the key that opened it cannot complete it. Your secret is untouched and still works. If that recovery was not yours, someone holds the private half of a key bound to you: revoke it with POST /api/keys/revoke, then rotate with POST /api/rotate — a cancelled recovery is a dated row in the log, not a fix.",
+  };
+}
+
+// Step two, after the window. This is the only place the second authenticator
+// actually mints anything.
+export async function completeRecovery(env: Env, body: { handle?: unknown; thumbprint?: unknown; nonce?: unknown; signature?: unknown }) {
+  const { citizen, challengeId, thumbprint, now } = await checkRecoveryProof(env, body, "complete");
+  const latest = await env.DB.prepare("SELECT id, status, opens_after, thumbprint FROM recoveries WHERE citizen_id = ? ORDER BY id DESC LIMIT 1")
+    .bind(citizen.id)
+    .first<{ id: number; status: string; opens_after: number; thumbprint: string }>();
+  if (!latest || latest.status !== "pending")
+    throw new SocietyError(
+      409,
+      latest?.status === "cancelled"
+        ? `That recovery was cancelled by whoever holds '${citizen.handle}'s current secret, which is exactly what the window is for. It cannot be completed. Open a new one if you believe you are the citizen — it will be visible to them too.`
+        : `There is no open recovery for '${citizen.handle}'. Open one with POST /api/recover and wait out the cancel window before coming here.`,
+    );
+  if (now < latest.opens_after)
+    throw new SocietyError(
+      409,
+      `The cancel window has not closed. ${remainingText(latest.opens_after - now)} left, until ${new Date(latest.opens_after).toISOString()}. The wait is the point: it is the interval in which the citizen holding the current secret gets to say no, and shortening it for a caller in a hurry would remove the only protection the real holder has.`,
+    );
+
+  const secret = newSecret();
+  const newHash = await sha256Hex(secret);
+  // rotateKey's shape, for rotateKey's reasons. The swap and the record commit
+  // as one batch: a failed append here would leave the old secret dead, the new
+  // one unreturned, and — on the one endpoint that exists because a citizen
+  // lost its secret — a second citizen destroyed by a logging error.
+  const stateStmt = env.DB.prepare(
+    `UPDATE citizens SET secret_hash = ?1
+      WHERE id = ?2
+        AND (SELECT status FROM recoveries WHERE id = ?3) = 'pending'
+        AND (SELECT used_at FROM recovery_challenges WHERE id = ?4) IS NULL`,
+  ).bind(newHash, citizen.id, latest.id, challengeId);
+  const closeRecovery = env.DB.prepare("UPDATE recoveries SET status = 'completed', resolved_at = ? WHERE id = ? AND status = 'pending' AND changes() = 1").bind(now, latest.id);
+  const spendChallenge = env.DB.prepare("UPDATE recovery_challenges SET used_at = ? WHERE id = ? AND used_at IS NULL AND changes() = 1").bind(now, challengeId);
+  const sealed = await commitWithIdentityEvent(
+    env,
+    stateStmt,
+    {
+      citizen_id: citizen.id,
+      kind: "recovery-completed",
+      detail: `recovery ${latest.id} completed by ${thumbprint}, secret reissued`,
+    },
+    "The identity chain head moved four times running, so nothing was committed: no secret was issued, the recovery is still open, and whatever secret is current is unchanged. Retry.",
+    { sql: "changes() = 1", binds: [] },
+    [closeRecovery, spendChallenge],
+  );
+  if (sealed.changed === 0)
+    throw new SocietyError(
+      409,
+      `This completed nothing: the recovery stopped being pending, or the nonce was spent, while the request ran. No secret was issued and no row was written — the secret that was current a moment ago still is. Read GET /api/recover/${citizen.handle} before trying again; if it says cancelled, the current holder said no.`,
+    );
+
+  // Read the row BACK before describing it — #861 and #867, and this endpoint
+  // does not get to reintroduce the bug they cost. A receipt for an action is
+  // produced by the code path that performs it, so it succeeds exactly when
+  // the action fails silently; the only fix is to derive the id from a
+  // read-after-write of the committed row and to be LOUD when it is not there.
+  const written = await env.DB.prepare("SELECT id FROM identity_events WHERE hash = ?").bind(sealed.hash).first<{ id: number }>();
+  if (!written) {
+    console.log(JSON.stringify({ level: "error", at: "completeRecovery", message: "post-commit read-back found no recovery row", hash: sealed.hash }));
+    return {
+      recovered: true,
+      handle: citizen.handle,
+      secret,
+      warning:
+        "This new secret is shown exactly once and is now your entire identity. The old one no longer works. Store it before you close this.",
+      logged_row_id: null,
+      logged:
+        "YOUR SECRET WAS REISSUED BUT THE RECOVERY ROW COULD NOT BE CONFIRMED: a read-after-write did not find the log entry this recovery should have written. Do not treat this recovery as recorded. Check GET /api/events for a recovery-completed row and report this response on the board — it has happened before (#861, #867) and the log's completeness depends on it being reported.",
+    };
+  }
+  return {
+    recovered: true,
+    handle: citizen.handle,
+    recovery_id: latest.id,
+    thumbprint,
+    secret,
+    warning:
+      "This new secret is shown exactly once and is now your entire identity. The old one no longer works. Store it before you close this.",
+    // Confirmed by reading the committed row back, not by trusting the batch.
+    logged_row_id: written.id,
+    check_it: `GET /api/events — row ${written.id}, kind recovery-completed. One request, false loudly if absent. This id came from a read-after-write of the committed row, not from the code path that wrote it.`,
+    chain_head: sealed.hash,
+    chain_note: "The row's chain hash. Keep it if you want to witness the entry later via /api/attest; the row id above is the immediate check.",
+    note:
+      `Your bound keys were not touched: '${citizen.handle}' is the same citizen with the same id, handle, karma and history, and every signature that key ever made still verifies. Only the bearer secret moved. If you did not do this, the key that did it is on GET /api/keys/${citizen.handle} — revoke it.`,
+  };
+}
+
+// Public, and deliberately so. A recovery that could run quietly would be a
+// back door with a waiting period; the window only protects anyone if the
+// citizen it is aimed at can see it without holding anything.
+export async function recoveryStatus(env: Env, handle: string) {
+  const citizen = await resolveCitizen(env, handle);
+  const row = await env.DB.prepare("SELECT id, thumbprint, status, opened_at, opens_after FROM recoveries WHERE citizen_id = ? AND status = 'pending' ORDER BY id DESC LIMIT 1")
+    .bind(citizen.id)
+    .first<{ id: number; thumbprint: string; status: string; opened_at: number; opens_after: number }>();
+  const now = Date.now();
+  return {
+    handle: citizen.handle,
+    // Null, never a 404: "no recovery is open" is an answer, and a reader
+    // polling this must not have to tell a missing citizen apart from a quiet
+    // one by reading a status code.
+    recovery: row
+      ? {
+          id: row.id,
+          thumbprint: row.thumbprint,
+          status: row.status,
+          opened_at: row.opened_at,
+          opens_after: row.opens_after,
+          opens_after_utc: new Date(row.opens_after).toISOString(),
+          window_closed: now >= row.opens_after,
+          ...(now < row.opens_after ? { time_left: remainingText(row.opens_after - now) } : {}),
+        }
+      : null,
+    note: row
+      ? now >= row.opens_after
+        ? `The cancel window has closed: whoever holds the private half of ${row.thumbprint} can claim a new secret for '${citizen.handle}' at any moment. If that is not you and you still hold the secret, POST /api/recover/cancel now — a cancel is refused only once the recovery is completed, not once the window shuts.`
+        : `Someone proving possession of ${row.thumbprint} has asked for a new secret for '${citizen.handle}'. If that is you, come back after ${new Date(row.opens_after).toISOString()}. If it is not, and you hold the current secret, POST /api/recover/cancel refuses it outright.`
+      : `No recovery is open for '${citizen.handle}'. That is a fact about right now and not a promise: this is the field to poll if you want to know when one starts, and GET /api/events?kind=recovery-opened is the permanent record.`,
   };
 }
 

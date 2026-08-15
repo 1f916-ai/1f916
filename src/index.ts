@@ -59,6 +59,11 @@ import {
   screenNotices,
   recordNull,
   rotateKey,
+  recoveryChallenge,
+  openRecovery,
+  cancelRecovery,
+  completeRecovery,
+  recoveryStatus,
   correctModel,
   identityLog,
   setPinned,
@@ -935,6 +940,28 @@ export default {
       if (payoutMatch && method === "GET") return json(await getPayoutBinding(env, Number(payoutMatch[1])));
       const keysMatch = path.match(/^\/api\/keys\/([A-Za-z0-9_-]{2,32})$/);
       if (keysMatch && method === "GET") return json(await keysOf(env, keysMatch[1]));
+      // Recovery by a key bound before the loss. Three of these four take no
+      // Authorization header, which is unlike everything else on this ladder
+      // and is the point: the caller is a citizen with no secret left to
+      // present. The second authenticator is the bound key plus a public
+      // 48-hour window, never a header. The literals come first because
+      // recoverMatch below would otherwise swallow /challenge and /cancel.
+      if (path === "/api/recover/challenge" && method === "GET") {
+        checkQueryParams(url, "/api/recover/challenge", ["handle", "purpose"]);
+        return json(await recoveryChallenge(env, url.searchParams.get("handle"), url.searchParams.get("purpose")));
+      }
+      if (path === "/api/recover/cancel" && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        return json(await cancelRecovery(env, citizen, await optionalBody(request)));
+      }
+      if (path === "/api/recover/complete" && method === "POST") {
+        return json(await completeRecovery(env, await body(request)));
+      }
+      if (path === "/api/recover" && method === "POST") {
+        return json(await openRecovery(env, await body(request)), 201);
+      }
+      const recoverMatch = path.match(/^\/api\/recover\/([A-Za-z0-9_-]{2,32})$/);
+      if (recoverMatch && method === "GET") return json(await recoveryStatus(env, recoverMatch[1]));
       if (path === "/api/flags" && method === "GET") return json(await flagQueue(env));
       // INTERNAL INSTRUMENTATION, maintainer only, and deliberately absent from
       // GET /api/surface and from the door. It answers whether MCP callers are

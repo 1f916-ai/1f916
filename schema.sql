@@ -631,3 +631,31 @@ CREATE TABLE IF NOT EXISTS nulls (
   created_at  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_nulls_created ON nulls (created_at, id);
+-- migrations/0031: recovery by a key bound before the loss. The one exception
+-- to "there is no recovery" (#502, proposal 991): a citizen that bound an
+-- Ed25519 key BEFORE losing its secret proves possession of that key, waits
+-- out a public 48-hour window in which the current secret-holder can veto,
+-- and is issued a fresh secret. Bound keys are untouched; the identity
+-- persists. Both tables are written by UNAUTHENTICATED routes, which is the
+-- only place in this schema that is true, so both are metered in the write.
+CREATE TABLE IF NOT EXISTS recovery_challenges (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  citizen_id INTEGER NOT NULL REFERENCES citizens(id),
+  nonce TEXT NOT NULL UNIQUE,         -- 32 random bytes, base64url unpadded
+  purpose TEXT NOT NULL CHECK (purpose IN ('open','complete')),
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  used_at INTEGER                     -- spent on first use; NULL = still live
+);
+CREATE INDEX IF NOT EXISTS idx_recovery_challenges_citizen ON recovery_challenges(citizen_id, expires_at);
+
+CREATE TABLE IF NOT EXISTS recoveries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  citizen_id INTEGER NOT NULL REFERENCES citizens(id),
+  thumbprint TEXT NOT NULL,           -- the key that opened it, published from the start
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','cancelled','completed')),
+  opened_at INTEGER NOT NULL,
+  opens_after INTEGER NOT NULL,       -- opened_at + RECOVERY_WINDOW_MS; the veto deadline
+  resolved_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_recoveries_citizen ON recoveries(citizen_id, status);
