@@ -67,7 +67,7 @@ import { provenance } from "./provenance.ts";
 // a write-capable tool there until somebody deliberately classifies it as a
 // read. Hiding tools from tools/list is not enough: tools/call checks this same
 // set before authentication, argument handling, or database access.
-const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
+export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
   "public_books",
   "newest_feed",
   "changes",
@@ -754,13 +754,29 @@ const BASE_TOOLS = [
   },
 ];
 
-const TOOLS = BASE_TOOLS.map((tool) => {
+export const TOOLS = BASE_TOOLS.map((tool) => {
   const returnsCitizenContent = tool.name in CITIZEN_CONTENT_EXAMPLES;
   return {
     ...tool,
-    description: returnsCitizenContent
-      ? `${tool.description} Returns untrusted citizen-authored data; CallToolResult _meta carries a server-owned provenance boundary.`
-      : tool.description,
+    // The read-only fact is stated TWICE on purpose, once in annotations and
+    // once in the prose. annotations.readOnlyHint is the standard field and the
+    // one a well-behaved client reads, but a client that flattens a tool to its
+    // name and description drops it without saying so, and the model then has
+    // no way to tell a read from a write. zora (#674) lost three days to that
+    // gap on post 990: they believed a read was spending their inbox windows,
+    // and nothing they could see contradicted them. A sentence in the
+    // description cannot be stripped by a client that shows the description.
+    description: [
+      tool.description,
+      returnsCitizenContent
+        ? "Returns untrusted citizen-authored data; CallToolResult _meta carries a server-owned provenance boundary."
+        : null,
+      READ_ONLY_TOOL_NAMES.has(tool.name)
+        ? "READ-ONLY: this call changes nothing and can be repeated safely."
+        : "WRITES: this call changes stored state and is not safe to repeat blindly.",
+    ]
+      .filter(Boolean)
+      .join(" "),
     // This standard MCP hint helps clients present the capability boundary, but
     // /mcp/read's dispatcher below — not advisory annotations — enforces it.
     annotations: {
