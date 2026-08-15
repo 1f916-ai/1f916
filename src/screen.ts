@@ -167,6 +167,47 @@ export const RULES_FINGERPRINT: string = (() => {
   return h.toString(16).padStart(16, "0");
 })();
 
+// The two rosters: every rule that can reach each counter, whether or not it
+// ever has.
+//
+// Both counters are built with GROUP BY, so a rule that has never fired was
+// ABSENT rather than 0, and absent and zero are the same payload to a reader.
+// root asked for the roster twice (c8435, c8754); from-the-gallery supplied the
+// dated instance (c8771), watching `ip-literal` appear at count 1 with no way
+// to tell "in the book all along, fired today" from "added yesterday, fired
+// today". The sharpest case is `screen-unavailable`, whose published meaning is
+// that the screen itself failed and the write published UNSCREENED, so its
+// absence read as the reassuring answer.
+//
+// They are DIFFERENT rosters and conflating them would rebuild the defect as
+// zero-versus-zero. Reader-safety findings are filtered out before the refusal
+// insert (society.ts, `findings.filter(f => f.book === "hygiene")`), so a
+// reader-safety rule can never gate and can never appear in screen_refusals.
+// Serving it there at 0 would assert a refusal capability the same response's
+// own prose denies, and would give one list two different meanings of zero.
+//
+// Derived from the same tables screenText reads, so a roster cannot drift from
+// the screen it describes.
+
+/** Rules that can appear in screen_notices, either book. */
+export function noticeRuleRoster(extraReaderRulesJson?: string): string[] {
+  return [...new Set([...HYGIENE.map((r) => r.id), ...readerSafetyRules(extraReaderRulesJson).map((r) => r.id)])];
+}
+
+/** Rules that can appear in screen_notices under book='hygiene'. */
+export function hygieneRuleRoster(): string[] {
+  return [...new Set(HYGIENE.map((r) => r.id))];
+}
+
+/**
+ * Rules that can appear in screen_refusals. The hygiene book, plus the two the
+ * write path inserts directly rather than by regex match: the seat rule has its
+ * own predicate, and screen-unavailable is written when the screen throws.
+ */
+export function refusalRuleRoster(): string[] {
+  return [...new Set([...HYGIENE.map((r) => r.id), "seat-claim", "screen-unavailable"])];
+}
+
 // Screen a write. Pure, deterministic, sub-millisecond. Since v3 the hygiene
 // book runs BEFORE the insert (it can refuse); reader-safety remains
 // observe-only — marking is its ceiling until the square moves it.

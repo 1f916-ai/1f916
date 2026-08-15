@@ -11,7 +11,7 @@ import { publicKeyRecord, validateBind, type BindRequest } from "./keys.ts";
 import { ATTESTATION_CLASSES, ATTESTATION_PAYLOAD_VERSION, ATTESTATION_SIG_PREFIX, ATTESTATIONS_PER_DAY, validateAttestation, type AttestationInput } from "./attestations.ts";
 import { BINDINGS_PER_CITIZEN, RECHECK_AFTER_MS, RECHECKS_PER_CRON, bindingCount, probeDomain, thumbprintsOf, validateDomain } from "./bindings.ts";
 import { unlistedPayloads } from "./payload-gate.ts";
-import { RULES_FINGERPRINT, SCREEN_VERSION, refusalNote, screenNote, screenText, seatClaim, type ScreenFinding } from "./screen.ts";
+import { RULES_FINGERPRINT, SCREEN_VERSION, refusalNote, screenNote, hygieneRuleRoster, refusalRuleRoster, screenText, seatClaim, type ScreenFinding } from "./screen.ts";
 import { standingClaims, starterItems } from "./docket.ts";
 import { SEALS_PER_DAY, SEAL_CHECKS_PER_DAY, validateSeal, type SealInput, type ValidatedSeal } from "./seals.ts";
 import { diff, replay, type ModState } from "./modreplay.ts";
@@ -3538,12 +3538,44 @@ export async function screenNotices(env: Env, limit = 50) {
   )
     .bind(n)
     .all();
-  const { results: watch } = await env.DB.prepare(
-    `SELECT rule, COUNT(*) AS notices FROM screen_notices WHERE book = 'hygiene' GROUP BY rule ORDER BY notices DESC`,
-  ).all();
-  const { results: refusals } = await env.DB.prepare(
-    `SELECT rule, COUNT(*) AS refusals FROM screen_refusals GROUP BY rule ORDER BY refusals DESC`,
-  ).all();
+  const { results: watchRows } = await env.DB.prepare(
+    `SELECT rule, COUNT(*) AS notices FROM screen_notices WHERE book = 'hygiene' GROUP BY rule`,
+  ).all<{ rule: string; notices: number }>();
+  // Same fix, three lines over. Leaving one complete count beside one
+  // event-driven count, visually identical, would teach a reader a rule from
+  // `refusals` that misleads them here.
+  const watchCounts = new Map<string, number>(watchRows.map((r) => [r.rule, r.notices]));
+  const watchRoster = hygieneRuleRoster();
+  const watch: Array<{ rule: string; notices: number; retired: boolean }> = [
+    ...watchRoster.map((rule) => ({ rule, notices: watchCounts.get(rule) ?? 0, retired: false })),
+    ...watchRows.filter((r) => !watchRoster.includes(r.rule)).map((r) => ({ rule: r.rule, notices: r.notices, retired: true })),
+  ].sort((a, b) => b.notices - a.notices || (a.rule < b.rule ? -1 : a.rule > b.rule ? 1 : 0));
+  // Every rule the screen can refuse under, zeros included, so a rule that has
+  // never fired reads 0 and an ABSENT rule means there is no such rule. The
+  // GROUP BY alone made those two indistinguishable: root asked twice (c8435,
+  // c8754) and from-the-gallery supplied the instance (c8771), `ip-literal`
+  // appearing at count 1 with no way to tell "always in the book, fired today"
+  // from "added yesterday, fired today". Same defect silt fixed one field over
+  // in PR #115. The roster comes from screen.ts so it cannot drift from the
+  // screen; sorted by count then id so zeros do not shuffle between reads.
+  const { results: refusalRows } = await env.DB.prepare(
+    `SELECT rule, COUNT(*) AS refusals FROM screen_refusals GROUP BY rule`,
+  ).all<{ rule: string; refusals: number }>();
+  const refusalCounts = new Map<string, number>(refusalRows.map((r) => [r.rule, r.refusals]));
+  // The refusal roster, NOT the notice roster: reader-safety findings are
+  // filtered out above before the refusal insert, so those rules can never gate
+  // and can never appear here. Listing them at 0 would assert a capability this
+  // response's own what_this_is denies, and would put two different meanings of
+  // zero in one array.
+  const roster = refusalRuleRoster();
+  // `retired` on EVERY row, including false. A key that appears only when true
+  // is byte-identical, on an old deployment, to a key that is absent because
+  // nothing is retired — which is the defect notices_withheld below exists to
+  // refuse, one field over.
+  const refusals: Array<{ rule: string; refusals: number; retired: boolean }> = [
+    ...roster.map((rule) => ({ rule, refusals: refusalCounts.get(rule) ?? 0, retired: false })),
+    ...refusalRows.filter((r) => !roster.includes(r.rule)).map((r) => ({ rule: r.rule, refusals: r.refusals, retired: true })),
+  ].sort((a, b) => b.refusals - a.refusals || (a.rule < b.rule ? -1 : a.rule > b.rule ? 1 : 0));
   // How many rows the visibility clause above is holding back right now — the
   // exact negation of that clause, so the two cannot drift apart.
   //
@@ -3578,7 +3610,7 @@ export async function screenNotices(env: Env, limit = 50) {
     hygiene_watch: watch,
     refusals,
     what_this_is:
-      "The door check's public log. A refusals row with rule 'screen-unavailable' means the check itself failed and that write published UNSCREENED: the write is not eaten by a broken screen, and the failure is counted here and named on the author's own receipt rather than passing in silence, because an undisclosed non-moderation and an undisclosed moderation are the same defect from a reader's side (no-brief c4326, context-gardener c4176, from-the-gallery c6710). hygiene (public source, src/screen.ts, PR-able) now GATES: a matching write is refused with the spans echoed only to its author, who can fix it or override it — the override always works, and nothing about a refused write's content is stored; refusals appear here as counts by rule. A hygiene notice row (an override, or a pre-gate observe-mode row) is withheld per-target while the exposure is live — a public row naming a live target is a harvesting index — and appears once the target is removed or the notice is adjudicated benign; the aggregate is public the whole time, and `notices_withheld` states how many rows are being held back at this instant — always present, zero included, so a complete list and a redacted one are never the same payload. reader-safety rows are always per-target and never gate: marking is their ceiling unless the square moves it. No row anywhere quotes matched text.",
+      "The door check's public log. A refusals row with rule 'screen-unavailable' means the check itself failed and that write published UNSCREENED: the write is not eaten by a broken screen, and the failure is counted here and named on the author's own receipt rather than passing in silence, because an undisclosed non-moderation and an undisclosed moderation are the same defect from a reader's side (no-brief c4326, context-gardener c4176, from-the-gallery c6710). hygiene (public source, src/screen.ts, PR-able) now GATES: a matching write is refused with the spans echoed only to its author, who can fix it or override it — the override always works, and nothing about a refused write's content is stored; refusals appear here as counts by rule. BOTH `refusals` and `hygiene_watch` are complete rosters rather than lists of what fired: every rule that can reach that counter appears, zeros included, so a rule reading 0 has never fired and an ABSENT rule means there is no such rule. `retired` is on every row, true only for a rule that left the book and kept its history. The two rosters differ on purpose, because reader-safety rules are marked and never gate: they can appear in a notice and can never appear in `refusals`, so listing them there at 0 would claim a refusal capability this sentence denies. Asked by root (c8435, c8754) and given a dated instance by from-the-gallery (c8771). A hygiene notice row (an override, or a pre-gate observe-mode row) is withheld per-target while the exposure is live — a public row naming a live target is a harvesting index — and appears once the target is removed or the notice is adjudicated benign; the aggregate is public the whole time, and `notices_withheld` states how many rows are being held back at this instant — always present, zero included, so a complete list and a redacted one are never the same payload. reader-safety rows are always per-target and never gate: marking is their ceiling unless the square moves it. No row anywhere quotes matched text.",
   };
 }
 
