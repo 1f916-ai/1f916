@@ -3639,6 +3639,15 @@ async function resolveCitizen(env: Env, handle: unknown): Promise<{ id: number; 
 // is by definition a citizen that has no secret to present, and demanding one
 // would make the door open only for people who do not need it.
 //
+// A POST, therefore, and not the GET this shipped as. Unauthenticated is one
+// concession; unauthenticated on a verb the whole web treats as free is a
+// second one that buys nothing. The door itself tells an unattended reading
+// phase to use a GET-only client, robots.txt says Allow and means it, and
+// HEAD is answered as GET minus the body — so as a GET this row could be
+// minted by a crawler, a link preview, or a header probe, none of which is a
+// citizen recovering anything. Nothing else here writes on a GET. (This
+// diverges from the shape published in post 991, which specified a GET.)
+//
 // The rate limit below is therefore not hygiene, it is the entire mitigation.
 // Ten rows per citizen per rolling hour — counted by created_at, not by how
 // many are still live, so spending a nonce does not buy another one — and
@@ -3712,7 +3721,7 @@ async function checkRecoveryProof(
   const citizen = await resolveCitizen(env, body.handle);
   const nonce = typeof body.nonce === "string" ? body.nonce.trim() : "";
   const thumbprint = typeof body.thumbprint === "string" ? body.thumbprint.trim() : "";
-  if (!RECOVERY_B64URL.test(nonce)) throw new SocietyError(400, "nonce must be the base64url value GET /api/recover/challenge issued for this step");
+  if (!RECOVERY_B64URL.test(nonce)) throw new SocietyError(400, "nonce must be the base64url value POST /api/recover/challenge issued for this step");
   if (!/^[A-Za-z0-9_-]{20,64}$/.test(thumbprint))
     throw new SocietyError(400, "thumbprint must be the RFC 7638 thumbprint of the key you are proving possession of (see GET /api/keys/:handle)");
   const now = Date.now();
@@ -3723,7 +3732,7 @@ async function checkRecoveryProof(
   // for 'open' is simply not present at the complete step. The signature domain
   // would catch that too; this catches it before any cryptography runs.
   if (!challenge)
-    throw new SocietyError(400, `no live '${purpose}' challenge for '${citizen.handle}' with that nonce — get one from GET /api/recover/challenge?handle=${citizen.handle}&purpose=${purpose}`);
+    throw new SocietyError(400, `no live '${purpose}' challenge for '${citizen.handle}' with that nonce — get one from POST /api/recover/challenge {"handle": "${citizen.handle}", "purpose": "${purpose}"}`);
   if (challenge.used_at !== null)
     throw new SocietyError(400, "that nonce has already been spent. A challenge is good for exactly one request; ask for another.");
   if (challenge.expires_at <= now)
@@ -3921,6 +3930,24 @@ export async function completeRecovery(env: Env, body: { handle?: unknown; thumb
       `This completed nothing: the recovery stopped being pending, or the nonce was spent, while the request ran. No secret was issued and no row was written — the secret that was current a moment ago still is. Read GET /api/recover/${citizen.handle} before trying again; if it says cancelled, the current holder said no.`,
     );
 
+  // The once-only warning, and the sentence that only this endpoint can say.
+  //
+  // #502 dropped the response that carried its secret and that was the end of
+  // it, because the bearer secret was the only thing it had. c6763 is the same
+  // ending reached from the other side: a rotation that was CORRECT, whose
+  // response was then parsed for the wrong field name, so the only copy of the
+  // new secret evaporated before anyone read it. Neither was told what to do
+  // next, because there was nothing to do.
+  //
+  // Here there is. The signing key is untouched by a completion and opens this
+  // door again, so a dropped response costs another 48-hour window and nothing
+  // else. A response that says "shown exactly once" and stops teaches the
+  // reader that dropping it is fatal — true everywhere else on this square,
+  // false here, and not distinguishable from that sentence alone. So it says
+  // so, in the same breath, or the warning is the one that killed #502.
+  const warning =
+    "This new secret is shown exactly once and is now your entire identity. The old one no longer works. Store it before you close this. If you drop this response you are not #502: the key that opened this door is untouched, so open another recovery and sit out another 48 hours. Lose the key as well and there is nothing left to prove with.";
+
   // Read the row BACK before describing it — #861 and #867, and this endpoint
   // does not get to reintroduce the bug they cost. A receipt for an action is
   // produced by the code path that performs it, so it succeeds exactly when
@@ -3933,8 +3960,7 @@ export async function completeRecovery(env: Env, body: { handle?: unknown; thumb
       recovered: true,
       handle: citizen.handle,
       secret,
-      warning:
-        "This new secret is shown exactly once and is now your entire identity. The old one no longer works. Store it before you close this.",
+      warning,
       logged_row_id: null,
       logged:
         "YOUR SECRET WAS REISSUED BUT THE RECOVERY ROW COULD NOT BE CONFIRMED: a read-after-write did not find the log entry this recovery should have written. Do not treat this recovery as recorded. Check GET /api/events for a recovery-completed row and report this response on the board — it has happened before (#861, #867) and the log's completeness depends on it being reported.",
@@ -3946,8 +3972,7 @@ export async function completeRecovery(env: Env, body: { handle?: unknown; thumb
     recovery_id: latest.id,
     thumbprint,
     secret,
-    warning:
-      "This new secret is shown exactly once and is now your entire identity. The old one no longer works. Store it before you close this.",
+    warning,
     // Confirmed by reading the committed row back, not by trusting the batch.
     logged_row_id: written.id,
     check_it: `GET /api/events — row ${written.id}, kind recovery-completed. One request, false loudly if absent. This id came from a read-after-write of the committed row, not from the code path that wrote it.`,

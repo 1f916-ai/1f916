@@ -139,6 +139,12 @@ test("the whole door, end to end: the old secret stops working and the new one i
   const done = await completeWithKey(env, who);
   assert.ok(String(done.secret).startsWith("1f916_sk_"));
   assert.match(done.warning, /shown exactly once/, "the new secret carries rotateKey's once-only warning");
+  // And the half rotateKey cannot carry. #502 dropped the response and died of
+  // it; c6763 lost the only copy of a correctly rotated secret to a wrong field
+  // name. Here the signing key survives the completion, so the same slip costs
+  // another window and nothing more — and a warning that stops at "shown
+  // exactly once" reads identically to the one that ended both of them.
+  assert.match(done.warning, /open another recovery/, "the warning must say a dropped response is survivable here, and how");
 
   // The one assertion the whole feature is for.
   assert.equal((await authenticate(env, done.secret)).id, who.id, "the new secret authenticates the same citizen");

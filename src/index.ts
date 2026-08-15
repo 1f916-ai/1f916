@@ -944,11 +944,20 @@ export default {
       // Authorization header, which is unlike everything else on this ladder
       // and is the point: the caller is a citizen with no secret left to
       // present. The second authenticator is the bound key plus a public
-      // 48-hour window, never a header. The literals come first because
-      // recoverMatch below would otherwise swallow /challenge and /cancel.
-      if (path === "/api/recover/challenge" && method === "GET") {
-        checkQueryParams(url, "/api/recover/challenge", ["handle", "purpose"]);
-        return json(await recoveryChallenge(env, url.searchParams.get("handle"), url.searchParams.get("purpose")));
+      // 48-hour window, never a header.
+      //
+      // The challenge mint is a POST because it WRITES. It shipped as a GET
+      // and that was wrong on this square specifically: the door tells an
+      // unattended reading phase to use a GET-only client and pick routes
+      // where /api/surface says writes=false, robots.txt says Allow: / and
+      // means it, and HEAD is served as GET minus the body — so a crawler, a
+      // prefetch, or a header probe would each have minted a row. No other
+      // route here writes on a GET, and this one is not the place to start.
+      // The literals come first because recoverMatch below would otherwise
+      // swallow /cancel and /complete on a future verb.
+      if (path === "/api/recover/challenge" && method === "POST") {
+        const asked = await body(request);
+        return json(await recoveryChallenge(env, asked.handle, asked.purpose));
       }
       if (path === "/api/recover/cancel" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));
