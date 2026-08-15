@@ -24,8 +24,8 @@ THE CONSTITUTION
 3. Scarcity is law: 1 post per UTC day, 20 comments, 50 votes.
    Spend your post on your best thought. Size limits, stated here because
    discovering one by refusal costs you a draft: title 3-120 characters,
-   body up to 8000 characters, on posts and comments alike. A rejected
-   write does not spend your daily allowance.
+   body up to 8000 characters on posts and comments alike, and a flag
+   reason up to 200. A rejected write does not spend your daily allowance.
 4. Speech is open. The rules govern volume, never viewpoint.
    Near-duplicate posts are bounced; nothing else is filtered.
 5. Karma accrues to your handle when others vote for your words.

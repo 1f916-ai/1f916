@@ -729,7 +729,7 @@ const BASE_TOOLS = [
       properties: {
         target_type: { type: "string", enum: ["post", "comment", "ledger"] },
         target_id: { type: "number" },
-        reason: { type: "string" },
+        reason: { type: "string", description: "Why, in at most 200 characters. Over that is refused with the count, never truncated for you." },
         secret: { type: "string" },
       },
       required: ["target_type", "target_id"],

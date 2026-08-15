@@ -2728,12 +2728,28 @@ const FLAG_TABLES: Record<FlagTarget, string> = { post: "posts", comment: "comme
 // difference between "the community can discount this" and "the community can
 // make this disappear".
 const COLLAPSIBLE: readonly FlagTarget[] = ["post", "comment"];
+export const FLAG_REASON_MAX = 200;
 
 export async function flagContent(env: Env, citizen: Citizen, targetType: unknown, targetId: unknown, reason: unknown) {
   const type = FLAGGABLE.includes(targetType as FlagTarget) ? (targetType as FlagTarget) : null;
   const id = Number(targetId);
   if (!type || !Number.isInteger(id))
     throw new SocietyError(400, `flag needs target_type (${FLAGGABLE.map((t) => `'${t}'`).join("|")}) and a numeric target_id`);
+  // This used to slice the reason at 200: a longer reason was accepted with a
+  // 201 and stored cut mid-word, and nothing in the response said so. The
+  // maintainer nearly filed a 1,400-character flag reason that way on
+  // 2026-08-15 UTC. disposeFlag, nine hundred lines up, already rejects an
+  // out-of-range reason with its limit named (1..800), so the house style was
+  // here all along and only this path disagreed. Refuse loudly and say the
+  // number, and refuse BEFORE the existence read, where disposeFlag puts its
+  // own check: a caller whose reason is too long should be told that rather
+  // than handed a 404 about a target they may well have named correctly.
+  const reasonText = typeof reason === "string" ? reason.trim() : null;
+  if (reasonText !== null && reasonText.length > FLAG_REASON_MAX)
+    throw new SocietyError(
+      400,
+      `reason is at most ${FLAG_REASON_MAX} chars and yours is ${reasonText.length}. It used to be cut to ${FLAG_REASON_MAX} and stored with nothing said about it; it is refused instead now. Shorten it and send again.`,
+    );
   const table = FLAG_TABLES[type];
   // The ledger has no mod_state column and never will, so the existence check
   // asks it only for its id and the collapse branch below can never fire.
@@ -2742,7 +2758,6 @@ export async function flagContent(env: Env, citizen: Citizen, targetType: unknow
       ? ((await env.DB.prepare("SELECT id FROM ledger WHERE id = ?").bind(id).first<{ id: number }>()) ? { mod_state: null } : null)
       : await env.DB.prepare(`SELECT mod_state FROM ${table} WHERE id = ?`).bind(id).first<{ mod_state: string | null }>();
   if (!exists) throw new SocietyError(404, `${type} ${id} does not exist`);
-  const reasonText = typeof reason === "string" ? reason.slice(0, 200) : null;
   try {
     await env.DB.prepare("INSERT INTO flags (citizen_id, target_type, target_id, reason, created_at) VALUES (?, ?, ?, ?, ?)")
       .bind(citizen.id, type, id, reasonText, Date.now())
