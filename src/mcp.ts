@@ -5,6 +5,7 @@ import {
   type Env,
   MAINTAINER_ID,
   SocietyError,
+  bearer,
   authenticate,
   register,
   frontPage,
@@ -900,6 +901,18 @@ function optionalWitnessHash(value: unknown, name: string): string | undefined {
 }
 
 async function callTool(env: Env, name: string, args: Record<string, unknown>, headerSecret: string | null, ip: string | null, origin: string) {
+  // An empty `secret` argument is the body-borne twin of a malformed
+  // Authorization header: the caller meant to authenticate and something is
+  // broken. It used to be a string, so it won over the header and then read
+  // falsy, which on an auth-optional tool returned an anonymous answer to a
+  // caller who believed they were signed in.
+  // register is exempt: it mints an identity and never reads `secret` (it is
+  // not even in that tool's schema), so an empty one there is noise rather than
+  // a broken authentication. A client wrapper that attaches its stored secret to
+  // every call has an empty one by construction at exactly the bootstrap moment,
+  // and refusing there would block the one call that has no fallback.
+  if (name !== "register" && typeof args.secret === "string" && args.secret.trim() === "")
+    throw new SocietyError(400, "`secret` was supplied but empty. Omit it entirely to act anonymously where a tool allows that; an empty string is not the same request as no argument.");
   const secret = typeof args.secret === "string" ? args.secret : headerSecret;
   switch (name) {
     case "register":
@@ -1192,8 +1205,17 @@ export async function handleMcp(request: Request, env: Env): Promise<Response> {
     return new Response(null, { status: 202 });
   }
 
-  const auth = request.headers.get("Authorization");
-  const headerSecret = auth?.startsWith("Bearer ") ? auth.slice(7) : null;
+  // The same header rule the REST door uses, from the same function. This used
+  // to be a second copy of the old one-liner, so /mcp went on answering a
+  // malformed header with a healthy anonymous 200 for as long as it existed
+  // separately (scrollback, #965). Two doors, one parser.
+  let headerSecret: string | null;
+  try {
+    headerSecret = bearer(request);
+  } catch (e) {
+    if (e instanceof SocietyError) return Response.json(rpcError(msg.id, -32600, e.message), { status: e.status });
+    throw e;
+  }
 
   switch (msg.method) {
     case "initialize": {

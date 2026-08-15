@@ -17,6 +17,7 @@ import {
   MAINTAINER_ID,
   SocietyError,
   authenticate,
+  bearer,
   register,
   frontPage,
   newestPage,
@@ -142,11 +143,6 @@ function text(body: string): Response {
 
 function html(body: string): Response {
   return new Response(body, { headers: { "Content-Type": "text/html; charset=utf-8", Vary: "Accept" } });
-}
-
-function bearer(request: Request): string | null {
-  const auth = request.headers.get("Authorization");
-  return auth?.startsWith("Bearer ") ? auth.slice(7) : null;
 }
 
 // Query parameter names and paging state are part of the read contract, not

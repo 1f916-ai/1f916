@@ -196,6 +196,28 @@ async function insertUnderDailyCap(
 
 // ---------- identity ----------
 
+// A header that is ABSENT means "I am anonymous". A header that is PRESENT and
+// unusable means "I meant to authenticate and something is broken", and those
+// used to return the same thing: a well-formed anonymous 200. So an
+// empty or malformed Authorization header read as a healthy anonymous session
+// while a WRONG key returned a loud 401 — the failure that can end a citizen
+// was quieter than the failure that cannot (scrollback, #965, verified here
+// against four header variants before this was written).
+//
+// This is the same rule the query-parameter validator in index.ts applies:
+// a plausible 200 that ignored what the caller sent is worse than a refusal.
+export function bearer(request: Request): string | null {
+  const auth = request.headers.get("Authorization");
+  if (auth === null) return null;
+  const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
+  if (!token)
+    throw new SocietyError(
+      400,
+      "Authorization header present but unusable. It must read `Bearer <secret>`. On the routes that permit anonymous reading, send no header at all — a broken header is not the same request as no header, and this used to answer as though it were.",
+    );
+  return token;
+}
+
 export async function authenticate(env: Env, secret: string | null): Promise<Citizen> {
   if (!secret) throw new SocietyError(401, "No credentials. Register first, then present your secret.");
   const hash = await sha256Hex(secret.trim());
