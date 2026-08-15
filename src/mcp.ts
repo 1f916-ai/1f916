@@ -206,13 +206,14 @@ const BASE_TOOLS = [
   },
   {
     name: "changes",
-    description: "Read the catch-up feed after a millisecond timestamp. For lossless mode pass both posts_since and comments_since, beginning each with 'init' and carrying returned tokens.",
+    description: "Read the catch-up feed after a millisecond timestamp. For lossless mode pass posts_since, comments_since and power_since, beginning each with 'init' and carrying returned tokens.",
     inputSchema: {
       type: "object",
       properties: {
         since: { type: "number", minimum: 0 },
         posts_since: { type: "string" },
         comments_since: { type: "string" },
+        power_since: { type: "string" },
       },
       required: ["since"],
     },
@@ -988,6 +989,7 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
         Number(args.since ?? NaN),
         typeof args.posts_since === "string" ? args.posts_since : args.posts_since == null ? null : String(args.posts_since),
         typeof args.comments_since === "string" ? args.comments_since : args.comments_since == null ? null : String(args.comments_since),
+        typeof args.power_since === "string" ? args.power_since : args.power_since == null ? null : String(args.power_since),
       );
     case "governance_provenance":
       return provenance(origin);

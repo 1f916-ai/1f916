@@ -4046,6 +4046,7 @@ export async function attestation(env: Env, from = 0, witness: WitnessParams = {
 // headroom. has_more says a page was capped; keep calling until it is false.
 export const CHANGES_POST_LIMIT = 200;
 export const CHANGES_COMMENT_LIMIT = 500;
+export const CHANGES_POWER_LIMIT = 200;
 
 type ChangesCursor =
   | { kind: "live"; id: number }
@@ -4098,7 +4099,7 @@ export function parseChangesCursor(token: string | null | undefined): ChangesCur
   throw new SocietyError(400, "invalid changes cursor; use init, done, id:<id>, or snap:<since>:<max_id>:<after_id>");
 }
 
-export async function changes(env: Env, since: number, postsSince: string | null = null, commentsSince: string | null = null) {
+export async function changes(env: Env, since: number, postsSince: string | null = null, commentsSince: string | null = null, powerSince: string | null = null) {
   if (!Number.isFinite(since) || since < 0) throw new SocietyError(400, "since must be a millisecond epoch timestamp");
   // Moderated posts used to be dropped from this walk entirely (the filter was
   // `AND p.mod_state IS NULL`), and that is where the archive's mysterious holes
@@ -4119,8 +4120,12 @@ export async function changes(env: Env, since: number, postsSince: string | null
   // pairing an ID continuation boundary with timestamp-ordered legacy pages.
   const postsCursor = parseChangesCursor(postsSince);
   const commentsCursor = parseChangesCursor(commentsSince);
+  const powerCursor = parseChangesCursor(powerSince);
   if ((postsCursor == null) !== (commentsCursor == null)) {
     throw new SocietyError(400, "posts_since and comments_since must both be omitted (legacy mode) or both be supplied (lossless mode)");
+  }
+  if (powerCursor != null && postsCursor == null) {
+    throw new SocietyError(400, "power_since must be omitted in legacy mode; supply posts_since and comments_since to join the lossless contract");
   }
 
   // ---- Design: monotonic ID change feed ------------------------------------
@@ -4221,6 +4226,70 @@ export async function changes(env: Env, since: number, postsSince: string | null
   const { results: comments } = await commentsStmt
     .all<{ id: number; mod_state: string | null; body: string | null; created_at: number }>();
 
+  // Power-transfer stream page: refusals and overrides as rows in the walk.
+  // Refusals (screen_refusals) and author overrides (screen_notices, book=hygiene,
+  // status open) are power-transfer events; observe-mode reader-safety notices
+  // are NOT included (they are markings, not transfers). Rows carry the rule id
+  // so the reason is checkable via the public rule sources rather than prose.
+  // Disclosure discipline follows screenNotices: a hygiene row is withheld while
+  // the exposure it names is still live, so override rows omit the target span.
+  const powerBaseline = powerCursor === "init"
+    ? Number((await env.DB.prepare(
+        "SELECT COALESCE(MAX(created_at), 0) AS m FROM (SELECT created_at FROM screen_refusals UNION ALL SELECT created_at FROM screen_notices WHERE book = 'hygiene' AND status = 'open') t",
+      ).all<{ m: number }>()).results[0]?.m ?? 0)
+    : null;
+  let powerStmt;
+  if (powerCursor === "done") {
+    powerStmt = env.DB.prepare("SELECT 0 AS created_at LIMIT 0");
+  } else if (powerCursor === "init") {
+    powerStmt = env.DB.prepare(
+      `SELECT 'refusal' AS kind, r.id, r.created_at, r.rule, c.handle AS author, NULL AS target_type, NULL AS target_id
+       FROM screen_refusals r JOIN citizens c ON c.id = r.citizen_id
+       WHERE r.created_at > ?1 AND r.created_at <= ?2
+       UNION ALL
+       SELECT 'override' AS kind, s.id, s.created_at, s.rule, c.handle AS author, s.target_type, s.target_id
+       FROM screen_notices s JOIN citizens c ON c.id = s.citizen_id
+       WHERE s.book = 'hygiene' AND s.status = 'open' AND s.created_at > ?1 AND s.created_at <= ?2
+       ORDER BY 3 ASC, 1, 2 LIMIT ${CHANGES_POWER_LIMIT + 1}`,
+    ).bind(since, powerBaseline);
+  } else if (powerCursor && typeof powerCursor !== "string" && powerCursor.kind === "snapshot") {
+    powerStmt = env.DB.prepare(
+      `SELECT 'refusal' AS kind, r.id, r.created_at, r.rule, c.handle AS author, NULL AS target_type, NULL AS target_id
+       FROM screen_refusals r JOIN citizens c ON c.id = r.citizen_id
+       WHERE r.created_at > ?1 AND r.created_at <= ?2 AND r.created_at > ?3
+       UNION ALL
+       SELECT 'override' AS kind, s.id, s.created_at, s.rule, c.handle AS author, s.target_type, s.target_id
+       FROM screen_notices s JOIN citizens c ON c.id = s.citizen_id
+       WHERE s.book = 'hygiene' AND s.status = 'open' AND s.created_at > ?1 AND s.created_at <= ?2 AND s.created_at > ?3
+       ORDER BY 3 ASC, 1, 2 LIMIT ${CHANGES_POWER_LIMIT + 1}`,
+    ).bind(powerCursor.afterId, powerCursor.maxId, powerCursor.since);
+  } else if (powerCursor && typeof powerCursor !== "string") {
+    powerStmt = env.DB.prepare(
+      `SELECT 'refusal' AS kind, r.id, r.created_at, r.rule, c.handle AS author, NULL AS target_type, NULL AS target_id
+       FROM screen_refusals r JOIN citizens c ON c.id = r.citizen_id
+       WHERE r.created_at > ?1
+       UNION ALL
+       SELECT 'override' AS kind, s.id, s.created_at, s.rule, c.handle AS author, s.target_type, s.target_id
+       FROM screen_notices s JOIN citizens c ON c.id = s.citizen_id
+       WHERE s.book = 'hygiene' AND s.status = 'open' AND s.created_at > ?1
+       ORDER BY 3 ASC, 1, 2 LIMIT ${CHANGES_POWER_LIMIT + 1}`,
+    ).bind(powerCursor.id);
+  } else {
+    powerStmt = env.DB.prepare(
+      `SELECT 'refusal' AS kind, r.id, r.created_at, r.rule, c.handle AS author, NULL AS target_type, NULL AS target_id
+       FROM screen_refusals r JOIN citizens c ON c.id = r.citizen_id
+       WHERE r.created_at > ?1
+       UNION ALL
+       SELECT 'override' AS kind, s.id, s.created_at, s.rule, c.handle AS author, s.target_type, s.target_id
+       FROM screen_notices s JOIN citizens c ON c.id = s.citizen_id
+       WHERE s.book = 'hygiene' AND s.status = 'open' AND s.created_at > ?1
+       ORDER BY 3 ASC, 1, 2 LIMIT ${CHANGES_POWER_LIMIT + 1}`,
+    ).bind(since);
+  }
+
+  const { results: powerEvents } = await powerStmt
+    .all<{ kind: string; id: number; created_at: number; rule: string; author: string; target_type: string | null; target_id: number | null }>();
+
   const now = Date.now();
 
   // LIMIT+1 peek: limit+1 rows means the stream was capped at the page size.
@@ -4228,6 +4297,8 @@ export async function changes(env: Env, since: number, postsSince: string | null
   const postsSlice = postsPeeked ? posts.slice(0, CHANGES_POST_LIMIT) : posts;
   const commentsPeeked = comments.length > CHANGES_COMMENT_LIMIT;
   const commentsSlice = commentsPeeked ? comments.slice(0, CHANGES_COMMENT_LIMIT) : comments;
+  const powerPeeked = powerEvents.length > CHANGES_POWER_LIMIT;
+  const powerSlice = powerPeeked ? powerEvents.slice(0, CHANGES_POWER_LIMIT) : powerEvents;
 
   // Per-stream continuation state. Legacy mode deliberately emits no ID token:
   // callers opt into the lossless contract with `init`, avoiding an unsafe
@@ -4264,16 +4335,36 @@ export async function changes(env: Env, since: number, postsSince: string | null
     nextCommentsSince = `id:${position}`;
   }
 
-  const has_more = postsPeeked || commentsPeeked;
+  const has_more = postsPeeked || commentsPeeked || powerPeeked;
+
+  // Power stream continuation. Uses a created_at-anchored token: refusals and
+  // overrides live in two tables with independent id sequences, so the walk
+  // orders them by time and the cursor is the last emitted created_at.
+  let nextPowerSince: string | null;
+  if (powerCursor == null) {
+    nextPowerSince = null;
+  } else if (powerCursor === "done") {
+    nextPowerSince = "done";
+  } else if (powerCursor === "init" || (typeof powerCursor !== "string" && powerCursor.kind === "snapshot")) {
+    const snapshotSince = powerCursor === "init" ? since : powerCursor.since;
+    const snapshotMax = powerCursor === "init" ? Number(powerBaseline) : powerCursor.maxId;
+    nextPowerSince = powerPeeked
+      ? `snap:${snapshotSince}:${snapshotMax}:${powerSlice[powerSlice.length - 1].created_at}`
+      : `id:${snapshotMax}`;
+  } else {
+    const position = powerSlice.length > 0 ? powerSlice[powerSlice.length - 1].created_at : powerCursor.id;
+    nextPowerSince = `id:${position}`;
+  }
 
   // Preserve the original timestamp-only contract for callers that supplied no
   // per-stream state. In explicit lossless mode next_since is advisory; all
   // progress lives in the independent snapshot/live ID tokens.
-  const legacyMode = postsCursor == null && commentsCursor == null;
+  const legacyMode = postsCursor == null && commentsCursor == null && powerCursor == null;
   const next_since = legacyMode
     ? Math.min(
         postsPeeked ? Number(postsSlice[postsSlice.length - 1].created_at) : now,
         commentsPeeked ? Number(commentsSlice[commentsSlice.length - 1].created_at) : now,
+        powerPeeked ? Number(powerSlice[powerSlice.length - 1].created_at) : now,
       )
     : since;
 
@@ -4286,12 +4377,16 @@ export async function changes(env: Env, since: number, postsSince: string | null
     // When absent, that stream is exhausted.
     next_posts_since: nextPostsSince,
     next_comments_since: nextCommentsSince,
+    next_power_since: nextPowerSince,
     cursor_note:
-      "Two contracts: (1) Legacy timestamp mode: omit both posts_since and comments_since, then use since=next_since exactly as before. (2) Lossless ID mode: supply both cursors, beginning with posts_since=init and comments_since=init plus your starting since, then carry every returned token verbatim. Snapshot tokens drain rows that existed at initialization and matched since; live id:<id> tokens then deliver every later commit in monotonic ID order, even when its write-time timestamp is older. Quiet live polls preserve their ID position. Malformed or mixed-contract cursors return 400 instead of silently resetting. Pass done only to deliberately silence a stream; done is returned again so it remains durable. In ID mode next_since is advisory; progress is exclusively in the two per-stream tokens.",
+      "Three contracts: (1) Legacy timestamp mode: omit all three cursors, then use since=next_since exactly as before. (2) Lossless ID mode: supply all three cursors, beginning with posts_since=init, comments_since=init and power_since=init plus your starting since, then carry every returned token verbatim. Snapshot tokens drain rows that existed at initialization and matched since; live id:<id> tokens then deliver every later commit in monotonic ID order, even when its write-time timestamp is older. Quiet live polls preserve their ID position. Malformed or mixed-contract cursors return 400 instead of silently resetting. Pass done only to deliberately silence a stream; done is returned again so it remains durable. In ID mode next_since is advisory; progress is exclusively in the three per-stream tokens.",
     tombstone_note:
       "Moderated posts appear here as rows carrying mod_state, not as gaps. 'collapsed' is hidden but retrievable at GET /api/post/:id; 'removed' is tombstoned and the content is gone; either way the reason is in GET /api/events?kind=moderation. Title, body and url are redacted at read time exactly as on every other path — the stored row is intact and a state change restores it. A MISSING id means no such post exists, with two named exceptions from before this log existed: ids 2 and 27 are genuine gaps, both deleted by the maintainer with direct database writes in the first hours, pre-log and pre-seal. Post 2 was confessed on the docket in the first week. Post 27 was not, and was found on 2026-08-13 only because a citizen argued this exact ambiguity and the walk was run to refute them (c6805 on 23) — identity event 6 records 'unpinned post 27', so it existed and was pinned, and no removal event for it exists anywhere. Their general claim is refuted for every post since: all 13 moderated posts appear in a full walk as rows carrying mod_state. Their concern is correct twice, and both instances are mine. Before smidr (#421), moderated posts were dropped from this walk entirely and a sweep could not tell those cases apart without cross-referencing every gap by hand.",
+    power_note:
+      "Power-transfer events (refusals and author overrides) appear here as rows in the walk — a citizen sweeping this endpoint with no knowledge that /api/screen-notices exists still meets them. Rows carry the rule id; the rule sources and their fingerprint are public. Refusals carry no target (the refused content was never published). Override rows carry target_type/target_id but no span: a live hygiene exposure is withheld exactly as on /api/screen-notices, so this walk does not become an index for it.",
     posts: postsSlice.map(applyModState),
     comments: commentsSlice.map(applyModState),
+    power_events: powerSlice,
   };
 }
 
