@@ -4232,7 +4232,13 @@ export async function changes(env: Env, since: number, postsSince: string | null
   // are NOT included (they are markings, not transfers). Rows carry the rule id
   // so the reason is checkable via the public rule sources rather than prose.
   // Disclosure discipline follows screenNotices: a hygiene row is withheld while
-  // the exposure it names is still live, so override rows omit the target span.
+  // the exposure it names is still live, so override rows omit the target span
+  // entirely (NULL target_type/target_id) — the walk says power moved and by
+  // which rule, never where. The per-target detail stays on /api/screen-notices,
+  // which only discloses it once the target is removed or adjudicated benign.
+  // Refusals carry the author handle but never matched text: a refusal names a
+  // person and a rule, nothing about the content (screen_refusals stores no
+  // span by design, and the rule id is checkable against the public sources).
   const powerBaseline = powerCursor === "init"
     ? Number((await env.DB.prepare(
         "SELECT COALESCE(MAX(created_at), 0) AS m FROM (SELECT created_at FROM screen_refusals UNION ALL SELECT created_at FROM screen_notices WHERE book = 'hygiene' AND status = 'open') t",
@@ -4247,7 +4253,7 @@ export async function changes(env: Env, since: number, postsSince: string | null
        FROM screen_refusals r JOIN citizens c ON c.id = r.citizen_id
        WHERE r.created_at > ?1 AND r.created_at <= ?2
        UNION ALL
-       SELECT 'override' AS kind, s.id, s.created_at, s.rule, c.handle AS author, s.target_type, s.target_id
+       SELECT 'override' AS kind, s.id, s.created_at, s.rule, c.handle AS author, NULL AS target_type, NULL AS target_id
        FROM screen_notices s JOIN citizens c ON c.id = s.citizen_id
        WHERE s.book = 'hygiene' AND s.status = 'open' AND s.created_at > ?1 AND s.created_at <= ?2
        ORDER BY 3 ASC, 1, 2 LIMIT ${CHANGES_POWER_LIMIT + 1}`,
@@ -4258,7 +4264,7 @@ export async function changes(env: Env, since: number, postsSince: string | null
        FROM screen_refusals r JOIN citizens c ON c.id = r.citizen_id
        WHERE r.created_at > ?1 AND r.created_at <= ?2 AND r.created_at > ?3
        UNION ALL
-       SELECT 'override' AS kind, s.id, s.created_at, s.rule, c.handle AS author, s.target_type, s.target_id
+       SELECT 'override' AS kind, s.id, s.created_at, s.rule, c.handle AS author, NULL AS target_type, NULL AS target_id
        FROM screen_notices s JOIN citizens c ON c.id = s.citizen_id
        WHERE s.book = 'hygiene' AND s.status = 'open' AND s.created_at > ?1 AND s.created_at <= ?2 AND s.created_at > ?3
        ORDER BY 3 ASC, 1, 2 LIMIT ${CHANGES_POWER_LIMIT + 1}`,
@@ -4269,7 +4275,7 @@ export async function changes(env: Env, since: number, postsSince: string | null
        FROM screen_refusals r JOIN citizens c ON c.id = r.citizen_id
        WHERE r.created_at > ?1
        UNION ALL
-       SELECT 'override' AS kind, s.id, s.created_at, s.rule, c.handle AS author, s.target_type, s.target_id
+       SELECT 'override' AS kind, s.id, s.created_at, s.rule, c.handle AS author, NULL AS target_type, NULL AS target_id
        FROM screen_notices s JOIN citizens c ON c.id = s.citizen_id
        WHERE s.book = 'hygiene' AND s.status = 'open' AND s.created_at > ?1
        ORDER BY 3 ASC, 1, 2 LIMIT ${CHANGES_POWER_LIMIT + 1}`,
@@ -4280,7 +4286,7 @@ export async function changes(env: Env, since: number, postsSince: string | null
        FROM screen_refusals r JOIN citizens c ON c.id = r.citizen_id
        WHERE r.created_at > ?1
        UNION ALL
-       SELECT 'override' AS kind, s.id, s.created_at, s.rule, c.handle AS author, s.target_type, s.target_id
+       SELECT 'override' AS kind, s.id, s.created_at, s.rule, c.handle AS author, NULL AS target_type, NULL AS target_id
        FROM screen_notices s JOIN citizens c ON c.id = s.citizen_id
        WHERE s.book = 'hygiene' AND s.status = 'open' AND s.created_at > ?1
        ORDER BY 3 ASC, 1, 2 LIMIT ${CHANGES_POWER_LIMIT + 1}`,

@@ -115,8 +115,8 @@ test("power stream delivers refusals and open hygiene overrides, excluding obser
       "reader-safety observe notices and resolved overrides stay out of the power stream",
     );
     assert.equal(first.power_events[0].target_type, null, "refusals carry no target");
-    assert.equal(first.power_events[1].target_type, "post", "overrides carry their target");
-    assert.equal(first.power_events[1].target_id, 5);
+    assert.equal(first.power_events[1].target_type, null, "overrides omit the target span while the exposure is live (screenNotices discipline)");
+    assert.equal(first.power_events[1].target_id, null);
     assert.equal(first.next_power_since, "id:300", "the token is the last emitted created_at");
     assert.equal(first.has_more, false);
   } finally {
