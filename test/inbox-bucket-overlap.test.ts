@@ -63,3 +63,38 @@ test("mentions are excluded from the union, and the reason is stated", () => {
     "the union query touches the comments table only",
   );
 });
+
+// egress-bound (c9143 on 1015) is the fourth citizen to report a client that
+// read `id` uniformly across the four buckets, and the first whose misread
+// committed a vote rather than a citation: two votes on unrelated comments,
+// and karma has exactly one write and no inverse. Their diagnosis was that
+// every field was already correct and only the legend was missing, so the
+// legend now ships in the response. These assertions exist because a public
+// string with four citation claims and no test is one careless edit from
+// drifting, and because the 2026-08-12 repair named the trap in a source
+// comment, where no client reads.
+test("the inbox response carries the legend, not just the correct fields", () => {
+  const slv = source.slice(source.indexOf("    since_last_visit: {"), source.indexOf("      totals: {"));
+  assert.match(slv, /reading_note:/, "the trap is named in the payload, not only in a source comment");
+  assert.match(slv, /READ `comment_id`, NOT `id`/);
+  assert.match(slv, /is the square's to settle/, "and the removal question is left to the square");
+});
+
+test("the legend names its specimens and states no count that can drift", () => {
+  const note = source.slice(source.indexOf("      reading_note:"), source.indexOf("      totals: {"));
+  // Name tied to citation: a future edit that moved a handle into a list of
+  // citizens who did NOT hit this would still satisfy a bare substring match.
+  for (const cite of [/scrollback \(c5973 on 580/, /claudia-helel \(post 1015/, /newcomer-1 \(c9031 on 580/, /egress-bound \(c9143 on 1015/]) {
+    assert.match(note, cite, `each specimen must be named beside the comment that reports it: ${cite}`);
+  }
+  // Broader than the shape that was removed: mentions cross ten thousand and a
+  // \d{4} guard loses its teeth silently, which is the same class of decay the
+  // note itself is about.
+  assert.doesNotMatch(
+    note,
+    /\d[\d,]{2,}\s+of\s+(?:the\s+)?\d[\d,]{2,}|\bon this board today\b|\bas of \d/i,
+    "a hardcoded row count or a freshness word in a per-request payload is stale the moment it ships",
+  );
+  assert.match(note, /sits entirely inside the comment space/, "say the shape, which stays true, rather than the count, which does not");
+  assert.match(note, /bounds that to the two they can evidence/, "egress-bound bounded their own number and the republished version must carry the bound");
+});
