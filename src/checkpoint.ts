@@ -1,14 +1,14 @@
 // Protocol P2: checkpoints, proofs, and the registry signing key.
 //
-// Every hour the cron computes a Merkle root (RFC 6962, src/merkle.ts) over
+// Every five minutes the cron computes a Merkle root (RFC 6962, src/merkle.ts) over
 // each sealed chain's row hashes in id order and signs the head:
 //
 //   payload = "1f916.checkpoint.v1:<log>:<tree_size>:<root>:<created_at>"
 //   sig     = Ed25519(payload), base64url
 //
 // The signing seed lives in a Worker secret (REGISTRY_SEED, base64url raw 32
-// bytes); the public key is published on GET /api/checkpoint, and the hourly
-// witness records each checkpoint outside this registry's failure domain.
+// bytes); the public key is published on GET /api/checkpoint, and the witness
+// records each checkpoint outside this registry's failure domain.
 // From there: inclusion proofs date any event, consistency proofs prove the
 // log only ever appended, and both verify offline against a witnessed head.
 //
@@ -135,7 +135,7 @@ export async function latestCheckpoints(env: Env) {
     leaves_are: "the sealed rows' `hash` column values (lowercase hex, as UTF-8 bytes), in id order — the same hashes the linear chain and GET /api/attest already publish",
     tree: "RFC 6962: leaf = SHA-256(0x00 || leaf), node = SHA-256(0x01 || l || r)",
     how_to_verify:
-      "Check sig over the payload format above with registry_public_key. Then GET /api/proof?log=&event= for inclusion, /api/checkpoint/consistency?log=&from=&to= for append-only-ness. The hourly witness records every checkpoint at github.com/1f916-ai/1f916 under witness/ — compare roots there before believing ours.",
+      "Check sig over the payload format above with registry_public_key. Then GET /api/proof?log=&event= for inclusion, /api/checkpoint/consistency?log=&from=&to= for append-only-ness. The witness records every checkpoint at github.com/1f916-ai/1f916 under witness/, one line per five-minute window since 2026-08-12T03:41Z and hourly before that — compare roots there before believing ours.",
   };
 }
 
@@ -152,7 +152,7 @@ export async function consistency(env: Env, logParam: string | null, fromParam: 
     .bind(log, to)
     .first<CheckpointRow>();
   if (!fromRow || !toRow)
-    throw new SocietyError(404, "no checkpoint at that tree size for that log — GET /api/checkpoint lists the latest; historical sizes exist only where an hourly run landed");
+    throw new SocietyError(404, "no checkpoint at that tree size for that log — GET /api/checkpoint lists the latest; historical sizes exist only where a run landed, which is every five minutes since 2026-08-12T03:41Z and hourly before that");
   const leaves = await sealedHashes(env, log);
   if (leaves.length < to) throw new SocietyError(500, "log shorter than checkpointed size — this response is itself evidence; keep it");
   const proof = await consistencyProof(leaves.slice(0, to), from, to);
@@ -180,7 +180,7 @@ export async function inclusion(env: Env, logParam: string | null, eventParam: s
   const cp = await env.DB.prepare("SELECT id, tree_size, root, sig, created_at FROM checkpoints WHERE log = ? AND tree_size >= ? ORDER BY tree_size ASC LIMIT 1")
     .bind(log, index + 1)
     .first<CheckpointRow>();
-  if (!cp) throw new SocietyError(404, "no checkpoint covers this event yet — the next hourly run will");
+  if (!cp) throw new SocietyError(404, "no checkpoint covers this event yet — the next run will, within five minutes");
   const proof = await inclusionProof(leaves.slice(0, cp.tree_size), index, cp.tree_size);
   return {
     log,

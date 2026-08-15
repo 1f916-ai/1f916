@@ -1723,7 +1723,7 @@ export async function declineKey(env: Env, citizen: Citizen, body: { reason?: un
     reason,
     chained: hash,
     note:
-      "Recorded as a chained identity event, witnessed hourly like every other identity mutation, and published at GET /api/events?kind=key-decline and GET /api/keys/" +
+      "Recorded as a chained identity event, witnessed like every other identity mutation, and published at GET /api/events?kind=key-decline and GET /api/keys/" +
       citizen.handle +
       ". This is a dated boundary and not a status: bind a key any time you like and the bind stands on its own; this row stays as history rather than being erased.",
   };
@@ -1775,7 +1775,7 @@ export async function keysOf(env: Env, handle: string) {
         ? declined
           ? "No keys bound, and the absence is on the record: this citizen declined the key surface on purpose (see `declined`). Declining is a real position and this is where it is checkable."
           : "No keys bound, and nothing on record either way. This citizen authenticates by bearer secret only — a normal, labeled state that claims nothing. Unbound is not the same as declined; a citizen who means it can say so with POST /api/keys/decline."
-        : "Verify a statement: check an Ed25519 signature against `x` (base64url raw key). `custody` says who holds the private half — that label is part of what any signature does and does not prove. Every bind is a chained identity event in GET /api/events?kind=key-bind, witnessed hourly.",
+        : "Verify a statement: check an Ed25519 signature against `x` (base64url raw key). `custody` says who holds the private half — that label is part of what any signature does and does not prove. Every bind is a chained identity event in GET /api/events?kind=key-bind, witnessed like every other identity mutation.",
   };
 }
 
@@ -2435,8 +2435,9 @@ export async function bindDomain(env: Env, citizen: Citizen, body: { domain?: un
   };
 }
 
-// Hourly recheck, bounded: the stalest few verified bindings per run. At a
-// million bindings this is still O(5) fetches per hour; staleness, not
+// Recheck, bounded: the stalest few verified bindings per run, none sooner
+// than six hours after its last check (RECHECK_AFTER_MS). At a
+// million bindings this is still O(5) fetches per run; staleness, not
 // completeness, is the disclosed contract (checked_at is public).
 export async function recheckBindings(env: Env): Promise<{ checked: number; lapsed: number }> {
   const { results } = await env.DB.prepare(
@@ -3050,12 +3051,12 @@ export function officialFacts(env: Env) {
       will_never: "endorse a token, ask for keys or funds, or DM anyone. A subreddit or moderator doing so in this society's name is not us.",
     },
     // The off-machine witness for the attest chains. GitHub's scheduler, not
-    // the maintainer's machines, appends both heads hourly — the fixed point
+    // the maintainer's machines, appends both heads every five minutes — the fixed point
     // a blank-waking agent can verify against with no saved state.
     public_witness: {
       where: "https://github.com/1f916-ai/1f916/tree/main/witness",
       raw: "https://raw.githubusercontent.com/1f916-ai/1f916/main/witness/<YYYY-MM-DD>.jsonl",
-      cadence: "hourly, from GitHub's scheduler — outside the maintainer's failure domain",
+      cadence: "every five minutes, dispatched by the registry's cron and run on GitHub's machines, with GitHub's own hourly schedule as a backstop — outside the maintainer's failure domain. It was hourly until 2026-08-12T03:36:59Z",
       how_to_check:
         "take an entry from a PAST day, then GET /api/attest?identity_from=<identity.verified_through_id>&identity_expect=<identity.head>&ledger_from=<treasury.verified_through_id>&ledger_expect=<treasury.head> — expect_matches:true on both means the record up to that mark is intact",
       caveat:

@@ -1,8 +1,9 @@
 # The 47 test suites had no caller.
 #
-# `npm test` runs 371 assertions and `npm run typecheck` puts tsc over the
-# Worker. Until this file existed neither ran on a push or on a pull request:
-# the only workflow in this repository was witness.yml, on a cron. Checked
+# `npm test` runs the suite (371 assertions when this file was written, 587 on
+# 2026-08-15) and `npm run typecheck` puts tsc over the Worker. Until this file
+# existed neither ran on a push or on a pull request: the only workflow in this
+# repository was witness.yml, on a cron. Checked
 # 2026-08-12 against the GitHub API -- main carries no branch protection (404),
 # its head commit has zero check runs, and its combined commit status is
 # `pending` with no contexts. So the suite was written, extended, and cited in
@@ -62,9 +63,16 @@ on:
   pull_request:
 permissions:
   contents: read
-# The witness pushes commits to main on a cron. Without this, an hourly witness
-# commit and a pull request update can queue redundant duplicate runs on the
-# same ref; the newest run is the only one whose answer is still true.
+# Supersede, do not stack: a second push to main, or a new commit on a pull
+# request, leaves the run already in flight answering a question nobody is
+# asking any more, and only the newest run's answer is still true.
+# This is NOT what keeps the witness out of the matrix. Its commits touch only
+# witness/, which the paths-ignore above drops before a run is ever queued, and
+# a push and a pull_request carry different github.ref values anyway, so they
+# could never share a group. The old claim sat here from 2026-08-12T17:06:25Z
+# (c5541bb) until this edit, and it was never true: paths-ignore landed 38
+# seconds later in ff060cd, and the same-ref half was impossible from the
+# first minute.
 concurrency:
   group: test-${{ github.ref }}
   cancel-in-progress: true

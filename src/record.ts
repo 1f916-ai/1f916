@@ -81,7 +81,7 @@ export async function record(env: Env, handle: string, sinceEventId: number = Na
     }
     const index = checkpoint ? leaves.indexOf(e.hash) : -1;
     if (!checkpoint || index === -1 || index >= checkpoint.tree_size) {
-      provenEvents.push({ ...e, proof: null, proof_note: "not yet checkpointed — the next hourly head will cover it" });
+      provenEvents.push({ ...e, proof: null, proof_note: "not yet checkpointed — the next head will cover it, within five minutes" });
       continue;
     }
     provenEvents.push({ ...e, leaf_index: index, proof: await inclusionProof(leaves.slice(0, checkpoint.tree_size), index, checkpoint.tree_size) });

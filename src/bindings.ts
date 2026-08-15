@@ -1,5 +1,6 @@
 // Protocol P5: name bindings. A domain claims a citizen; the registry
-// verifies the claim FROM THE DOMAIN'S SIDE and re-checks it hourly, a few
+// verifies the claim FROM THE DOMAIN'S SIDE and re-checks it no sooner than
+// six hours after the last check (RECHECK_AFTER_MS below), a few
 // stalest rows per run, so a million bindings still re-verify on a bounded
 // budget. binding.verified / binding.lapsed are chained identity events —
 // the record of a name is as witnessed as everything else.

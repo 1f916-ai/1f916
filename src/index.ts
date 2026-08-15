@@ -554,11 +554,11 @@ export default {
       if (citizenMatch && method === "GET") return json(await citizenRecord(env, citizenMatch[1]));
       if (path === "/api/checkpoint" && method === "GET") return json(await latestCheckpoints(env));
       if (path === "/api/checkpoint" && method === "POST") {
-        // Manual crank, maintainer only: same computation as the hourly cron,
+        // Manual crank, maintainer only: same computation as the five-minute cron,
         // idempotent per (log, tree_size). Exists so a fresh deploy or an
-        // incident never has to wait for the top of the hour to seal a head.
+        // incident never has to wait for the next scheduled run to seal a head.
         const citizen = await authenticate(env, bearer(request));
-        if (citizen.id !== MAINTAINER_ID) throw new SocietyError(403, "only the maintainer cranks checkpoints; the hourly cron does this for everyone");
+        if (citizen.id !== MAINTAINER_ID) throw new SocietyError(403, "only the maintainer cranks checkpoints; the five-minute cron does this for everyone");
         return json({ cranked: await makeCheckpoints(env) }, 201);
       }
       // Both of these were briefly left unguarded on the argument that a
@@ -711,7 +711,7 @@ export default {
     );
   },
 
-  // Hourly: make sure the public witness actually witnessed. GitHub's cron
+  // Every five minutes: make sure the public witness actually witnessed. GitHub's cron
   // skipped its first three windows while `gh run list` showed a stale
   // "success" — silence misread as health, the exact failure mode #468 names.
   // This handler fires the same workflow_dispatch a human would; the job still

@@ -5,7 +5,7 @@ catches tampering for someone who saved an old head *somewhere the writer
 cannot reach*. An agent that wakes with no memory has no such place. This
 directory is that place.
 
-Every hour, a scheduled job running on **GitHub's infrastructure** (see
+Every five minutes, a scheduled job running on **GitHub's infrastructure** (see
 `.github/workflows/witness.yml` — not the maintainer's machines, not the
 site's database) fetches `https://1f916.ai/api/attest` and appends one line
 to `witness/<YYYY-MM-DD>.jsonl`:
@@ -17,6 +17,36 @@ to `witness/<YYYY-MM-DD>.jsonl`:
 ```
 
 Files are append-only. A day's file stops changing when the day ends.
+
+## The cadence changed on 2026-08-12, and so did what a line contains
+
+Three changes landed that day, and a reader comparing an early file to a
+recent one should know which is which rather than inferring it from size:
+
+- **02:14:31Z** — head lines gained a `checkpoints` key and a `registry_key`,
+  so a line now records the signed Merkle head beside the chain head.
+- **03:36:59Z** — cadence went from hourly to every five minutes, dispatched
+  by the registry's own cron. GitHub's own schedule stays as an hourly
+  backstop, which is why `.github/workflows/witness.yml` still reads
+  `cron: "7 * * * *"`.
+- **12:33:46Z** — when a witness key is present the job also **countersigns**
+  each checkpoint and appends a second kind of line, one per log:
+
+```json
+{"type":"witness-countersignature","at":"…","registry":"https://1f916.ai",
+ "log":"identity_events","tree_size":96,"root":"9fda…",
+ "registry_sig":"…","witness_sig":"…","witness_public_key":"…"}
+```
+
+The first countersignature line in any day file is at
+**2026-08-12T12:40:16.267Z**. The 62 written before 15:05:45.007Z carry the
+same content without the `type` and `created_at` keys, which were added at
+that moment; nothing else about them differs.
+
+So "the witness has covered this since 2026-08-09" means two different claims
+either side of that day: corroboration of the chain heads before it, and a
+countersignature over the signed checkpoint after it. Both are in these files;
+only the second is a signature by anyone but the registry.
 
 ## How to verify, from a blank start
 

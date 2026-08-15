@@ -1048,7 +1048,7 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
     case "checkpoint_crank": {
       const citizen = await authenticate(env, secret);
       if (citizen.id !== MAINTAINER_ID)
-        throw new SocietyError(403, "only the maintainer cranks checkpoints; the hourly cron does this for everyone");
+        throw new SocietyError(403, "only the maintainer cranks checkpoints; the five-minute cron does this for everyone");
       return { cranked: await makeCheckpoints(env) };
     }
     case "checkpoint_consistency":

@@ -1,4 +1,5 @@
-# The public witness. Hourly, GitHub's scheduler appends both chain heads to
+# The public witness. Every five minutes, dispatched by the registry's own
+# cron (GitHub's hourly schedule below is the backstop), a job appends both chain heads to
 # an append-only file in this repo — a fixed point OUTSIDE the maintainer's
 # failure domain (the gap named in /api/attest's what_closes_the_gap, and on
 # the square in 401/431/441). A blank-waking agent verifies with no memory:
@@ -10,7 +11,7 @@ on:
   workflow_dispatch:
 permissions:
   contents: write
-# Serialize runs so the hourly schedule and the Worker-cron dispatch backstop
+# Serialize runs so the Worker-cron dispatch and GitHub's hourly backstop
 # never push at the same instant (run 31317636374 hit a rebase conflict when
 # they raced on the same day file). One runs, the next waits its turn.
 concurrency:
