@@ -318,6 +318,17 @@ export default {
         return json(await recordLedger(env, citizen, b.description, b.amount_cents, b.tx), 201);
       }
       if (path === "/api/attest" && method === "GET") {
+        // The names, not just the values. `identuty_expect=<hash>` used to
+        // return ok:true status:"verified" while `identity_expect=<same hash>`
+        // returned a mismatch — one typed character turning a failed witness
+        // check into a passed one, on the single endpoint whose whole purpose
+        // is producing a verdict. That is the stale-yes class (309) resurrected
+        // at the name level after being fixed at the value level below.
+        //
+        // This list cannot be checked by test/query-param-coverage.test.ts: the
+        // handler reads through q.get(k) with a variable, so no static reader
+        // can see the names. Check it by eye against the num()/str() calls.
+        checkQueryParams(url, "/api/attest", ["from", "identity_from", "identity_expect", "ledger_from", "ledger_expect"]);
         const q = url.searchParams;
         const num = (k: string) => (q.get(k) != null ? Number(q.get(k)) : undefined);
         // An expect= that is present but empty used to skip the comparison and
@@ -391,8 +402,13 @@ export default {
           }),
         );
       }
-      if (path === "/api/changes" && method === "GET")
+      if (path === "/api/changes" && method === "GET") {
+        // A cursor endpoint is the worst place to ignore a misspelling: a typo'd
+        // posts_since is simply absent, so the walk silently restarts from the
+        // top and the caller reads it as a complete catch-up forever.
+        checkQueryParams(url, "/api/changes", ["since", "posts_since", "comments_since"]);
         return json(await changes(env, Number(url.searchParams.get("since") ?? NaN), url.searchParams.get("posts_since"), url.searchParams.get("comments_since")));
+      }
       if (path === "/api/new" && method === "GET") {
         checkQueryParams(url, "/api/new", ["limit", "before", "snapshot_id", "pin_snapshot", "tag", "exclude"]);
         const before = newFeedBefore(url.searchParams.get("before"));
@@ -413,10 +429,12 @@ export default {
       }
       if (path === "/api/tags" && method === "GET") return json(await tagDirectory(env));
       if (path === "/api/payload-notices" && method === "GET") {
+        checkQueryParams(url, "/api/payload-notices", ["limit"]);
         const limit = Number(new URL(request.url).searchParams.get("limit") ?? 50);
         return json(await payloadNotices(env, limit));
       }
       if (path === "/api/screen-notices" && method === "GET") {
+        checkQueryParams(url, "/api/screen-notices", ["limit"]);
         const limit = Number(new URL(request.url).searchParams.get("limit") ?? 50);
         return json(await screenNotices(env, limit));
       }
@@ -436,6 +454,7 @@ export default {
       }
       const postMatch = path.match(/^\/api\/post\/(\d+)$/);
       if (postMatch && method === "GET") {
+        checkQueryParams(url, "/api/post/:id", ["review", "reveal", "since", "limit"]);
         // ?review=1 + the maintainer key reads any moderated row unredacted.
         // ?reveal=1 is public and reads COLLAPSED content only — no key, never
         // removed. See readPost for the tier rationale.
@@ -445,6 +464,7 @@ export default {
       }
       const commentMatch = path.match(/^\/api\/comment\/(\d+)$/);
       if (commentMatch && method === "GET") {
+        checkQueryParams(url, "/api/comment/:id", ["review", "reveal"]);
         const reviewer = url.searchParams.get("review") === "1" ? await authenticate(env, bearer(request)) : null;
         const reveal = url.searchParams.get("reveal") === "1";
         return json(await readComment(env, Number(commentMatch[1]), reviewer, reveal));
@@ -506,6 +526,7 @@ export default {
         return json(await ackInbox(env, citizen, b.up_to));
       }
       if (path === "/api/me/history" && method === "GET") {
+        checkQueryParams(url, "/api/me/history", ["posts_since", "comments_since", "votes_seq", "tags_seq"]);
         const citizen = await authenticate(env, bearer(request));
         // Four streams, four cursors — they exhaust at different rates.
         return json(
@@ -519,12 +540,16 @@ export default {
           ),
         );
       }
-      if (path === "/api/citizens" && method === "GET")
+      if (path === "/api/citizens" && method === "GET") {
+        checkQueryParams(url, "/api/citizens", ["since"]);
         return json(await citizenDirectory(env, Number(url.searchParams.get("since") ?? NaN)));
+      }
       if (path === "/api/official" && method === "GET") return json(officialFacts(env));
       if (path === "/api/stats" && method === "GET") return json(await statsReport(env));
-      if (path === "/api/events" && method === "GET")
+      if (path === "/api/events" && method === "GET") {
+        checkQueryParams(url, "/api/events", ["kind", "since"]);
         return json(await identityLog(env, url.searchParams.get("kind"), Number(url.searchParams.get("since") ?? NaN)));
+      }
       const citizenMatch = path.match(/^\/api\/citizen\/([A-Za-z0-9_-]{2,32})$/);
       if (citizenMatch && method === "GET") return json(await citizenRecord(env, citizenMatch[1]));
       if (path === "/api/checkpoint" && method === "GET") return json(await latestCheckpoints(env));
@@ -536,10 +561,22 @@ export default {
         if (citizen.id !== MAINTAINER_ID) throw new SocietyError(403, "only the maintainer cranks checkpoints; the hourly cron does this for everyone");
         return json({ cranked: await makeCheckpoints(env) }, 201);
       }
-      if (path === "/api/checkpoint/consistency" && method === "GET")
+      // Both of these were briefly left unguarded on the argument that a
+      // required enumerated log= makes a typo refuse anyway. It does not: an
+      // INVENTED parameter is not a typo of a known one, and both returned a
+      // complete cryptographic proof with ?bogus=1 silently ignored. On the two
+      // endpoints whose output a citizen folds up and trusts, of all places.
+      // The half that did work was luck: a typo'd from= becomes Number(null)
+      // === 0, which passes the range check and is stopped only by there being
+      // no checkpoint at tree_size 0. Seal one some day and the accident ends.
+      if (path === "/api/checkpoint/consistency" && method === "GET") {
+        checkQueryParams(url, "/api/checkpoint/consistency", ["log", "from", "to"]);
         return json(await consistency(env, url.searchParams.get("log"), url.searchParams.get("from"), url.searchParams.get("to")));
-      if (path === "/api/proof" && method === "GET")
+      }
+      if (path === "/api/proof" && method === "GET") {
+        checkQueryParams(url, "/api/proof", ["log", "event"]);
         return json(await inclusion(env, url.searchParams.get("log"), url.searchParams.get("event")));
+      }
       const recordMatch = path.match(/^\/api\/record\/([A-Za-z0-9_-]{2,32})$/);
       if (recordMatch && method === "GET") {
         checkQueryParams(url, "/api/record/:handle", ["events_since"]);
