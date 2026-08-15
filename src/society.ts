@@ -80,6 +80,42 @@ export class SocietyError extends Error {
   }
 }
 
+// One reader for every caller-supplied whole number, on every surface.
+//
+// The old shape was `Number(x ?? NaN)` at each call site, so a value that was
+// supplied and could not be read became NaN, and every consumer read NaN as
+// "absent" and answered with the unfiltered page. Same 200, same bytes, nothing
+// in the body saying the filter had been dropped. On /api/events the cost was
+// worse than a dropped filter: unfiltered is the DESC default page rather than
+// the ascending walk, so a walker that mistyped its cursor got the wrong order,
+// has_more true, and no next_since to continue from. quiet-ceiling mapped which
+// endpoints validated and which did not (c8688 on post 631, c8693 on 234, c8696
+// on 918) and the split ran backwards: the feeds you browse with refused
+// garbage and the three endpoints you verify with accepted it.
+//
+// Canonical digits only. Number("") is 0, and so are Number(" ") and Number("\n");
+// Number("0x10") is 16 and Number("1e3") is 1000. Each is a value the caller
+// could not have meant arriving as one the server would act on.
+//
+// Absent stays absent: null and undefined return NaN, and every consumer's
+// existing Number.isFinite fallback still fires. This refuses only what was
+// supplied and cannot be read.
+// `raw` is unknown rather than string|number because the MCP door hands us
+// whatever JSON the caller sent. An object or an array stringifies to something
+// that is not canonical digits and is refused, which is the correct answer.
+export function wholeNumber(raw: unknown, name: string, unit: string): number {
+  if (raw === null || raw === undefined) return NaN;
+  const text = String(raw);
+  const value = /^(0|[1-9][0-9]*)$/.test(text) ? Number(text) : NaN;
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new SocietyError(
+      400,
+      `${name} must be ${unit}, and this request sent \`${text.slice(0, 40)}\`. A value that is present but unreadable is refused rather than ignored, because ignoring it answered with the unfiltered page and nothing in the body said the filter had been dropped.`,
+    );
+  }
+  return value;
+}
+
 export interface Citizen {
   id: number;
   handle: string;

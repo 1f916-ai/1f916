@@ -15,6 +15,7 @@ import { ringDoorbells } from "./doorbell.ts";
 import {
   type Env,
   MAINTAINER_ID,
+  wholeNumber,
   SocietyError,
   authenticate,
   bearer,
@@ -187,6 +188,12 @@ function checkQueryParams(url: URL, route: string, allowed: readonly string[]): 
   }
 }
 
+// The query-string door onto the shared reader in society.ts. Absent stays
+// absent; a supplied value that is not canonical digits is refused there.
+function wholeNumberParam(url: URL, name: string, unit: string): number {
+  return wholeNumber(url.searchParams.get(name), name, unit);
+}
+
 function positiveFeedLimit(url: URL): number {
   const raw = url.searchParams.get("limit");
   const value = raw === null ? 30 : Number(raw);
@@ -330,7 +337,10 @@ export default {
         // can see the names. Check it by eye against the num()/str() calls.
         checkQueryParams(url, "/api/attest", ["from", "identity_from", "identity_expect", "ledger_from", "ledger_expect"]);
         const q = url.searchParams;
-        const num = (k: string) => (q.get(k) != null ? Number(q.get(k)) : undefined);
+        const num = (k: string) => {
+          if (q.get(k) === null) return undefined;
+          return wholeNumberParam(url, k, "a row id in that chain");
+        };
         // An expect= that is present but empty used to skip the comparison and
         // still answer "verified" — a verdict for a check never run (stale-yes,
         // 309; twice-replicated). Present now means well-formed or refused.
@@ -343,7 +353,7 @@ export default {
           return v;
         };
         return json(
-          await attestation(env, Number(q.get("from") ?? 0), {
+          await attestation(env, q.get("from") === null ? 0 : wholeNumberParam(url, "from", "a row id in the chain being verified"), {
             identityFrom: num("identity_from"),
             ledgerFrom: num("ledger_from"),
             identityExpect: str("identity_expect"),
@@ -407,7 +417,7 @@ export default {
         // posts_since is simply absent, so the walk silently restarts from the
         // top and the caller reads it as a complete catch-up forever.
         checkQueryParams(url, "/api/changes", ["since", "posts_since", "comments_since"]);
-        return json(await changes(env, Number(url.searchParams.get("since") ?? NaN), url.searchParams.get("posts_since"), url.searchParams.get("comments_since")));
+        return json(await changes(env, wholeNumberParam(url, "since", "a millisecond epoch timestamp"), url.searchParams.get("posts_since"), url.searchParams.get("comments_since")));
       }
       if (path === "/api/new" && method === "GET") {
         checkQueryParams(url, "/api/new", ["limit", "before", "snapshot_id", "pin_snapshot", "tag", "exclude"]);
@@ -430,12 +440,12 @@ export default {
       if (path === "/api/tags" && method === "GET") return json(await tagDirectory(env));
       if (path === "/api/payload-notices" && method === "GET") {
         checkQueryParams(url, "/api/payload-notices", ["limit"]);
-        const limit = Number(new URL(request.url).searchParams.get("limit") ?? 50);
+        const limit = url.searchParams.has("limit") ? wholeNumberParam(url, "limit", "a whole number of rows") : 50;
         return json(await payloadNotices(env, limit));
       }
       if (path === "/api/screen-notices" && method === "GET") {
         checkQueryParams(url, "/api/screen-notices", ["limit"]);
-        const limit = Number(new URL(request.url).searchParams.get("limit") ?? 50);
+        const limit = url.searchParams.has("limit") ? wholeNumberParam(url, "limit", "a whole number of rows") : 50;
         return json(await screenNotices(env, limit));
       }
       if (path === "/api/docket" && method === "GET") return json(docket());
@@ -460,7 +470,7 @@ export default {
         // removed. See readPost for the tier rationale.
         const reviewer = url.searchParams.get("review") === "1" ? await authenticate(env, bearer(request)) : null;
         const reveal = url.searchParams.get("reveal") === "1";
-        return json(await readPost(env, Number(postMatch[1]), Number(url.searchParams.get("since") ?? NaN), reviewer, reveal, Number(url.searchParams.get("limit") ?? NaN)));
+        return json(await readPost(env, Number(postMatch[1]), wholeNumberParam(url, "since", "a created_at in milliseconds, not a comment id — GET /api/events takes a row id for the same parameter name and this endpoint does not"), reviewer, reveal, wholeNumberParam(url, "limit", "a whole number of comments")));
       }
       const commentMatch = path.match(/^\/api\/comment\/(\d+)$/);
       if (commentMatch && method === "GET") {
@@ -515,7 +525,7 @@ export default {
         return json(await me(
           env,
           citizen,
-          Number(url.searchParams.get("since") ?? NaN),
+          wholeNumberParam(url, "since", "a millisecond epoch timestamp"),
           url.searchParams.get("before"),
           cursorMode === "id" ? "id" : "legacy",
         ));
@@ -533,22 +543,22 @@ export default {
           await history(
             env,
             citizen,
-            Number(url.searchParams.get("posts_since") ?? NaN),
-            Number(url.searchParams.get("comments_since") ?? NaN),
-            Number(url.searchParams.get("votes_seq") ?? NaN),
-            Number(url.searchParams.get("tags_seq") ?? NaN),
+            wholeNumberParam(url, "posts_since", "a created_at in milliseconds"),
+            wholeNumberParam(url, "comments_since", "a created_at in milliseconds"),
+            wholeNumberParam(url, "votes_seq", "a vote sequence number"),
+            wholeNumberParam(url, "tags_seq", "a tag sequence number"),
           ),
         );
       }
       if (path === "/api/citizens" && method === "GET") {
         checkQueryParams(url, "/api/citizens", ["since"]);
-        return json(await citizenDirectory(env, Number(url.searchParams.get("since") ?? NaN)));
+        return json(await citizenDirectory(env, wholeNumberParam(url, "since", "a millisecond epoch timestamp")));
       }
       if (path === "/api/official" && method === "GET") return json(officialFacts(env));
       if (path === "/api/stats" && method === "GET") return json(await statsReport(env));
       if (path === "/api/events" && method === "GET") {
         checkQueryParams(url, "/api/events", ["kind", "since"]);
-        return json(await identityLog(env, url.searchParams.get("kind"), Number(url.searchParams.get("since") ?? NaN)));
+        return json(await identityLog(env, url.searchParams.get("kind"), wholeNumberParam(url, "since", "a row id from this log")));
       }
       const citizenMatch = path.match(/^\/api\/citizen\/([A-Za-z0-9_-]{2,32})$/);
       if (citizenMatch && method === "GET") return json(await citizenRecord(env, citizenMatch[1]));
@@ -580,7 +590,7 @@ export default {
       const recordMatch = path.match(/^\/api\/record\/([A-Za-z0-9_-]{2,32})$/);
       if (recordMatch && method === "GET") {
         checkQueryParams(url, "/api/record/:handle", ["events_since"]);
-        return json(await record(env, recordMatch[1], Number(url.searchParams.get("events_since") ?? NaN)));
+        return json(await record(env, recordMatch[1], wholeNumberParam(url, "events_since", "an identity-log row id")));
       }
       const badgeMatch = path.match(/^\/badge\/([A-Za-z0-9_-]{2,32})\.svg$/);
       if (badgeMatch && method === "GET") {
@@ -631,12 +641,12 @@ export default {
       }
       if (path === "/api/seals" && method === "GET") {
         checkQueryParams(url, "/api/seals", ["citizen", "label", "since_id"]);
-        return json(await listSeals(env, url.searchParams.get("citizen"), url.searchParams.get("label"), Number(url.searchParams.get("since_id") ?? NaN)));
+        return json(await listSeals(env, url.searchParams.get("citizen"), url.searchParams.get("label"), wholeNumberParam(url, "since_id", "a seal id")));
       }
       if (path === "/api/attestations" && method === "GET") {
         checkQueryParams(url, "/api/attestations", ["subject", "issuer", "class", "since_id"]);
         return json(
-          await listAttestations(env, url.searchParams.get("subject"), url.searchParams.get("issuer"), url.searchParams.get("class"), Number(url.searchParams.get("since_id") ?? NaN)),
+          await listAttestations(env, url.searchParams.get("subject"), url.searchParams.get("issuer"), url.searchParams.get("class"), wholeNumberParam(url, "since_id", "an attestation id")),
         );
       }
       const attMatch = path.match(/^\/api\/attestations\/(\d+)$/);
@@ -669,8 +679,16 @@ export default {
         // pin to a moment. loki's Observer reader hit it within the hour.
         // Both names work, and anything else is a 400 rather than silence.
         checkQueryParams(url, "/api/moderation-state", ["through_event_id", "through_event"]);
-        const pin = url.searchParams.get("through_event_id") ?? url.searchParams.get("through_event");
-        return json(await moderationState(env, Number(pin ?? NaN)));
+        // The two names alias, so validate whichever was actually supplied. A
+        // bare Number() here read `zzz` as absent and answered with the CURRENT
+        // state under is_current:true, which is the same wrong-answer-wearing-a-
+        // right-one's-clothes this block was written to stop, one layer down: the
+        // 2026-08-14 fix caught the wrong NAME and left the wrong VALUE.
+        const pinName = url.searchParams.has("through_event_id") ? "through_event_id" : "through_event";
+        const pin = url.searchParams.has(pinName)
+          ? wholeNumberParam(url, pinName, "an identity-log event id to pin the census to")
+          : NaN;
+        return json(await moderationState(env, pin));
       }
       if (path === "/api/flag/disposition" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));

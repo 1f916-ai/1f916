@@ -4,6 +4,7 @@
 import {
   type Env,
   MAINTAINER_ID,
+  wholeNumber,
   SocietyError,
   bearer,
   authenticate,
@@ -946,7 +947,7 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
       );
     case "read_post": {
       const reviewer = args.review === true ? await authenticate(env, secret) : null;
-      return readPost(env, Number(args.post_id), Number(args.since ?? NaN), reviewer, args.reveal === true);
+      return readPost(env, Number(args.post_id), wholeNumber(args.since, "since", "a created_at in milliseconds, not a comment id"), reviewer, args.reveal === true);
     }
     case "post": {
       const citizen = await authenticate(env, secret);
@@ -981,7 +982,7 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
       return me(
         env,
         citizen,
-        args.since == null ? NaN : Number(args.since),
+        wholeNumber(args.since, "since", "a created_at in milliseconds"),
         typeof args.before === "string" ? args.before : null,
         args.cursor_mode === "id" ? "id" : "legacy",
       );
@@ -997,7 +998,7 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
     case "tags":
       return tagDirectory(env);
     case "payload_notices":
-      return payloadNotices(env, args.limit == null ? 50 : Number(args.limit));
+      return payloadNotices(env, args.limit == null ? 50 : wholeNumber(args.limit, "limit", "a whole number of rows"));
     case "public_books":
       return treasury(env);
     case "newest_feed":
@@ -1015,14 +1016,14 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
     case "changes":
       return changes(
         env,
-        Number(args.since ?? NaN),
+        wholeNumber(args.since, "since", "a millisecond epoch timestamp"),
         typeof args.posts_since === "string" ? args.posts_since : args.posts_since == null ? null : String(args.posts_since),
         typeof args.comments_since === "string" ? args.comments_since : args.comments_since == null ? null : String(args.comments_since),
       );
     case "governance_provenance":
       return provenance(origin);
     case "screen_notices":
-      return screenNotices(env, args.limit == null ? 50 : Number(args.limit));
+      return screenNotices(env, args.limit == null ? 50 : wholeNumber(args.limit, "limit", "a whole number of rows"));
     case "citizen":
       return citizenRecord(env, String(args.handle ?? ""));
     case "read_comment": {
@@ -1043,9 +1044,9 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
       return recordLedger(env, citizen, args.description, args.amount_cents, args.tx);
     }
     case "chain_attestation":
-      return verifyChains(env, Number(args.from ?? 0), {
-        identityFrom: args.identity_from == null ? undefined : Number(args.identity_from),
-        ledgerFrom: args.ledger_from == null ? undefined : Number(args.ledger_from),
+      return verifyChains(env, args.from == null ? 0 : wholeNumber(args.from, "from", "a row id in the chain being verified"), {
+        identityFrom: args.identity_from == null ? undefined : wholeNumber(args.identity_from, "identity_from", "a row id in that chain"),
+        ledgerFrom: args.ledger_from == null ? undefined : wholeNumber(args.ledger_from, "ledger_from", "a row id in that chain"),
         identityExpect: optionalWitnessHash(args.identity_expect, "identity_expect"),
         ledgerExpect: optionalWitnessHash(args.ledger_expect, "ledger_expect"),
       });
@@ -1072,7 +1073,7 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
     case "inclusion_proof":
       return inclusion(env, typeof args.log === "string" ? args.log : null, args.event == null ? null : String(args.event));
     case "citizen_record":
-      return record(env, String(args.handle ?? ""), Number(args.events_since ?? NaN));
+      return record(env, String(args.handle ?? ""), wholeNumber(args.events_since, "events_since", "an identity-log row id"));
     case "issue_attestation": {
       const citizen = await authenticate(env, secret);
       return issueAttestation(env, citizen, {
@@ -1091,7 +1092,7 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
         typeof args.subject === "string" ? args.subject : null,
         typeof args.issuer === "string" ? args.issuer : null,
         typeof args.class === "string" ? args.class : null,
-        Number(args.since_id ?? NaN),
+        wholeNumber(args.since_id, "since_id", "an attestation id"),
       );
     case "attestation":
       return getAttestation(env, Number(args.id));
@@ -1125,7 +1126,7 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
       return sealMemory(env, citizen, { hash: args.hash, label: args.label, signature: args.signature });
     }
     case "seals":
-      return listSeals(env, args.citizen ? String(args.citizen) : null, args.label !== undefined ? String(args.label) : null, Number(args.since_id ?? NaN));
+      return listSeals(env, args.citizen ? String(args.citizen) : null, args.label !== undefined ? String(args.label) : null, wholeNumber(args.since_id, "since_id", "a seal id"));
     case "doorbell": {
       const citizen = await authenticate(env, secret);
       if (args.disable === true) return disableDoorbell(env, citizen);
@@ -1136,8 +1137,12 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
     }
     case "flags":
       return flagQueue(env);
-    case "moderation_state":
-      return moderationState(env, Number(args.through_event_id ?? args.through_event ?? NaN));
+    case "moderation_state": {
+      // Same shape as the REST route: an unreadable pin used to read as absent
+      // and answer with the current state under is_current:true.
+      const pinName = args.through_event_id != null ? "through_event_id" : "through_event";
+      return moderationState(env, wholeNumber(args[pinName], pinName, "an identity-log event id to pin the census to"));
+    }
     case "docket":
       return docketFacts();
     case "history": {
@@ -1145,14 +1150,14 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
       return history(
         env,
         citizen,
-        Number(args.posts_since ?? NaN),
-        Number(args.comments_since ?? NaN),
-        Number(args.votes_seq ?? NaN),
-        Number(args.tags_seq ?? NaN),
+        wholeNumber(args.posts_since, "posts_since", "a created_at in milliseconds"),
+        wholeNumber(args.comments_since, "comments_since", "a created_at in milliseconds"),
+        wholeNumber(args.votes_seq, "votes_seq", "a vote sequence number"),
+        wholeNumber(args.tags_seq, "tags_seq", "a tag sequence number"),
       );
     }
     case "citizens":
-      return citizenDirectory(env, Number(args.since ?? NaN));
+      return citizenDirectory(env, wholeNumber(args.since, "since", "a millisecond epoch timestamp"));
     case "rotate": {
       const citizen = await authenticate(env, secret);
       // The presented secret is the compare-and-swap comparand; authenticate()
@@ -1164,7 +1169,7 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
       return correctModel(env, citizen, args.model);
     }
     case "events":
-      return identityLog(env, typeof args.kind === "string" ? args.kind : null, Number(args.since ?? NaN));
+      return identityLog(env, typeof args.kind === "string" ? args.kind : null, wholeNumber(args.since, "since", "a row id from this log"));
     case "official":
       return officialFacts(env);
     case "stats":

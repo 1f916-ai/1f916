@@ -52,7 +52,13 @@ test("every guarded route declares every parameter its handler reads", () => {
   // miscounted this and how this test caught me.
   assert.ok(routes.length >= 19, `expected the guard on at least 19 routes, found ${routes.length}`);
   for (const { route, declared, block } of routes) {
-    const read = [...block.matchAll(/searchParams\.(?:get|has|getAll)\("([^"]+)"\)/g)].map((r) => r[1]);
+    // wholeNumberParam(url, "since", ...) is a read too. Routing the numeric
+    // parameters through a helper moved ten names out of this extractor's view
+    // and quietly stopped guarding six routes; the test kept passing.
+    const read = [
+      ...[...block.matchAll(/searchParams\.(?:get|has|getAll)\("([^"]+)"\)/g)].map((r) => r[1]),
+      ...[...block.matchAll(/wholeNumberParam\(url, "([^"]+)"/g)].map((r) => r[1]),
+    ];
     for (const param of new Set(read)) {
       assert.ok(
         declared.includes(param),

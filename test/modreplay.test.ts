@@ -86,17 +86,55 @@ test("the endpoint refuses to call a divergent replay trustworthy", () => {
   assert.ok(/REPLAY DOES NOT MATCH LIVE STATE/.test(src), "a divergence must say so in the payload rather than serving a clean set");
 });
 
-test("the pin parameter is named the same thing the response publishes", () => {
+test("both pin spellings reach the pin, and an unreadable pin is refused", async () => {
   // The response prints `through_event_id`. Accepting only `through_event`
   // meant a caller who round-tripped our own field name silently received the
   // LATEST state with is_current:true — a wrong answer shaped like a right
   // one, on the one endpoint whose entire purpose is pinning to a moment.
-  const index = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
-  const route = index.slice(index.indexOf('path === "/api/moderation-state"'), index.indexOf('path === "/api/flag/disposition"'));
-  assert.ok(/searchParams\.get\("through_event_id"\)/.test(route), "the published field name must be accepted");
-  assert.ok(/searchParams\.get\("through_event"\)/.test(route), "the original name stays working, because someone may already use it");
-  assert.ok(
-    /checkQueryParams\(url, "\/api\/moderation-state", \["through_event_id", "through_event"\]\)/.test(route),
-    "an unrecognised pin parameter must be a 400, never a silent fallback to now",
-  );
+  //
+  // This drives the route rather than matching its text. The text version of
+  // this test passed while the alias was dead: replacing the selector with a
+  // constant `"through_event_id"` kills `?through_event=`, and every assertion
+  // about spelling still held because the other name survives in the
+  // checkQueryParams allowlist, which is not a read.
+  const worker = (await import("../src/index.ts")).default;
+  const events = [
+    { id: 5, kind: "moderation", detail: "collapsed post 70: naked memecoin shill", created_at: 1_786_000_000_000 },
+    { id: 9, kind: "moderation", detail: "restored post 70: appealed and upheld", created_at: 1_786_000_100_000 },
+  ];
+  const env = {
+    DB: {
+      prepare(sql: string) {
+        return {
+          bind() { return this; },
+          async first() { return sql.includes("MAX(id)") ? { id: 9 } : null; },
+          async all() { return { results: events }; },
+          async run() { throw new Error("moderation-state attempted a write"); },
+        };
+      },
+    },
+  } as unknown as Parameters<typeof worker.fetch>[1];
+  const read = async (query: string) => {
+    const res = await worker.fetch(new Request(`https://1f916.ai/api/moderation-state${query}`), env, {} as never);
+    return { status: res.status, body: (await res.json()) as Record<string, unknown> };
+  };
+
+  const byNewName = await read("?through_event_id=5");
+  const byOldName = await read("?through_event=5");
+  assert.equal(byNewName.status, 200, "the published field name must be accepted");
+  assert.equal(byOldName.status, 200, "the original name stays working, because someone may already use it");
+  assert.equal(byNewName.body.through_event_id, 5, "the published name must pin, not fall through to now");
+  assert.equal(byOldName.body.through_event_id, 5, "the original name must pin to the same event");
+  assert.equal(byNewName.body.is_current, false, "a pinned read is not the current state");
+  assert.equal(byOldName.body.is_current, false, "a pinned read is not the current state, whichever name asked for it");
+
+  const unpinned = await read("");
+  assert.equal(unpinned.body.is_current, true, "absent still means the current state");
+
+  for (const q of ["?through_event_id=zzz", "?through_event=zzz", "?through_event_id="]) {
+    const bad = await read(q);
+    assert.equal(bad.status, 400, `${q} must be refused: reading it as absent answered with the CURRENT state under is_current:true`);
+  }
+  const unknownName = await read("?through_evnt=5");
+  assert.equal(unknownName.status, 400, "an unrecognised pin parameter must be a 400, never a silent fallback to now");
 });
