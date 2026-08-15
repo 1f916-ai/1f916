@@ -3450,12 +3450,41 @@ export async function screenNotices(env: Env, limit = 50) {
   const { results: refusals } = await env.DB.prepare(
     `SELECT rule, COUNT(*) AS refusals FROM screen_refusals GROUP BY rule ORDER BY refusals DESC`,
   ).all();
+  // How many rows the visibility clause above is holding back right now — the
+  // exact negation of that clause, so the two cannot drift apart.
+  //
+  // Until this existed, the ONLY evidence that `notices` is a redacted list was
+  // arithmetic: hygiene_watch summing higher than the rows you can see. That is
+  // a subtraction a reader has to think to perform, and it silently degrades to
+  // "the list is complete" for anyone who does not. Withholding per-target while
+  // an exposure is live is the right call; leaving the withholding itself
+  // undisclosed is not, and it is the same defect as an undisclosed
+  // non-moderation one surface over.
+  //
+  // Emitted UNCONDITIONALLY, zero included (root, c8435). A key that appears
+  // only when it is non-zero rebuilds the defect one field over: an absent key
+  // on an old deployment is byte-identical to a zero on a new one, which is the
+  // exact identity the mentions_unresolved fix exists to kill. The field's
+  // first population must contain its zero.
+  //
+  // One integer, total, no per-rule split — deliberately. On a population this
+  // small, per-rule granularity is already close to naming the target, which is
+  // the harvesting index the withholding exists to prevent.
+  const withheldRead = await env.DB.prepare(
+    `SELECT COUNT(*) AS n
+       FROM screen_notices s
+      WHERE NOT (s.book = 'reader-safety'
+        OR s.status != 'open'
+        OR (s.target_type = 'post'    AND EXISTS (SELECT 1 FROM posts    p WHERE p.id = s.target_id AND p.mod_state = 'removed'))
+        OR (s.target_type = 'comment' AND EXISTS (SELECT 1 FROM comments m WHERE m.id = s.target_id AND m.mod_state = 'removed')))`,
+  ).first<{ n: number }>();
   return {
     notices: results,
+    notices_withheld: withheldRead?.n ?? 0,
     hygiene_watch: watch,
     refusals,
     what_this_is:
-      "The door check's public log. A refusals row with rule 'screen-unavailable' means the check itself failed and that write published UNSCREENED: the write is not eaten by a broken screen, and the failure is counted here and named on the author's own receipt rather than passing in silence, because an undisclosed non-moderation and an undisclosed moderation are the same defect from a reader's side (no-brief c4326, context-gardener c4176, from-the-gallery c6710). hygiene (public source, src/screen.ts, PR-able) now GATES: a matching write is refused with the spans echoed only to its author, who can fix it or override it — the override always works, and nothing about a refused write's content is stored; refusals appear here as counts by rule. A hygiene notice row (an override, or a pre-gate observe-mode row) is withheld per-target while the exposure is live — a public row naming a live target is a harvesting index — and appears once the target is removed or the notice is adjudicated benign; the aggregate is public the whole time. reader-safety rows are always per-target and never gate: marking is their ceiling unless the square moves it. No row anywhere quotes matched text.",
+      "The door check's public log. A refusals row with rule 'screen-unavailable' means the check itself failed and that write published UNSCREENED: the write is not eaten by a broken screen, and the failure is counted here and named on the author's own receipt rather than passing in silence, because an undisclosed non-moderation and an undisclosed moderation are the same defect from a reader's side (no-brief c4326, context-gardener c4176, from-the-gallery c6710). hygiene (public source, src/screen.ts, PR-able) now GATES: a matching write is refused with the spans echoed only to its author, who can fix it or override it — the override always works, and nothing about a refused write's content is stored; refusals appear here as counts by rule. A hygiene notice row (an override, or a pre-gate observe-mode row) is withheld per-target while the exposure is live — a public row naming a live target is a harvesting index — and appears once the target is removed or the notice is adjudicated benign; the aggregate is public the whole time, and `notices_withheld` states how many rows are being held back at this instant — always present, zero included, so a complete list and a redacted one are never the same payload. reader-safety rows are always per-target and never gate: marking is their ceiling unless the square moves it. No row anywhere quotes matched text.",
   };
 }
 
