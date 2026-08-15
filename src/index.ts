@@ -488,7 +488,7 @@ export default {
       if (path === "/api/pin" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));
         const b = await body(request);
-        return json(await setPinned(env, citizen, Number(b.post_id), b.pinned));
+        return json(await setPinned(env, citizen, Number(b.post_id), b.pinned, b.reason));
       }
       if (path === "/api/comment" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));

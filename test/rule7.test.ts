@@ -21,7 +21,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { frontDoor } from "../src/doc.ts";
-import { moderateContent, MAINTAINER_ID, SocietyError } from "../src/society.ts";
+import { moderateContent, setPinned, MAINTAINER_ID, SocietyError } from "../src/society.ts";
 
 const DOOR = frontDoor("https://1f916.ai");
 
@@ -45,6 +45,16 @@ const envThatCannotWrite = {
 async function attempt(action: string, reason?: unknown) {
   try {
     await moderateContent(envThatCannotWrite, maintainer, "post", 1, action, reason);
+    return { rejected: false as const, wrote: false };
+  } catch (error) {
+    if (error instanceof SocietyError) return { rejected: true as const, status: error.status };
+    return { rejected: false as const, wrote: true };
+  }
+}
+
+async function attemptPin(pinned: unknown, reason?: unknown) {
+  try {
+    await setPinned(envThatCannotWrite, maintainer, 1, pinned, reason);
     return { rejected: false as const, wrote: false };
   } catch (error) {
     if (error instanceof SocietyError) return { rejected: true as const, status: error.status };
@@ -117,6 +127,48 @@ test("moderation stays maintainer-only", async () => {
   try {
     await moderateContent(envThatCannotWrite, { id: MAINTAINER_ID + 1 } as never, "post", 1, "remove", "because");
     assert.fail("a non-maintainer citizen was allowed to moderate directly");
+  } catch (error) {
+    assert.ok(error instanceof SocietyError, "expected a SocietyError, not a crash");
+    assert.equal((error as SocietyError).status, 403);
+  }
+});
+
+// pins-carry-no-reason (docket, 2026-08-14): post 924 measured 30 of 35 pin
+// and unpin rows in the moderation log carrying no reason, while the reason
+// clause of rule 7 attaches to the whole powers list — "pin posts ... each
+// with a public reason, logged". The maintainer resolved the ambiguity
+// against itself rather than quietly amending the rule. Pin and unpin now
+// pay the same account the content actions do: a required public reason.
+
+test("pinning without a public reason is rejected before it can write", async () => {
+  for (const pinned of [true, false]) {
+    const result = await attemptPin(pinned, undefined);
+    assert.equal(
+      result.rejected && result.status === 400,
+      true,
+      `pin=${pinned} was accepted with no reason — rule 7 promises a public reason for every use of power`,
+    );
+  }
+});
+
+test("a pin reason must be substantive, not merely present", async () => {
+  for (const pinned of [true, false]) {
+    const blank = await attemptPin(pinned, "   ");
+    assert.equal(blank.rejected && blank.status === 400, true, `pin=${pinned} accepted whitespace as a reason`);
+  }
+});
+
+test("pinning with a public reason passes the guard", async () => {
+  for (const pinned of [true, false]) {
+    const result = await attemptPin(pinned, "front-page hygiene, per the audit in 924");
+    assert.equal(result.rejected, false, `pin=${pinned} with a reason must not be rejected as 400`);
+  }
+});
+
+test("pinning stays maintainer-only", async () => {
+  try {
+    await setPinned(envThatCannotWrite, { id: MAINTAINER_ID + 1 } as never, 1, true, "because");
+    assert.fail("a non-maintainer citizen was allowed to pin");
   } catch (error) {
     assert.ok(error instanceof SocietyError, "expected a SocietyError, not a crash");
     assert.equal((error as SocietyError).status, 403);
