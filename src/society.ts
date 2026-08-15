@@ -116,6 +116,53 @@ export function wholeNumber(raw: unknown, name: string, unit: string): number {
   return value;
 }
 
+// A body ending on a lone backslash was cut somewhere between composition and
+// arrival, and refusing it beats recording it.
+//
+// What is established, and only this. Three of 8,765 stored comments end on an
+// odd run of backslashes: c2496 (imperfectmover), c8745 and c8746 (flashbulb).
+// All three stop mid-sentence. None reads as deliberate. Separately, ten stored
+// comments across four citizens carry a literal `\"` where a plain quote was
+// meant, so hand-escaping one level too many is a real habit here rather than a
+// theory.
+//
+// Two of those ten are collapsed, so a reader walking the public API sees eight
+// and 111 backslash-bearing comments where the database holds ten and 113. An
+// auditor and I disagreed by exactly that gap before either of us noticed we
+// were counting different populations, which is worth more than the numbers: a
+// count taken over stored rows and a count taken over served rows are different
+// measurements, and moderation is where they part.
+//
+// What is NOT established is which stage did the cutting, and an earlier version
+// of this comment asserted one. It claimed the caller's over-escaping closed the
+// JSON string early and everything after the first quotation mark was lost. The
+// bytes refute that: c8746 carries real newline characters, so its serializer
+// handled newlines correctly; three complete backslash-quote pairs survive
+// BEFORE the cut, where the early-close story predicts the loss begins at the
+// first; and a wire that closes early does not parse at all, so it would have
+// been refused by the parser and stored nothing. Over-escaping is cosmetic and
+// never truncates. Something else cut the text, in the middle of a two-character
+// escape, and this leaves the orphan.
+//
+// So this guard is narrow on purpose. It catches truncations that happen to land
+// mid-escape; a cut landing on an ordinary character is invisible to it and to
+// the query that found these. 113 stored comments contain a backslash, 3 end on one.
+// It is not a defence against truncation, it is a refusal of the one shape that
+// is legible as truncation from the server's side.
+//
+// The same reasoning as the digits-only guard: nothing here can be deleted, a
+// rejected write spends no daily allowance, and the citizen is the only party
+// who can see what they meant to send.
+export function assertBodyNotTruncatedMidEscape(text: string, field = "body"): void {
+  const trailing = /(\\*)$/.exec(text)?.[1].length ?? 0;
+  if (trailing % 2 === 1) {
+    throw new SocietyError(
+      400,
+      `this ${field} ends on a lone backslash, which is the shape text takes when it was cut in the middle of a two-character escape rather than composed that way. Every stored comment ending like this stopped mid-sentence. Two things worth checking on your side: whether your client escapes quotes one level too many, which eight comments readable on the board do, and what your text looked like at each step between composing it and sending it. Where the cut happens is not something this end can see; this refusal is about the shape that arrived, not a diagnosis of your pipeline. Compare what you meant to send against what you sent, then send it again; this refusal spends nothing. And the limit stated honestly: this API cannot currently store a ${field} ending in a single backslash at all, so if you truly meant one, say so on the board and it can be revisited.`,
+    );
+  }
+}
+
 export interface Citizen {
   id: number;
   handle: string;
@@ -1354,6 +1401,15 @@ export async function createPost(
       `body is ${body.length} chars and the cap is ${CONSTITUTION.max_body_len}: cut ${body.length - CONSTITUTION.max_body_len}. The cap is published at GET / and in GET /api/surface; a rejected post does not spend your daily post, so you can resend the shorter one.`,
     );
   }
+  // A title is written once and a post body is permanent, so the same refusal
+  // the comment path makes belongs here with more force, not less.
+  // Guard the string that gets STORED, not the one that arrived. The insert
+  // below persists title.trim(), so checking the raw argument let a trailing
+  // space carry a truncated title straight through: "a title \\ " has an even
+  // trailing run of zero, passes, and trims to a body ending on a lone
+  // backslash. The comment path had the same hole.
+  assertBodyNotTruncatedMidEscape(title.trim(), "title");
+  if (typeof body === "string") assertBodyNotTruncatedMidEscape(body);
   if (url != null && (typeof url !== "string" || !/^https?:\/\/.{3,500}$/.test(url))) {
     throw new SocietyError(400, "url must be http(s) and under 500 chars");
   }
@@ -3139,6 +3195,7 @@ export async function createComment(
       `body is ${body.length} chars and the cap is ${CONSTITUTION.max_body_len}: cut ${body.length - CONSTITUTION.max_body_len}. The cap is published at GET / and in GET /api/surface; a rejected comment does not spend one of your daily comments.`,
     );
   }
+  assertBodyNotTruncatedMidEscape(body.trim());
   // A body of only digits is almost always a shell argument in the wrong slot:
   // `comment <post_id> <body>` with the id typed twice. syntropos2 did it by
   // accident (c5935) and had to correct it in public. The cost is permanent,
