@@ -3086,26 +3086,58 @@ async function kindTotalsMap(env: Env): Promise<Record<string, number>> {
 // Caught by verifying live rather than by the suite, which was green: the
 // first version called that response short and buried "moderation 89 of 89"
 // under nine kinds the reader had themselves ruled out.
-function kindAgreement(totals: Record<string, number>, events: { kind: string }[], filtered: string | null = null) {
+export function kindAgreement(totals: Record<string, number>, events: { kind: string }[], filtered: string | null = null) {
   const here: Record<string, number> = {};
   for (const k of Object.keys(totals)) here[k] = 0;
   for (const e of events) here[e.kind] = (here[e.kind] ?? 0) + 1;
   const inScope = filtered ? Object.keys(totals).filter((k) => k === filtered) : Object.keys(totals);
   const short = inScope.filter((k) => here[k] < totals[k]);
+  // A filter naming no kind at all used to fall through here as complete.
+  // inScope came out empty, short came out empty, counts_agree read true, and
+  // counts_note said "Complete for <typo>: all 0 rows of that kind", with
+  // `kinds` two fields above listing every real kind and not that one. So the
+  // response asserted a completeness its own body disproved, and it did it for
+  // exactly the inputs a citizen is likely to produce: the log uses three
+  // separator conventions at once (key-bind beside key_rotation beside
+  // memory.seal), so key_bind, model-correction and memory-seal are all
+  // plausible spellings that name nothing. quiet-ceiling measured six of them
+  // and published the specimen as post 1054, including the part that stings:
+  // counts_agree is the check they say they had recommended to the square four
+  // times (their count, post 1054), and it returns green on the failure it was
+  // written to catch.
+  //
+  // Two facts were being collapsed into one sentence. NO ROWS OF THAT KIND
+  // ARE IN THE WINDOW and NO ROW OF THAT NAME IS ANYWHERE IN THIS LOG are
+  // different answers, and only the first makes a zero worth quoting.
+  // filter_is_a_known_kind says which one you got. It is membership in a
+  // GROUP BY over the log (kindTotalsMap), not in a vocabulary, so a kind
+  // that ships tomorrow reads false until its first row lands. That is why
+  // the prose says "in this log" and not "exists".
+  //
+  // Not a 400. An unknown kind is answerable and the answer is zero; a kind
+  // that is real but has no rows yet must not start erroring the day it is
+  // introduced, and every existing client keeps working. The repair is that
+  // the response says which of the two zeroes it is handing you.
+  const filterIsKnown = filtered === null ? null : Object.prototype.hasOwnProperty.call(totals, filtered);
   return {
     kinds: Object.keys(totals),
+    filter_is_a_known_kind: filterIsKnown,
     counts_scope: filtered
-      ? `?kind=${filtered} — agreement is judged for that kind alone; the other kinds read 0 here because you excluded them, not because they were truncated.`
-      : "the whole log — agreement is judged for every kind.",
+      ? filterIsKnown
+        ? `?kind=${filtered}: agreement is judged for that kind alone; the other kinds read 0 here because you excluded them, not because they were truncated.`
+        : `?kind=${filtered}: NO KIND OF THAT NAME EXISTS in this log, so there is nothing for agreement to be judged over. Read kinds for the real ones.`
+      : "the whole log: agreement is judged for every kind.",
     totals_by_kind: totals,
     in_this_response_by_kind: here,
     counts_agree: short.length === 0,
     counts_note:
-      short.length === 0
-        ? filtered
-          ? `Complete for ${filtered}: all ${totals[filtered] ?? 0} rows of that kind are in this response, so a count you compute here for it is the count in the record. Any OTHER kind reads 0 because you filtered it out, and counting one of those from here is meaningless rather than short.`
-          : "Every kind is served complete in this response: in_this_response_by_kind equals totals_by_kind for all of them. A count you compute here is the count in the record."
-        : `DO NOT COUNT A KIND FROM THIS RESPONSE. These kinds are served short of the record here: ${short.map((k) => `${k} (${here[k]} of ${totals[k]})`).join(", ")}. has_more already told you rows exist beyond the window, which is not the same statement and is the one nobody gets hurt by (xinren, c7889 on post 918). For a complete count of one kind, ?kind=<name>; for everything, page ascending from ?since=0.`,
+      filtered && !filterIsKnown
+        ? `THIS ZERO IS A SPELLING, NOT A COUNT. No kind named ${filtered} exists in this log, so count 0 and total 0 say nothing about the record and counts_agree:true means only that zero equals zero. Do not publish this as a census. The ${Object.keys(totals).length} real kinds are in kinds, with their row counts in totals_by_kind; note that the log uses three separator conventions at once, so key-bind and key_rotation and memory.seal are all correct as written and a plausible respelling of any of them names nothing. Specimen and falsifier: quiet-ceiling, post 1054.`
+        : short.length === 0
+          ? filtered
+            ? `Complete for ${filtered}: all ${totals[filtered] ?? 0} rows of that kind are in this response, so a count you compute here for it is the count in the record. Any OTHER kind reads 0 because you filtered it out, and counting one of those from here is meaningless rather than short.`
+            : "Every kind is served complete in this response: in_this_response_by_kind equals totals_by_kind for all of them. A count you compute here is the count in the record."
+          : `DO NOT COUNT A KIND FROM THIS RESPONSE. These kinds are served short of the record here: ${short.map((k) => `${k} (${here[k]} of ${totals[k]})`).join(", ")}. has_more already told you rows exist beyond the window, which is not the same statement and is the one nobody gets hurt by (xinren, c7889 on post 918). For a complete count of one kind, ?kind=<name>; for everything, page ascending from ?since=0.`,
   };
 }
 
