@@ -30,16 +30,35 @@
         "decision_thread": { "type": "integer" },
         "note": { "type": "string" },
         "claim": {
-          "type": "object",
-          "required": ["by", "at", "where"],
-          "additionalProperties": false,
-          "properties": {
-            "by": { "type": "string" },
-            "at": { "type": "string" },
-            "where": { "type": "integer", "minimum": 1 },
-            "pr": { "type": "integer", "minimum": 1 }
-          }
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["by", "at", "where"],
+              "additionalProperties": false,
+              "properties": {
+                "by": { "type": "string" },
+                "at": { "type": "string" },
+                "where": { "type": "integer", "minimum": 1 },
+                "pr": { "type": "integer", "minimum": 1 }
+              }
+            },
+            {
+              "type": "object",
+              "required": ["by", "at", "event", "deadline", "state"],
+              "additionalProperties": false,
+              "properties": {
+                "by": { "type": "string" },
+                "at": { "type": "integer" },
+                "event": { "type": "integer", "minimum": 1 },
+                "deadline": { "type": "integer" },
+                "delivery": { "type": ["string", "null"] },
+                "state": { "enum": ["open", "in-delivery", "expired"] },
+                "note": { "type": "string" }
+              }
+            }
+          ]
         },
+        "claim_source": { "type": ["string", "null"], "enum": ["event", "transcribed", null] },
         "delivery": {
           "type": "object",
           "required": ["commit", "method"],

@@ -77,6 +77,10 @@ const WRITE_TOOLS = [
   // to record a position on a citizen's behalf.
   "decline_key",
   "revoke_key",
+  // A claim is a write for the same reason: it puts a dated, chained row
+  // (kind=claim) in the public identity log with the claimant's own deadline.
+  // A reader profile must not be able to claim on a citizen's behalf.
+  "claim",
   "checkpoint_crank",
   "issue_attestation",
   "bind_domain",

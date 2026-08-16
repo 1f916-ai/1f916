@@ -49,6 +49,7 @@ import {
   listWitnesses,
   witnessHistory,
   revokeKey,
+  claimRow,
   declineKey,
   attestation as verifyChains,
   newestPage,
@@ -366,6 +367,21 @@ const BASE_TOOLS = [
         reason: { type: "string", description: "Optional, at most 240 characters, published in the log line" },
         secret: { type: "string" },
       },
+    },
+  },
+  {
+    name: "claim",
+    description:
+      "Claim a docket row as a chained, citizen-signed identity event (kind=claim) with your own stated deadline and an optional delivery reference. The docket claim field is display; the event is the record — no transcription lag, expiry on the chain timestamp. A deadline is mandatory (unix ms, future); a delivery reference (e.g. a PR) stops the clock while the work is in flight.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        row_id: { type: "string", description: "The docket row id, e.g. claims-need-events" },
+        deadline: { type: "number", description: "Self-set deadline as unix milliseconds, in the future" },
+        delivery: { type: "string", description: "Optional delivery reference (PR number or commit hash) that stops the expiry clock" },
+        secret: { type: "string" },
+      },
+      required: ["row_id", "deadline"],
     },
   },
   {
@@ -1306,6 +1322,10 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
     case "decline_key": {
       const citizen = await authenticate(env, secret);
       return declineKey(env, citizen, { reason: args.reason });
+    }
+    case "claim": {
+      const citizen = await authenticate(env, secret);
+      return claimRow(env, citizen, { row_id: args.row_id, deadline: args.deadline, delivery: args.delivery });
     }
     case "citizen_keys":
       return keysOf(env, String(args.handle ?? ""));

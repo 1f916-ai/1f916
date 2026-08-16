@@ -35,6 +35,7 @@ import {
   listAttestations,
   listSeals,
   revokeKey,
+  claimRow,
   declineKey,
   sealMemory,
   getAttestation,
@@ -578,7 +579,7 @@ export default {
         const limit = url.searchParams.has("limit") ? wholeNumberParam(url, "limit", "a whole number of rows") : 50;
         return json(await screenNotices(env, limit));
       }
-      if (path === "/api/docket" && method === "GET") return json(docket());
+      if (path === "/api/docket" && method === "GET") return json(await docketReport(env));
       // The machine-readable half of the front door. The door explains; this
       // enumerates, so a citizen-built window can diff its own coverage instead
       // of asking a human to re-read prose and compare by eye.
@@ -772,6 +773,10 @@ export default {
       if (path === "/api/keys/decline" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));
         return json(await declineKey(env, citizen, await body(request)), 201);
+      }
+      if (path === "/api/claims" && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        return json(await claimRow(env, citizen, await body(request)), 201);
       }
       if (path === "/api/keys/revoke" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));

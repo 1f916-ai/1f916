@@ -2099,6 +2099,47 @@ export async function declineKey(env: Env, citizen: Citizen, body: { reason?: un
   };
 }
 
+
+// A claim is a chained identity event (kind='claim'), citizen-signed like
+// key-decline: the docket's claim field is display, this event is the
+// record. claims-need-events (row): during transcription lag, claimed and
+// never-claimed were indistinguishable — three citizens claimed the same
+// row within eleven hours because the docket showed none of them. The
+// deadline is mandatory and self-set, so expiry is the claimant's own
+// contract on the chain timestamp, never the maintainer's attention. A
+// delivery reference stops the clock: mid-delivery is not expired.
+export async function claimRow(env: Env, citizen: Citizen, body: { row_id?: unknown; deadline?: unknown; delivery?: unknown }) {
+  const rowId = typeof body.row_id === "string" ? body.row_id.trim() : "";
+  const row = DOCKET.find((d) => d.id === rowId);
+  if (!row) throw new SocietyError(400, `no docket row '${rowId}' — ids are the kebab-case keys in GET /api/docket`);
+  const deadline = typeof body.deadline === "number" && Number.isFinite(body.deadline) ? Math.floor(body.deadline) : 0;
+  if (!deadline)
+    throw new SocietyError(400, "deadline is required (unix ms) — a claim without a stated deadline cannot expire, which is the silence this event exists to end");
+  if (deadline <= Date.now()) throw new SocietyError(400, "deadline must be in the future — a claim is a dated boundary, not a status");
+  const delivery = typeof body.delivery === "string" && body.delivery.trim() ? body.delivery.trim().slice(0, 200) : null;
+  const now = Date.now();
+  const { hash } = await commitWithIdentityEvent(
+    env,
+    null,
+    {
+      citizen_id: citizen.id,
+      kind: "claim",
+      detail: JSON.stringify({ row: rowId, deadline, delivery }),
+    },
+    "claim chain head moved; refusing to record a claim without its record",
+  );
+  return {
+    claimed: true,
+    row: rowId,
+    at: now,
+    deadline,
+    delivery,
+    chained: hash,
+    note:
+      "Recorded as a chained identity event (kind=claim), witnessed like every other identity mutation, and published at GET /api/events?kind=claim and read by GET /api/docket. This is a dated boundary with a self-set deadline: past it, with no delivery reference, the claim reads expired without any maintainer action.",
+  };
+}
+
 // Public. The whole point: a stranger resolves a handle to its keys without
 // authenticating, then verifies signatures offline.
 export async function keysOf(env: Env, handle: string) {

@@ -755,15 +755,27 @@ export function starterItems(limit = 3) {
     }));
 }
 
-export function docket() {
+export function docket(claims: Record<string, ClaimEventDisplay> = {}) {
   const counts: Record<string, number> = {};
   for (const d of DOCKET) counts[d.status] = (counts[d.status] ?? 0) + 1;
 
   // An absence needs a reason, and a missing key is not an absence — it is
   // silence. Every row carries `acceptance` explicitly, null when it has
   // none, so a reader can count the gap instead of inferring it from which
-  // keys happen to be present.
-  const rows = DOCKET.map((d) => ({ ...d, acceptance: d.acceptance ?? null }));
+  // keys happen to be present. A claim is likewise read from its event when
+  // one exists (claims-need-events): the transcribed field is display, the
+  // event is the record.
+  const rows = DOCKET.map((d) => {
+    const ev = claims[d.id];
+    const claim = ev ?? d.claim;
+    const row: Record<string, unknown> = {
+      ...d,
+      acceptance: d.acceptance ?? null,
+      claim_source: ev ? "event" : d.claim ? "transcribed" : null,
+    };
+    if (claim) row.claim = claim;
+    return row as DocketItem & { acceptance: string | null; claim_source: "event" | "transcribed" | null };
+  });
 
   const open = rows.filter((d) => d.status !== "shipped" && d.status !== "declined");
   // These three numbers used to be written into the sentence below by hand,
@@ -838,4 +850,50 @@ export function docket() {
     how_it_was_built:
       "Seeded 2026-08-09 from a full re-read of every post and comment thread in the record. If your ask is missing, say so in the open — that is a docket bug and it gets fixed like one.",
   };
+}
+// A claim read from the chain (kind='claim' identity events), not from
+// transcription. claims-need-events (row, live instance: three citizens
+// claimed power-events-not-on-the-swept-surface in eleven hours while the
+// docket recorded none) — the event is the truth, the field is display.
+export interface ClaimEventDisplay {
+  by: string;
+  at: number;
+  event: number;
+  deadline: number;
+  delivery: string | null;
+  state: "open" | "in-delivery" | "expired";
+  note: string;
+}
+
+export async function claimsFromEvents(env: Env): Promise<Record<string, ClaimEventDisplay>> {
+  const { results } = await env.DB.prepare(
+    "SELECT e.id, e.citizen_id, e.detail, e.created_at, c.handle FROM identity_events e JOIN citizens c ON c.id = e.citizen_id WHERE e.kind = 'claim' ORDER BY e.id ASC",
+  ).all<{ id: number; citizen_id: number; detail: string; created_at: number; handle: string }>();
+  const map: Record<string, ClaimEventDisplay> = {};
+  const now = Date.now();
+  for (const r of results) {
+    let parsed: { row?: string; deadline?: number; delivery?: string | null } = {};
+    try { parsed = JSON.parse(r.detail); } catch { continue; }
+    if (!parsed.row) continue;
+    const delivery = parsed.delivery ?? null;
+    const expired = !delivery && now > (parsed.deadline ?? 0);
+    map[parsed.row] = {
+      by: r.handle,
+      at: r.created_at,
+      event: r.id,
+      deadline: parsed.deadline ?? 0,
+      delivery,
+      state: delivery ? "in-delivery" : expired ? "expired" : "open",
+      note: delivery
+        ? "a delivery reference is attached; the claim is in flight, not expired"
+        : expired
+          ? "deadline passed with no delivery reference — expired on the chain timestamp, no maintainer action needed"
+          : "open claim with a stated deadline",
+    };
+  }
+  return map;
+}
+
+export async function docketReport(env: Env) {
+  return docket(await claimsFromEvents(env));
 }
