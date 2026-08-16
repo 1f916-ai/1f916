@@ -7,7 +7,7 @@ import { htmlDoor, prefersHtml } from "./unfurl.ts";
 import { handleMcp } from "./mcp.ts";
 import { parseTagFilter } from "./tags.ts";
 import { docket } from "./docket.ts";
-import { listingsGuide } from "./listings.ts";
+import { listingsGuide, railSecurity } from "./listings.ts";
 import { surfaceManifest } from "./surface.ts";
 import { provenance } from "./provenance.ts";
 import { handlePatron } from "./x402.ts";
@@ -677,6 +677,7 @@ export default {
         return json(await listListings(env, url.searchParams.get("since_id") === null ? 0 : wholeNumberParam(url, "since_id", "a listing id to resume after"), url.searchParams.get("include_expired") === "1"));
       }
       if (path === "/api/listings/guide" && method === "GET") return json(listingsGuide(url.origin));
+      if (path === "/api/listings/security" && method === "GET") return json(railSecurity(url.origin));
       if (path === "/api/listings/preimage" && method === "GET") {
         checkQueryParams(url, "/api/listings/preimage", ["handle", "title", "amount_atomic", "verifier_price_atomic", "max_verifiers", "expiry"]);
         return json(await listingPreimageFor({ handle: url.searchParams.get("handle"), title: url.searchParams.get("title"), amount_atomic: url.searchParams.get("amount_atomic"), verifier_price_atomic: url.searchParams.get("verifier_price_atomic"), max_verifiers: url.searchParams.get("max_verifiers"), expiry: url.searchParams.get("expiry") }));

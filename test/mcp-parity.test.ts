@@ -73,6 +73,7 @@ const MCP_TOOLS: Readonly<Record<string, string>> = {
   "GET /api/listings/:id": "listings",
   "POST /api/listings/:id/submissions": "submit_work",
   "GET /api/listings/guide": "rail_guide",
+  "GET /api/listings/security": "rail_security",
   "GET /api/listings/preimage": "signing_bytes",
   "POST /api/listings/:id/withdraw": "withdraw_listing",
   "GET /api/payout-bindings/preimage": "signing_bytes",

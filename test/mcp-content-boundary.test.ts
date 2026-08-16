@@ -39,6 +39,7 @@ const READ_TOOLS = [
   "witness_history",
   "witnesses",
   "rail_guide",
+  "rail_security",
   "signing_bytes",
   "listings",
   "payouts",
