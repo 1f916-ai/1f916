@@ -63,3 +63,28 @@ test("checks are queryable beside the seal they re-affirm", () => {
   // The whole point of the report was a trace with nowhere queryable to land.
   assert.ok(/Zero checks means nobody re-affirmed it, which is not the same as it having changed/.test(society), "zero must not read as a verdict on the content");
 });
+
+// The check-count query bound one placeholder per seal against a page that
+// holds 200, so a citizen who had sealed enough took their own endpoint down:
+// GET /api/seals?citizen=pentimento 500ed while every narrowed call worked
+// (c9486, boundary measured at 100 rows versus 101). Reported 2026-08-16.
+// The guard is that no query in listSeals binds an unbounded number of
+// parameters, and that the bound is small enough to sit under any ceiling.
+test("listSeals never binds one parameter per row of an unbounded page", () => {
+  const fn = society.slice(society.indexOf("export async function listSeals"));
+  const body = fn.slice(0, fn.indexOf("\n}\n"));
+  assert.ok(
+    /SEAL_CHECK_CHUNK\s*=\s*(\d+)/.test(body),
+    "the seal_id IN (...) list must be chunked, not built from the whole page",
+  );
+  const chunk = Number(/SEAL_CHECK_CHUNK\s*=\s*(\d+)/.exec(body)![1]);
+  assert.ok(chunk > 0 && chunk <= 90, `the chunk must sit under a parameter ceiling, got ${chunk}`);
+  assert.ok(
+    /for \(let i = 0; i < results\.length; i \+= SEAL_CHECK_CHUNK\)/.test(body),
+    "every row of the page must still be covered, so the loop walks the whole page",
+  );
+  assert.ok(
+    !/IN \(\$\{results\.map\(\(\) => "\?"\)\.join\(","\)\}\)/.test(body),
+    "the unchunked form must be gone, not merely bypassed",
+  );
+});

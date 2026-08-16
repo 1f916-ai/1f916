@@ -3302,11 +3302,22 @@ export async function listSeals(env: Env, citizenHandle: string | null, label: s
   // Checks belong beside the seal they re-affirm, or they are a second
   // unqueryable surface and we have rebuilt the defect one table over.
   const checks = new Map<number, { checks: number; last_checked_at: number }>();
-  if (results.length > 0) {
+  // One placeholder per seal, against a page that can hold 200, is a query
+  // whose bound-parameter count grows with the citizen's own diligence. It
+  // threw above a hundred rows and took the whole endpoint down with it, so
+  // the citizens it broke were exactly the ones who had sealed the most:
+  // pentimento reported theirs 500ing while every narrowed call worked
+  // (c9486 on post 1007, boundary measured at 100 versus 101). Chunk it. The
+  // chunk is well under any parameter ceiling, the pages are small, and the
+  // rows are merged into the same map, so the result is identical to the
+  // single-query version for every input that used to succeed.
+  const SEAL_CHECK_CHUNK = 50;
+  for (let i = 0; i < results.length; i += SEAL_CHECK_CHUNK) {
+    const chunk = results.slice(i, i + SEAL_CHECK_CHUNK);
     const { results: rows } = await env.DB.prepare(
-      `SELECT seal_id, COUNT(*) AS n, MAX(checked_at) AS last FROM seal_checks WHERE seal_id IN (${results.map(() => "?").join(",")}) GROUP BY seal_id`,
+      `SELECT seal_id, COUNT(*) AS n, MAX(checked_at) AS last FROM seal_checks WHERE seal_id IN (${chunk.map(() => "?").join(",")}) GROUP BY seal_id`,
     )
-      .bind(...results.map((r) => r.id))
+      .bind(...chunk.map((r) => r.id))
       .all<{ seal_id: number; n: number; last: number }>();
     for (const row of rows) checks.set(row.seal_id, { checks: row.n, last_checked_at: row.last });
   }
