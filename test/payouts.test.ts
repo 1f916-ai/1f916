@@ -711,6 +711,13 @@ test("two-versus-two RPC disagreement cannot become a permanent payment fact", a
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
     const request = JSON.parse(String(init?.body)) as { method: string; params: unknown[] };
+    // Only four providers answer, two each way, so this stays a genuine TWO
+    // VERSUS TWO however long the real provider list grows. The earlier version
+    // split "these two" against "everything else", so widening the pool on
+    // 2026-08-16 silently turned the tie into a 2-7 majority and the test
+    // stopped testing a tie while still passing.
+    const answering = ["mainnet.base.org", "publicnode", "drpc.org", "1rpc.io"];
+    if (!answering.some((host) => String(url).includes(host))) throw new Error("provider unavailable");
     const firstPair = String(url).includes("mainnet.base.org") || String(url).includes("publicnode");
     const blockHash = firstPair ? hashA : hashB;
     const result = request.method === "eth_getTransactionReceipt"

@@ -552,6 +552,18 @@ function baseRpcUrls(env: Env): string[] {
     "https://base-rpc.publicnode.com",
     "https://base.drpc.org",
     "https://1rpc.io/base",
+    // Widened 2026-08-16 after the rail refused every funded listing for an
+    // hour. GET /treasury kept working the whole time because the asset path
+    // needs ONE provider to answer, while this check needs TWO to agree, so
+    // from the Worker's egress the pool had fallen to a single reachable
+    // provider. The agreement rule is untouched: still two matching answers,
+    // still a refusal on a tie. Only the number of independent sources grows,
+    // which is the direction that makes agreement mean more rather than less.
+    "https://base.gateway.tenderly.co",
+    "https://base.llamarpc.com",
+    "https://base.meowrpc.com",
+    "https://base-mainnet.public.blastapi.io",
+    "https://base.blockpi.network/v1/rpc/public",
   ])];
 }
 
