@@ -558,7 +558,13 @@ function baseRpcUrls(env: Env): string[] {
 async function rpc(rpcUrl: string, method: string, params: unknown[]): Promise<unknown> {
   const response = await fetch(rpcUrl, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    // Every public Base RPC in the list below answers 403 to a request with no
+    // User-Agent. Without this header all four providers fail, none of them
+    // votes, and readUsdcBalanceTwoSource raises "providers did not agree" on
+    // every funded listing, which reads as a chain disagreement when it is
+    // actually us being refused at the door. Found 2026-08-16 when the rail
+    // stopped accepting any listing that named a paying wallet.
+    headers: { "content-type": "application/json", "user-agent": "1f916.ai registry (+https://1f916.ai)" },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
     signal: AbortSignal.timeout(2500),
   });

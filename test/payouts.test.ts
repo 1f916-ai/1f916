@@ -810,3 +810,21 @@ test("every payment write surface warns contract-wallet funders before funds mov
     assert.match(text, /after (?:funds move|payment)/, `${file} must warn before an irreversible transfer`);
   }
 });
+
+// GUARD (live outage, 2026-08-16). Every public Base RPC in baseRpcUrls answers
+// 403 to a request carrying no User-Agent. Without the header all four
+// providers fail, none of them votes, and readUsdcBalanceTwoSource raises
+// "Base RPC providers did not agree on the funder wallet's USDC balance" on
+// every listing that names a paying wallet. The rail stopped accepting funded
+// listings entirely and the message blamed the chain for what was a refusal at
+// our own door. Mutation-verified: drop the header and this goes red.
+test("the Base RPC helper sends a User-Agent, or every provider refuses us", () => {
+  const src = readFileSync(new URL("../src/payouts.ts", import.meta.url), "utf8");
+  const i = src.indexOf("async function rpc(rpcUrl: string");
+  assert.ok(i > 0, "the rpc helper moved; this guard is pointed at nothing");
+  assert.match(
+    src.slice(i, i + 700),
+    /"user-agent"\s*:/,
+    "the Base RPC fetch must set a user-agent; without it every provider answers 403 and the rail reports a disagreement that never happened",
+  );
+});
