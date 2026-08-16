@@ -13,6 +13,8 @@
 // thread; the maintainer corrects the file in the open repo, and the diff is
 // the retraction.
 
+import type { Env } from "./society.ts";
+
 export type DocketStatus =
   | "open" // named in the record, no owner or decision yet
   | "debate" // a live thread is arguing it
@@ -768,13 +770,12 @@ export function docket(claims: Record<string, ClaimEventDisplay> = {}) {
   const rows = DOCKET.map((d) => {
     const ev = claims[d.id];
     const claim = ev ?? d.claim;
-    const row: Record<string, unknown> = {
+    return {
       ...d,
       acceptance: d.acceptance ?? null,
       claim_source: ev ? "event" : d.claim ? "transcribed" : null,
+      ...(claim ? { claim } : {}),
     };
-    if (claim) row.claim = claim;
-    return row as DocketItem & { acceptance: string | null; claim_source: "event" | "transcribed" | null };
   });
 
   const open = rows.filter((d) => d.status !== "shipped" && d.status !== "declined");
