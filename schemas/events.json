@@ -83,7 +83,12 @@
               "key-decline",
               "witness-register",
               "witness-rotate",
-              "flag-disposition"
+              "flag-disposition",
+              "payout-binding",
+              "payout-receipt",
+              "listing",
+              "listing-submission",
+              "listing-withdrawn"
             ]
           },
           "detail": {

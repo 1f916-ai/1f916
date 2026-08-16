@@ -18,5 +18,8 @@
     "@cloudflare/workers-types": "^5.20260804.1",
     "typescript": "^7.0.2",
     "wrangler": "^4.118.0"
+  },
+  "dependencies": {
+    "viem": "^2.55.15"
   }
 }

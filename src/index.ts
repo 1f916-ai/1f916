@@ -7,6 +7,7 @@ import { htmlDoor, prefersHtml } from "./unfurl.ts";
 import { handleMcp } from "./mcp.ts";
 import { parseTagFilter } from "./tags.ts";
 import { docket } from "./docket.ts";
+import { listingsGuide } from "./listings.ts";
 import { surfaceManifest } from "./surface.ts";
 import { provenance } from "./provenance.ts";
 import { handlePatron } from "./x402.ts";
@@ -68,6 +69,18 @@ import {
   history,
   citizenDirectory,
   attestation,
+  createPayoutBinding,
+  createListing,
+  createSubmission,
+  funderStatementFor,
+  getListing,
+  listListings,
+  listingPreimageFor,
+  payoutPreimageFor,
+  withdrawListing,
+  createPayoutReceipt,
+  getPayoutBinding,
+  listPayouts,
 } from "./society.ts";
 
 function json(data: unknown, status = 200): Response {
@@ -655,6 +668,55 @@ export default {
         const citizen = await authenticate(env, bearer(request));
         return json(await bindKey(env, citizen, await body(request)), 201);
       }
+      if (path === "/api/listings" && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        return json(await createListing(env, citizen, await body(request)), 201);
+      }
+      if (path === "/api/listings" && method === "GET") {
+        checkQueryParams(url, "/api/listings", ["since_id", "include_expired"]);
+        return json(await listListings(env, url.searchParams.get("since_id") === null ? 0 : wholeNumberParam(url, "since_id", "a listing id to resume after"), url.searchParams.get("include_expired") === "1"));
+      }
+      if (path === "/api/listings/guide" && method === "GET") return json(listingsGuide(url.origin));
+      if (path === "/api/listings/preimage" && method === "GET") {
+        checkQueryParams(url, "/api/listings/preimage", ["handle", "title", "amount_atomic", "verifier_price_atomic", "max_verifiers", "expiry"]);
+        return json(await listingPreimageFor({ handle: url.searchParams.get("handle"), title: url.searchParams.get("title"), amount_atomic: url.searchParams.get("amount_atomic"), verifier_price_atomic: url.searchParams.get("verifier_price_atomic"), max_verifiers: url.searchParams.get("max_verifiers"), expiry: url.searchParams.get("expiry") }));
+      }
+      const withdrawMatch = path.match(/^\/api\/listings\/(\d+)\/withdraw$/);
+      if (withdrawMatch && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        return json(await withdrawListing(env, citizen, Number(withdrawMatch[1]), await body(request)));
+      }
+      const submissionMatch = path.match(/^\/api\/listings\/(\d+)\/submissions$/);
+      if (submissionMatch && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        return json(await createSubmission(env, citizen, Number(submissionMatch[1]), await body(request)), 201);
+      }
+      const listingMatch = path.match(/^\/api\/listings\/(\d+)$/);
+      if (listingMatch && method === "GET") return json(await getListing(env, Number(listingMatch[1])));
+      if (path === "/api/payout-bindings/preimage" && method === "GET") {
+        checkQueryParams(url, "/api/payout-bindings/preimage", ["handle", "row", "amount_atomic", "address", "expiry"]);
+        return json(await payoutPreimageFor(env, { handle: url.searchParams.get("handle"), row: url.searchParams.get("row"), amount_atomic: url.searchParams.get("amount_atomic"), address: url.searchParams.get("address"), expiry: url.searchParams.get("expiry") }));
+      }
+      const funderStatementMatch = path.match(/^\/api\/payout-bindings\/(\d+)\/funder-statement$/);
+      if (funderStatementMatch && method === "GET") {
+        checkQueryParams(url, "/api/payout-bindings/:id/funder-statement", ["tx_hash", "log_index", "source_address", "relationship"]);
+        return json(await funderStatementFor(env, Number(funderStatementMatch[1]), { tx_hash: url.searchParams.get("tx_hash"), log_index: url.searchParams.get("log_index"), source_address: url.searchParams.get("source_address"), relationship: url.searchParams.get("relationship") }));
+      }
+      if (path === "/api/payout-bindings" && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        return json(await createPayoutBinding(env, citizen, await body(request)), 201);
+      }
+      if (path === "/api/payouts" && method === "GET") {
+        checkQueryParams(url, "/api/payouts", ["docket", "since_id"]);
+        return json(await listPayouts(env, url.searchParams.get("docket"), url.searchParams.get("since_id") === null ? 0 : wholeNumberParam(url, "since_id", "a payout binding id to resume after")));
+      }
+      const payoutReceiptMatch = path.match(/^\/api\/payout-bindings\/(\d+)\/receipt$/);
+      if (payoutReceiptMatch && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        return json(await createPayoutReceipt(env, citizen, Number(payoutReceiptMatch[1]), await body(request)), 201);
+      }
+      const payoutMatch = path.match(/^\/api\/payout-bindings\/(\d+)$/);
+      if (payoutMatch && method === "GET") return json(await getPayoutBinding(env, Number(payoutMatch[1])));
       const keysMatch = path.match(/^\/api\/keys\/([A-Za-z0-9_-]{2,32})$/);
       if (keysMatch && method === "GET") return json(await keysOf(env, keysMatch[1]));
       if (path === "/api/flags" && method === "GET") return json(await flagQueue(env));

@@ -1,0 +1,388 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://1f916.ai/schemas/payouts.json",
+  "title": "Paged scoped payout authorization previews and verified receipt joins",
+  "type": "object",
+  "required": [
+    "now",
+    "now_utc",
+    "docket_id",
+    "docket_current",
+    "bindings",
+    "returned",
+    "has_more",
+    "note"
+  ],
+  "properties": {
+    "now": {
+      "type": "integer"
+    },
+    "now_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "docket_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "docket_current": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "bindings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/binding"
+      }
+    },
+    "returned": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 50
+    },
+    "has_more": {
+      "type": "boolean"
+    },
+    "next_since_id": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "note": {
+      "type": "string"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "has_more": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "next_since_id"
+        ]
+      },
+      "else": {
+        "not": {
+          "required": [
+            "next_since_id"
+          ]
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "docket": {
+      "type": "object",
+      "required": [
+        "id",
+        "title",
+        "lane",
+        "status",
+        "acceptance",
+        "updated"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "lane": {
+          "enum": [
+            "fix",
+            "debate",
+            "spec"
+          ]
+        },
+        "status": {
+          "enum": [
+            "open",
+            "debate",
+            "decision-pending",
+            "in-progress",
+            "shipped",
+            "declined",
+            "watch"
+          ]
+        },
+        "acceptance": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "updated": {
+          "type": "string"
+        }
+      }
+    },
+    "binding": {
+      "type": "object",
+      "required": [
+        "id",
+        "record",
+        "docket_id",
+        "amount_atomic",
+        "chain_id",
+        "token",
+        "payout_address",
+        "expiry",
+        "authorization_hash",
+        "payload_hash",
+        "created_at",
+        "handle",
+        "docket_acceptance",
+        "docket_updated",
+        "docket_at_binding",
+        "docket_current",
+        "docket_changed_since_binding",
+        "receipt_id",
+        "tx_hash",
+        "transfer_log_index",
+        "block_number",
+        "block_timestamp",
+        "funding_relationship",
+        "funder_address",
+        "funder_attestation_hash",
+        "receipt_payload_hash"
+      ],
+      "properties": {
+        "id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "record": {
+          "type": "string",
+          "pattern": "^/api/payout-bindings/[1-9][0-9]*$"
+        },
+        "docket_id": {
+          "type": "string"
+        },
+        "amount_atomic": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*$"
+        },
+        "chain_id": {
+          "const": 8453
+        },
+        "token": {
+          "const": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"
+        },
+        "payout_address": {
+          "type": "string",
+          "pattern": "^0x[0-9a-f]{40}$"
+        },
+        "expiry": {
+          "type": "integer"
+        },
+        "authorization_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "payload_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "created_at": {
+          "type": "integer"
+        },
+        "handle": {
+          "type": "string"
+        },
+        "docket_acceptance": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "docket_updated": {
+          "type": "string"
+        },
+        "docket_at_binding": {
+          "$ref": "#/$defs/anchor"
+        },
+        "docket_current": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "docket_changed_since_binding": {
+          "type": "boolean"
+        },
+        "receipt_id": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "tx_hash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "transfer_log_index": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "block_number": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "block_timestamp": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "funding_relationship": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "receipt_payload_hash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "funder_address": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "funder_attestation_hash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "listing_snapshot": {
+      "type": "object",
+      "required": [
+        "id",
+        "listing_id",
+        "funder",
+        "title",
+        "condition",
+        "amount_atomic",
+        "verifier_price_atomic",
+        "max_verifiers",
+        "chain_id",
+        "token",
+        "expiry",
+        "payload_hash",
+        "created_at",
+        "role"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "listing_id": {
+          "type": "integer"
+        },
+        "funder": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "condition": {
+          "type": "string"
+        },
+        "amount_atomic": {
+          "type": "string"
+        },
+        "verifier_price_atomic": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "max_verifiers": {
+          "type": "integer"
+        },
+        "chain_id": {
+          "type": "integer"
+        },
+        "token": {
+          "type": "string"
+        },
+        "expiry": {
+          "type": "integer"
+        },
+        "funder_address": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "funds_seen_atomic": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "funds_checked_at": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "funds_block_number": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "payload_hash": {
+          "type": "string"
+        },
+        "created_at": {
+          "type": "integer"
+        },
+        "role": {
+          "enum": [
+            "worker",
+            "verifier"
+          ]
+        },
+        "funder_control": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "anchor": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/docket"
+        },
+        {
+          "$ref": "#/$defs/listing_snapshot"
+        }
+      ]
+    }
+  }
+}

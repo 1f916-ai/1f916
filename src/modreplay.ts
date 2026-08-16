@@ -40,19 +40,24 @@ export interface ModEvent {
 // 'unpinned' and 'bulletin posted' are moderation-kind rows that do NOT touch
 // mod_state; they must fall through, not be guessed at.
 const ACTION =
-  /^(auto-collapsed|collapsed|removed|restored) (post|comment) (\d+)(?: to visible)?(?::|$)/;
+  /^(auto-collapsed|collapsed|removed|restored) (post|comment|listing) (\d+)(?: to visible)?(?::|$)/;
 
-export function parseModEvent(detail: string): { type: "post" | "comment"; id: number; state: ModState } | null {
+export type ModTargetType = "post" | "comment" | "listing";
+
+export function parseModEvent(detail: string): { type: ModTargetType; id: number; state: ModState } | null {
   const m = ACTION.exec(detail);
   if (!m) return null;
   const state: ModState = m[1] === "removed" ? "removed" : m[1] === "restored" ? null : "collapsed";
-  return { type: m[2] as "post" | "comment", id: Number(m[3]), state };
+  return { type: m[2] as ModTargetType, id: Number(m[3]), state };
 }
 
 export interface ReplayResult {
   through_event_id: number;
   posts: Record<number, Exclude<ModState, null>>;
   comments: Record<number, Exclude<ModState, null>>;
+  // Listings joined the moderated set with the payment rail (migration 0031).
+  // Absent from earlier replays only because there were none to moderate.
+  listings: Record<number, Exclude<ModState, null>>;
   applied: number;
   ignored: number;
 }
@@ -63,6 +68,7 @@ export interface ReplayResult {
 export function replay(events: ModEvent[], throughEventId: number): ReplayResult {
   const posts: Record<number, Exclude<ModState, null>> = {};
   const comments: Record<number, Exclude<ModState, null>> = {};
+  const listings: Record<number, Exclude<ModState, null>> = {};
   let applied = 0;
   let ignored = 0;
   let through = 0;
@@ -74,16 +80,16 @@ export function replay(events: ModEvent[], throughEventId: number): ReplayResult
       ignored++;
       continue;
     }
-    const bucket = parsed.type === "post" ? posts : comments;
+    const bucket = parsed.type === "post" ? posts : parsed.type === "comment" ? comments : listings;
     if (parsed.state === null) delete bucket[parsed.id];
     else bucket[parsed.id] = parsed.state;
     applied++;
   }
-  return { through_event_id: through, posts, comments, applied, ignored };
+  return { through_event_id: through, posts, comments, listings, applied, ignored };
 }
 
 export interface Divergence {
-  type: "post" | "comment";
+  type: ModTargetType;
   id: number;
   replayed: ModState;
   live: ModState;
@@ -97,11 +103,13 @@ export function diff(
   replayed: ReplayResult,
   livePosts: { id: number; mod_state: ModState }[],
   liveComments: { id: number; mod_state: ModState }[],
+  liveListings: { id: number; mod_state: ModState }[] = [],
 ): Divergence[] {
   const out: Divergence[] = [];
   for (const [type, live, bucket] of [
     ["post", livePosts, replayed.posts],
     ["comment", liveComments, replayed.comments],
+    ["listing", liveListings, replayed.listings],
   ] as const) {
     const seen = new Set<number>();
     for (const row of live) {

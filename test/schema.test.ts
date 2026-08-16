@@ -84,6 +84,10 @@ function validate(schema, value, path = "$", root = schema) {
   if (schema.allOf !== undefined) {
     for (const sub of schema.allOf) errors.push(...validate(sub, value, path, root));
   }
+  if (schema.oneOf !== undefined) {
+    const passing = schema.oneOf.filter((sub) => validate(sub, value, path, root).length === 0).length;
+    if (passing !== 1) errors.push(`${path}: matched ${passing} of oneOf branches, need exactly 1`);
+  }
   if (schema.if !== undefined) {
     const branch = validate(schema.if, value, path, root).length === 0 ? schema.then : schema.else;
     if (branch !== undefined) errors.push(...validate(branch, value, path, root));
@@ -256,6 +260,53 @@ test("the local provenance response satisfies the new claim/delivery contract", 
   assert.ok(
     validate(schema, hiddenJoin).some((error) => /forbidden schema/.test(error)),
     "joined=false must not hide a complete ask/claim/delivery join",
+  );
+});
+
+test("a listing-anchored binding satisfies the payout contracts through the anchor oneOf", () => {
+  const detailSchema = loadSchema("payout-binding.json");
+  const detailFixture = JSON.parse(readFileSync(join(import.meta.dirname, "fixtures", "payout-binding-detail.json"), "utf8"));
+  const listingSnapshot = {
+    id: "listing-7", listing_id: 7, funder: "context-gardener", title: "Add ?limit= to GET /api/post",
+    condition: "Clone at the named commit, run npm test, the new test passes.", amount_atomic: "5000000",
+    verifier_price_atomic: "1000000", max_verifiers: 1, chain_id: 8453, token: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+    expiry: 1788220800, funder_address: null, funds_seen_atomic: null, funds_checked_at: null, funds_block_number: null,
+    payload_hash: "0".repeat(64), created_at: 1786800000000, role: "worker",
+  };
+  const listingDetail = { ...detailFixture, row: "listing-7", docket_at_binding: listingSnapshot, docket_current: listingSnapshot, anchor_kind: "listing", anchor_role: "worker" };
+  assert.deepEqual(validate(detailSchema, listingDetail), [], "a listing snapshot is a valid anchor");
+  const neither = { ...detailFixture, docket_at_binding: { id: "x" } };
+  assert.notDeepEqual(validate(detailSchema, neither), [], "an anchor that is neither shape is refused");
+  const listSchema = loadSchema("payouts.json");
+  const listFixture = JSON.parse(readFileSync(join(import.meta.dirname, "fixtures", "payouts-list.json"), "utf8"));
+  const withListing = { ...listFixture, bindings: listFixture.bindings.map((b) => ({ ...b, docket_id: "listing-7", docket_at_binding: listingSnapshot, docket_current: listingSnapshot, anchor_kind: "listing", anchor_role: "worker" })) };
+  assert.deepEqual(validate(listSchema, withListing), [], "a listing-anchored preview row is a valid list row");
+});
+
+test("local payout list and detail fixtures satisfy complete public contracts", () => {
+  const listSchema = loadSchema("payouts.json");
+  const listFixture = JSON.parse(readFileSync(join(import.meta.dirname, "fixtures", "payouts-list.json"), "utf8"));
+  assert.deepEqual(validate(listSchema, listFixture), []);
+  assert.ok(
+    validate(listSchema, { ...listFixture, has_more: true }).some((error) => /next_since_id/.test(error)),
+    "a payout preview page with more rows must carry its cursor",
+  );
+  assert.ok(
+    validate(listSchema, { ...listFixture, next_since_id: 1 }).some((error) => /forbidden schema/.test(error)),
+    "a final payout page must not advertise a cursor",
+  );
+  const partialList = structuredClone(listFixture);
+  delete partialList.bindings[0].receipt_payload_hash;
+  assert.ok(validate(listSchema, partialList).some((error) => /receipt_payload_hash/.test(error)));
+
+  const detailSchema = loadSchema("payout-binding.json");
+  const detailFixture = JSON.parse(readFileSync(join(import.meta.dirname, "fixtures", "payout-binding-detail.json"), "utf8"));
+  assert.deepEqual(validate(detailSchema, detailFixture), []);
+  const partialDetail = structuredClone(detailFixture);
+  delete partialDetail.receipt.payload.finalized_block_number;
+  assert.ok(
+    validate(detailSchema, partialDetail).some((error) => /finalized_block_number/.test(error)),
+    "joined receipt payloads must expose every anchored chain observation",
   );
 });
 
