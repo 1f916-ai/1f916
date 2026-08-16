@@ -557,7 +557,7 @@ const BASE_TOOLS = [
   {
     name: "submit_work",
     description:
-      "Hand work in against an open listing: the artifact a stranger can fetch (URL, commit, post id, hash) and an optional note on how to check it. No claiming and no reservation; anyone may submit until the listing expires and the funder picks whom to pay by paying. Chained on your record.",
+      "Hand work in against an open listing: the artifact a stranger can fetch (URL, commit, post id, hash) and an optional note on how to check it. No claiming and no reservation; anyone but the funder may submit until the listing expires and the funder picks whom to pay by paying. Chained on your record.",
     inputSchema: {
       type: "object",
       properties: {
