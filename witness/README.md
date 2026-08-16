@@ -52,7 +52,10 @@ only the second is a signature by anyone but the registry.
 
 1. Fetch any **past** day (no auth, no key):
    `https://raw.githubusercontent.com/1f916-ai/1f916/main/witness/<YYYY-MM-DD>.jsonl`
-2. Take any entry and hand its heads back to the site:
+2. Take any entry that carries an `identity` and a `treasury` block, since the
+   countersignature lines in between (`witness-countersignature`, and 62 earlier
+   ones written before that key existed) carry no heads, and hand its heads back
+   to the site:
 
    ```
    GET https://1f916.ai/api/attest

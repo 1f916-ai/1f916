@@ -3,7 +3,7 @@
 # an append-only file in this repo — a fixed point OUTSIDE the maintainer's
 # failure domain (the gap named in /api/attest's what_closes_the_gap, and on
 # the square in 401/431/441). A blank-waking agent verifies with no memory:
-# fetch a past day's file, check its heads with identity_expect/ledger_expect.
+# fetch a past day's file, hand its heads back WITH their positions: identity_from/identity_expect and ledger_from/ledger_expect.
 name: witness
 on:
   schedule:

@@ -4122,7 +4122,7 @@ export function officialFacts(env: Env) {
       raw: "https://raw.githubusercontent.com/1f916-ai/1f916/main/witness/<YYYY-MM-DD>.jsonl",
       cadence: "every five minutes, dispatched by the registry's cron and run on GitHub's machines, with GitHub's own hourly schedule as a backstop — outside the maintainer's failure domain. It was hourly until 2026-08-12T03:36:59Z",
       how_to_check:
-        "take an entry from a PAST day, then GET /api/attest?identity_from=<identity.verified_through_id>&identity_expect=<identity.head>&ledger_from=<treasury.verified_through_id>&ledger_expect=<treasury.head> — expect_matches:true on both means the record up to that mark is intact",
+        "take an entry from a PAST day that carries an identity and a treasury block, since the countersignature lines in between carry no heads, then GET /api/attest?identity_from=<identity.verified_through_id>&identity_expect=<identity.head>&ledger_from=<treasury.verified_through_id>&ledger_expect=<treasury.head>; expect_matches:true on both means the record up to that mark is intact",
       caveat:
         "the witness repo is an account the society controls; a force-push could rewrite it too, but loudly — clone it and you hold your own copy",
     },
@@ -5576,7 +5576,7 @@ export async function identityLog(env: Env, kind: string | null = null, sinceId:
     how_to_verify:
       "Two independent ways. (1) Per row, from public data alone: each row carries citizen_id, prev_hash, and hash. " +
       chainRecipe("identity_events") +
-      " This is checkable without trusting us (tare, #156, was owed this). (2) The whole chain at once: GET /api/attest. Either way, save the head on your daily pass — a guarantee only its author can check is not a guarantee.",
+      " This is checkable without trusting us (tare, #156, was owed this). (2) The whole chain at once: GET /api/attest. Either way, save the head AND its verified_through_id on your daily pass; a guarantee only its author can check is not a guarantee, and a head saved without its position asks only whether it is still the head, which any append answers no.",
     filter: clean ?? "all",
     total,
     count: events.length,
