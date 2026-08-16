@@ -88,3 +88,50 @@ test("validation: unknown row, missing deadline, past deadline all refuse", asyn
   await assert.rejects(() => claimRow(env, claimant, { row_id: "claims-need-events" }), SocietyError);
   await assert.rejects(() => claimRow(env, claimant, { row_id: "claims-need-events", deadline: Date.now() - 1000 }), SocietyError);
 });
+
+test("a claim is queryable by a stranger the way key-decline is: kind=claim in the chained log with the citizen attached", async () => {
+  const { env, db } = makeEnv();
+  await claimRow(env, claimant, { row_id: "claims-need-events", deadline: Date.now() + DAY });
+  // The public events endpoint filters by kind; the row must carry the citizen
+  // link so a stranger resolving GET /api/events?kind=claim sees who claimed.
+  const rows = db
+    .prepare("SELECT e.kind, e.citizen_id, c.handle FROM identity_events e JOIN citizens c ON c.id = e.citizen_id WHERE e.kind = 'claim'")
+    .all() as Array<{ kind: string; citizen_id: number; handle: string }>;
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].kind, "claim");
+  assert.equal(rows[0].citizen_id, 5);
+  assert.equal(rows[0].handle, "claimant");
+});
+
+test("expiry is pure timestamp arithmetic: same event, different injected now", async () => {
+  const { env } = makeEnv();
+  const deadline = 1_000_000_000_000; // fixed far-future ms
+  env.DB.prepare(
+    "INSERT INTO identity_events (citizen_id, kind, detail, created_at) VALUES (5, 'claim', ?, 1000)",
+  ).bind(JSON.stringify({ row: "claims-need-events", deadline, delivery: null })).run();
+  const before = await docketReport(env, deadline - 1);
+  assert.equal(before.docket.find((d: { id: string }) => d.id === "claims-need-events").claim.state, "open");
+  const after = await docketReport(env, deadline + 1);
+  assert.equal(after.docket.find((d: { id: string }) => d.id === "claims-need-events").claim.state, "expired");
+});
+
+test("renewal: a later claim event with fresh deadline and artifact supersedes the stale one", async () => {
+  const { env } = makeEnv();
+  const t0 = Date.now() - 5 * DAY;
+  // stale claim: deadline long past, no delivery
+  env.DB.prepare(
+    "INSERT INTO identity_events (citizen_id, kind, detail, created_at) VALUES (5, 'claim', ?, 1000)",
+  ).bind(JSON.stringify({ row: "claims-need-events", deadline: t0 + DAY, delivery: null })).run();
+  // renewal: artifact attached, fresh deadline (simulates posting a renewal
+  // claim with evidence of continued work, e.g. a newer PR/commit)
+  const renewDeadline = Date.now() + DAY;
+  env.DB.prepare(
+    "INSERT INTO identity_events (citizen_id, kind, detail, created_at) VALUES (5, 'claim', ?, 2000)",
+  ).bind(JSON.stringify({ row: "claims-need-events", deadline: renewDeadline, delivery: "PR #118 v2" })).run();
+  const report = await docketReport(env);
+  const row = report.docket.find((d: { id: string }) => d.id === "claims-need-events");
+  assert.equal(row.claim.state, "in-delivery");
+  assert.equal(row.claim.delivery, "PR #118 v2");
+  assert.equal(row.claim.deadline, renewDeadline);
+  assert.equal(row.claim.event > 1, true); // the latest event is the truth
+});

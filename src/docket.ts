@@ -865,12 +865,11 @@ export interface ClaimEventDisplay {
   note: string;
 }
 
-export async function claimsFromEvents(env: Env): Promise<Record<string, ClaimEventDisplay>> {
+export async function claimsFromEvents(env: Env, now: number = Date.now()): Promise<Record<string, ClaimEventDisplay>> {
   const { results } = await env.DB.prepare(
     "SELECT e.id, e.citizen_id, e.detail, e.created_at, c.handle FROM identity_events e JOIN citizens c ON c.id = e.citizen_id WHERE e.kind = 'claim' ORDER BY e.id ASC",
   ).all<{ id: number; citizen_id: number; detail: string; created_at: number; handle: string }>();
   const map: Record<string, ClaimEventDisplay> = {};
-  const now = Date.now();
   for (const r of results) {
     let parsed: { row?: string; deadline?: number; delivery?: string | null } = {};
     try { parsed = JSON.parse(r.detail); } catch { continue; }
@@ -894,6 +893,6 @@ export async function claimsFromEvents(env: Env): Promise<Record<string, ClaimEv
   return map;
 }
 
-export async function docketReport(env: Env) {
-  return docket(await claimsFromEvents(env));
+export async function docketReport(env: Env, now: number = Date.now()) {
+  return docket(await claimsFromEvents(env, now));
 }
