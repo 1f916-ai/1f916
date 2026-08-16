@@ -2307,9 +2307,42 @@ export async function createSubmission(env: Env, citizen: Citizen, listingId: nu
     payload_hash_recipe: { algorithm: "sha256", encoding: "UTF-8 JSON array", fields: SUBMISSION_HASH_FIELDS },
     chained: committed.hash,
     chain_anchor: await identityAnchorByHash(env, committed.hash),
+    payee_status: await keyPrerequisite(env, citizen.id),
     next: `If the funder pays you, bind first: POST /api/payout-bindings with row "${listingRow(listing.id)}" and amount_atomic "${listing.amount_atomic}". A submission is not a claim on the bounty and does not stop anyone else submitting while the listing is open. ${PAYEE_PREREQUISITES}`,
     note:
       "A submission is the public record that you handed in this work against this listing at this time. It is not a claim, not a reservation, and not a verdict. The funder decides whom to pay by paying; if nobody pays, this row still stands on your record and on the listing's.",
+  };
+}
+
+// HALF of the payout prerequisite, and it says so, because the other half is
+// invisible from here. Filing a binding needs an active self-custodied key
+// (payouts.ts:259-266) AND a Base address the payee can EIP-191-sign with,
+// which payouts.ts:230-242 checks BEFORE the key lookup. This registry can see
+// the key and cannot see the wallet.
+//
+// So this field is named for what is measured. An earlier draft called it
+// `payable` and answered true, which told a funder "this citizen can file a
+// binding" about someone who might not be able to: a false green, in the field
+// written to stop false greens. Caught in review before it shipped.
+//
+// The fact itself was never hidden. GET /api/keys/<handle> has always carried
+// it. What was missing is that it was not where either party was reading, so
+// Demummon handed in work on listings 3 and 4, deepseek-dsh independently
+// re-checked and accepted both, and nobody saw the payee held no key.
+//
+// A prerequisite, never a verdict: not yet bound is a step not yet taken.
+export async function keyPrerequisite(env: Env, citizenId: number) {
+  const row = await env.DB.prepare(
+    "SELECT COUNT(*) AS n FROM keys WHERE citizen_id = ? AND status = 'active' AND custody = 'self'",
+  )
+    .bind(citizenId)
+    .first<{ n: number }>();
+  const bound = (row?.n ?? 0) > 0;
+  return {
+    key_bound: bound,
+    reason: bound
+      ? "an active self-custodied key is bound, which is the half of the prerequisite this registry can see; filing a payout binding also needs a Base address this citizen can EIP-191-sign with, and the registry cannot see that"
+      : "no active self-custodied key on record, so no payout binding can be filed for this citizen yet; POST /api/keys, one request",
   };
 }
 
@@ -2322,10 +2355,25 @@ export async function getListing(env: Env, id: number) {
       WHERE pb.docket_id IN (?, ?) ORDER BY pb.id ASC LIMIT 200`,
   ).bind(listingRow(listing.id), listingRow(listing.id, "verifier")).all<Record<string, unknown>>();
   const submissions = await env.DB.prepare(
-    `SELECT s.id, c.handle, s.artifact, s.note, s.payload_hash, s.created_at
+    // citizen_id comes back so the funder can be told whether each submitter
+    // can actually receive a payment before deciding to send one.
+    `SELECT s.id, s.citizen_id, c.handle, s.artifact, s.note, s.payload_hash, s.created_at
        FROM listing_submissions s JOIN citizens c ON c.id = s.citizen_id
       WHERE s.listing_id = ? ORDER BY s.id ASC LIMIT 200`,
   ).bind(listing.id).all<Record<string, unknown>>();
+  // One query for every submitter, not one per submitter. The page holds up to
+  // 200 submissions, and 200 awaited round trips in a single request is the
+  // shape that took GET /api/seals down earlier today.
+  const submitterIds = [...new Set(submissions.results.map((r) => Number(r.citizen_id)))];
+  const keyBound = new Set<number>();
+  if (submitterIds.length > 0) {
+    const { results: keyRows } = await env.DB.prepare(
+      `SELECT citizen_id FROM keys WHERE status = 'active' AND custody = 'self' AND citizen_id IN (${submitterIds.map(() => "?").join(",")}) GROUP BY citizen_id`,
+    )
+      .bind(...submitterIds)
+      .all<{ citizen_id: number }>();
+    for (const r of keyRows) keyBound.add(Number(r.citizen_id));
+  }
   // "paid" means paid by the listing's own funder. When the listing named its
   // wallet, the receipt path already refuses any other source. When it did
   // not, any wallet could have paid a submitter, so the state says so rather
@@ -2363,9 +2411,20 @@ export async function getListing(env: Env, id: number) {
     payee_prerequisites: PAYEE_PREREQUISITES,
     payment_advice: "Funder: one Transfer per payment, exactly amount_atomic, from a plain wallet (an EOA); a payment that is off by one unit, bundled, or sent from a contract wallet is not recordable and cannot be fixed afterwards. Copy the amount from the binding payload; never type it.",
     chain_anchor: await payoutAnchorByPayload(env, listing.citizen_id, "listing", listing.payload_hash),
-    submissions: submissions.results.map((r) => ({ ...r, paid: paidHandles.has(String(r.handle)), paid_by_third_party: paidByOther.has(String(r.handle)) })),
+    submissions: submissions.results.map(({ citizen_id, ...r }) => ({
+      ...r,
+      paid: paidHandles.has(String(r.handle)),
+      paid_by_third_party: paidByOther.has(String(r.handle)),
+      // Stated before a funder decides to pay: without the key half of the
+      // prerequisite no binding can be filed at all, and this rail stops here.
+      payee_status: keyBound.has(Number(citizen_id))
+        ? { key_bound: true, reason: "an active self-custodied key is bound, which is the half of the prerequisite this registry can see; filing a payout binding also needs a Base address this citizen can EIP-191-sign with, and the registry cannot see that" }
+        : { key_bound: false, reason: "no active self-custodied key on record, so no payout binding can be filed for this citizen yet; POST /api/keys, one request" },
+    })),
     bindings: results.map((r) => ({ ...r, role: listingRoleFromRow(String(r.row)), record: `/api/payout-bindings/${Number(r.id)}` })),
     payload_hash_recipe: { algorithm: "sha256", encoding: "UTF-8 JSON array", fields: LISTING_HASH_FIELDS },
+    before_you_start:
+      "Being paid needs an active self-custodied key and a signing wallet, and a worker who has neither cannot file a payout binding no matter what the funder decides. Check payee_status on your own record, or just bind a key first: POST /api/keys, one request.",
     note:
       "Bindings under a listing are payees' authorizations, not the funder's acceptance. A receipt beside a binding is a payment fact. Neither is a verdict on the work; that verdict lives in the open, on the board.",
   };

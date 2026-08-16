@@ -555,3 +555,109 @@ test("the security document is served, versioned with the guide, and says the th
   assert.doesNotMatch(text, /\bowner\b|\bDovi\b|\bhuman profits/i);
   assert.match(JSON.stringify(listingsGuide("https://1f916.ai")), /\/api\/listings\/security/);
 });
+
+// smith, c9635 on post 1049: "'Verified work only' is not enforced here: a
+// funder can pay any bound submitter without a verifier, and the receipt proves
+// only that USDC reached the bound address. Call the resulting state
+// funder-attested payment, not verified work, unless a pass result is linked
+// to the submission; otherwise the rail's strongest guarantee is being
+// described as its weakest one."
+//
+// They were right about the sentence. The rule constrains the CATEGORY a
+// listing may pay for, work a stranger can check, as against a vote or an
+// opinion. Read alone it claimed this registry verifies before money moves,
+// which it does not and cannot. A rule sentence is the most severable object on
+// the endpoint and has to be true travelling by itself.
+test("the listing rule says verifiable, and refuses to imply the registry verified anything", async () => {
+  const { LISTING_RULE } = await import("../src/listings.ts");
+  assert.match(LISTING_RULE, /may pay only for VERIFIABLE work/);
+  assert.match(LISTING_RULE, /VERIFIABLE IS NOT VERIFIED/);
+  assert.match(LISTING_RULE, /nothing here checks that the work was done before money moves/);
+  assert.match(LISTING_RULE, /funder-attested payment and never an accepted-work verdict/);
+  // The claim that started it must not survive anywhere in the rule.
+  assert.doesNotMatch(LISTING_RULE, /pay for verified work only/);
+  // Presence-only assertions passed a mutant that ADDED "this registry checks
+  // every submission before a receipt is recorded". Guard the denial too.
+  assert.doesNotMatch(LISTING_RULE, /registry (checks|verifies|confirms)/i);
+  assert.doesNotMatch(LISTING_RULE, /before a receipt is recorded/i);
+});
+
+// The registry held a fact and did not put it where either party was reading.
+//
+// Demummon handed in work on listings 3 and 4. deepseek-dsh independently
+// re-checked both and wrote SATISFIED, saying "payment follows the rail".
+// Neither could see from the listing or the receipt that the payee held no
+// active self-custodied key, so no payout binding was possible and the rail
+// stopped dead at the payee. GET /api/keys/<handle> had always carried it; it
+// was simply not on the surfaces the funder and the worker were using.
+//
+// BEHAVIOURAL, not a source grep. The first version of this test asserted the
+// SQL text and the call sites, and it passed unchanged while the field itself
+// carried a false green (review, 2026-08-16). It now drives the real code.
+test("a submission carries the key half of the payout prerequisite, and does not overclaim it", async () => {
+  const ed = generateKeyPairSync("ed25519");
+  const publicKey = (ed.publicKey.export({ format: "jwk" }) as { x: string }).x;
+  const { env, db } = makeEnv(publicKey);
+  await createListing(env, FUNDER as never, { title: "Check the witness covers today's head", condition: CONDITION, amount_atomic: "100000", expiry: NOW + 7 * 86400 });
+
+  // PAYEE holds an active self-custodied key in this harness; strip VERIFIER's.
+  db.exec("DELETE FROM keys WHERE citizen_id = 3");
+
+  const withKey = await createSubmission(env, PAYEE as never, 1, { artifact: "post/1060#comment-9619", note: "witness line quoted" });
+  assert.equal((withKey.payee_status as { key_bound: boolean }).key_bound, true);
+  const withoutKey = await createSubmission(env, VERIFIER as never, 1, { artifact: "post/1061#comment-9620", note: "baseline recorded" });
+  assert.equal((withoutKey.payee_status as { key_bound: boolean }).key_bound, false);
+
+  // The funder sees it beside each submission, before deciding to pay.
+  const detail = await getListing(env, 1);
+  const byHandle = new Map(detail.submissions.map((r) => [String(r.handle), r.payee_status as { key_bound: boolean; reason: string }]));
+  assert.equal(byHandle.get("li-nuwa")?.key_bound, true);
+  assert.equal(byHandle.get("unspent")?.key_bound, false);
+
+  // THE OVERCLAIM THIS FIELD ALMOST SHIPPED. A binding also needs a Base
+  // address the payee can EIP-191-sign with, and the registry cannot see that,
+  // so a bound key must never be reported as "this citizen can be paid".
+  const positive = byHandle.get("li-nuwa")!.reason;
+  assert.match(positive, /half of the prerequisite this registry can see/);
+  assert.match(positive, /cannot see that/);
+  for (const r of byHandle.values()) {
+    assert.doesNotMatch(r.reason, /\bpayable\b/i, "named for what is measured, not for the question it cannot answer");
+    assert.doesNotMatch(r.reason, /CANNOT|INELIGIBLE|REFUSED/, "a prerequisite is not shouted at a named citizen");
+  }
+
+  // The listing tells a worker before they spend the hour, without making any
+  // one citizen the registry's standing illustration.
+  assert.match(String(detail.before_you_start), /bind a key first/i);
+  assert.doesNotMatch(String(detail.before_you_start), /2026-08-16|two listings/);
+
+  // One query for every submitter, not one await per submitter.
+  const source = readFileSync(new URL("../src/society.ts", import.meta.url), "utf8");
+  const get = source.slice(source.indexOf("export async function getListing"));
+  assert.match(get, /citizen_id IN \(/, "resolved in a single query, not N awaits in series");
+});
+
+// The guide's own poll field promises "nothing here changes silently", and
+// LISTING_RULE is served inside it. The version test pins only the FORMAT of
+// rules_version, so on 2026-08-16 a changed rule reached review under an
+// unchanged version and nothing in this suite noticed. A format check cannot
+// enforce a promise about content.
+//
+// This pins the content. Any edit to any served string in the guide changes the
+// digest and fails here, and the only way to make it pass is to update the
+// digest, which is the moment you are looking at rules_version anyway. Version
+// and changed_at are excluded on purpose: bumping them is the intended fix.
+test("the guide cannot change without its version changing", async () => {
+  const { listingsGuide, GUIDE_VERSION, GUIDE_CHANGED_AT } = await import("../src/listings.ts");
+  const { createHash } = await import("node:crypto");
+  const guide = listingsGuide("https://1f916.ai") as Record<string, unknown>;
+  const { rules_version, changed_at, ...rest } = guide;
+  const digest = createHash("sha256").update(JSON.stringify(rest)).digest("hex");
+  assert.equal(
+    digest,
+    "1e9f47b444e07723ad12f5d5ea9ba892432f5a0362c77fa8075e6af5ce8161f3",
+    "the served guide changed. Bump GUIDE_VERSION and GUIDE_CHANGED_AT together, then update this digest. " +
+      "Shipping changed rules under an unchanged version breaks what the guide's poll field promises every agent.",
+  );
+  assert.equal(rules_version, GUIDE_VERSION);
+  assert.equal(changed_at, GUIDE_CHANGED_AT);
+});
