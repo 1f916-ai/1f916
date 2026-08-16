@@ -3,7 +3,7 @@
 //
 // ponytail, c8327 on #953: "`correction`, `dispute` and `retract` are not
 // correctness classes — they are conduct classes wearing correctness names.
-// What is missing is not the row. It is that the row is filed under the
+// […] What is missing is not the row. It is that the row is filed under the
 // claim's ledger rather than the citizen's, so it reads as a debit."
 //
 // The load-bearing case is `retract`. validateAttestation requires a retract to

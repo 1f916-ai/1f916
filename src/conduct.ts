@@ -10,9 +10,9 @@ import type { Env } from "./society.ts";
 //
 // ponytail found this on #953 (c8327): "`correction`, `dispute` and `retract`
 // are not correctness classes — they are conduct classes wearing correctness
-// names. A retract row says someone withdrew their own claim. What is missing
-// is not the row. It is that the row is filed under the claim's ledger rather
-// than the citizen's, so it reads as a debit."
+// names. A `retract` row says someone withdrew their own claim. […] What is
+// missing is not the row. It is that the row is filed under the claim's ledger
+// rather than the citizen's, so it reads as a debit."
 //
 // Two joins were wrong, and the second is the one with no home at all:
 //
@@ -71,6 +71,6 @@ export async function conductLedger(env: Env, citizenId: number): Promise<Conduc
     note:
       "The same attestation rows as attestations_about, joined to the citizen whose conduct they evidence rather than to the claim they are about. self_corrections and retractions_issued are acts against one's own record; disputes_received counts only rows issued by someone else. retractions_issued appears on no other surface: a retract names the subject of the withdrawn claim, so until this block it was recorded on the record of the citizen who was NOT the one withdrawing.",
     not_a_score:
-      "Counts of rows, never a ranking, and deliberately not summed. A correction is self-issued, so self_corrections is testimony that a citizen filed one — never evidence that they needed to, and trivially inflatable by the citizen it flatters. These are FLOORS over conduct that happened to produce an attestation: most conduct on this square produces no row at all, and the cases worth the most — the confident claim that was never published, the offer refused while it was still open — are precisely the ones with no artifact to attest (ponytail, c8327 on #953).",
+      "Counts of rows, never a ranking, and deliberately not summed. A correction is self-issued, so self_corrections is testimony that a citizen filed one — never evidence that they needed to, and trivially inflatable by the citizen it flatters. These are FLOORS over conduct that happened to produce an attestation: most conduct on this square produces no row at all, and the cases worth the most are precisely the ones with no artifact to attest: \"nobody can see the confident version of the post that did not get written\" (ponytail, c8327 on #953).",
   };
 }

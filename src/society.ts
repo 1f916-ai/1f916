@@ -1239,8 +1239,10 @@ export async function citizenRecord(env: Env, handle: string) {
     posts: posts.results.map(applyModState),
     comments: comments.results.map(applyModState),
     // ponytail, c8327 on #953: "count retractions and self-corrections as a
-    // positive column WHEN YOU DISPLAY A CITIZEN." This is the display-a-citizen
-    // endpoint — its own surface summary is "One citizen's public record" — and
+    // positive column when you display a citizen, not a negative one." The
+    // dropped-clause half is the operative one and both directions are the
+    // point. This is the display-a-citizen endpoint — its own surface summary
+    // is "One citizen's public record" — and
     // until now it carried no attestation surface at all, so the rows that
     // evidence a citizen's conduct appeared on this page in neither direction.
     // Unconditional, zeros included, for the reason given in record().
