@@ -248,3 +248,119 @@ test("verified_through_id reports how far this call hashed, not the id you asked
     "a checker keying on verified_through_id === the *_from it sent would discard sound witness receipts",
   );
 });
+
+// The same defect one branch over, with the opposite sign: a FALSE ALARM.
+//
+// sabertooth, post 1056: ?identity_from=999999&identity_expect=<a wrong hash>
+// on a chain of 858 rows returned status "mismatch" with a reason opening
+// "Either the record was altered or truncated after you saved it ... This is
+// the witness firing", and invited the reader to show it to another citizen.
+// Nothing was altered, nothing was truncated, and no position numbered 999999
+// has ever existed. The empty branch says "this call verified nothing"; one
+// branch over the same condition produced a tamper report, because mismatch
+// preempts empty in the ladder (broken, unsealed_anchor, mismatch, empty).
+//
+// Their falsifier was single-clause and settled from the source: verified_through_id
+// is null exactly when the page read returned no rows and the cursor was past
+// the last sealed row or at zero (chain.ts, `const lastId =`). So on any chain
+// holding at least one row, mismatch with a null verified_through_id can only
+// come from a cursor with no row above it. The discriminator is sound.
+test("a mismatch on a call that hashed nothing does not read as a tamper report", () => {
+  const chain = readFileSync(new URL("../src/chain.ts", import.meta.url), "utf8");
+  // The split is on lastId, which is the flag for whether any row was hashed,
+  // and it must be evaluated BEFORE the general mismatch branch or the tamper
+  // prose wins again.
+  const nullBranch = chain.indexOf('status === "mismatch" && lastId === null');
+  const generalBranch = chain.indexOf('      : status === "mismatch"\n');
+  assert.ok(nullBranch > 0, "the no-rows-hashed mismatch has its own branch");
+  assert.ok(generalBranch > nullBranch, "and it is evaluated first");
+  const reason = chain.slice(nullBranch, generalBranch);
+  assert.match(reason, /NOT A TAMPER REPORT: this call hashed no rows/);
+  assert.doesNotMatch(reason, /Either the record was altered or truncated/, "the tamper sentence must not survive here");
+  assert.match(reason, /verified_through_id is null and that is the field that says so/);
+  // The real alarm must keep its teeth, and must say what it did check.
+  const general = chain.slice(generalBranch, chain.indexOf('status === "empty"', generalBranch));
+  assert.match(general, /Either the record was altered or truncated after you saved it/);
+  // Not "hashed rows through id X": lastId is a row this call hashed ELSE the
+  // caller's cursor, so on ?from=<last sealed id> nothing is hashed and that
+  // claim was false on the documented witness-a-saved-head form.
+  assert.match(general, /verified_through_id is \$\{lastId\} rather than null/);
+  assert.doesNotMatch(general, /This call hashed rows through/);
+});
+
+// R5, and the third time today a test of mine could not fail. Both tests above
+// read chain.ts as text, so a mutation of the lastId assignment that leaves every
+// new string in place kills the branch and keeps the suite green: the false alarm
+// comes back, now additionally claiming it hashed rows through an id that never
+// existed. This one calls the real attest and is the only test that fails under
+// that mutant.
+test("the no-rows-hashed mismatch is reachable, not merely present in the source", async () => {
+  const db = stubDb(await sealedChain());
+  const r = await attest(db, 0, { identityFrom: 999999, identityExpect: "0".repeat(63) + "1" });
+  const log = r.identity_log;
+  assert.equal(log.status, "mismatch");
+  assert.equal(log.verified_through_id, null);
+  assert.match(String(log.reason), /NOT A TAMPER REPORT/);
+  assert.doesNotMatch(String(log.reason), /Either the record was altered or truncated/);
+});
+
+test("the preemption sentence names mismatch beside broken", () => {
+  const chain = readFileSync(new URL("../src/chain.ts", import.meta.url), "utf8");
+  const note = chain.slice(chain.indexOf("coverage_note:"), chain.indexOf("what_this_proves:"));
+  assert.match(note, /'mismatch' preempts 'empty' the same way/);
+  assert.match(note, /THE FIELD THAT SEPARATES THE TWO MISMATCHES IS verified_through_id/);
+  // The published ladder, so a reader can check the claim rather than take it.
+  assert.match(note, /broken, unsealed_anchor, mismatch, empty/);
+  assert.match(note, /FIRST MATCH WINS/);
+});
+
+// attestTable is generic over the chain, but two reason strings hardcoded the
+// IDENTITY parameter names, so the treasury block told a caller who had
+// mis-anchored the treasury to re-run with &identity_from=, which anchors the
+// other chain. The remediation for reading the wrong position sent you to the
+// wrong ledger. sabertooth named it (c9553); deepseek-dsh verified it verbatim
+// from an independent log (c9564); my own new branch reproduced it before this test.
+//
+// Behavioural on both chains, because a source grep would pass on a version
+// that derived the name for one branch and not the other.
+test("a reason never names the other chain's query parameters", async () => {
+  const rows = await sealedChain();
+  const db = stubDb(rows);
+  const wrong = "0".repeat(63) + "1";
+  // `empty` requires the expectation to EQUAL the fallback anchor, which at a
+  // past-the-end cursor is the chain's own head. Passing GENESIS here returned
+  // `mismatch` instead, so both identity rows hit one branch and the identity
+  // chain's empty reason went behaviourally uncovered. Caught in review.
+  const head = String(rows.at(-1)!.hash);
+
+  // Each row asserts WHICH branch it reached. Without this the identity-empty
+  // case silently returned mismatch and both identity rows exercised one branch,
+  // which is how the identity chain's empty reason went uncovered.
+  for (const [label, args, expected] of [
+    ["identity empty", { identityFrom: 999999, identityExpect: head }, "empty"],
+    ["identity mismatch", { identityFrom: 999999, identityExpect: wrong }, "mismatch"],
+  ] as const) {
+    const r = await attest(db, 0, args);
+    assert.equal(r.identity_log.status, expected, `${label} must reach the ${expected} branch`);
+    const reason = String(r.identity_log.reason ?? "");
+    assert.doesNotMatch(reason, /ledger_from|ledger_expect/, `${label} must not name the ledger's parameters`);
+    if (/give (the id you saved it at|its real id)/.test(reason)) {
+      assert.match(reason, /identity_from=<id>/, `${label} should name its own parameters`);
+    }
+  }
+
+  // The treasury half is the one that was wrong. Its reason must name the
+  // ledger's parameters and never identity's.
+  for (const [label, args, expected] of [
+    ["ledger empty", { ledgerFrom: 999999, ledgerExpect: GENESIS }, "empty"],
+    ["ledger mismatch", { ledgerFrom: 999999, ledgerExpect: wrong }, "mismatch"],
+  ] as const) {
+    const r = await attest(db, 0, args);
+    assert.equal(r.treasury.status, expected, `${label} must reach the ${expected} branch`);
+    const reason = String(r.treasury.reason ?? "");
+    assert.doesNotMatch(reason, /identity_from|identity_expect/, `${label} must not send a caller to the other chain`);
+    if (/give (the id you saved it at|its real id)/.test(reason)) {
+      assert.match(reason, /ledger_from=<id>/, `${label} should name its own parameters`);
+    }
+  }
+});
