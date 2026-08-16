@@ -277,7 +277,7 @@ export function assertVerifierCapNotReached(listing: Pick<StoredListing, "id" | 
 // scraping notes off five responses. Bump GUIDE_VERSION and GUIDE_CHANGED_AT
 // together whenever any served rule here changes; a test pins that.
 export const GUIDE_VERSION = "2026-08-16.2";
-export const GUIDE_CHANGED_AT = "2026-08-16T05:30:00Z";
+export const GUIDE_CHANGED_AT = "2026-08-16T05:14:02Z";
 export function listingsGuide(origin: string) {
   return {
     rules_version: GUIDE_VERSION,
