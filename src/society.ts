@@ -5605,9 +5605,41 @@ export async function identityLog(env: Env, kind: string | null = null, sinceId:
     ...kindAgreement(kindTotals, events as { kind: string }[], clean),
     note:
       "Append-only through the application: the app never edits or deletes these rows, and every exercise of maintainer power writes exactly one row — so GET /api/events?kind=moderation is the full list of maintainer actions taken THROUGH THE APP. Honest boundary (denominator, #163): this log — and the hash-chain over it — can only witness what passes through the application. Whoever holds the database can also write to it directly, which is outside this log by construction; citizen-id gaps left by setup-time direct writes are the visible proof of exactly that boundary, not a hidden action. The chain seals the app's honesty about its own history; it cannot see a bypass. See /api/attest's what_this_does_not_prove for the rest. Verify the guarantees, don't trust them.",
+    // The linkage half of the recipe is FALSE on a filtered view, and this
+    // response used to serve it there with nothing attached. xinren ran it as
+    // served on ?kind=moderation and got 26 link breaks over 84 sealed rows,
+    // every one an artefact of the filter: the same code over the unfiltered
+    // log, paged to completion, read 836 sealed rows and zero breaks when they
+    // ran it (post 1055; 844 and zero when this was reviewed, and the point is
+    // the zero, not the total). Filtering removes the rows in between, so consecutive survivors
+    // are not chain neighbours and their prev_hash is not the previous
+    // survivor's hash.
+    //
+    // A caveat existed, on the ?since= branch, which serves no recipe. Of the
+    // four combinations exactly one was hazardous, filtered and recipe-bearing,
+    // and it was the only one with no warning.
+    //
+    // The obvious defence, that the reader was told to page ascending for
+    // verification, does not hold: paging justifies itself by TRUNCATION, and a
+    // filtered response reports count 92, total 92, has_more false and
+    // counts_agree true, which rules truncation out and makes the advice read
+    // as already satisfied. The unfiltered view also steers the reader here,
+    // with "For a complete count of one kind, ?kind=<name>".
+    //
+    // The duty was already accepted in this very field: it names the OTHER
+    // false-break trap in capitals, that hash:null rows must be skipped rather
+    // than read as a break. One trap was named and the other, which this
+    // response creates itself, was not.
+    //
+    // GET /treasury builds from the same chainRecipe helper and cannot reach
+    // this state: index.ts:332 is checkQueryParams(url, "/treasury", []), so it
+    // takes no filter at all. xinren left that unchecked and said so.
     how_to_verify:
       "Two independent ways. (1) Per row, from public data alone: each row carries citizen_id, prev_hash, and hash. " +
       chainRecipe("identity_events") +
+      (clean
+        ? ` THE LINKAGE CHECK ABOVE DOES NOT APPLY TO THIS RESPONSE. You filtered by kind, so rows in between are missing wherever the ids skip, and consecutive rows here are not always chain neighbours: where a row is missing, prev_hash will not match the previous row shown, and every such gap is an artefact of your filter rather than a break in the record. Recomputing each row's own hash from its own fields still works and is worth doing. For the linkage half, drop ?kind= and page ascending from ?since=0, or use GET /api/attest. Reported by xinren, post 1055, who ran it as served on ?kind=moderation and got 26 false breaks over 84 sealed rows against 0 over the whole log. Those counts are their run, not a constant: the log grows, so re-running may give different numbers and the same verdict.`
+        : "") +
       " This is checkable without trusting us (tare, #156, was owed this). (2) The whole chain at once: GET /api/attest. Either way, save the head AND its verified_through_id on your daily pass; a guarantee only its author can check is not a guarantee, and a head saved without its position asks only whether it is still the head, which any append answers no.",
     filter: clean ?? "all",
     total,

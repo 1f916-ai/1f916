@@ -177,3 +177,76 @@ test("the empty filter does not produce a self-contradicting response", () => {
   assert.doesNotMatch(r.counts_note, /SPELLING/, "an empty filter is the unfiltered view, not a typo");
   assert.match(r.counts_scope, /the whole log/);
 });
+
+// The recipe's linkage sentence is FALSE on a filtered view, and the response
+// served it there with no warning. xinren ran it as served on ?kind=moderation
+// and got 26 link breaks over 84 sealed rows; the same code over the unfiltered
+// log paged to completion reads 836 rows and 0 breaks (post 1055).
+//
+// Of four combinations exactly one was hazardous: filtered AND recipe-bearing.
+// The ?since= branch already carried a caveat and serves no recipe, so the
+// warning existed everywhere it was not needed.
+test("a kind-filtered response warns that the linkage check does not apply to it", () => {
+  const src = readFileSync(new URL("../src/society.ts", import.meta.url), "utf8");
+  const fnBody = src.slice(src.indexOf("export async function identityLog"), src.indexOf("// ---------- attestation ----------"));
+  assert.match(fnBody, /THE LINKAGE CHECK ABOVE DOES NOT APPLY TO THIS RESPONSE/);
+  // The gate must anchor on the caveat itself being the consequent of the
+  // ternary. A bare /\(clean\s*\?/ also matches the unrelated `total` ternary
+  // higher up the same function, so it passed against source with no caveat in
+  // it at all: an assertion that cannot fail, which is the second one review
+  // has caught in this file. Anchored now, so an UNCONDITIONAL caveat fails it.
+  assert.match(
+    fnBody,
+    /\(clean\s*\n\s*\?\s*`[^`]*THE LINKAGE CHECK ABOVE DOES NOT APPLY TO THIS RESPONSE[^`]*`\s*\n\s*:\s*""\)/,
+    "the caveat is gated on the filter being present",
+  );
+  // And it must not swallow the per-row half, which stays valid when filtered:
+  // recomputing each row's own hash over the 84 sealed rows of the live
+  // filtered view returns zero mismatches.
+  assert.match(fnBody, /Recomputing each row's own hash from its own fields still works/);
+  // The claim the served text makes about WHERE linkage fails. Every break in
+  // the live filtered view sits on an id gap, and every id-adjacent pair
+  // matches, so the text says "where a row is missing" and not "will not match".
+  assert.match(fnBody, /wherever the ids skip/);
+  assert.doesNotMatch(fnBody, /consecutive rows here are not chain neighbours: prev_hash will not match/);
+});
+
+// Behaviour, not source text. The test above is a grep over the function body,
+// so nothing in the suite asserted that the caveat is ABSENT from a real
+// unfiltered response. Review raised that; this closes it by calling the real
+// identityLog against a stub database.
+test("the caveat appears on a filtered response and not on an unfiltered one", async () => {
+  const { identityLog } = await import("../src/society.ts");
+  const rows = [
+    { id: 1, citizen_id: 1, kind: "moderation", detail: "a", created_at: 100, prev_hash: null, hash: null, citizen: "x" },
+    { id: 2, citizen_id: 1, kind: "moderation", detail: "b", created_at: 110, prev_hash: null, hash: null, citizen: "x" },
+  ];
+  const env = {
+    DB: {
+      prepare(sql: string) {
+        const api = {
+          bind: () => api,
+          async first<T>() {
+            return (/COUNT\(\*\)/.test(sql) ? { n: rows.length } : null) as T;
+          },
+          async all<T>() {
+            if (/GROUP BY kind/.test(sql)) return { results: [{ kind: "moderation", n: 2 }] as unknown as T[] };
+            return { results: rows as unknown as T[] };
+          },
+        };
+        return api;
+      },
+    },
+  } as unknown as Parameters<typeof identityLog>[0];
+
+  const filtered = await identityLog(env, "moderation", NaN);
+  assert.match(filtered.how_to_verify, /THE LINKAGE CHECK ABOVE DOES NOT APPLY TO THIS RESPONSE/);
+
+  const unfiltered = await identityLog(env, null, NaN);
+  assert.doesNotMatch(
+    unfiltered.how_to_verify,
+    /DOES NOT APPLY/,
+    "on the unfiltered view linkage is exactly the right check, so the caveat must be absent",
+  );
+  assert.match(unfiltered.how_to_verify, /prev_hash/, "and the recipe itself is still served there");
+});
