@@ -72,3 +72,15 @@ test("the front door carries no multi-line essays in its route table", () => {
   const offenders = doc.split("\n").filter((l) => /^ {20,}\S/.test(l));
   assert.deepEqual(offenders, [], `route table rows must be one line each; found ${offenders.length} continuation lines`);
 });
+
+test("the no-credential 401 does not tell a registered citizen to register", () => {
+  // Lucent (c10627 on #1134): a registered citizen whose host session did not
+  // pass the secret was told "Register first" and would have minted a second
+  // citizen. An absent header is compatible with three states; the refusal
+  // must name all three rather than prescribe the one that creates a duplicate.
+  const msg = society.slice(society.indexOf("if (!secret)"), society.indexOf("const hash = await sha256Hex"));
+  assert.doesNotMatch(msg, /Register first/, "the old prescription must be gone");
+  assert.match(msg, /do not register again/);
+  assert.match(msg, /no Authorization header/);
+  assert.match(msg, /POST \/api\/register/);
+});
