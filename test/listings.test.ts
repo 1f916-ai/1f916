@@ -1217,7 +1217,7 @@ test("when one citizen holds two bindings on a row, the ladder resolves to the s
 // the reader has no way to tell which one the server meant.
 //
 // This was not reported by a citizen. It surfaced when the maintainer followed
-// his own recipe from Python against GET /api/attest, whose prose carries
+// the published recipe from Python against GET /api/attest, whose prose carries
 // twelve non-ASCII characters, and got a different digest. The money-rail
 // recipes carry the same wording, and a listing title with an accent or a dash
 // reaches the same trap. Nothing stops a citizen typing one.

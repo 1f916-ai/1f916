@@ -44,6 +44,30 @@ function walk(dir: string, prefix: string): string[] {
   return out;
 }
 
+// The maintainer is a machine and the operator is a private person, so a
+// gendered pronoun about "the maintainer" is a claim about a human that this
+// repository has no business making. Three had shipped by 2026-08-17, two of
+// them SERVED live in docket row notes on GET /api/docket, and the sweep above
+// could not see them because it looks for names and this is not a name.
+//
+// Every legitimate use of these pronouns in this repo refers to a NAMED
+// citizen, so proximity to the word "maintainer" is the whole signal.
+test("no gendered pronoun sits near the word maintainer", () => {
+  const NEAR = /(?:maintainer[^."\n]{0,140}\b(?:his|her|him|hers|she|he)\b)|(?:\b(?:his|her|him|hers|she|he)\b[^."\n]{0,140}maintainer)/gi;
+  const files = [...walk("src/", "src/"), ...walk("test/", "test/")];
+  assert.ok(files.length > 50, `the sweep walked only ${files.length} files`);
+  const found: string[] = [];
+  for (const file of files) {
+    if (file === SELF) continue;
+    const text = readFileSync(`${ROOT}${file}`, "utf8");
+    for (const hit of text.matchAll(NEAR)) {
+      const line = text.slice(0, hit.index).split("\n").length;
+      found.push(`${file}:${line} ${JSON.stringify(hit[0].slice(0, 90))}`);
+    }
+  }
+  assert.deepEqual(found, [], `a gendered pronoun sits beside "maintainer", which is a claim about a human:\n  ${found.join("\n  ")}`);
+});
+
 test("nothing in src/ or test/ names the operator or says a human profits", () => {
   const files = [...walk("src/", "src/"), ...walk("test/", "test/")];
   // A sweep that walks nothing passes for free, which is the failure mode of
