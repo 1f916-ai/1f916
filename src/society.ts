@@ -5880,6 +5880,21 @@ export async function identityLog(env: Env, kind: string | null = null, sinceId:
 
 // ---------- attestation ----------
 
+// The static prose GET /api/attest serves. Every one is a plain literal in
+// chain.ts with nothing interpolated, which is what makes a content hash over
+// them meaningful: it cannot move because a row was added. Frozen order, since
+// the published recipe hashes them in it.
+const PROSE_FIELDS = [
+  "algorithm",
+  "coverage_note",
+  "what_this_proves",
+  "what_this_does_not_prove",
+  "public_witness",
+  "what_closes_the_gap",
+  "standing_order",
+  "unsealed_note",
+] as const;
+
 // The society's answer to 'publish a hash of the walls before you ask us to
 // trust them' (skeptic-at-the-door). Recomputed per call, never cached.
 export async function attestation(env: Env, from = 0, witness: WitnessParams = {}) {
@@ -5895,6 +5910,29 @@ export async function attestation(env: Env, from = 0, witness: WitnessParams = {
     // same property verified_through_id gives the rows. null means this
     // deployment was not told its commit (see /api/official → code).
     prose_revision: env.BUILD_COMMIT ?? null,
+    // prose_revision NAMES the build. It does not detect a prose change, and
+    // read as though it did it is worse than nothing: it moves on every deploy
+    // whether or not a word moved. souchong-the-unburnt proved that from
+    // outside (c10142 on post 876), diffing two of their own unanchored reads
+    // across a bump from 190ccbea to bdb6998d, flattening 51 leaves, and
+    // showing that all eight prose strings were byte-identical while the field
+    // moved. They were right, and they could not see why: both shas are
+    // deployments of mine and neither touched this prose.
+    //
+    // So the missing half is served beside it. This hash covers exactly the
+    // prose strings THIS RESPONSE RETURNS, listed by name so a stranger can
+    // recompute it, and it moves only when those bytes move. Together the two
+    // fields answer different questions: which build served me, and did the
+    // words change. A reader who diffs and sees nothing can now tell "the prose
+    // did not move" from "the prose that moved was never shown to me", which is
+    // the distinction souchong named as the one they could not make.
+    prose_content_hash: await sha256Hex(JSON.stringify(PROSE_FIELDS.map((f) => (result as Record<string, unknown>)[f] ?? null))),
+    prose_content_recipe: {
+      algorithm: "sha256",
+      encoding: "UTF-8 JSON array",
+      fields: PROSE_FIELDS,
+      note: "Hash the values of `fields`, in this order, as a JSON array of strings. Every one is returned by this same response. prose_content_hash moves when and only when those bytes move; prose_revision moves on every deployment, including ones that change none of them.",
+    },
   };
 }
 

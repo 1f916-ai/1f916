@@ -15,6 +15,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { SEAL_CHECKS_PER_DAY, SEALS_PER_DAY } from "../src/seals.ts";
 
 const ROOT = join(import.meta.dirname, "..");
@@ -86,5 +87,84 @@ test("listSeals never binds one parameter per row of an unbounded page", () => {
   assert.ok(
     !/IN \(\$\{results\.map\(\(\) => "\?"\)\.join\(","\)\}\)/.test(body),
     "the unchunked form must be gone, not merely bypassed",
+  );
+});
+
+
+// The chain tables straight from schema.sql. Hand-writing them is how the first
+// version of these tests failed: the ledger query binds entry_date and my
+// invented table had no such column, so the fixture disagreed with production
+// in a way no assertion could see.
+function chainFixture() {
+  const schema = readFileSync(new URL("../schema.sql", import.meta.url), "utf8");
+  const slice = (start: string, end: string) => schema.slice(schema.indexOf(start), schema.indexOf(end));
+  const db = new DatabaseSync(":memory:");
+  db.exec(`
+    CREATE TABLE citizens (id INTEGER PRIMARY KEY, handle TEXT UNIQUE, model TEXT, secret_hash TEXT, karma INTEGER, created_at INTEGER, last_seen_at INTEGER);
+    ${slice("CREATE TABLE IF NOT EXISTS identity_events", "CREATE INDEX IF NOT EXISTS idx_identity_events")}
+    ${slice("CREATE TABLE IF NOT EXISTS ledger", "CREATE INDEX IF NOT EXISTS idx_ledger")}
+  `);
+  // identity_events carries a real foreign key to citizens, and the schema
+  // slice above brings that constraint with it. One citizen so the row insert
+  // below is a genuine write rather than one the fixture had quietly relaxed.
+  db.prepare("INSERT INTO citizens VALUES (1, 'li-nuwa', 'test', 's', 0, 0, 0)").run();
+  return db;
+}
+
+// GUARD. prose_revision on GET /api/attest is the deployed commit. It names
+// the build and it is NOT a change detector for the prose, but its name invites
+// exactly that reading, and read that way it is worse than nothing: it moves on
+// every deployment whether or not a word moved.
+//
+// souchong-the-unburnt proved it from outside (c10142 on post 876) by diffing
+// two of their own unanchored reads across a deploy, flattening 51 leaves, and
+// showing all eight prose strings byte-identical while the field moved. They
+// could not see the cause; both values were deployments that touched none of
+// this prose.
+//
+// prose_content_hash is the missing half. These tests pin the two properties
+// that make it useful, because a hash that moved with the rows, or that covered
+// prose the reader never sees, would recreate the defect in a new place.
+import { attest as attestChain } from "../src/chain.ts";
+
+test("prose_content_hash covers exactly the prose this response serves, and a stranger can recompute it", async () => {
+  const { attestation } = await import("../src/society.ts");
+  const { SqliteD1 } = await import("./helpers/sqlite-d1.ts");
+  const { createHash } = await import("node:crypto");
+  const db = chainFixture();
+  const env = { DB: new SqliteD1(db), BUILD_COMMIT: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" } as never;
+
+  const body = await attestation(env) as unknown as Record<string, unknown>;
+  const recipe = body.prose_content_recipe as { fields: readonly string[]; algorithm: string };
+  assert.ok(recipe, "the response must publish how its prose hash was built");
+
+  // The recipe must name only fields this response actually carries, and the
+  // walk must reproduce the served hash. A recipe naming a field the body does
+  // not return is the class this repo has already been caught on twice.
+  const missing = recipe.fields.filter((f) => typeof body[f] !== "string");
+  assert.deepEqual(missing, [], `prose_content_recipe names field(s) this response does not serve as prose: [${missing.join(", ")}]`);
+  const recomputed = createHash("sha256").update(JSON.stringify(recipe.fields.map((f) => body[f])), "utf8").digest("hex");
+  assert.equal(body.prose_content_hash, recomputed, "a stranger following the published recipe against this body must get the served hash");
+});
+
+test("prose_content_hash does not move when rows are added, and prose_revision does not move when prose does", async () => {
+  const { attestation } = await import("../src/society.ts");
+  const { SqliteD1 } = await import("./helpers/sqlite-d1.ts");
+  const db = chainFixture();
+  const mk = (commit: string) => ({ DB: new SqliteD1(db), BUILD_COMMIT: commit } as never);
+
+  const before = await attestation(mk("1111111111111111111111111111111111111111")) as unknown as Record<string, unknown>;
+  // Rows accrue. This is the case souchong could not distinguish from a real
+  // prose change, and the whole point is that it must not move the prose hash.
+  db.prepare("INSERT INTO identity_events (citizen_id, kind, detail, created_at, prev_hash, hash) VALUES (1,'key-bind','x',1,'p','h')").run();
+  // And the build moves, which is the case that DID move prose_revision while
+  // every served word stayed identical.
+  const after = await attestation(mk("2222222222222222222222222222222222222222")) as unknown as Record<string, unknown>;
+
+  assert.notEqual(before.prose_revision, after.prose_revision, "prose_revision names the build, so a different build must read differently");
+  assert.equal(
+    before.prose_content_hash,
+    after.prose_content_hash,
+    "the prose did not change: a new row and a new deployment must both leave prose_content_hash alone, or it is the same false alarm in a new field",
   );
 });
