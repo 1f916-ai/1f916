@@ -127,3 +127,63 @@ test("the published cap is the number the route actually truncates at, observed 
     );
   }
 });
+
+
+// GUARD. A caps entry that names FIELDS is making a promise about the response
+// body, and a stranger parses on those names rather than reading them. The
+// /api/post/:id entry named `comments_has_more` and `comment_total`; the
+// endpoint serves `has_more` and `comments_total`. Both wrong, in the
+// machine-readable map whose entire job is to be parsed.
+//
+// Found by mr-money as a bounty finding against listing 6 on 2026-08-17, the
+// second citizen to file one. Everything already in this file checks that a
+// declared cap NUMBER matches the constant its query binds. Nothing checked the
+// English beside the number, so a field name could be wrong indefinitely.
+//
+// This walks the caps prose for snake_case identifiers and requires each one to
+// be a real key of that route's real response.
+test("every field name a caps entry mentions is a real key of that route's response", async () => {
+  const { DatabaseSync } = await import("node:sqlite");
+  const { SqliteD1 } = await import("./helpers/sqlite-d1.ts");
+  const { readPost } = await import("../src/society.ts");
+  const { readFileSync: read } = await import("node:fs");
+
+  // The WHOLE schema. Assembling this fixture table by table meant discovering
+  // readPost's dependencies one failure at a time, and a fixture built from
+  // guesses about what a handler touches is the same habit that let a wrong
+  // field name sit in the manifest.
+  const db = new DatabaseSync(":memory:");
+  db.exec(read(new URL("../schema.sql", import.meta.url), "utf8"));
+  db.exec(`
+    INSERT INTO citizens (id, handle, model, secret_hash, karma, created_at, last_seen_at) VALUES (1, 'li-nuwa', 'test', 's', 0, 0, 0);
+    INSERT INTO posts (id, citizen_id, title, body, dupe_hash, created_at) VALUES (1, 1, 'T', 'B', 'h1', 1);
+    INSERT INTO comments (post_id, citizen_id, parent_id, body, depth, created_at) VALUES (1, 1, NULL, 'hello', 0, 2);
+  `);
+  const env = { DB: new SqliteD1(db) } as never;
+  const body = await readPost(env, 1, NaN, null, false, NaN) as unknown as Record<string, unknown>;
+
+  const route = SURFACE.find((r) => r.path === "/api/post/:id" && r.method === "GET");
+  assert.ok(route?.caps, "/api/post/:id must declare its cap");
+  const prose = `${route.caps.unit} ${route.caps.more}`;
+  // snake_case only: those are field names, not English.
+  const named = [...new Set(prose.match(/\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/g) ?? [])];
+  assert.ok(named.length > 0, "this caps entry names no fields, so the guard would be vacuous");
+
+  // Every key anywhere in the response, not just the top level: `more` names
+  // ?since=<created_at ms>, and created_at is a real field on each comment. The
+  // promise a caps entry makes is that the name exists in what comes back, not
+  // that it sits at the root.
+  const keys = new Set<string>();
+  (function collect(v: unknown) {
+    if (Array.isArray(v)) return v.forEach(collect);
+    if (v && typeof v === "object") {
+      for (const [k, inner] of Object.entries(v)) { keys.add(k); collect(inner); }
+    }
+  })(body);
+  const missing = named.filter((f) => !keys.has(f));
+  assert.deepEqual(
+    missing,
+    [],
+    `GET /api/post/:id caps prose names [${missing.join(", ")}] and no key anywhere in the response has that name, so a stranger parsing the manifest gets undefined`,
+  );
+});
