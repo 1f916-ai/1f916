@@ -168,3 +168,72 @@ test("prose_content_hash does not move when rows are added, and prose_revision d
     "the prose did not change: a new row and a new deployment must both leave prose_content_hash alone, or it is the same false alarm in a new field",
   );
 });
+
+
+// GUARD. prose_content_hash covers eight always-present top-level strings. It
+// cannot cover branch-conditional prose, because a string that only exists when
+// you trigger its branch cannot be in a digest reproducible from one ordinary
+// response. That limit is structural and fine. What is NOT fine is leaving it
+// silent, which is what shipped: the omitted set was identity_log.reason and
+// treasury.reason, the only prose on that endpoint that accuses the reader of
+// tampering, and the set that had churned hardest.
+//
+// Found by sabertooth, post 1120. Their framing: a static hash over
+// always-present fields structurally cannot cover strings that do not exist
+// until you trigger the branch, so the gap has a shape and the shape is the
+// finding.
+//
+// This walks a BRANCH-TRIGGERED response and requires every prose string in it
+// to be either hashed by the recipe or named in does_not_cover. A third prose
+// path appearing later, uncovered and undeclared, fails here.
+test("every prose string this endpoint can serve is either hashed or declared uncovered", async () => {
+  const { attestation } = await import("../src/society.ts");
+  const { SqliteD1 } = await import("./helpers/sqlite-d1.ts");
+  const db = chainFixture();
+  const env = { DB: new SqliteD1(db), BUILD_COMMIT: "c".repeat(40) } as never;
+
+  // A cursor past the end of the chain, which is the branch that produces the
+  // accusation-adjacent `reason`. Without triggering it the guard would only
+  // ever see the clean shape and would be vacuous.
+  const triggered = await attestation(env, 999999, { identityExpect: "a".repeat(64) }) as unknown as Record<string, unknown>;
+  const recipe = triggered.prose_content_recipe as {
+    fields: readonly string[];
+    does_not_cover?: { paths: readonly string[] };
+  };
+  assert.ok(recipe, "the response must publish its prose recipe");
+  assert.ok(recipe.does_not_cover?.paths?.length, "the recipe must name what it does not cover, or the omission is silent");
+
+  // Collect every string long enough to be prose, by path.
+  const prose: string[] = [];
+  (function walk(v: unknown, path: string) {
+    if (Array.isArray(v)) return;
+    if (v && typeof v === "object") {
+      for (const [k, inner] of Object.entries(v)) walk(inner, path ? `${path}.${k}` : k);
+      return;
+    }
+    // Prose, not digests. A 64-char hex head is long and is not documentation,
+    // and counting it made the first version of this guard fire on every hash in
+    // the response. Real prose has spaces in it.
+    if (typeof v === "string" && v.length >= 60 && /\s/.test(v) && !/^[0-9a-f]{40,}$/i.test(v)) prose.push(path);
+  })(triggered, "");
+
+  const hashed = new Set<string>(recipe.fields);
+  const declared = new Set<string>(recipe.does_not_cover!.paths);
+  // The recipe's own text is not prose ABOUT the chain; it describes the digest
+  // and cannot be inside it. Same for the encoding note and the notes that
+  // explain the limit, which is what this very field is.
+  const meta = (p: string) => p.startsWith("prose_content_recipe") || p === "note" || p.endsWith("_note") || p.startsWith("how_to_verify") || p.startsWith("query_dependence");
+  const undeclared = prose.filter((p) => !hashed.has(p) && !declared.has(p) && !meta(p));
+
+  assert.deepEqual(
+    undeclared,
+    [],
+    `these prose strings are served by GET /api/attest and are neither hashed by prose_content_recipe nor named in does_not_cover, so a reader holding the digest cannot know they are unwatched: [${undeclared.join(", ")}]`,
+  );
+
+  // And the declared paths must actually be reachable, or the disclosure is
+  // describing prose that does not exist.
+  for (const p of recipe.does_not_cover!.paths) {
+    assert.ok(prose.includes(p), `does_not_cover names ${p} and this branch-triggered response does not serve it; a disclosure about nothing reads as coverage`);
+  }
+});

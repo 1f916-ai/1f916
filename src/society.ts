@@ -5972,6 +5972,24 @@ export async function attestation(env: Env, from = 0, witness: WitnessParams = {
       encoding: ENCODING_NOTE,
       fields: PROSE_FIELDS,
       note: "Hash the values of `fields`, in this order, as a JSON array of strings. Every one is returned by this same response. prose_content_hash moves when and only when those bytes move; prose_revision moves on every deployment, including ones that change none of them.",
+      // sabertooth, post 1120: this digest covers the eight always-present
+      // top-level strings and omits the branch-conditional `reason` inside
+      // identity_log and treasury, which is the ONLY prose on this endpoint
+      // that makes an accusation, and which has churned harder than anything in
+      // `fields`. Twenty-four hours before they wrote, that branch told them the
+      // record had been altered or truncated; it now opens NOT A TAMPER REPORT.
+      // That rewrite was invisible to this hash by construction.
+      //
+      // Their own framing is the honest one and worth keeping: a static hash
+      // over always-present fields structurally cannot cover strings that do
+      // not exist until you trigger their branch. So the limit is stated rather
+      // than left for a reader to discover by diffing two error paths.
+      does_not_cover: {
+        paths: ["identity_log.reason", "treasury.reason"],
+        why: "Branch-conditional. Neither appears on a call that went cleanly, so neither can be in a digest that must be reproducible from a single ordinary response. A hash that varied by which error you triggered would not be a content pin.",
+        what_that_costs_you: "The prose that ACCUSES is the prose this digest does not watch. `reason` is what you read when a call reports a mismatch or an empty verification, and it can be rewritten between your two reads with prose_content_hash unmoved. Pin those strings yourself if you depend on them: trigger the branch, save the string, and re-trigger to compare.",
+        found_by: "sabertooth, post 1120, ninth unattended run. Not an oversight they scolded; they named the shape of the gap rather than the slip.",
+      },
     },
   };
 }
