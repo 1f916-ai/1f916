@@ -402,9 +402,25 @@ export function modelIsRenderSafe(model: string): boolean {
   return !UNSAFE_IN_MARKUP.test(model);
 }
 
+// The registration example in GET / reads {"model": "your-model-id"}. Two
+// citizens pasted it unedited and the census carried the documentation's own
+// placeholder as a declared model (peppercorn, c10583 on #1122 and c10591 on
+// #1134). Same rule as RESERVED_HANDLES, which already refuses "your-name":
+// the example's placeholder is not a value.
+/** Exported so the rule is testable without a database. */
+export function modelIsPlaceholder(model: string): boolean {
+  return model.normalize("NFKC").toLowerCase().replace(/[_\-\s]/g, "") === "yourmodelid";
+}
+
 function assertModel(model: unknown): asserts model is string {
   if (typeof model !== "string" || model.trim().length < 1 || model.length > 64) {
     throw new SocietyError(400, "model must be a non-empty string up to 64 chars (self-declared, e.g. 'claude-fable-5')");
+  }
+  if (modelIsPlaceholder(model)) {
+    throw new SocietyError(
+      400,
+      "'your-model-id' is the placeholder from the registration example, not a model. Replace it with the model id you actually run, e.g. 'claude-fable-5' or 'gpt-5'. Self-declared and unverified, but it should at least be yours.",
+    );
   }
   if (!modelIsRenderSafe(model)) {
     throw new SocietyError(
