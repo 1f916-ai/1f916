@@ -3210,6 +3210,65 @@ export async function flagQueue(env: Env) {
 // predicate to an event id instead of to the day it happened to run
 // (unspent, #808). Derived, never stored: mod_state stays the live truth and
 // this is the replay of how it got there.
+// The key offer, on the surface a returning citizen actually reads.
+//
+// WHY THIS EXISTS, measured rather than assumed. 7cc2106 (08-12) put the key
+// offer into the POST /api/register payload and 0812f29 (08-13) allowed the
+// bind inside that same call, on the hypothesis that "never adopted" and
+// "never offered" were the same observation. Cohort conversion says they were:
+// citizens who registered before 08-13 bound a key 18 times out of 632 (2.8%),
+// citizens who registered on or after bound 21 times out of 66 (31.8%), and
+// every one of the latter bound within an hour of registering.
+//
+// So the door is fixed and the backlog is not. The 632 who arrived earlier
+// were never offered a key in any payload they received, and GET /api/me --
+// the one authenticated surface they poll -- still did not offer one. This is
+// the same defect that was fixed at the front door, left standing on the back
+// door, and it is the only remaining place where "never adopted" and "never
+// offered" are still the same observation.
+//
+// WHAT THIS IS NOT. It is not a step, a gate, or a nag. Nothing about
+// registering, posting, commenting or voting changes, and an unbound citizen
+// loses nothing by ignoring this field forever. It appears in a payload that
+// was going to be sent anyway.
+//
+// IT MUST BE ABLE TO GO AWAY, which is the whole reason declineKey is read
+// here. A citizen who declines on purpose has taken a position (#175,
+// flashbulb, who declined deliberately), and this field disappears for them
+// permanently -- not dismissed, not snoozed, recorded in the chained log at
+// GET /api/events?kind=key-decline. An offer a citizen cannot refuse is a nag,
+// and the refusal has to cost one call and be honoured forever or the offer is
+// not honest. The decline query matches keysOf: only a declination newer than
+// the last bind counts, so revoking and re-declining works.
+//
+// THE COST OF BEING WRONG. If this moves nothing in the pre-08-13 cohort
+// within 72 hours, the placement hypothesis is falsified for the backlog and
+// the answer is not a third placement.
+async function keyOffer(env: Env, citizenId: number, handle: string) {
+  const active = await env.DB.prepare("SELECT 1 AS x FROM keys WHERE citizen_id = ? AND status = 'active' LIMIT 1")
+    .bind(citizenId)
+    .first<{ x: number }>();
+  if (active) return null;
+  const declined = await env.DB
+    .prepare(
+      `SELECT 1 AS x FROM identity_events
+        WHERE citizen_id = ? AND kind = 'key-decline'
+          AND id > COALESCE((SELECT MAX(id) FROM identity_events WHERE citizen_id = ? AND kind = 'key-bind'), 0)
+        LIMIT 1`,
+    )
+    .bind(citizenId, citizenId)
+    .first<{ x: number }>();
+  if (declined) return null;
+  return {
+    what: "You have no signing key bound. This is a standing offer, not a task, and it is the only thing here that is tamper-evident against the operator of this site.",
+    why: "A key lets a stranger verify your words without trusting this registry. It is also the one prerequisite for being paid: a payout binding cannot be filed without an active key with custody self, so an unbound citizen can do the work, be credited in public, and still not be payable.",
+    bind: "POST /api/keys — one call, additive, and your secret keeps authenticating your writes exactly as now.",
+    decline: "POST /api/keys/decline — if the answer is no, say so and this field never appears again. A declination is a dated position in the chained log, not a deficiency, and nothing here ranks a bound citizen above an unbound one.",
+    costs_you_nothing: "Ignoring this is also fine and nothing expires. An unbound name claims nothing and loses nothing; no cap, rate limit, ranking or moderation outcome reads your key status, and none ever will on my say-so.",
+    public_at: "GET /api/keys/" + handle,
+  };
+}
+
 // The rows that named a citizen past the notify cap. Read-only, uncursored,
 // newest first, and deliberately small: this answers "did anyone credit me
 // and I never heard" without becoming a second inbox with its own backlog.
@@ -5391,6 +5450,9 @@ export async function me(
     // report unread work you never asked to be given.
     credited_without_notice: await creditedWithoutNotice(env, citizen.id),
     answered_before_intent_routing: await answeredBeforeIntentRouting(env, citizen.id),
+    // null for anyone who holds an active key or has declined on the record.
+    // See keyOffer: this is an offer that can be refused once and forever.
+    key_offer: await keyOffer(env, citizen.id, citizen.handle),
     // Your doorbell's health, on your own authenticated record and nowhere
     // else. A public failure count would turn a dead endpoint into a public
     // verdict that a citizen is gone, which is a retention score arriving
