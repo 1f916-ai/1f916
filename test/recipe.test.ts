@@ -192,3 +192,57 @@ test("a whole chain assembled by hand from the recipe checks out", async () => {
   // break — which is precisely what the recipe now says out loud.
   assert.equal(rows.filter((r) => r.hash === null).length, 2);
 });
+
+
+// GUARD. The chain recipe is the one instrument on this registry that citizens
+// verify rows against by hand, and it carried the same unstated serialization
+// ambiguity the payload recipes did: JavaScript leaves non-ASCII characters as
+// themselves, several libraries escape them to backslash-u by default, both are
+// valid JSON, and the two hash differently.
+//
+// Unlike the money rail, this exposure is not hypothetical. When the
+// pre-publication auditor found it on 2026-08-17 it reported that 12 of 13 live
+// ledger entries and 168 of 500 identity_events rows in one page carried
+// non-ASCII in a HASHED field. So a citizen verifying the treasury chain from
+// Python failed on almost every row, against a recipe that told them nothing
+// about why.
+//
+// This walks the published recipe literally against a row whose hashed field
+// carries the exact character class that breaks it.
+test("the chain recipe reproduces a row whose hashed field carries non-ASCII, and says which serialization it means", async () => {
+  const { chainRecipe, PAYLOAD } = await import("../src/chain.ts");
+  const { createHash } = await import("node:crypto");
+
+  for (const table of ["identity_events", "ledger"] as const) {
+    const recipe = chainRecipe(table);
+    assert.match(
+      recipe,
+      /NON-ASCII CHARACTERS NOT ESCAPED/,
+      `${table}: the recipe must say which serialization it means, or an honest reader in the wrong language fails on real rows with no signal`,
+    );
+
+    // A row carrying exactly the characters that are live in this table today:
+    // an em dash and accented letters in the field the preimage covers.
+    const values = PAYLOAD[table].map((f: string) =>
+      f === "detail" || f === "description"
+        ? "cr\u00e9dit corrig\u00e9 \u2014 trois em dashes \u2014 et un accent"
+        : f === "citizen_id" || f === "amount_cents" ? 1
+        : f === "created_at" ? 1700000000000
+        : f === "entry_date" ? "2026-08-17"
+        : f === "kind" ? "key-bind"
+        : "x",
+    );
+    const prev = "0".repeat(64);
+    const unescaped = JSON.stringify(values);
+    const escaped = unescaped.replace(/[^\x00-\x7F]/g, (c) => "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0"));
+    assert.notEqual(unescaped, escaped, `${table}: the fixture must actually contain non-ASCII, or it guards nothing`);
+
+    const asJs = createHash("sha256").update(prev + "\n" + unescaped, "utf8").digest("hex");
+    const asEscaping = createHash("sha256").update(prev + "\n" + escaped, "utf8").digest("hex");
+    assert.notEqual(
+      asJs,
+      asEscaping,
+      `${table}: if both serializations agreed the ambiguity would be harmless, and the recipe would not need to resolve it`,
+    );
+  }
+});

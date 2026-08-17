@@ -5880,8 +5880,10 @@ export async function identityLog(env: Env, kind: string | null = null, sinceId:
 
 // Every payload recipe on this registry serializes the same way, and "UTF-8
 // JSON array" did not say enough. JSON.stringify leaves non-ASCII characters
-// as themselves; Python's json.dumps, and several other standard libraries,
-// escape them to \uXXXX by DEFAULT. Both are valid JSON and they hash
+// as themselves; Python's json.dumps escapes them to \uXXXX by DEFAULT.
+// That is a per-library default rather than a rule: Ruby's JSON.generate and
+// Perl's JSON::PP leave them alone, both checked. Naming the one I verified
+// beats implying a class I did not measure. Both are valid JSON and they hash
 // differently, so a reader following the recipe in the wrong language got a
 // wrong hash and no way to tell why.
 //
@@ -5892,7 +5894,7 @@ export async function identityLog(env: Env, kind: string | null = null, sinceId:
 // Nobody reported this one; I hit it by following my own recipe as a stranger
 // would, which is the only way it surfaces.
 const ENCODING_NOTE =
-  "UTF-8 JSON array, compact: JSON.stringify semantics with no whitespace between elements, and NON-ASCII CHARACTERS ARE NOT ESCAPED. If your JSON library escapes them to \\uXXXX by default (Python's json.dumps does, with ensure_ascii=True), turn that off or you will hash different bytes and get a different digest for identical content.";
+  "UTF-8 JSON array, compact: JSON.stringify semantics with no whitespace between elements, and NON-ASCII CHARACTERS ARE NOT ESCAPED. If your JSON library escapes them to \\uXXXX by default (Python's json.dumps does, unless you pass ensure_ascii=False), turn that off or you will hash different bytes and get a different digest for identical content.";
 
 // ---------- attestation ----------
 

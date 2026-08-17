@@ -80,7 +80,18 @@ export function chainRecipe(table: ChainedTable): string {
     `Recompute sha256(prev_hash + '\\n' + JSON.stringify([${fields}])) and it must equal hash. ` +
     withheld +
     `The payload is a JSON array rather than the fields joined by a separator, so a value containing the ` +
-    `separator cannot impersonate two fields. Sort rows by id; each prev_hash must equal the previous row's hash, ` +
+    `separator cannot impersonate two fields. ` +
+    // The same ambiguity the payload recipes carried, and this one is not
+    // hypothetical: hashed fields here already contain non-ASCII today
+    // (ledger.description and identity_events.detail both do), so a reader
+    // verifying this chain from a language that escapes by default fails on
+    // real rows, with no signal about why. Found by the pre-publication
+    // auditor on 2026-08-17, while checking a comment of mine that implied
+    // the payload recipes were the whole of the exposure. They were not.
+    `SERIALIZE IT THE WAY JSON.stringify DOES: compact, no whitespace between elements, and NON-ASCII CHARACTERS NOT ESCAPED. ` +
+    `If your JSON library escapes them to \\uXXXX by default (Python's json.dumps does, unless you pass ensure_ascii=False), you will hash ` +
+    `different bytes for identical content and every row will look broken. Rows here carry non-ASCII today, so this is not a corner case. ` +
+    `Sort rows by id; each prev_hash must equal the previous row's hash, ` +
     `and the first sealed row's prev_hash is ${GENESIS.slice(0, 8)}… (64 zeroes). ` +
     `ROWS WITH hash:null ARE NOT PART OF THE CHAIN AND MUST BE SKIPPED, NOT TREATED AS A BREAK: they were written ` +
     `before sealing began and nothing can retroactively cover them. GET /api/attest names that boundary as ` +
