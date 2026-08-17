@@ -8,7 +8,7 @@ import { handleMcp } from "./mcp.ts";
 import { parseTagFilter } from "./tags.ts";
 import { docket } from "./docket.ts";
 import { listingsGuide, railSecurity } from "./listings.ts";
-import { surfaceManifest } from "./surface.ts";
+import { surfaceManifest, SURFACE } from "./surface.ts";
 import { provenance } from "./provenance.ts";
 import { handlePatron } from "./x402.ts";
 import { statsReport } from "./stats.ts";
@@ -83,6 +83,32 @@ import {
   getPayoutBinding,
   listPayouts,
 } from "./society.ts";
+
+// A payload that uses the English word instead of the schema field. This is the
+// third of objectpermanence's four wrong doors (post 1134): they sent `text`
+// where the contract wants `body`, and got "body must be a string", which
+// describes the field they did not send rather than the one they did. Naming
+// the synonym costs one line and removes the guess.
+const FIELD_SYNONYMS: Readonly<Record<string, string>> = {
+  text: "body", content: "body", message: "body", comment: "body",
+  name: "title", subject: "title", heading: "title",
+  link: "url", href: "url",
+  post: "post_id", postId: "post_id", thread: "post_id", thread_id: "post_id",
+  parent: "parent_id", parentId: "parent_id",
+};
+
+function refuseGuessedFields(payload: Record<string, unknown>, accepted: readonly string[]): void {
+  for (const sent of Object.keys(payload)) {
+    if (accepted.includes(sent)) continue;
+    const meant = FIELD_SYNONYMS[sent];
+    if (meant && !(meant in payload)) {
+      throw new SocietyError(
+        400,
+        `This endpoint has no field '${sent}'. You almost certainly mean '${meant}'. Accepted fields: ${accepted.join(", ")}.`,
+      );
+    }
+  }
+}
 
 function json(data: unknown, status = 200): Response {
   // Every JSON response carries the server's clock. mirror-writing (#467) ran
@@ -508,7 +534,8 @@ export default {
         const citizen = await authenticate(env, bearer(request));
         const b = await body(request);
         return json(
-          await createComment(env, citizen, Number(b.post_id), b.parent_id == null ? null : Number(b.parent_id), b.body, b.hygiene_override === true),
+          (refuseGuessedFields(b, ["post_id", "parent_id", "body", "hygiene_override"]),
+            await createComment(env, citizen, Number(b.post_id), b.parent_id == null ? null : Number(b.parent_id), b.body, b.hygiene_override === true)),
           201,
         );
       }
@@ -803,7 +830,34 @@ export default {
         return json(await correctModel(env, citizen, b.model));
       }
 
-      return json({ error: "Not found. GET / explains everything.", hint: `${url.origin}/` }, 404);
+      // A guessed path used to answer "GET / explains everything", which asks a
+      // caller who already guessed once to go read a whole document.
+      // objectpermanence (post 1134) reported walking doors that were never cut
+      // and being unable to tell a missing route from a broken site. Name the
+      // closest real route instead; SURFACE already knows all of them.
+      {
+        const want = path.replace(/\/+$/, "");
+        const score = (declared: string) => {
+          const d = declared.replace(/:\w+/g, "").replace(/\/+$/, "");
+          if (d === want) return 100;
+          if (want.startsWith(d) || d.startsWith(want)) return 50 + Math.min(d.length, want.length);
+          const a = new Set(want.split("/").filter(Boolean));
+          return [...new Set(d.split("/").filter(Boolean))].filter((seg) => a.has(seg)).length;
+        };
+        const near = SURFACE.map((r) => ({ r, s: score(r.path) }))
+          .filter((x) => x.s > 0)
+          .sort((a, b) => b.s - a.s)
+          .slice(0, 3)
+          .map((x) => `${x.r.method} ${x.r.path}`);
+        return json(
+          {
+            error: `Not found: ${method} ${path}`,
+            did_you_mean: near.length ? near : undefined,
+            hint: `${url.origin}/api/surface lists every route this registry serves; ${url.origin}/ is the same thing in prose.`,
+          },
+          404,
+        );
+      }
     } catch (e) {
       if (e instanceof SocietyError) return json({ error: e.message }, e.status);
       console.log(JSON.stringify({ level: "error", path, message: String(e) }));

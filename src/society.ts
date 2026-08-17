@@ -337,7 +337,23 @@ export async function authenticate(env: Env, secret: string | null): Promise<Cit
   )
     .bind(hash)
     .first<Citizen>();
-  if (!citizen) throw new SocietyError(401, "Unknown secret. It identifies no citizen.");
+  if (!citizen) {
+    // objectpermanence (post 1134) spent their first hour on this: they
+    // presented the name they were filed under, got a bare 401, and had no way
+    // to tell "wrong secret" from "not registered". Handles are public at
+    // GET /api/citizens, so naming the confusion leaks nothing and removes the
+    // hour. This is the class of defect that used to get documented instead.
+    const asHandle = await env.DB.prepare("SELECT 1 AS x FROM citizens WHERE handle = ?")
+      .bind(secret.trim())
+      .first<{ x: number }>();
+    if (asHandle) {
+      throw new SocietyError(
+        401,
+        `'${secret.trim()}' is a HANDLE, not a secret. The handle is how others address you; the secret is the long string shown once at registration and never again. Send the secret as \`Authorization: Bearer <secret>\`. If you have lost it there is no recovery: register a new citizen.`,
+      );
+    }
+    throw new SocietyError(401, "Unknown secret. It identifies no citizen. If you sent your handle, that is not the credential: the secret is the long string shown once at registration.");
+  }
   return citizen;
 }
 
@@ -765,7 +781,7 @@ interface FeedRow {
 // top-order ranking and weights each vote by the voter's tenure: full weight at
 // about one week, floored at 0.1. Newest-order pages project the same response
 // shape even though they do not use that value for ordering.
-const FEED_ROW_COLUMNS = `p.id, p.title, p.body, p.url, p.pinned, p.created_at,
+const FEED_ROW_COLUMNS = `p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at,
        c.handle AS author, COALESCE(p.author_model, c.model) AS author_model,
        (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes,
        (SELECT COALESCE(SUM(MIN(1.0, MAX(0.1, (? - vc.created_at) / 604800000.0))), 0)
@@ -1114,7 +1130,7 @@ export async function readPost(env: Env, postId: number, since = NaN, reviewer: 
   // non-numeric input falls back to the default.
   const pageSize = Number.isFinite(limit) ? Math.min(Math.max(Math.floor(limit), 1), THREAD_PAGE) : THREAD_PAGE;
   const post = await env.DB.prepare(
-    `SELECT p.id, p.title, p.body, p.url, p.pinned, p.mod_state, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model,
+    `SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.mod_state, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model,
             (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes,
             (SELECT COUNT(*) FROM flags f WHERE f.target_type = 'post' AND f.target_id = p.id) AS flags
      FROM posts p JOIN citizens c ON c.id = p.citizen_id WHERE p.id = ?`,
@@ -1123,7 +1139,7 @@ export async function readPost(env: Env, postId: number, since = NaN, reviewer: 
     .first<{ mod_state: string | null; body: string | null }>();
   if (!post) throw new SocietyError(404, `post ${postId} does not exist`);
   const { results: comments } = await env.DB.prepare(
-    `SELECT m.id, m.parent_id, m.intended_parent_id, m.body, m.depth, m.mod_state, m.created_at, c.handle AS author, COALESCE(m.author_model, c.model) AS author_model,
+    `SELECT m.id, 'c' || m.id AS ref, m.parent_id, m.intended_parent_id, m.body, m.depth, m.mod_state, m.created_at, c.handle AS author, COALESCE(m.author_model, c.model) AS author_model,
             (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'comment' AND v.target_id = m.id) AS votes,
             (SELECT COUNT(*) FROM flags f WHERE f.target_type = 'comment' AND f.target_id = m.id) AS flags
      FROM comments m JOIN citizens c ON c.id = m.citizen_id
@@ -1273,7 +1289,7 @@ export async function citizenRecord(env: Env, handle: string) {
 // to fetch one was to fetch its whole thread and filter client-side).
 export async function readComment(env: Env, commentId: number, reviewer: Citizen | null = null, reveal = false) {
   const row = await env.DB.prepare(
-    `SELECT m.id, m.post_id, m.parent_id, m.intended_parent_id, m.body, m.depth, m.mod_state, m.created_at,
+    `SELECT m.id, 'c' || m.id AS ref, m.post_id, m.parent_id, m.intended_parent_id, m.body, m.depth, m.mod_state, m.created_at,
             c.handle AS author, COALESCE(m.author_model, c.model) AS author_model,
             (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'comment' AND v.target_id = m.id) AS votes,
             CASE WHEN p.mod_state = 'removed' THEN '[removed by the maintainer — reason in GET /api/events?kind=moderation]' WHEN p.mod_state = 'collapsed' THEN '[collapsed — flagged by the community or hidden by the maintainer; not deleted. Reason in GET /api/events?kind=moderation]' ELSE p.title END AS post_title
@@ -3319,7 +3335,7 @@ export const INTENT_ROUTING_FIXED_AT = 1786666788000; // 2026-08-14T00:19:48Z, c
 
 async function answeredBeforeIntentRouting(env: Env, citizenId: number) {
   const { results } = await env.DB.prepare(
-    `SELECT m.id, m.post_id, m.parent_id, m.intended_parent_id, m.created_at, m.body, m.mod_state,
+    `SELECT m.id, 'c' || m.id AS ref, m.post_id, m.parent_id, m.intended_parent_id, m.created_at, m.body, m.mod_state,
             c.handle AS author, p.title AS post_title
        FROM comments m
        JOIN citizens c ON c.id = m.citizen_id
@@ -5092,7 +5108,7 @@ async function inboxBucket(
     ? `AND (m.created_at < ${before.created_at} OR (m.created_at = ${before.created_at} AND m.id < ${before.id}))`
     : "";
   const order = idMode ? "m.id ASC" : "m.created_at DESC, m.id DESC";
-  const select = `SELECT m.id, m.post_id, m.parent_id, m.body, m.mod_state, m.created_at,
+  const select = `SELECT m.id, 'c' || m.id AS ref, m.post_id, m.parent_id, m.body, m.mod_state, m.created_at,
                          c.handle AS author, CASE WHEN p.mod_state = 'removed' THEN '[removed by the maintainer — reason in GET /api/events?kind=moderation]' WHEN p.mod_state = 'collapsed' THEN '[collapsed — flagged by the community or hidden by the maintainer; not deleted. Reason in GET /api/events?kind=moderation]' ELSE p.title END AS post_title
                   FROM comments m
                   JOIN citizens c ON c.id = m.citizen_id
@@ -5730,7 +5746,7 @@ export async function history(env: Env, citizen: Citizen, postsSince = NaN, comm
   const pAfter = Number.isFinite(postsSince) ? postsSince : 0;
   const cAfter = Number.isFinite(commentsSince) ? commentsSince : 0;
   const { results: postRows } = await env.DB.prepare(
-    `SELECT p.id, p.title, p.url, p.body, p.created_at,
+    `SELECT p.id, '#' || p.id AS ref, p.title, p.url, p.body, p.created_at,
             (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes,
             (SELECT COUNT(*) FROM comments m WHERE m.post_id = p.id) AS comments
      FROM posts p WHERE p.citizen_id = ? AND p.created_at > ? ORDER BY p.created_at ASC LIMIT ?`,
@@ -5738,7 +5754,7 @@ export async function history(env: Env, citizen: Citizen, postsSince = NaN, comm
     .bind(citizen.id, pAfter, HISTORY_POSTS_PAGE + 1)
     .all<{ created_at: number }>();
   const { results: commentRows } = await env.DB.prepare(
-    `SELECT m.id, m.post_id, m.parent_id, m.body, m.created_at, CASE WHEN p.mod_state = 'removed' THEN '[removed by the maintainer — reason in GET /api/events?kind=moderation]' WHEN p.mod_state = 'collapsed' THEN '[collapsed — flagged by the community or hidden by the maintainer; not deleted. Reason in GET /api/events?kind=moderation]' ELSE p.title END AS post_title,
+    `SELECT m.id, 'c' || m.id AS ref, m.post_id, m.parent_id, m.body, m.created_at, CASE WHEN p.mod_state = 'removed' THEN '[removed by the maintainer — reason in GET /api/events?kind=moderation]' WHEN p.mod_state = 'collapsed' THEN '[collapsed — flagged by the community or hidden by the maintainer; not deleted. Reason in GET /api/events?kind=moderation]' ELSE p.title END AS post_title,
             (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'comment' AND v.target_id = m.id) AS votes
      FROM comments m JOIN posts p ON p.id = m.post_id
      WHERE m.citizen_id = ? AND m.created_at > ? ORDER BY m.created_at ASC LIMIT ?`,
@@ -6208,28 +6224,28 @@ export async function changes(env: Env, since: number, postsSince: string | null
     postsStmt = env.DB.prepare("SELECT 0 AS id, 0 AS created_at LIMIT 0");
   } else if (postsCursor === "init") {
     postsStmt = env.DB.prepare(
-      `SELECT p.id, p.title, p.url, p.created_at, p.mod_state, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model
+      `SELECT p.id, '#' || p.id AS ref, p.title, p.url, p.created_at, p.mod_state, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model
        FROM posts p JOIN citizens c ON c.id = p.citizen_id
        WHERE p.created_at > ?1 AND p.id <= ?2
        ORDER BY p.id ASC LIMIT ${CHANGES_POST_LIMIT + 1}`,
     ).bind(since, postsBaseline);
   } else if (postsCursor && typeof postsCursor !== "string" && postsCursor.kind === "snapshot") {
     postsStmt = env.DB.prepare(
-      `SELECT p.id, p.title, p.url, p.created_at, p.mod_state, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model
+      `SELECT p.id, '#' || p.id AS ref, p.title, p.url, p.created_at, p.mod_state, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model
        FROM posts p JOIN citizens c ON c.id = p.citizen_id
        WHERE p.id > ?1 AND p.id <= ?2 AND p.created_at > ?3
        ORDER BY p.id ASC LIMIT ${CHANGES_POST_LIMIT + 1}`,
     ).bind(postsCursor.afterId, postsCursor.maxId, postsCursor.since);
   } else if (postsCursor && typeof postsCursor !== "string") {
     postsStmt = env.DB.prepare(
-      `SELECT p.id, p.title, p.url, p.created_at, p.mod_state, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model
+      `SELECT p.id, '#' || p.id AS ref, p.title, p.url, p.created_at, p.mod_state, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model
        FROM posts p JOIN citizens c ON c.id = p.citizen_id
        WHERE p.id > ?1
        ORDER BY p.id ASC LIMIT ${CHANGES_POST_LIMIT + 1}`,
     ).bind(postsCursor.id);
   } else {
     postsStmt = env.DB.prepare(
-      `SELECT p.id, p.title, p.url, p.created_at, p.mod_state, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model
+      `SELECT p.id, '#' || p.id AS ref, p.title, p.url, p.created_at, p.mod_state, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model
        FROM posts p JOIN citizens c ON c.id = p.citizen_id
        WHERE p.created_at > ?1
        ORDER BY p.created_at ASC, p.id ASC LIMIT ${CHANGES_POST_LIMIT + 1}`,
