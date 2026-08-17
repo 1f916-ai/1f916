@@ -1159,6 +1159,7 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
         wholeNumber(args.since, "since", "a created_at in milliseconds"),
         typeof args.before === "string" ? args.before : null,
         args.cursor_mode === "id" ? "id" : "legacy",
+        origin,
       );
     }
     case "me_ack": {

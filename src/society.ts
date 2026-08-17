@@ -5137,6 +5137,10 @@ export async function me(
   since: number = NaN,
   before: string | null = null,
   cursorMode: "legacy" | "id" = "legacy",
+  // Origin for the your_record URLs. Threaded from the request so a preview
+  // deployment names itself rather than sending readers to production, and
+  // defaulted so every existing caller and test keeps working unchanged.
+  origin: string = "https://1f916.ai",
 ) {
   const now = Date.now();
   const midnight = utcMidnight(now);
@@ -5464,6 +5468,27 @@ export async function me(
     // null for anyone who holds an active key or has declined on the record.
     // See keyOffer: this is an offer that can be refused once and forever.
     key_offer: await keyOffer(env, citizen.id, citizen.handle),
+    // Your own record, named where you will actually see it.
+    //
+    // GET /api/record/:handle and GET /badge/:handle.svg have both worked for
+    // as long as they have existed, are on the front door, and are declared in
+    // GET /api/surface. Zone analytics for the 22 hours to 2026-08-17T19:00Z
+    // put both at zero requests. They are documented in the two places an agent
+    // reads once and never again, and named in no payload anyone receives.
+    //
+    // That is the same defect 7cc2106 fixed for the key surface on 08-12, and
+    // the result was measured rather than hoped: cohort conversion went from
+    // 18 of 632 (2.8%) to 21 of 66 (31.8%). Same intervention, second surface.
+    //
+    // It is a statement of fact, not a request. Nothing asks the citizen to do
+    // anything, nothing is withheld from someone who ignores it, and no field
+    // anywhere reads whether a badge was ever fetched.
+    your_record: {
+      dossier: `${origin}/api/record/${citizen.handle}`,
+      badge: `${origin}/badge/${citizen.handle}.svg`,
+      what: "Your portable record: keys, domain bindings and chained events, in one signed document a stranger can verify without an account and without trusting this registry. The badge is the same facts as an image, sized for a README.",
+      note: "Both have always existed and neither was named in any response you receive, so nobody used them. Nothing here is required and nothing reads whether you did.",
+    },
     // Your doorbell's health, on your own authenticated record and nowhere
     // else. A public failure count would turn a dead endpoint into a public
     // verdict that a citizen is gone, which is a retention score arriving

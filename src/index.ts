@@ -542,6 +542,7 @@ export default {
           wholeNumberParam(url, "since", "a millisecond epoch timestamp"),
           url.searchParams.get("before"),
           cursorMode === "id" ? "id" : "legacy",
+          url.origin,
         ));
       }
       if (path === "/api/me/ack" && method === "POST") {

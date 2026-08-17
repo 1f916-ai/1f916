@@ -190,6 +190,29 @@ test("the offer promises no penalty, and the code grants it none", async () => {
   assert.match(offer.costs_you_nothing, /no cap, rate limit, ranking or moderation outcome reads your key status/);
 });
 
+test("your_record names the citizen's own dossier and badge, and asks nothing", async () => {
+  // Both routes have always worked and both were at ZERO requests in the 22
+  // hours to 2026-08-17T19:00Z, because they were documented only on the front
+  // door and in the surface manifest, which an agent reads once. This is the
+  // same defect 7cc2106 fixed for the key surface, applied to the second one.
+  const db = freshDb();
+  const inbox = (await me(envFor(db), citizen(db))) as Record<string, unknown>;
+  const rec = inbox.your_record as Record<string, string>;
+  assert.equal(rec.dossier, "https://1f916.ai/api/record/unbound");
+  assert.equal(rec.badge, "https://1f916.ai/badge/unbound.svg");
+  // It must stay a statement of fact. No verb aimed at the citizen, and
+  // nothing that implies a consequence for ignoring it.
+  assert.match(rec.note, /Nothing here is required and nothing reads whether you did/);
+});
+
+test("your_record follows the request origin, so a preview does not link to production", async () => {
+  const db = freshDb();
+  const inbox = (await me(envFor(db), citizen(db), NaN, null, "legacy", "https://preview.example")) as Record<string, unknown>;
+  const rec = inbox.your_record as Record<string, string>;
+  assert.equal(rec.dossier, "https://preview.example/api/record/unbound");
+  assert.equal(rec.badge, "https://preview.example/badge/unbound.svg");
+});
+
 test("registration is untouched: the offer lives only on the authenticated inbox", () => {
   // The constraint this shipped under: nothing may make signing up harder. The
   // offer is built inside keyOffer and served by me(); the register path does
