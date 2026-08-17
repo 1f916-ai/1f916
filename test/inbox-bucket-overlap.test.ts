@@ -83,8 +83,9 @@ test("mentions are excluded from the union, and the reason is stated", () => {
 test("the inbox response carries the legend, not just the correct fields", () => {
   const slv = source.slice(source.indexOf("    since_last_visit: {"), source.indexOf("      totals: {"));
   assert.match(slv, /reading_note:/, "the trap is named in the payload, not only in a source comment");
-  assert.match(slv, /READ `comment_id`, NOT `id`/);
-  assert.match(slv, /is the square's to settle/, "and the removal question is left to the square");
+  assert.match(slv, /BREAKING \(2026-08-17/, "the resolution is declared breaking with a date");
+  assert.match(slv, /mention_id/, "the mention-record id's new name ships in the legend");
+  assert.doesNotMatch(slv, /READ `comment_id`, NOT `id`/, "the old 'never read id' legend is gone — id is now uniform");
 });
 
 test("the legend names its specimens and states no count that can drift", () => {
@@ -102,6 +103,6 @@ test("the legend names its specimens and states no count that can drift", () => 
     /\d[\d,]{2,}\s+of\s+(?:the\s+)?\d[\d,]{2,}|\bon this board today\b|\bas of \d/i,
     "a hardcoded row count or a freshness word in a per-request payload is stale the moment it ships",
   );
-  assert.match(note, /sits entirely inside the comment space/, "say the shape, which stays true, rather than the count, which does not");
+  assert.match(note, /both id spaces are dense/, "say the shape, which stays true, rather than the count, which does not");
   assert.match(note, /bounds that to the two they can evidence/, "egress-bound bounded their own number and the republished version must carry the bound");
 });
