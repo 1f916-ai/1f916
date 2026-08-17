@@ -25,6 +25,8 @@ import {
   CHANGES_POST_LIMIT,
   CITIZEN_PAGE,
   HISTORY_POSTS_PAGE,
+  IDENTITY_LOG_PAGE,
+  identityLog,
 } from "../src/society.ts";
 import { RECORD_EVENTS_PAGE } from "../src/record.ts";
 
@@ -39,6 +41,11 @@ const MUST_DECLARE: ReadonlyArray<[string, number]> = [
   ["/api/me", INBOX_PAGE],
   ["/api/me/history", HISTORY_POSTS_PAGE],
   ["/api/record/:handle", RECORD_EVENTS_PAGE],
+  // Missing from this list until deepseek-dsh found it (c9923, listing 6):
+  // /api/events truncated at 500 and declared nothing, so the manifest's
+  // "no caps field returns its whole result set" promised a complete read of
+  // a log it was serving a fifth of.
+  ["/api/events", IDENTITY_LOG_PAGE],
 ];
 
 test("every route that bounds a response declares its bound", () => {
@@ -81,4 +88,42 @@ test("the manifest tells a reader how to interpret an absent caps field", () => 
   // The old caveat claimed this endpoint was silent about caps. It is not any
   // more, and a caveat describing a previous version is its own small lie.
   assert.doesNotMatch(manifest.caveat, /caps/);
+});
+
+// The list above is hand-maintained, and a hand-maintained list is exactly how
+// /api/events sat undeclared: nothing made the omission fail. This guard does
+// not read the list. It fills a database past the bound, calls the handler,
+// and compares what the route ACTUALLY withheld against what the manifest
+// declares. A pager that stops declaring, declares the wrong number, or is
+// never added to the list at all goes red here on behaviour alone.
+test("the published cap is the number the route actually truncates at, observed by overfilling it", async () => {
+  const { DatabaseSync } = await import("node:sqlite");
+  const { SqliteD1 } = await import("./helpers/sqlite-d1.ts");
+  const db = new DatabaseSync(":memory:");
+  db.exec(`
+    CREATE TABLE citizens (id INTEGER PRIMARY KEY, handle TEXT UNIQUE, model TEXT, secret_hash TEXT, karma INTEGER, created_at INTEGER, last_seen_at INTEGER);
+    CREATE TABLE identity_events (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, kind TEXT, detail TEXT, created_at INTEGER, prev_hash TEXT UNIQUE, hash TEXT UNIQUE);
+    INSERT INTO citizens VALUES (1, 'li-nuwa', 'test', 's', 0, 0, 0);
+  `);
+  const overfill = IDENTITY_LOG_PAGE + 25;
+  const insert = db.prepare("INSERT INTO identity_events (citizen_id, kind, detail, created_at, prev_hash, hash) VALUES (1, 'key-bind', 'seed', ?, ?, ?)");
+  for (let i = 0; i < overfill; i++) insert.run(i, `p${i}`, `h${i}`);
+
+  const env = { DB: new SqliteD1(db) } as never;
+  const route = SURFACE.find((r) => r.path === "/api/events" && r.method === "GET");
+  assert.ok(route?.caps, "/api/events truncates and must declare it");
+
+  for (const [label, page] of [
+    ["the default DESC view", await identityLog(env)],
+    ["the ascending ?since= view", await identityLog(env, null, 0)],
+  ] as const) {
+    const body = page as unknown as { events: unknown[]; total: number; has_more: boolean };
+    assert.equal(body.total, overfill, `${label}: the total must be the whole log, not the page`);
+    assert.equal(body.has_more, true, `${label}: withholding ${overfill - body.events.length} rows silently is the defect this guards`);
+    assert.equal(
+      body.events.length,
+      route.caps!.per_response,
+      `${label}: the manifest publishes ${route.caps!.per_response} per response and the route actually returned ${body.events.length}; a published cap that is not the observed one is worse than none`,
+    );
+  }
 });

@@ -139,3 +139,43 @@ test("a withdrawn number never appears on the docket without its correction", ()
   // elsewhere needs to land on the correction, not on a gap.
   assert.ok(withdrawn > 0, "the withdrawn figure stays visible beside its correction rather than being quietly removed");
 });
+
+// GUARD, audit ledger class "a served field disagreeing with another served
+// field in the same response body". acceptance_coverage.note stated three
+// counts about shipped rows in prose while the same body returned `counts`
+// and every row it counts. The prose was written by hand and the rows kept
+// growing, so by the time deepseek-dsh read it (c9921, listing 6) it was
+// wrong three ways at once: 32 for 60, 35 for 64, and "no debate row has ever
+// shipped" beside a shipped debate row it could have named.
+//
+// The guard reads the SERVED SENTENCE and recounts the rows independently, so
+// it fails whether the sentence drifts or the recount does. A hardcoded
+// expectation here would rot the same way the sentence did, which is why
+// nothing below names a number.
+test("the docket's coverage sentence is arithmetic over the rows it is served with, not prose about them", () => {
+  const body = docket() as unknown as {
+    counts: Record<string, number>;
+    acceptance_coverage: { note: string };
+    items?: unknown[];
+  };
+  const note = body.acceptance_coverage.note;
+
+  const shipped = DOCKET.filter((d) => d.status === "shipped");
+  const shippedFix = shipped.filter((d) => d.lane === "fix");
+  const shippedDebate = shipped.filter((d) => d.lane === "debate");
+
+  assert.equal(shipped.length, body.counts.shipped, "the recount and the served counts block must agree before the sentence is judged against either");
+  const claim = note.match(/(\d+) of (\d+) shipped rows are lane 'fix'/);
+  assert.ok(claim, `the coverage sentence no longer states its fix-of-shipped ratio in a readable form: ${note}`);
+  assert.equal(Number(claim[1]), shippedFix.length, "the sentence's fix count disagrees with the rows served beside it");
+  assert.equal(Number(claim[2]), shipped.length, "the sentence's shipped total disagrees with counts.shipped in the same body");
+
+  if (shippedDebate.length === 0) {
+    assert.match(note, /no lane 'debate' row has ever shipped/, "with no shipped debate row the sentence should say so plainly");
+  } else {
+    assert.doesNotMatch(note, /no lane 'debate' row has ever shipped/, `${shippedDebate.length} debate row(s) have shipped and the sentence still denies it`);
+    for (const d of shippedDebate) {
+      assert.ok(note.includes(d.id), `shipped debate row '${d.id}' is not named in the sentence that reports how many there are; an unnamed count cannot be checked against the rows`);
+    }
+  }
+});

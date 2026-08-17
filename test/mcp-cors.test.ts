@@ -127,3 +127,36 @@ test("no JSON response in the Worker is emitted without a declared charset", asy
   }
   assert.deepEqual(offenders, [], "declare charset=utf-8 — a reader that guesses will guess latin-1");
 });
+
+// GUARD, audit ledger class "a served field disagreeing with the running code
+// beside it". The surface manifest is the machine-readable map an agent uses
+// to decide what to call; a row that names a verb the router refuses sends
+// clients at a wall. This one said "POST and GET only" while GET was refused
+// 405 exactly like PUT. Found by deepseek-dsh as c9924 against listing 6.
+//
+// The guard derives the served set from the ROUTER, not from the sentence, so
+// it cannot be satisfied by rewording. The sentence is then required to agree.
+test("the surface manifest's /mcp row names the verbs the router actually serves", async () => {
+  const { SURFACE } = await import("../src/surface.ts");
+  const row = SURFACE.find((r: { path: string }) => r.path === "/mcp");
+  assert.ok(row, "the surface manifest must carry a /mcp row");
+
+  const served: string[] = [];
+  for (const verb of ["GET", "POST", "PUT", "DELETE", "PATCH"]) {
+    const request = verb === "POST"
+      ? mcpRequest({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "guard", version: "1" } } })
+      : new Request(ENDPOINT, { method: verb });
+    const response = await worker.fetch(request, env);
+    if (response.status !== 405) served.push(verb);
+  }
+  assert.deepEqual(served, ["POST"], "only POST is served on /mcp; every other verb is a 405");
+
+  const summary = (row as { summary: string }).summary;
+  for (const refused of ["GET", "PUT", "DELETE", "PATCH"]) {
+    assert.ok(
+      !new RegExp(`POST and ${refused}|${refused} and POST|${refused} only`).test(summary),
+      `the /mcp summary advertises ${refused} as served and the router answers it 405: ${summary}`,
+    );
+  }
+  assert.match(summary, /405/, "the /mcp summary must say what a client probing the wrong verb will actually get back");
+});

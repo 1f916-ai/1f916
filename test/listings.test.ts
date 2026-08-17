@@ -8,10 +8,39 @@ import { readFileSync } from "node:fs";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { BASE_USDC, PAYOUT_VERSION, payoutPreimage } from "../src/payouts.ts";
 import { b64urlEncode } from "../src/keys.ts";
-import { LISTINGS_PER_DAY, assertPaidFromListingFunder, listingIdFromRow, listingPreimage, listingRoleFromRow, validateListing } from "../src/listings.ts";
+import { LISTINGS_PER_DAY, assertPaidFromListingFunder, listingIdFromRow, listingPreimage, listingRoleFromRow, listingRow, payeeNextActions, validateListing } from "../src/listings.ts";
 import { createHash } from "node:crypto";
 import { createListing, createPayoutBinding, createSubmission, funderStatementFor, getListing, getPayoutBinding, listListings, listPayouts, listingPreimageFor, moderateContent, payoutPreimageFor, withdrawListing, SocietyError, type Env } from "../src/society.ts";
 import { payoutFunderStatement } from "../src/payouts.ts";
+import { CITIZEN_CONTENT_EXAMPLES } from "../src/mcp.ts";
+
+// GUARD, audit ledger class 13. Any response that publishes a
+// payload_hash_recipe is promising that a stranger can follow it against THAT
+// response and reproduce the published payload_hash. This walks the promise
+// literally: resolve each named field through response_key_for, read the value
+// out of the body, hash, compare. Key-presence alone is deliberately not the
+// assertion, because a body can carry an unrelated field of the same name and
+// make a presence check vacuous, which is exactly how the first version of this
+// guard passed under mutation.
+function assertRecipeReproduces(body: Record<string, unknown>, label: string) {
+  const recipe = body.payload_hash_recipe as { fields: readonly string[]; response_key_for?: Record<string, string>; values_from?: string } | undefined;
+  assert.ok(recipe, `${label}: expected a payload_hash_recipe on this response`);
+  // Two conventions are live on this rail: on the listings surfaces `fields`
+  // names keys of the response body, and on the payout surfaces it names keys
+  // of the nested `payload`. Nothing in the response said which, so a reader
+  // who generalised from one walked most of the fields correctly and hit
+  // undefined on the rest, producing a silently wrong hash. `values_from` now
+  // says it, and this walk honours it, so the guard can be pointed at either
+  // convention instead of only the one it was born on.
+  const scope = (recipe.values_from ? body[recipe.values_from] : body) as Record<string, unknown> | undefined;
+  assert.ok(scope && typeof scope === "object", `${label}: payload_hash_recipe says values_from "${recipe.values_from}" and this response carries no such object`);
+  const missing = recipe.fields.filter((f) => !((recipe.response_key_for?.[f] ?? f) in scope));
+  assert.deepEqual(missing, [], `${label}: the recipe names field(s) [${missing.join(", ")}] that this same response body does not carry under any key`);
+  const recomputed = createHash("sha256")
+    .update(JSON.stringify(recipe.fields.map((f) => scope[recipe.response_key_for?.[f] ?? f])), "utf8")
+    .digest("hex");
+  assert.equal(recomputed, body.payload_hash, `${label}: following payload_hash_recipe against this response body must reproduce payload_hash; if it does not, the recipe names a key whose served value is not the value that was hashed`);
+}
 
 class D1Statement {
   private args: unknown[] = [];
@@ -95,10 +124,10 @@ function makeEnv(payeePublicKey: string) {
 
 const CONDITION = "Clone the repository at the named commit, run `npm test`, and the file test/listings.test.ts reports 0 failures.";
 
-async function payeeBinding(row: string, amountAtomic: string, ed = generateKeyPairSync("ed25519"), who = PAYEE) {
+async function payeeBinding(row: string, amountAtomic: string, ed = generateKeyPairSync("ed25519"), who = PAYEE, expirySeconds = NOW + 86400) {
   const wallet = privateKeyToAccount(generatePrivateKey());
   const publicKey = (ed.publicKey.export({ format: "jwk" }) as { x: string }).x;
-  const fields = { handle: who.handle, row, amountAtomic, chainId: 8453, token: BASE_USDC, address: wallet.address.toLowerCase(), expiry: NOW + 86400 };
+  const fields = { handle: who.handle, row, amountAtomic, chainId: 8453, token: BASE_USDC, address: wallet.address.toLowerCase(), expiry: expirySeconds };
   const preimage = payoutPreimage(fields);
   return {
     publicKey,
@@ -254,7 +283,15 @@ test("a binding cannot be filed against a listing that does not exist or has exp
 
   const docket = await payeeBinding("earning-economy", "1000000", ed);
   const bound = await createPayoutBinding(env, PAYEE as never, docket.body);
-  assert.equal((await getPayoutBinding(env, bound.id!)).anchor_kind, "docket");
+  const boundView = await getPayoutBinding(env, bound.id!);
+  assert.equal(boundView.anchor_kind, "docket");
+  // The payout surfaces publish the same promise and had never been walked by
+  // any test: their recipe names keys of the nested `payload`, so the earlier
+  // body-relative guard could not be pointed at them and the convention went
+  // undeclared. Now that values_from says which scope applies, both surfaces
+  // are held to the same contract as the listings ones.
+  assertRecipeReproduces(bound as unknown as Record<string, unknown>, "POST /api/payout-bindings");
+  assertRecipeReproduces(boundView as unknown as Record<string, unknown>, "GET /api/payout-bindings/:id");
 });
 
 test("the listing cap is enforced inside the state write, with no phantom identity event", async () => {
@@ -273,7 +310,7 @@ test("submissions: open to anyone while the listing is open, no claim, and the l
   const ed = generateKeyPairSync("ed25519");
   const publicKey = (ed.publicKey.export({ format: "jwk" }) as { x: string }).x;
   const { env, db } = makeEnv(publicKey);
-  await createListing(env, FUNDER as never, { title: "Add ?limit= to GET /api/post", condition: CONDITION, amount_atomic: "5000000", expiry: NOW + 7 * 86400 });
+  const created1 = await createListing(env, FUNDER as never, { title: "Add ?limit= to GET /api/post", condition: CONDITION, amount_atomic: "5000000", expiry: NOW + 7 * 86400 });
   assert.equal((await getListing(env, 1)).state, "open");
 
   await assert.rejects(createSubmission(env, FUNDER as never, 1, { artifact: "https://example.invalid/pr/1" }), /own listing/);
@@ -285,10 +322,41 @@ test("submissions: open to anyone while the listing is open, no claim, and the l
   assert.equal(first.listing, "listing-1");
   const second = await createSubmission(env, VERIFIER as never, 1, { artifact: "commit 0123456789abcdef" });
   assert.equal(second.id, 2, "a second citizen can submit against the same open listing; nothing was reserved");
+
+  // GUARD, audit ledger class "a served field disagreeing with another served
+  // field in the same response body". The recipe tells a citizen which values to
+  // hash; every name it lists must be findable in the very response that prints
+  // the recipe, directly or through response_key_for. Renaming a served key
+  // without updating the map is exactly the drift this catches.
+  // Mutation-checked in both directions: delete response_key_for and this goes
+  // red naming `note`; restore it and it passes.
+  {
+    assertRecipeReproduces(first as unknown as Record<string, unknown>, "POST /api/listings/:id/submissions");
+    const body = first as unknown as Record<string, unknown>;
+    assert.equal(body.submitted_note, "clone, npm test, the new test passes", "the citizen's own words are served under submitted_note, never under a key named note");
+    assert.equal(typeof body.note, "string", "`note` on a rail response is server-authored, with no exception");
+  }
   const events = db.prepare("SELECT kind FROM identity_events ORDER BY id").all() as { kind: string }[];
   assert.deepEqual(events.map((e) => e.kind), ["listing", "listing-submission", "listing-submission"]);
 
   let detail = await getListing(env, 1);
+  // The read surface publishes the SAME promise and had drifted: it named
+  // commit_nonce in its recipe and carried it nowhere, so a stranger could not
+  // reproduce payload_hash from GET /api/listings/:id. Found live on production
+  // by the pre-publication auditor, 2026-08-16.
+  assertRecipeReproduces(detail as unknown as Record<string, unknown>, "GET /api/listings/:id");
+  // Internal consistency is not enough. A response can recompute its own hash
+  // from a tampered field and satisfy the walk perfectly: the pre-deploy
+  // auditor proved it by serving a fabricated commit_nonce alongside a hash
+  // derived from it, and the whole suite stayed green. So the served hash is
+  // also compared against the one the WRITE path produced, which is a different
+  // function reading a different source. A single wrong value now has to be
+  // wrong in two places at once to survive.
+  assert.equal(
+    (detail as unknown as Record<string, unknown>).payload_hash,
+    (created1 as unknown as Record<string, unknown>).payload_hash,
+    "the read surface must serve the same payload_hash the write path recorded; a self-consistent hash recomputed from a tampered body would otherwise pass",
+  );
   assert.equal(detail.state, "submitted");
   assert.deepEqual(detail.submissions.map((x) => [x.handle, x.paid]), [["li-nuwa", false], ["unspent", false]]);
   assert.equal((await listListings(env)).listings[0]!.submissions, 2);
@@ -649,15 +717,300 @@ test("a submission carries the key half of the payout prerequisite, and does not
 test("the guide cannot change without its version changing", async () => {
   const { listingsGuide, GUIDE_VERSION, GUIDE_CHANGED_AT } = await import("../src/listings.ts");
   const { createHash } = await import("node:crypto");
+  const { railSecurity } = await import("../src/listings.ts");
   const guide = listingsGuide("https://1f916.ai") as Record<string, unknown>;
   const { rules_version, changed_at, ...rest } = guide;
-  const digest = createHash("sha256").update(JSON.stringify(rest)).digest("hex");
+  // railSecurity serves the SAME rules_version and carries the trust boundary,
+  // so it has to be inside the digest. It was not, and on 2026-08-16 a change
+  // to the security document passed this test untouched: the guard covered one
+  // of the two documents that promise nothing changes silently. Review flagged
+  // the gap the same day and it bit before it was closed.
+  const sec = railSecurity("https://1f916.ai") as Record<string, unknown>;
+  const { rules_version: _sv, changed_at: _sc, ...secRest } = sec;
+  const digest = createHash("sha256").update(JSON.stringify({ guide: rest, security: secRest })).digest("hex");
   assert.equal(
     digest,
-    "1e9f47b444e07723ad12f5d5ea9ba892432f5a0362c77fa8075e6af5ce8161f3",
+    "24b43b640954fbca7cb3967c57548401cd18531af79fb89e8b032eaab329c4b4",
     "the served guide changed. Bump GUIDE_VERSION and GUIDE_CHANGED_AT together, then update this digest. " +
       "Shipping changed rules under an unchanged version breaks what the guide's poll field promises every agent.",
   );
   assert.equal(rules_version, GUIDE_VERSION);
   assert.equal(changed_at, GUIDE_CHANGED_AT);
+});
+
+// The reputational half of this rail was always the enforcement: a listing that
+// lapses with work handed in and nobody paid stands on the funder's record
+// forever, because the registry holds nothing and can compel nothing. But that
+// only works if a worker reads it BEFORE doing the work, and nothing put it
+// where they were looking. Asked for on 2026-08-16.
+//
+// COUNTS, NEVER A SCORE, and a first-time funder must not read as a risk.
+// GUARD for the absolute trust rule in GET /api/listings/security: "any field
+// named note, how_to, guide, rule or reason in a rail response is
+// SERVER-AUTHORED, with no exception". That is an ABSOLUTE claim in served
+// text, so it needs a mechanical check rather than a careful reader. Every
+// citizen-supplied string here is a unique sentinel; the walker then proves no
+// reserved key anywhere, at any depth, in any rail response, carries one.
+//
+// This is the check that was missing when the sentence was written. The
+// withdraw response returned the funder's own words under a key named `reason`,
+// one line below the rule declaring that impossible. Found by the pre-deploy
+// auditor, 2026-08-16; the key is now `withdraw_reason`.
+const RESERVED_KEYS = new Set(["note", "how_to", "guide", "rule", "reason"]);
+
+function reservedKeysCarrying(value: unknown, sentinels: string[], path = "$"): string[] {
+  const bad: string[] = [];
+  if (Array.isArray(value)) {
+    value.forEach((v, i) => bad.push(...reservedKeysCarrying(v, sentinels, `${path}[${i}]`)));
+  } else if (value && typeof value === "object") {
+    for (const [k, v] of Object.entries(value)) {
+      const here = `${path}.${k}`;
+      if (RESERVED_KEYS.has(k) && typeof v === "string" && sentinels.some((s) => v.includes(s))) bad.push(here);
+      bad.push(...reservedKeysCarrying(v, sentinels, here));
+    }
+  }
+  return bad;
+}
+
+test("no rail response carries citizen text under a key named note, how_to, guide, rule or reason", async () => {
+  const ed = generateKeyPairSync("ed25519");
+  const publicKey = (ed.publicKey.export({ format: "jwk" }) as { x: string }).x;
+  const { env } = makeEnv(publicKey);
+
+  // Every one of these is a citizen writing into the rail.
+  const S = {
+    title: "SENTINEL-TITLE-a1b2",
+    condition: `SENTINEL-CONDITION-c3d4 ${CONDITION}`,
+    artifact: "https://example.invalid/SENTINEL-ARTIFACT-e5f6",
+    note: "SENTINEL-SUBMISSION-NOTE-g7h8",
+    withdraw: "SENTINEL-WITHDRAW-REASON-i9j0, reposting later",
+  };
+  const sentinels = Object.values(S).map((v) => v.split(" ")[0]!);
+
+  const created = await createListing(env, FUNDER as never, { title: S.title, condition: S.condition, amount_atomic: "5000000", expiry: NOW + 7 * 86400 });
+  const submitted = await createSubmission(env, PAYEE as never, created.id!, { artifact: S.artifact, note: S.note });
+  const detail = await getListing(env, created.id!);
+  const listed = await listListings(env);
+  const withdrawn = await withdrawListing(env, FUNDER as never, created.id!, { reason: S.withdraw });
+  const afterWithdraw = await getListing(env, created.id!);
+
+  // The sentinels really are in these responses, or the walker is proving
+  // nothing. This is the half that makes the test able to fail at all.
+  assert.ok(JSON.stringify(detail).includes("SENTINEL-SUBMISSION-NOTE"), "the submission note must reach getListing, or this test guards an empty room");
+  assert.ok(JSON.stringify(withdrawn).includes("SENTINEL-WITHDRAW-REASON"), "the withdraw reason must reach its own response, or this test guards an empty room");
+
+  for (const [label, body] of [
+    ["POST /api/listings", created],
+    ["POST /api/listings/:id/submissions", submitted],
+    ["GET /api/listings/:id", detail],
+    ["GET /api/listings", listed],
+    ["POST /api/listings/:id/withdraw", withdrawn],
+    ["GET /api/listings/:id after withdrawal", afterWithdraw],
+  ] as const) {
+    const bad = reservedKeysCarrying(body, sentinels);
+    assert.deepEqual(bad, [], `${label} carries citizen text under a reserved key at ${bad.join(", ")}; the security document says that is impossible, with no exception`);
+  }
+});
+
+// GUARD: the MCP content boundary tells every client which fields carry
+// untrusted citizen text. A path in that table that resolves to nothing is
+// worse than no entry at all: it reads as coverage while naming a key the
+// response does not have. The submissions[].note rename blanked exactly one
+// such path and nothing in the suite noticed. Found by the pre-deploy auditor,
+// 2026-08-16.
+function resolvesAgainst(body: unknown, path: string): boolean {
+  let cursor: unknown[] = [body];
+  for (const seg of path.split(".")) {
+    const key = seg.endsWith("[]") ? seg.slice(0, -2) : seg;
+    const next: unknown[] = [];
+    for (const c of cursor) {
+      if (!c || typeof c !== "object") continue;
+      const v = (c as Record<string, unknown>)[key];
+      if (v === undefined) continue;
+      if (seg.endsWith("[]")) { if (Array.isArray(v)) next.push(...v); }
+      else next.push(v);
+    }
+    if (next.length === 0) return false;
+    cursor = next;
+  }
+  return true;
+}
+
+test("every listings path the MCP content boundary names resolves against a real listings response", async () => {
+  const ed = generateKeyPairSync("ed25519");
+  const publicKey = (ed.publicKey.export({ format: "jwk" }) as { x: string }).x;
+  const { env } = makeEnv(publicKey);
+  const created = await createListing(env, FUNDER as never, { title: "BOUNDARY-SENTINEL title", condition: `BOUNDARY-SENTINEL condition ${CONDITION}`, amount_atomic: "5000000", expiry: NOW + 7 * 86400 });
+  await createSubmission(env, PAYEE as never, created.id!, { artifact: "https://example.invalid/BOUNDARY-SENTINEL-artifact", note: "BOUNDARY-SENTINEL note" });
+  // A binding has to exist or bindings[].handle cannot be walked, and an empty
+  // array would let this guard pass by having nothing to check.
+  const docket = await payeeBinding(listingRow(created.id!), "5000000", ed);
+  await createPayoutBinding(env, PAYEE as never, docket.body);
+  const detail = await getListing(env, created.id!) as unknown as Record<string, unknown>;
+  const listed = await listListings(env) as unknown as Record<string, unknown>;
+  const withdrawn = await withdrawListing(env, FUNDER as never, created.id!, { reason: "BOUNDARY-SENTINEL withdraw reason" }) as unknown as Record<string, unknown>;
+
+  const unresolved = CITIZEN_CONTENT_EXAMPLES.listings!.filter(
+    (p) => !resolvesAgainst(detail, p) && !resolvesAgainst(listed, p) && !resolvesAgainst(withdrawn, p),
+  );
+  // The other direction, which is the one that matters for injection safety.
+  // The check above walks table -> response, so it is satisfied by DELETING an
+  // entry: a citizen-controlled field that no boundary entry names would pass
+  // silently, which is the exact failure the table exists to prevent. So walk
+  // response -> table as well, using sentinels to find citizen text rather than
+  // trusting a hand-maintained list to stay current. Found by the pre-deploy
+  // auditor, 2026-08-16, who deleted an entry and watched the suite stay green.
+  const sentinelPaths: string[] = [];
+  const walk = (value: unknown, path: string) => {
+    if (Array.isArray(value)) value.forEach((v) => walk(v, `${path}[]`));
+    else if (value && typeof value === "object") {
+      for (const [k, v] of Object.entries(value)) {
+        if (typeof v === "string" && v.includes("BOUNDARY-SENTINEL")) sentinelPaths.push(path ? `${path}.${k}` : k);
+        walk(v, path ? `${path}.${k}` : k);
+      }
+    }
+  };
+  walk(detail, "");
+  walk(withdrawn, "");
+  const named = new Set(CITIZEN_CONTENT_EXAMPLES.listings!);
+  const unnamed = [...new Set(sentinelPaths)].filter((p) => !named.has(p));
+  assert.deepEqual(unnamed, [], `these listings response paths carry citizen-authored text and no MCP content-boundary entry names them: [${unnamed.join(", ")}]. An unnamed citizen field is text an MCP client has not been told to distrust.`);
+
+  assert.deepEqual(unresolved, [], `the MCP content boundary names [${unresolved.join(", ")}] for the listings tool, and no listings response carries those paths; a boundary entry that resolves to nothing reads as coverage while protecting nothing`);
+});
+
+// ---------- next_actions: the ladder must agree with the rail ----------
+
+// GUARD. next_actions is a claim about what the running code will do, served
+// as data an agent is meant to act on without asking. A step that reads ready
+// where the rail refuses, or blocked where it accepts, is a served field
+// contradicting the running code beside it: the exact class citizens found
+// eight of. So this guard reads none of the ladder's prose. It puts the
+// registry into each state, asks the ladder, then makes the REAL call and
+// requires the two verdicts to match. The ladder is a pure function of listing
+// columns; createPayoutBinding is the live validator against the live schema.
+// The two agree here or the suite goes red.
+async function step3(env: Env, listingId: number, handle: string) {
+  const detail = await getListing(env, listingId);
+  const row = detail.submissions.find((s) => s.handle === handle);
+  assert.ok(row, `expected a submission by ${handle} on listing ${listingId}`);
+  const step = (row as unknown as { next_actions: { step: number; state: string; blocked_by: string | null }[] }).next_actions.find((a) => a.step === 3);
+  assert.ok(step, "every submission ladder carries step 3, create_payout_binding");
+  return step;
+}
+
+test("next_actions step 3 is checked against the rail itself: ready means the binding is accepted, blocked means it is refused", async () => {
+  for (const scenario of ["open-and-key-bound", "no-key", "listing-withdrawn"] as const) {
+    const ed = generateKeyPairSync("ed25519");
+    const publicKey = (ed.publicKey.export({ format: "jwk" }) as { x: string }).x;
+    const { env, db } = makeEnv(publicKey);
+    await createListing(env, FUNDER as never, { title: "Reproduce the pool-depth outage", condition: CONDITION, amount_atomic: "1000000", expiry: NOW + 7 * 86400 });
+    await createSubmission(env, PAYEE as never, 1, { artifact: "https://github.com/1f916-ai/1f916/pull/998" });
+    if (scenario === "no-key") db.prepare("DELETE FROM keys WHERE citizen_id = 2").run();
+    if (scenario === "listing-withdrawn") await withdrawListing(env, FUNDER as never, 1, { reason: "found the answer myself before anyone bound" });
+
+    const claim = await step3(env, 1, "li-nuwa");
+    const attempt = createPayoutBinding(env, PAYEE as never, (await payeeBinding("listing-1", "1000000", ed, PAYEE)).body);
+    if (claim.state === "ready") {
+      assert.equal(claim.blocked_by, null, `${scenario}: a ready step must name no blocker`);
+      const bound = await attempt;
+      assert.ok(bound.id > 0, `${scenario}: next_actions said ready and the rail must accept the binding`);
+    } else {
+      assert.equal(claim.state, "blocked", `${scenario}: expected the ladder to read blocked`);
+      assert.equal(typeof claim.blocked_by, "string", `${scenario}: a blocked step must name what refuses it`);
+      await assert.rejects(attempt, `${scenario}: next_actions said blocked and the rail must refuse the binding`);
+    }
+  }
+});
+
+test("next_actions moves as the record moves, and never calls handing in work a prerequisite for being paid", async () => {
+  const ed = generateKeyPairSync("ed25519");
+  const publicKey = (ed.publicKey.export({ format: "jwk" }) as { x: string }).x;
+  const { env, db } = makeEnv(publicKey);
+  await createListing(env, FUNDER as never, { title: "Recount the shipped rows", condition: CONDITION, amount_atomic: "1000000", expiry: NOW + 7 * 86400 });
+
+  // The ladder at the top of the listing is the one for a citizen who has done
+  // nothing here, so it must not claim step 1 is done for anybody.
+  const fresh = await getListing(env, 1);
+  const top = (fresh as unknown as { next_actions: { step: number; state: string; optional: boolean; actor: string }[] }).next_actions;
+  assert.deepEqual(top.map((a) => a.state), ["ready", "ready", "blocked", "blocked", "blocked"], "nothing done yet: keys and submissions are open, everything downstream waits on a binding");
+  // LISTING_RULE on this same response says a funder may pay any citizen who
+  // filed a binding, submission or no submission. If step 2 were ever marked
+  // required, the response would contradict its own rule.
+  assert.equal(top.find((a) => a.step === 2)!.optional, true, "handing in work is optional by the rule served in this same body; only the binding is on the path to money");
+  assert.deepEqual(top.filter((a) => a.actor === "funder").map((a) => a.step), [4], "exactly one step is the funder's: sending the money");
+
+  await createSubmission(env, PAYEE as never, 1, { artifact: "https://github.com/1f916-ai/1f916/pull/997" });
+  const afterSubmit = await step3(env, 1, "li-nuwa");
+  assert.equal(afterSubmit.state, "ready");
+  const bound = await createPayoutBinding(env, PAYEE as never, (await payeeBinding("listing-1", "1000000", ed, PAYEE)).body);
+  assert.equal((await step3(env, 1, "li-nuwa")).state, "done", "once the binding is recorded the step it produces is done");
+
+  const afterBinding = await getListing(env, 1);
+  const ladder = (afterBinding.submissions[0] as unknown as { next_actions: { step: number; state: string; call: string | null }[] }).next_actions;
+  assert.equal(ladder.find((a) => a.step === 5)!.state, "ready", "with a binding on record the receipt can be filed");
+  assert.equal(
+    ladder.find((a) => a.step === 5)!.call,
+    `POST /api/payout-bindings/${bound.id}/receipt`,
+    "the receipt step names the real binding id, so the call can be made without the agent assembling the path",
+  );
+
+  db.prepare("INSERT INTO payout_receipts (binding_id, submitter_id, tx_hash, source_address) VALUES (?, 2, '0xabc', ?)").run(bound.id, "0x" + "9".repeat(40));
+  const settled = (await getListing(env, 1)).submissions[0] as unknown as { next_actions: { state: string }[] };
+  assert.deepEqual(
+    settled.next_actions.map((a) => a.state),
+    ["done", "done", "done", "done", "done"],
+    "a settled payee's ladder is finished end to end, with no step still advertising a call",
+  );
+});
+
+test("next_actions calls a verifier binding not-applicable on a listing that pays no verifier, and the rail refuses it for the same reason", async () => {
+  const ed = generateKeyPairSync("ed25519");
+  const publicKey = (ed.publicKey.export({ format: "jwk" }) as { x: string }).x;
+  const { env } = makeEnv(publicKey);
+  await createListing(env, FUNDER as never, { title: "No verifier price here", condition: CONDITION, amount_atomic: "1000000", expiry: NOW + 7 * 86400 });
+  const unpaid = payeeNextActions({ listingId: 1, role: "verifier", keyBound: true, submitted: false, bindingId: null, receipted: false, closedReason: null, verifierPriceAtomic: null });
+  assert.equal(unpaid.find((a) => a.step === 3)!.state, "not-applicable");
+  await assert.rejects(
+    createPayoutBinding(env, VERIFIER as never, (await payeeBinding("listing-1-verifier", "1000000", ed, VERIFIER)).body),
+    /names no verifier price/,
+    "the ladder says not-applicable and the rail must refuse a verifier binding on a listing that prices no verifier",
+  );
+
+  const paid = payeeNextActions({ listingId: 1, role: "verifier", keyBound: true, submitted: false, bindingId: null, receipted: false, closedReason: null, verifierPriceAtomic: "250000" });
+  assert.equal(paid.find((a) => a.step === 3)!.state, "ready", "priced verification is a real role and the ladder must not hide it");
+});
+
+// GUARD, audit ledger class "a builder that hands out bytes the validator will
+// refuse". GET /api/payout-bindings/preimage said "at most 30 days out" and
+// checked nothing, so it returned 200 and a signable preimage for an expiry
+// 36 days out that POST /api/payout-bindings then refused at recording. A
+// payee who signed those bytes spent a real signature, possibly a hardware
+// one, on an authorization that could never be filed. Found by deepseek-dsh
+// as c9925 against listing 6.
+//
+// The guard is an agreement check across two different code paths rather than
+// an assertion about either one's message: for each expiry, the builder and
+// the recorder must both accept or both refuse. A bound restored to only one
+// side goes red no matter which side it is.
+test("the preimage builder refuses exactly the expiries the binding recorder refuses", async () => {
+  const DAY = 86400;
+  for (const [label, expiry] of [
+    ["one minute ago", NOW - 60],
+    ["one minute from now", NOW + 60],
+    ["twenty-nine days out", NOW + 29 * DAY],
+    ["thirty-one days out", NOW + 31 * DAY],
+    ["a year out", NOW + 365 * DAY],
+  ] as const) {
+    const ed = generateKeyPairSync("ed25519");
+    const publicKey = (ed.publicKey.export({ format: "jwk" }) as { x: string }).x;
+    const { env } = makeEnv(publicKey);
+    await createListing(env, FUNDER as never, { title: "Expiry agreement", condition: CONDITION, amount_atomic: "1000000", expiry: NOW + 60 * DAY });
+
+    const built = await payoutPreimageFor(env, { handle: "li-nuwa", row: "listing-1", amount_atomic: "1000000", address: "0x" + "b".repeat(40), expiry: String(expiry) })
+      .then(() => "accepted" as const, () => "refused" as const);
+    const recorded = await createPayoutBinding(env, PAYEE as never, (await payeeBinding("listing-1", "1000000", ed, PAYEE, expiry)).body)
+      .then(() => "accepted" as const, () => "refused" as const);
+    assert.equal(built, recorded, `${label}: the preimage builder said ${built} and the binding recorder said ${recorded}; a builder that hands out bytes the recorder refuses spends a payee's signature on nothing`);
+  }
 });

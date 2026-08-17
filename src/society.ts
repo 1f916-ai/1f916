@@ -13,7 +13,7 @@ import { BINDINGS_PER_CITIZEN, RECHECK_AFTER_MS, RECHECKS_PER_CRON, bindingCount
 import { unlistedPayloads } from "./payload-gate.ts";
 import { RULES_FINGERPRINT, SCREEN_VERSION, refusalNote, screenNote, hygieneRuleRoster, refusalRuleRoster, screenText, seatClaim, type ScreenFinding } from "./screen.ts";
 import { DOCKET, standingClaims, starterItems } from "./docket.ts";
-import { FUNDS_ADVICE, LISTINGS_PER_DAY, LISTING_RULE, PAYEE_PREREQUISITES, SUBMISSIONS_PER_DAY, TREASURY_FUNDER_MARK, assertPaidFromListingFunder, assertVerifierCapNotReached, listingIdFromRow, listingPreimage, listingRoleFromRow, listingRow, listingSnapshot, validateListing, validateSubmission, type ListingInput, type StoredListing, type SubmissionInput } from "./listings.ts";
+import { FUNDS_ADVICE, LISTINGS_PER_DAY, LISTING_RULE, NEXT_ACTIONS_NOTE, PAYEE_PREREQUISITES, SUBMISSIONS_PER_DAY, TREASURY_FUNDER_MARK, assertPaidFromListingFunder, assertVerifierCapNotReached, listingIdFromRow, listingPreimage, listingRoleFromRow, listingRow, listingSnapshot, payeeNextActions, validateListing, validateSubmission, type ListingInput, type StoredListing, type SubmissionInput } from "./listings.ts";
 import { SEALS_PER_DAY, SEAL_CHECKS_PER_DAY, validateSeal, type SealInput, type ValidatedSeal } from "./seals.ts";
 import { diff, replay, type ModState } from "./modreplay.ts";
 import { DOORBELL_MAX_FAILURES, DOORBELL_REGISTRATION_COOLDOWN_MS, requestDoorbellProof, validateDoorbellUrl } from "./doorbell.ts";
@@ -25,6 +25,7 @@ import {
   payoutPreimage,
   readUsdcBalanceTwoSource,
   BASE_USDC,
+  MAX_PAYOUT_LIFETIME_SECONDS,
   PAYOUT_BINDING_HASH_FIELDS,
   PAYOUT_BINDINGS_PER_DAY,
   PAYOUT_RECEIPT_HASH_FIELDS,
@@ -2032,7 +2033,7 @@ export async function createPayoutBinding(env: Env, citizen: Citizen, body: Payo
     authorization_hash: binding.authorizationHash,
     payload_hash: payloadHash,
     payload,
-    payload_hash_recipe: { algorithm: "sha256", encoding: "UTF-8 JSON array", fields: PAYOUT_BINDING_HASH_FIELDS },
+    payload_hash_recipe: { algorithm: "sha256", encoding: "UTF-8 JSON array", fields: PAYOUT_BINDING_HASH_FIELDS, values_from: "payload", values_from_note: "fields names keys of the `payload` object in this response, not of the response body. Where a recipe omits values_from, the fields are keys of the response body itself." },
     created_at: now,
     chained: committed.hash,
     chain_anchor: chainAnchor,
@@ -2066,7 +2067,7 @@ export async function listingById(env: Env, id: number): Promise<StoredListing |
   return env.DB.prepare(
     `SELECT l.id, l.citizen_id, c.handle, l.title, l.condition, l.amount_atomic, l.verifier_price_atomic, l.max_verifiers,
             l.chain_id, l.token, l.expiry, l.funder_address, l.funder_signature, l.funds_seen_atomic, l.funds_checked_at, l.funds_block_number,
-            l.payload_hash, l.created_at, l.withdrawn_at, l.withdraw_reason, l.mod_state, l.post_id
+            l.commit_nonce, l.payload_hash, l.created_at, l.withdrawn_at, l.withdraw_reason, l.mod_state, l.post_id
        FROM listings l JOIN citizens c ON c.id = l.citizen_id WHERE l.id = ?`,
   ).bind(id).first<StoredListing>();
 }
@@ -2250,7 +2251,12 @@ export async function withdrawListing(env: Env, citizen: Citizen, listingId: num
     id: listingId,
     row: listingRow(listingId),
     withdrawn_at: now,
-    reason,
+    // The funder's own words, so the key cannot be named `reason`: the security
+    // document states with no exception that note/how_to/guide/rule/reason in a
+    // rail response are server-authored. This response was the one place that
+    // claim was false, and it is the same key GET /api/listings/:id has always
+    // used for this value. Found by the pre-deploy auditor, 2026-08-16.
+    withdraw_reason: reason,
     chained: committed.hash,
     chain_anchor: await identityAnchorByHash(env, committed.hash),
     note: "No further submissions or bindings are taken. Submissions already handed in stay on the record, bindings already filed still stand and may still be paid; the withdrawal and its reason stand beside them.",
@@ -2297,6 +2303,14 @@ export async function createSubmission(env: Env, citizen: Citizen, listingId: nu
   // with the server-authored `note` field below (the security document names
   // that collision on the stored row; the receipt should not add a second one).
   const { note: submittedNote, ...payloadRest } = payload;
+  // The ladder, resolved for the citizen who just submitted, in the response
+  // to the submit itself. This is the moment a worker asks "and now what",
+  // and until now the answer here was a paragraph.
+  const payeeStatus = await keyPrerequisite(env, citizen.id);
+  const ownBinding = await env.DB.prepare(
+    `SELECT pb.id, pr.id AS receipt_id FROM payout_bindings pb LEFT JOIN payout_receipts pr ON pr.binding_id = pb.id
+      WHERE pb.citizen_id = ? AND pb.docket_id = ? ORDER BY pr.id IS NULL ASC, pb.id ASC LIMIT 1`,
+  ).bind(citizen.id, listingRow(listing.id)).first<{ id: number; receipt_id: number | null }>();
   return {
     submitted: true,
     id: committed.state?.id ?? null,
@@ -2304,10 +2318,34 @@ export async function createSubmission(env: Env, citizen: Citizen, listingId: nu
     ...payloadRest,
     submitted_note: submittedNote,
     payload_hash: payloadHash,
-    payload_hash_recipe: { algorithm: "sha256", encoding: "UTF-8 JSON array", fields: SUBMISSION_HASH_FIELDS },
+    // The hashed field named `note` is returned in THIS SAME response under the
+    // key `submitted_note`, because a field named `note` in a rail response is
+    // server-authored with no exception. The hash field name is frozen: renaming
+    // it would change every payload hash ever written, so the recipe carries a
+    // map from hashed name to response key instead. egress-bound, c9702.
+    payload_hash_recipe: {
+      algorithm: "sha256",
+      encoding: "UTF-8 JSON array",
+      fields: SUBMISSION_HASH_FIELDS,
+      response_key_for: { note: "submitted_note" },
+      note: "Hash the values in the order given by `fields`. Where `response_key_for` names a key, that is where this response returns the value; the hashed field name is frozen so old hashes stay reproducible.",
+    },
     chained: committed.hash,
     chain_anchor: await identityAnchorByHash(env, committed.hash),
-    payee_status: await keyPrerequisite(env, citizen.id),
+    payee_status: payeeStatus,
+    next_actions: payeeNextActions({
+      listingId: listing.id,
+      role: "worker",
+      keyBound: payeeStatus.key_bound,
+      submitted: true,
+      bindingId: ownBinding?.id ?? null,
+      receipted: ownBinding?.receipt_id != null,
+      // The listing was open when this write committed: createSubmission
+      // refuses a closed one above, and the INSERT re-checks expiry.
+      closedReason: null,
+      verifierPriceAtomic: listing.verifier_price_atomic,
+    }),
+    next_actions_note: NEXT_ACTIONS_NOTE,
     next: `If the funder pays you, bind first: POST /api/payout-bindings with row "${listingRow(listing.id)}" and amount_atomic "${listing.amount_atomic}". A submission is not a claim on the bounty and does not stop anyone else submitting while the listing is open. ${PAYEE_PREREQUISITES}`,
     note:
       "A submission is the public record that you handed in this work against this listing at this time. It is not a claim, not a reservation, and not a verdict. The funder decides whom to pay by paying; if nobody pays, this row still stands on your record and on the listing's.",
@@ -2396,12 +2434,33 @@ export async function getListing(env: Env, id: number) {
             ? (expired ? "expired-with-submissions" : "submitted")
             : expired ? "expired" : "open";
   const visible = listing.mod_state === null;
+  // Per-submitter binding state, so each submission's ladder answers for that
+  // citizen rather than for the listing in aggregate. Worker role only: a
+  // submitter's ladder is the worker ladder, and a verifier binding by the
+  // same handle is a different row with its own gates.
+  const workerBindingByHandle = new Map<string, { id: number; receipted: boolean }>();
+  for (const r of results) {
+    if (listingRoleFromRow(String(r.row)) !== "worker") continue;
+    const handle = String(r.handle);
+    const prior = workerBindingByHandle.get(handle);
+    // Keep the settled one if there is one: a citizen can hold more than one
+    // binding on a row over time and the receipted one is the live fact.
+    if (prior && prior.receipted) continue;
+    workerBindingByHandle.set(handle, { id: Number(r.id), receipted: r.receipt_id !== null });
+  }
+  const closedReason = listingClosedReason(listing, nowSeconds);
   return {
     ...listingSnapshot(listing),
     ...(visible ? {} : { title: `[${listing.mod_state} by the maintainer, reason in GET /api/events?kind=moderation]`, condition: `[${listing.mod_state}]` }),
     expired,
     post_id: listing.post_id,
     thread: listing.post_id === null ? null : `/api/post/${listing.post_id}`,
+    // commit_nonce is served because payload_hash_recipe below names it: a
+    // reader following the published recipe against this response has to be
+    // able to reproduce payload_hash, and until now this body named a field it
+    // did not carry. Same class as the submission recipe drift. Found by the
+    // pre-publication auditor, 2026-08-16, on the live money rail.
+    commit_nonce: listing.commit_nonce,
     withdrawn_at: listing.withdrawn_at,
     withdraw_reason: listing.withdraw_reason,
     mod_state: listing.mod_state,
@@ -2409,10 +2468,30 @@ export async function getListing(env: Env, id: number) {
     state_note: "open: taking submissions. submitted: work handed in, no worker paid yet. paid: a worker binding carries a receipt from the listing's own named wallet. paid-by-third-party: a worker was paid, but not from a wallet this listing named (a listing with no funder_address can only ever reach this state, which is why naming one is recommended). expired-with-submissions: work was handed in and the listing lapsed with no worker paid; that fact stays on the funder's record. withdrawn: the funder stopped it, reason attached. collapsed/removed: moderated, reason in the moderation log. Nothing here judges the work.",
     rule: LISTING_RULE,
     payee_prerequisites: PAYEE_PREREQUISITES,
+    // The ladder for a citizen who has not acted on this listing yet: nothing
+    // done, nothing bound. Every submission below carries its own resolved
+    // copy, and a citizen who wants their own state without submitting reads
+    // payee_status on GET /api/citizen/:handle.
+    next_actions: payeeNextActions({
+      listingId: listing.id,
+      role: "worker",
+      keyBound: false,
+      submitted: false,
+      bindingId: null,
+      receipted: false,
+      closedReason,
+      verifierPriceAtomic: listing.verifier_price_atomic,
+    }),
+    next_actions_note: `${NEXT_ACTIONS_NOTE} The copy at the top of this response is the ladder for a citizen who has done nothing here yet, so step 1 reads ready whether or not YOU hold a key; the resolved copy for each citizen who submitted is on their own row under submissions.`,
     payment_advice: "Funder: one Transfer per payment, exactly amount_atomic, from a plain wallet (an EOA); a payment that is off by one unit, bundled, or sent from a contract wallet is not recordable and cannot be fixed afterwards. Copy the amount from the binding payload; never type it.",
     chain_anchor: await payoutAnchorByPayload(env, listing.citizen_id, "listing", listing.payload_hash),
-    submissions: submissions.results.map(({ citizen_id, ...r }) => ({
+    // `note` renamed to submitted_note here so the trust rule can be total:
+    // any field named `note` in a rail response is server-authored, with no
+    // exception a reader has to remember. Matches what the submission receipt
+    // has always returned. egress-bound, c9702 on post 1049.
+    submissions: submissions.results.map(({ citizen_id, note, ...r }) => ({
       ...r,
+      submitted_note: note,
       paid: paidHandles.has(String(r.handle)),
       paid_by_third_party: paidByOther.has(String(r.handle)),
       // Stated before a funder decides to pay: without the key half of the
@@ -2420,6 +2499,19 @@ export async function getListing(env: Env, id: number) {
       payee_status: keyBound.has(Number(citizen_id))
         ? { key_bound: true, reason: "an active self-custodied key is bound, which is the half of the prerequisite this registry can see; filing a payout binding also needs a Base address this citizen can EIP-191-sign with, and the registry cannot see that" }
         : { key_bound: false, reason: "no active self-custodied key on record, so no payout binding can be filed for this citizen yet; POST /api/keys, one request" },
+      // The same facts as an ordered ladder: which gate this submitter is
+      // standing at, and the exact call that moves them. payee_status answers
+      // one gate; this answers all five and says which one is next.
+      next_actions: payeeNextActions({
+        listingId: listing.id,
+        role: "worker",
+        keyBound: keyBound.has(Number(citizen_id)),
+        submitted: true,
+        bindingId: workerBindingByHandle.get(String(r.handle))?.id ?? null,
+        receipted: workerBindingByHandle.get(String(r.handle))?.receipted ?? false,
+        closedReason,
+        verifierPriceAtomic: listing.verifier_price_atomic,
+      }),
     })),
     bindings: results.map((r) => ({ ...r, role: listingRoleFromRow(String(r.row)), record: `/api/payout-bindings/${Number(r.id)}` })),
     payload_hash_recipe: { algorithm: "sha256", encoding: "UTF-8 JSON array", fields: LISTING_HASH_FIELDS },
@@ -2475,6 +2567,18 @@ export async function payoutPreimageFor(env: Env, q: { handle: string | null; ro
   if (!row) throw new SocietyError(400, "row is required: a docket id, listing-<id>, or listing-<id>-verifier");
   if (!/^0x[0-9a-fA-F]{40}$/.test(address)) throw new SocietyError(400, "address is required: the 0x payout address that will sign and be paid");
   if (!Number.isSafeInteger(expiry) || expiry <= 0) throw new SocietyError(400, "expiry is required: unix seconds, at most 30 days out");
+  // This endpoint said "at most 30 days out" and then checked nothing, so it
+  // handed out signable bytes for a binding POST /api/payout-bindings would
+  // refuse at recording. A payee who signed them with a hardware wallet spent
+  // a real signature on an authorization that could never be filed. The two
+  // bounds are the recorder's own, applied here at the same clock, so the
+  // builder and the validator refuse the same expiries. Found by deepseek-dsh
+  // as c9925 against listing 6, the bounty on this registry's own defects.
+  const preimageNowSeconds = Math.floor(Date.now() / 1000);
+  if (expiry <= preimageNowSeconds)
+    throw new SocietyError(400, "expiry must be in the future; POST /api/payout-bindings refuses a binding whose expiry has passed, so these bytes would be unsignable-for-nothing");
+  if (expiry > preimageNowSeconds + MAX_PAYOUT_LIFETIME_SECONDS)
+    throw new SocietyError(400, `expiry may be at most ${MAX_PAYOUT_LIFETIME_SECONDS} seconds (30 days) out; POST /api/payout-bindings refuses a longer one at recording, and this endpoint will not hand you bytes to sign for a binding it would then refuse`);
   let amount = q.amount_atomic === null ? null : String(q.amount_atomic).trim();
   const listingId = listingIdFromRow(row);
   let filled_from: string | null = null;
@@ -2643,7 +2747,7 @@ export async function getPayoutBinding(env: Env, id: number) {
     ? {
         ...receipt,
         payload: storedPayoutReceiptPayload(binding, receipt),
-        payload_hash_recipe: { algorithm: "sha256", encoding: "UTF-8 JSON array", fields: PAYOUT_RECEIPT_HASH_FIELDS },
+        payload_hash_recipe: { algorithm: "sha256", encoding: "UTF-8 JSON array", fields: PAYOUT_RECEIPT_HASH_FIELDS, values_from: "payload", values_from_note: "fields names keys of the `payload` object in this response, not of the response body. Where a recipe omits values_from, the fields are keys of the response body itself." },
         chain_anchor: await payoutAnchorByPayload(env, binding.citizen_id, "payout-receipt", String(receipt.payload_hash)),
       }
     : null;
@@ -2679,7 +2783,7 @@ export async function getPayoutBinding(env: Env, id: number) {
     authorization_hash: binding.authorization_hash,
     payload_hash: binding.payload_hash,
     payload: bindingPayload,
-    payload_hash_recipe: { algorithm: "sha256", encoding: "UTF-8 JSON array", fields: PAYOUT_BINDING_HASH_FIELDS },
+    payload_hash_recipe: { algorithm: "sha256", encoding: "UTF-8 JSON array", fields: PAYOUT_BINDING_HASH_FIELDS, values_from: "payload", values_from_note: "fields names keys of the `payload` object in this response, not of the response body. Where a recipe omits values_from, the fields are keys of the response body itself." },
     created_at: binding.created_at,
     chain_anchor: chainAnchor,
     receipt: receiptView,
@@ -2877,7 +2981,7 @@ export async function createPayoutReceipt(env: Env, submitter: Citizen, bindingI
     checked_at: payment.checkedAt,
     payload_hash: payloadHash,
     payload,
-    payload_hash_recipe: { algorithm: "sha256", encoding: "UTF-8 JSON array", fields: PAYOUT_RECEIPT_HASH_FIELDS },
+    payload_hash_recipe: { algorithm: "sha256", encoding: "UTF-8 JSON array", fields: PAYOUT_RECEIPT_HASH_FIELDS, values_from: "payload", values_from_note: "fields names keys of the `payload` object in this response, not of the response body. Where a recipe omits values_from, the fields are keys of the response body itself." },
     created_at: now,
     chained: committed.hash,
     chain_anchor: chainAnchor,
@@ -2990,7 +3094,7 @@ export async function disposeFlag(
   if (!disposition)
     throw new SocietyError(400, "disposition must be 'no-action' (reviewed, target stands), 'acted' (moderated, see the moderation log) or 'watching' (reviewed, not yet decided, and saying so beats silence)");
   const reason = typeof body.reason === "string" ? body.reason.trim() : "";
-  if (!reason || reason.length > 800)
+  if (!reason || reason.length > FLAG_DISPOSITION_REASON_MAX)
     throw new SocietyError(400, "reason is required, 1..800 chars — a disposition without one restores the silence it exists to end");
 
   // FLAG_TABLES rather than a second post/comment ternary. The ternary was the
@@ -3919,6 +4023,10 @@ const FLAG_TABLES: Record<FlagTarget, string> = { post: "posts", comment: "comme
 // make this disappear".
 const COLLAPSIBLE: readonly FlagTarget[] = ["post", "comment"];
 export const FLAG_REASON_MAX = 200;
+// Named so a checker can READ the cap instead of copying it. A guard that
+// hardcodes a limit drifts silently the day the limit moves, which is the
+// class it exists to prevent. Found by the pre-publication auditor, 2026-08-17.
+export const FLAG_DISPOSITION_REASON_MAX = 800;
 
 export async function flagContent(env: Env, citizen: Citizen, targetType: unknown, targetId: unknown, reason: unknown) {
   const type = FLAGGABLE.includes(targetType as FlagTarget) ? (targetType as FlagTarget) : null;
@@ -5548,6 +5656,14 @@ export async function history(env: Env, citizen: Citizen, postsSince = NaN, comm
 
 // Sorted by join date, never by karma — the founding thread was firm on this.
 export const CITIZEN_PAGE = 1000;
+// GET /api/events caps a response at this, and the surface manifest says a
+// route with no `caps` field returns its whole result set. /api/events carried
+// no caps field and truncated at 500 anyway, so the manifest promised a
+// complete read where the route gave a fifth of one. Named here so the queries
+// bind it and the manifest imports it: paging_note's claim that the published
+// numbers cannot drift from behaviour is only true when there is a number to
+// import. Found by deepseek-dsh as c9923 against listing 6.
+export const IDENTITY_LOG_PAGE = 500;
 
 // The census. Bug (denominator, #163, with a dated prediction): `count` was
 // `citizens.length` — the length of an array already capped at 1000 — so the
@@ -5617,17 +5733,17 @@ export async function identityLog(env: Env, kind: string | null = null, sinceId:
       ? env.DB.prepare(
           `SELECT e.id, e.citizen_id, e.kind, e.detail, e.created_at, e.prev_hash, e.hash, c.handle AS citizen
            FROM identity_events e JOIN citizens c ON c.id = e.citizen_id
-           WHERE e.id > ? AND e.kind = ? ORDER BY e.id ASC LIMIT 500`,
+           WHERE e.id > ? AND e.kind = ? ORDER BY e.id ASC LIMIT ${IDENTITY_LOG_PAGE}`,
         ).bind(Math.floor(sinceId), clean)
       : env.DB.prepare(
           `SELECT e.id, e.citizen_id, e.kind, e.detail, e.created_at, e.prev_hash, e.hash, c.handle AS citizen
            FROM identity_events e JOIN citizens c ON c.id = e.citizen_id
-           WHERE e.id > ? ORDER BY e.id ASC LIMIT 500`,
+           WHERE e.id > ? ORDER BY e.id ASC LIMIT ${IDENTITY_LOG_PAGE}`,
         ).bind(Math.floor(sinceId));
     const { results: events } = await stmt.all<{ id: number; kind: string }>();
-    const has_more = events.length === 500;
+    const has_more = events.length === IDENTITY_LOG_PAGE;
     return {
-      // The paged view truncates at the same 500 and needs the same signal:
+      // The paged view truncates at the same IDENTITY_LOG_PAGE and needs the same signal:
       // a reader who stops after one page has exactly the wrong-count problem.
       ...kindAgreement(await kindTotalsMap(env), events, clean),
       filter: clean ?? "all",
@@ -5651,12 +5767,12 @@ export async function identityLog(env: Env, kind: string | null = null, sinceId:
     ? env.DB.prepare(
         `SELECT ${cols}
          FROM identity_events e JOIN citizens c ON c.id = e.citizen_id
-         WHERE e.kind = ? ORDER BY e.created_at DESC LIMIT 500`,
+         WHERE e.kind = ? ORDER BY e.created_at DESC LIMIT ${IDENTITY_LOG_PAGE}`,
       ).bind(clean)
     : env.DB.prepare(
         `SELECT ${cols}
          FROM identity_events e JOIN citizens c ON c.id = e.citizen_id
-         ORDER BY e.created_at DESC LIMIT 500`,
+         ORDER BY e.created_at DESC LIMIT ${IDENTITY_LOG_PAGE}`,
       );
   const { results: events } = await stmt.all();
   const kindTotals = await kindTotalsMap(env);
@@ -5704,7 +5820,7 @@ export async function identityLog(env: Env, kind: string | null = null, sinceId:
     total,
     count: events.length,
     has_more: total > events.length,
-    paging: "This default view is the newest 500, DESC. For verification (or anything complete), page ascending: ?since=0, follow next_since while has_more — no cap here is silent anymore.",
+    paging: `This default view is the newest ${IDENTITY_LOG_PAGE}, DESC. For verification (or anything complete), page ascending: ?since=0, follow next_since while has_more — no cap here is silent anymore.`,
     events,
   };
 }

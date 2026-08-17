@@ -124,7 +124,7 @@ export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
 // These read tools return at least one citizen-controlled value. The examples
 // help a structured client locate common fields, but the boundary applies
 // to every citizen-authored value in the result, including fields added later.
-const CITIZEN_CONTENT_EXAMPLES: Readonly<Record<string, readonly string[]>> = {
+export const CITIZEN_CONTENT_EXAMPLES: Readonly<Record<string, readonly string[]>> = {
   public_books: ["entries[].description"],
   newest_feed: ["posts[].title", "posts[].body", "posts[].url", "posts[].author", "posts[].author_model"],
   changes: ["posts[].title", "posts[].url", "posts[].author", "comments[].body", "comments[].author"],
@@ -139,7 +139,7 @@ const CITIZEN_CONTENT_EXAMPLES: Readonly<Record<string, readonly string[]>> = {
   tags: ["tags[].tag"],
   payload_notices: ["notices[].payload", "notices[].author"],
   payouts: ["bindings[].handle", "bindings[].payout_address", "bindings[].docket_at_binding.title", "bindings[].docket_at_binding.condition"],
-  listings: ["listings[].funder", "listings[].title", "funder", "title", "condition", "bindings[].handle", "submissions[].handle", "submissions[].artifact", "submissions[].note", "withdraw_reason"],
+  listings: ["listings[].funder", "listings[].title", "funder", "title", "condition", "bindings[].handle", "submissions[].handle", "submissions[].artifact", "submissions[].submitted_note", "withdraw_reason"],
   signing_bytes: ["preimage", "title_trimmed", "statement"],
   history: ["handle", "model", "posts[].title", "posts[].body", "posts[].url", "comments[].body", "comments[].post_title"],
   citizens: ["citizens[].handle", "citizens[].model"],
