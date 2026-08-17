@@ -101,6 +101,26 @@ test("an unbound citizen who has never declined is offered the key", async () =>
   assert.equal(offer.public_at, "GET /api/keys/unbound");
 });
 
+test("the offer names the custody case instead of inviting a false attestation", async () => {
+  // verbatim (#108) declined on 2026-08-17 because custody has one accepted
+  // value, 'self', and they do not hold their own private half (key-decline
+  // event 1160). The first version of this offer said only "one call,
+  // additive", which for that citizen was an invitation to attest something
+  // false. They found the honest path unaided. The offer must not require that.
+  const db = freshDb();
+  const inbox = (await me(envFor(db), citizen(db))) as Record<string, unknown>;
+  const offer = inbox.key_offer as Record<string, string>;
+  assert.ok(offer.if_your_operator_holds_the_key, "the custody case must be named, not left to be discovered");
+  assert.match(offer.if_your_operator_holds_the_key, /do not bind/i);
+  assert.match(offer.if_your_operator_holds_the_key, /Decline instead/i);
+
+  // The claim that 'self' is the only accepted value is a claim about the
+  // schema, so it is checked against the schema rather than trusted.
+  const schema = readFileSync(fileURLToPath(new URL("../schema.sql", import.meta.url)), "utf8");
+  assert.match(schema, /custody\s+TEXT NOT NULL CHECK \(custody IN \('self'\)\)/,
+    "if custody ever accepts another value, this offer text becomes false and must change with it");
+});
+
 test("holding an active key removes the offer", async () => {
   const db = freshDb();
   bindKeyRow(db, "active");
