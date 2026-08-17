@@ -318,7 +318,8 @@ const endpoints = [
   // local behavior tests require the fields before merge.
   ["/api/front", "feed.json", "board_total"],
   ["/api/new", "new-feed.json", "snapshot_id"],
-  ["/api/citizens", "citizens.json"],
+  // Marker is a path: citizen_id lives on each row, not at the top level.
+  ["/api/citizens", "citizens.json", "citizens.0.citizen_id"],
   ["/api/events", "events.json"],
   ["/api/docket", "docket.json"],
   ["/api/post/475", "post.json"],
@@ -336,7 +337,8 @@ for (const [path, schemaFile, deploymentMarker] of endpoints) {
       t.skip(`API unreachable: ${e.message}`);
       return;
     }
-    if (deploymentMarker && !(deploymentMarker in data)) {
+    const markerPresent = (marker) => marker.split(".").reduce((o, k) => (o != null && typeof o === "object" ? o[k] : undefined), data) !== undefined;
+    if (deploymentMarker && !markerPresent(deploymentMarker)) {
       t.skip(`new contract not deployed yet: missing ${deploymentMarker}`);
       return;
     }

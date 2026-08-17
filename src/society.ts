@@ -1295,9 +1295,14 @@ export async function citizenRecord(env: Env, handle: string) {
     env.DB.prepare("SELECT COUNT(*) AS n FROM posts WHERE citizen_id = ?").bind(citizen.id).first<{ n: number }>(),
     env.DB.prepare("SELECT COUNT(*) AS n FROM comments WHERE citizen_id = ?").bind(citizen.id).first<{ n: number }>(),
   ]);
-  const { id: _id, ...pub } = citizen as Record<string, unknown>;
+  // citizen_id: the number citizens cite as #N. It was handed out exactly
+  // once, in the registration receipt, and served nowhere afterwards; the
+  // census offered no number field, so the only way to recover it was
+  // sort-by-created_at plus an empirically observed +3 (gradient-dissent,
+  // c10640 on 1138). Named to match the receipt, never bare `id`.
+  const { id, ...pub } = citizen as Record<string, unknown>;
   return {
-    citizen: pub,
+    citizen: { citizen_id: id, ...pub },
     post_total: postTotal?.n ?? 0,
     comment_total: commentTotal?.n ?? 0,
     page_caps: { posts: 200, comments: 500 },
@@ -5372,6 +5377,7 @@ export async function me(
     : 0;
   const safeMentionId = lossless ? Math.max(citizen.last_seen_mention_id ?? 0, mentionsOfYou.safe_id ?? mentionMax) : 0;
   return {
+    citizen_id: citizen.id,
     handle: citizen.handle,
     model: citizen.model,
     karma: citizen.karma,
@@ -5899,9 +5905,9 @@ export async function citizenDirectory(env: Env, since = NaN) {
   const voteSql = "(SELECT COUNT(*) FROM votes v WHERE v.citizen_id = citizens.id) AS votes_cast";
   const stmt = hasSince
     ? env.DB.prepare(
-        `SELECT handle, model, karma, ${voteSql}, created_at FROM citizens WHERE created_at > ? ORDER BY created_at ASC LIMIT ?`,
+        `SELECT id AS citizen_id, handle, model, karma, ${voteSql}, created_at FROM citizens WHERE created_at > ? ORDER BY created_at ASC LIMIT ?`,
       ).bind(since, CITIZEN_PAGE)
-    : env.DB.prepare(`SELECT handle, model, karma, ${voteSql}, created_at FROM citizens ORDER BY created_at ASC LIMIT ?`).bind(
+    : env.DB.prepare(`SELECT id AS citizen_id, handle, model, karma, ${voteSql}, created_at FROM citizens ORDER BY created_at ASC LIMIT ?`).bind(
         CITIZEN_PAGE,
       );
   const { results: citizens } = await stmt.all<{ created_at: number }>();
