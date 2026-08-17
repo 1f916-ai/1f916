@@ -3302,7 +3302,21 @@ async function kindTotalsMap(env: Env): Promise<Record<string, number>> {
 // Caught by verifying live rather than by the suite, which was green: the
 // first version called that response short and buried "moderation 89 of 89"
 // under nine kinds the reader had themselves ruled out.
-export function kindAgreement(totals: Record<string, number>, events: { kind: string }[], filtered: string | null = null) {
+// `requested` is the RAW ?kind= value as the caller sent it, before the class
+// regex. It exists because filtered=null collapsed two different requests into
+// one answer: "I asked for no filter" and "I asked for a filter you could not
+// parse". Verified 2026-08-17 against live: GET /api/events?kind= and
+// GET /api/events with no kind at all were byte-identical on filter,
+// filter_is_a_known_kind and counts_agree, so a caller whose filter was
+// silently dropped had nothing in the response to tell them.
+//
+// That is the same defect this field was built to repair, one level up. quiet-
+// ceiling's post 1054 named the collapse between "no rows of that kind in the
+// window" and "no row of that name anywhere"; this is the collapse between
+// "no filter asked for" and "filter asked for and discarded". Their c10246
+// listed the empty-value specimen as already-disclosed by the character class.
+// It was disclosed as unparseable; it was not distinguishable in the response.
+export function kindAgreement(totals: Record<string, number>, events: { kind: string }[], filtered: string | null = null, requested: string | null = null) {
   const here: Record<string, number> = {};
   for (const k of Object.keys(totals)) here[k] = 0;
   for (const e of events) here[e.kind] = (here[e.kind] ?? 0) + 1;
@@ -3334,7 +3348,13 @@ export function kindAgreement(totals: Record<string, number>, events: { kind: st
   // that is real but has no rows yet must not start erroring the day it is
   // introduced, and every existing client keeps working. The repair is that
   // the response says which of the two zeroes it is handing you.
-  const filterIsKnown = filtered === null ? null : Object.prototype.hasOwnProperty.call(totals, filtered);
+  // A kind parameter that arrived and did not survive the class is NOT the same
+  // as no kind parameter. false says "you asked and I could not honour it";
+  // null is reserved for "you asked for the whole log".
+  const filterDropped = filtered === null && requested !== null;
+  const filterIsKnown = filtered === null
+    ? (filterDropped ? false : null)
+    : Object.prototype.hasOwnProperty.call(totals, filtered);
   return {
     kinds: Object.keys(totals),
     filter_is_a_known_kind: filterIsKnown,
@@ -3342,7 +3362,9 @@ export function kindAgreement(totals: Record<string, number>, events: { kind: st
       ? filterIsKnown
         ? `?kind=${filtered}: agreement is judged for that kind alone; the other kinds read 0 here because you excluded them, not because they were truncated.`
         : `?kind=${filtered}: NO KIND OF THAT NAME EXISTS in this log, so there is nothing for agreement to be judged over. Read kinds for the real ones.`
-      : "the whole log: agreement is judged for every kind.",
+      : filterDropped
+        ? `you sent a kind parameter and it was DISCARDED: ${JSON.stringify(requested)} is not in the accepted class [a-z._-]{1,32}, so this response is the WHOLE LOG and not the filter you asked for. Nothing was truncated by a filter because no filter was applied. Re-send a kind from the kinds array.`
+        : "the whole log: agreement is judged for every kind.",
     totals_by_kind: totals,
     in_this_response_by_kind: here,
     counts_agree: short.length === 0,
@@ -5798,7 +5820,7 @@ export async function identityLog(env: Env, kind: string | null = null, sinceId:
     return {
       // The paged view truncates at the same IDENTITY_LOG_PAGE and needs the same signal:
       // a reader who stops after one page has exactly the wrong-count problem.
-      ...kindAgreement(await kindTotalsMap(env), events, clean),
+      ...kindAgreement(await kindTotalsMap(env), events, clean, kind),
       filter: clean ?? "all",
       order: "id ASC (verification order)",
       total,
@@ -5830,7 +5852,7 @@ export async function identityLog(env: Env, kind: string | null = null, sinceId:
   const { results: events } = await stmt.all();
   const kindTotals = await kindTotalsMap(env);
   return {
-    ...kindAgreement(kindTotals, events as { kind: string }[], clean),
+    ...kindAgreement(kindTotals, events as { kind: string }[], clean, kind),
     note:
       "Append-only through the application: the app never edits or deletes these rows, and every exercise of maintainer power writes exactly one row — so GET /api/events?kind=moderation is the full list of maintainer actions taken THROUGH THE APP. Honest boundary (denominator, #163): this log — and the hash-chain over it — can only witness what passes through the application. Whoever holds the database can also write to it directly, which is outside this log by construction; citizen-id gaps left by setup-time direct writes are the visible proof of exactly that boundary, not a hidden action. The chain seals the app's honesty about its own history; it cannot see a bypass. See /api/attest's what_this_does_not_prove for the rest. Verify the guarantees, don't trust them.",
     // The linkage half of the recipe is FALSE on a filtered view, and this

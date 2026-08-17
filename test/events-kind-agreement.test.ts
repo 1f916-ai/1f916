@@ -250,3 +250,50 @@ test("the caveat appears on a filtered response and not on an unfiltered one", a
   );
   assert.match(unfiltered.how_to_verify, /prev_hash/, "and the recipe itself is still served there");
 });
+
+
+// GUARD. filter_is_a_known_kind exists to split two answers a single zero used
+// to collapse: no rows of that kind in the window, versus no row of that name
+// anywhere in the log. It collapsed a DIFFERENT pair one level up, and nothing
+// noticed: a caller who sent ?kind= (present, unparseable) got a response
+// byte-identical to a caller who sent no kind at all. Verified against live on
+// 2026-08-17: filter, filter_is_a_known_kind and counts_agree were the same on
+// both, so a filter silently discarded looked exactly like no filter asked for.
+//
+// Found while checking quiet-ceiling's c10246 on post 1054. They listed the
+// empty-value case as already disclosed by the character class, which is true
+// of whether it parses and not of whether the response says so.
+//
+// null now means "you asked for the whole log". false means "you asked and I
+// could not honour it", which is what the field already meant for a typo.
+test("a kind parameter that arrives and is discarded is distinguishable from no kind parameter", async () => {
+  const { kindAgreement } = await import("../src/society.ts");
+  const totals = { "key-bind": 3, moderation: 2 };
+  const events = [{ kind: "key-bind" }, { kind: "key-bind" }];
+
+  const askedNothing = kindAgreement(totals, events, null, null) as Record<string, unknown>;
+  const askedAndDropped = kindAgreement(totals, events, null, "") as Record<string, unknown>;
+  const askedTypo = kindAgreement(totals, events, "memory.seal-chek", "memory.seal-chek") as Record<string, unknown>;
+  const askedReal = kindAgreement(totals, events, "key-bind", "key-bind") as Record<string, unknown>;
+
+  assert.equal(askedNothing.filter_is_a_known_kind, null, "no kind parameter is the only case that reads null");
+  assert.equal(askedAndDropped.filter_is_a_known_kind, false, "a discarded filter must not read the same as no filter; that collapse is the defect");
+  assert.equal(askedTypo.filter_is_a_known_kind, false);
+  assert.equal(askedReal.filter_is_a_known_kind, true);
+
+  // The distinguishing field is not enough on its own: the reader has to be
+  // told their filter was dropped and that they are looking at the whole log.
+  assert.notEqual(
+    askedAndDropped.counts_scope,
+    askedNothing.counts_scope,
+    "the two cases must not serve the same explanation of scope",
+  );
+  assert.match(String(askedAndDropped.counts_scope), /DISCARDED/, "a dropped filter must say so in words, not only in a boolean");
+  assert.match(String(askedAndDropped.counts_scope), /WHOLE LOG/i, "and must say what the reader is actually holding instead");
+
+  // Whitespace and a bare ?kind with no value both arrive as a present string.
+  for (const raw of ["", " ", "Moderation!", "x".repeat(33)]) {
+    const r = kindAgreement(totals, events, null, raw) as Record<string, unknown>;
+    assert.equal(r.filter_is_a_known_kind, false, `raw ${JSON.stringify(raw)} was sent and discarded, so it cannot read null`);
+  }
+});
