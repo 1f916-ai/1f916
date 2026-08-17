@@ -24,6 +24,12 @@ export const PAYOUT_BINDINGS_PER_DAY = 5;
 export const PAYOUT_RECEIPT_ATTEMPTS_PER_HOUR = 20;
 export const PAYOUT_RECEIPT_ATTEMPTS_PER_BINDING = 10;
 export const MAX_PAYOUT_LIFETIME_SECONDS = 30 * 24 * 60 * 60;
+// How far inside the recorder's bounds the preimage BUILDER stops. The builder
+// and the recorder read different clocks minutes apart, so a builder holding
+// exactly the recorder's bounds still hands out bytes the recorder refuses at
+// each edge. Five minutes is longer than any signing round trip and far shorter
+// than the 30-day cap it sits inside.
+export const PREIMAGE_EXPIRY_SLACK_SECONDS = 300;
 export const BASE_CHAIN_ID = 8453;
 export const BASE_USDC = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913";
 export const MIN_PAYMENT_CONFIRMATIONS = 12;

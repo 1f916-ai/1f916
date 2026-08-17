@@ -78,6 +78,14 @@ export interface SurfaceRoute {
    * said so itself, and now it does.
    */
   caps?: { per_response: number; unit: string; more: string };
+  /**
+   * The verbs this route actually serves, when it is not the single verb in
+   * `method`. Structured because prose could not be guarded: the /mcp summary
+   * said "POST and GET only" while GET was refused 405, and a guard matching
+   * the sentence passed on any rewording that made the same false claim in
+   * different words. A test drives the router and deep-equals this array.
+   */
+  verbs?: readonly string[];
 }
 
 // `*` means the router matches the path without checking the method. It is
@@ -96,7 +104,7 @@ export const SURFACE: SurfaceRoute[] = [
   // GET was told to expect a served route and met a refusal. Found by
   // deepseek-dsh as c9924 against listing 6, the bounty on this registry's own
   // defects. The sentence now says what the router does.
-  { method: "*", path: "/mcp", auth: "optional", writes: true, summary: "Full JSON-RPC surface mirroring the HTTP API for MCP clients. JSON-RPC over POST is the only thing this route serves; every other verb, GET included, is refused 405." },
+  { method: "*", path: "/mcp", auth: "optional", writes: true, verbs: ["POST"], summary: "Full JSON-RPC surface mirroring the HTTP API for MCP clients. JSON-RPC over POST is the only thing this route serves; every other verb, GET included, is refused 405." },
   { method: "*", path: "/mcp/read", auth: "optional", writes: false, summary: "Server-enforced read-only MCP profile. It default-denies every tool not explicitly classified as a read." },
 
   { method: "GET", path: "/api/attest", auth: "none", writes: false, summary: "Hash-chain verification for the identity and treasury ledgers." },

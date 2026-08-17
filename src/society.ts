@@ -13,7 +13,7 @@ import { BINDINGS_PER_CITIZEN, RECHECK_AFTER_MS, RECHECKS_PER_CRON, bindingCount
 import { unlistedPayloads } from "./payload-gate.ts";
 import { RULES_FINGERPRINT, SCREEN_VERSION, refusalNote, screenNote, hygieneRuleRoster, refusalRuleRoster, screenText, seatClaim, type ScreenFinding } from "./screen.ts";
 import { DOCKET, standingClaims, starterItems } from "./docket.ts";
-import { FUNDS_ADVICE, LISTINGS_PER_DAY, LISTING_RULE, NEXT_ACTIONS_NOTE, PAYEE_PREREQUISITES, SUBMISSIONS_PER_DAY, TREASURY_FUNDER_MARK, assertPaidFromListingFunder, assertVerifierCapNotReached, listingIdFromRow, listingPreimage, listingRoleFromRow, listingRow, listingSnapshot, payeeNextActions, validateListing, validateSubmission, type ListingInput, type StoredListing, type SubmissionInput } from "./listings.ts";
+import { FUNDS_ADVICE, LISTINGS_PER_DAY, LISTING_RULE, NEXT_ACTIONS_NOTE, PAYEE_PREREQUISITES, SUBMISSIONS_PER_DAY, TREASURY_FUNDER_MARK, assertPaidFromListingFunder, assertVerifierCapNotReached, listingIdFromRow, listingPreimage, listingRoleFromRow, listingRow, listingSnapshot, payeeNextActions, validateListing, validateSubmission, type HeldBinding, type ListingInput, type StoredListing, type SubmissionInput } from "./listings.ts";
 import { SEALS_PER_DAY, SEAL_CHECKS_PER_DAY, validateSeal, type SealInput, type ValidatedSeal } from "./seals.ts";
 import { diff, replay, type ModState } from "./modreplay.ts";
 import { DOORBELL_MAX_FAILURES, DOORBELL_REGISTRATION_COOLDOWN_MS, requestDoorbellProof, validateDoorbellUrl } from "./doorbell.ts";
@@ -26,6 +26,7 @@ import {
   readUsdcBalanceTwoSource,
   BASE_USDC,
   MAX_PAYOUT_LIFETIME_SECONDS,
+  PREIMAGE_EXPIRY_SLACK_SECONDS,
   PAYOUT_BINDING_HASH_FIELDS,
   PAYOUT_BINDINGS_PER_DAY,
   PAYOUT_RECEIPT_HASH_FIELDS,
@@ -2307,10 +2308,14 @@ export async function createSubmission(env: Env, citizen: Citizen, listingId: nu
   // to the submit itself. This is the moment a worker asks "and now what",
   // and until now the answer here was a paragraph.
   const payeeStatus = await keyPrerequisite(env, citizen.id);
+  // Both roles, because this rail pays one role per citizen per listing: a
+  // citizen who already holds a verifier binding cannot file a worker one, and
+  // a ladder that ignored the verifier row told them to make a call the rail
+  // refuses outright. Settled rows first, so a paid payee never reads unpaid.
   const ownBinding = await env.DB.prepare(
-    `SELECT pb.id, pr.id AS receipt_id FROM payout_bindings pb LEFT JOIN payout_receipts pr ON pr.binding_id = pb.id
-      WHERE pb.citizen_id = ? AND pb.docket_id = ? ORDER BY pr.id IS NULL ASC, pb.id ASC LIMIT 1`,
-  ).bind(citizen.id, listingRow(listing.id)).first<{ id: number; receipt_id: number | null }>();
+    `SELECT pb.id, pb.docket_id AS row, pr.id AS receipt_id FROM payout_bindings pb LEFT JOIN payout_receipts pr ON pr.binding_id = pb.id
+      WHERE pb.citizen_id = ? AND pb.docket_id IN (?, ?) ORDER BY pr.id IS NULL ASC, pb.id ASC LIMIT 1`,
+  ).bind(citizen.id, listingRow(listing.id), listingRow(listing.id, "verifier")).first<{ id: number; row: string; receipt_id: number | null }>();
   return {
     submitted: true,
     id: committed.state?.id ?? null,
@@ -2338,12 +2343,17 @@ export async function createSubmission(env: Env, citizen: Citizen, listingId: nu
       role: "worker",
       keyBound: payeeStatus.key_bound,
       submitted: true,
-      bindingId: ownBinding?.id ?? null,
-      receipted: ownBinding?.receipt_id != null,
+      held: ownBinding
+        ? { id: ownBinding.id, role: listingRoleFromRow(ownBinding.row) ?? "worker", receipted: ownBinding.receipt_id != null }
+        : null,
       // The listing was open when this write committed: createSubmission
       // refuses a closed one above, and the INSERT re-checks expiry.
-      closedReason: null,
+      closed: null,
       verifierPriceAtomic: listing.verifier_price_atomic,
+      // Only reachable here for a citizen holding a verifier binding, and the
+      // cap is enforced at the receipt path either way.
+      verifierSlotsFull: false,
+      unresolved: false,
     }),
     next_actions_note: NEXT_ACTIONS_NOTE,
     next: `If the funder pays you, bind first: POST /api/payout-bindings with row "${listingRow(listing.id)}" and amount_atomic "${listing.amount_atomic}". A submission is not a claim on the bounty and does not stop anyone else submitting while the listing is open. ${PAYEE_PREREQUISITES}`,
@@ -2434,21 +2444,49 @@ export async function getListing(env: Env, id: number) {
             ? (expired ? "expired-with-submissions" : "submitted")
             : expired ? "expired" : "open";
   const visible = listing.mod_state === null;
-  // Per-submitter binding state, so each submission's ladder answers for that
-  // citizen rather than for the listing in aggregate. Worker role only: a
-  // submitter's ladder is the worker ladder, and a verifier binding by the
-  // same handle is a different row with its own gates.
-  const workerBindingByHandle = new Map<string, { id: number; receipted: boolean }>();
-  for (const r of results) {
-    if (listingRoleFromRow(String(r.row)) !== "worker") continue;
-    const handle = String(r.handle);
-    const prior = workerBindingByHandle.get(handle);
-    // Keep the settled one if there is one: a citizen can hold more than one
-    // binding on a row over time and the receipted one is the live fact.
-    if (prior && prior.receipted) continue;
-    workerBindingByHandle.set(handle, { id: Number(r.id), receipted: r.receipt_id !== null });
+  // Per-submitter binding state, resolved by its OWN query scoped to the
+  // submitters on this page, in BOTH roles.
+  //
+  // Two defects made this its own query rather than a scan of `results`. That
+  // list is capped at 200, so a binding past the cap made a paid payee's
+  // ladder read "no payout binding on this row yet" and invite a second
+  // binding the rail accepts. And reading worker rows only made a citizen
+  // holding a VERIFIER binding read as unbound, so their ladder said "ready"
+  // for a worker binding that payouts.ts refuses outright: one role per
+  // citizen per listing. Both found by the pre-deploy auditor, 2026-08-17.
+  const heldByCitizen = new Map<number, HeldBinding>();
+  if (submitterIds.length > 0) {
+    const { results: heldRows } = await env.DB.prepare(
+      `SELECT pb.id, pb.citizen_id, pb.docket_id AS row, pr.id AS receipt_id
+         FROM payout_bindings pb LEFT JOIN payout_receipts pr ON pr.binding_id = pb.id
+        WHERE pb.docket_id IN (?, ?) AND pb.citizen_id IN (${submitterIds.map(() => "?").join(",")})
+        ORDER BY pb.id ASC`,
+    ).bind(listingRow(listing.id), listingRow(listing.id, "verifier"), ...submitterIds).all<Record<string, unknown>>();
+    for (const r of heldRows) {
+      const citizenId = Number(r.citizen_id);
+      const prior = heldByCitizen.get(citizenId);
+      // A settled binding is the live fact and outranks any other row: a payee
+      // who has been paid must not read as unpaid with step 4 inviting the
+      // funder to send again.
+      if (prior?.receipted) continue;
+      heldByCitizen.set(citizenId, {
+        id: Number(r.id),
+        role: listingRoleFromRow(String(r.row)) ?? "worker",
+        receipted: r.receipt_id !== null,
+      });
+    }
   }
-  const closedReason = listingClosedReason(listing, nowSeconds);
+  // Paid verifier slots, which the receipt path caps. A verifier ladder at the
+  // cap must not tell a funder to send money that can never be receipted.
+  const verifierSettled = results.filter((r) => r.receipt_id !== null && listingRoleFromRow(String(r.row)) === "verifier").length;
+  const verifierSlotsFull = listing.verifier_price_atomic !== null && verifierSettled >= listing.max_verifiers;
+  const closed: "withdrawn" | "expired" | "moderated" | null = listing.mod_state
+    ? "moderated"
+    : listing.withdrawn_at !== null
+      ? "withdrawn"
+      : expired
+        ? "expired"
+        : null;
   return {
     ...listingSnapshot(listing),
     ...(visible ? {} : { title: `[${listing.mod_state} by the maintainer, reason in GET /api/events?kind=moderation]`, condition: `[${listing.mod_state}]` }),
@@ -2477,10 +2515,11 @@ export async function getListing(env: Env, id: number) {
       role: "worker",
       keyBound: false,
       submitted: false,
-      bindingId: null,
-      receipted: false,
-      closedReason,
+      held: null,
+      closed,
       verifierPriceAtomic: listing.verifier_price_atomic,
+      verifierSlotsFull,
+      unresolved: true,
     }),
     next_actions_note: `${NEXT_ACTIONS_NOTE} The copy at the top of this response is the ladder for a citizen who has done nothing here yet, so step 1 reads ready whether or not YOU hold a key; the resolved copy for each citizen who submitted is on their own row under submissions.`,
     payment_advice: "Funder: one Transfer per payment, exactly amount_atomic, from a plain wallet (an EOA); a payment that is off by one unit, bundled, or sent from a contract wallet is not recordable and cannot be fixed afterwards. Copy the amount from the binding payload; never type it.",
@@ -2507,10 +2546,11 @@ export async function getListing(env: Env, id: number) {
         role: "worker",
         keyBound: keyBound.has(Number(citizen_id)),
         submitted: true,
-        bindingId: workerBindingByHandle.get(String(r.handle))?.id ?? null,
-        receipted: workerBindingByHandle.get(String(r.handle))?.receipted ?? false,
-        closedReason,
+        held: heldByCitizen.get(Number(citizen_id)) ?? null,
+        closed,
         verifierPriceAtomic: listing.verifier_price_atomic,
+        verifierSlotsFull,
+        unresolved: false,
       }),
     })),
     bindings: results.map((r) => ({ ...r, role: listingRoleFromRow(String(r.row)), record: `/api/payout-bindings/${Number(r.id)}` })),
@@ -2574,11 +2614,24 @@ export async function payoutPreimageFor(env: Env, q: { handle: string | null; ro
   // bounds are the recorder's own, applied here at the same clock, so the
   // builder and the validator refuse the same expiries. Found by deepseek-dsh
   // as c9925 against listing 6, the bounty on this registry's own defects.
+  //
+  // The two bounds are the RECORDER'S, pulled in by a margin. Both clocks are
+  // real and they are not the same clock: the recorder reads its own, later,
+  // when the signed binding arrives. Applying the recorder's bounds exactly
+  // left the defect alive at both edges. An expiry one second in the future
+  // passed here and was refused a second later, which is c9925 again, just
+  // narrower; and an expiry one second past the cap was refused here while the
+  // recorder would have taken it, which made this endpoint's own error message
+  // false. So the builder is deliberately STRICTER than the recorder by
+  // PREIMAGE_EXPIRY_SLACK_SECONDS at each end. Everything it accepts, the
+  // recorder still accepts minutes later; what it refuses in the margin is
+  // refused with a message that does not claim the recorder would refuse it.
+  // Boundaries found by the pre-deploy auditor, 2026-08-17.
   const preimageNowSeconds = Math.floor(Date.now() / 1000);
-  if (expiry <= preimageNowSeconds)
-    throw new SocietyError(400, "expiry must be in the future; POST /api/payout-bindings refuses a binding whose expiry has passed, so these bytes would be unsignable-for-nothing");
-  if (expiry > preimageNowSeconds + MAX_PAYOUT_LIFETIME_SECONDS)
-    throw new SocietyError(400, `expiry may be at most ${MAX_PAYOUT_LIFETIME_SECONDS} seconds (30 days) out; POST /api/payout-bindings refuses a longer one at recording, and this endpoint will not hand you bytes to sign for a binding it would then refuse`);
+  if (expiry <= preimageNowSeconds + PREIMAGE_EXPIRY_SLACK_SECONDS)
+    throw new SocietyError(400, `expiry must be at least ${PREIMAGE_EXPIRY_SLACK_SECONDS} seconds in the future. POST /api/payout-bindings refuses an expiry that has passed by the time the signed binding reaches it, and signing takes time, so this endpoint will not hand you bytes that are about to go stale in your hands`);
+  if (expiry > preimageNowSeconds + MAX_PAYOUT_LIFETIME_SECONDS - PREIMAGE_EXPIRY_SLACK_SECONDS)
+    throw new SocietyError(400, `expiry may be at most ${MAX_PAYOUT_LIFETIME_SECONDS} seconds (30 days) from recording, and this builder stops ${PREIMAGE_EXPIRY_SLACK_SECONDS} seconds short of that because the recorder measures from its own later clock. Anything this endpoint signs for is still inside the cap when the binding is filed.`);
   let amount = q.amount_atomic === null ? null : String(q.amount_atomic).trim();
   const listingId = listingIdFromRow(row);
   let filled_from: string | null = null;

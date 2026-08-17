@@ -151,12 +151,19 @@ test("the surface manifest's /mcp row names the verbs the router actually serves
   }
   assert.deepEqual(served, ["POST"], "only POST is served on /mcp; every other verb is a 405");
 
+  // The first version of this guard checked the SENTENCE with a regex over
+  // three phrasings. The auditor beat it in one line: a summary reading
+  // "Serves JSON-RPC over POST, and GET for the streamable transport; PUT is
+  // refused 405" makes the exact c9924 claim, advertises a verb the router
+  // refuses, and passed, because it matched none of the three phrasings and
+  // still contained "405". Prose cannot be guarded by pattern. The row now
+  // carries a structured `verbs` array and the assertion is a deep-equal
+  // against what the router did, so any drift is caught by construction.
+  assert.deepEqual(
+    (row as { verbs?: readonly string[] }).verbs,
+    served,
+    "the /mcp row's declared verbs must be exactly the set the router serves; a summary sentence is prose and cannot carry this promise",
+  );
   const summary = (row as { summary: string }).summary;
-  for (const refused of ["GET", "PUT", "DELETE", "PATCH"]) {
-    assert.ok(
-      !new RegExp(`POST and ${refused}|${refused} and POST|${refused} only`).test(summary),
-      `the /mcp summary advertises ${refused} as served and the router answers it 405: ${summary}`,
-    );
-  }
   assert.match(summary, /405/, "the /mcp summary must say what a client probing the wrong verb will actually get back");
 });

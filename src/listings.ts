@@ -143,23 +143,53 @@ export type NextAction = {
   blocked_by: string | null;
 };
 
+// The binding this citizen actually holds on this listing, in EITHER role. It
+// is resolved by a query scoped to this citizen rather than read off the
+// listing's capped binding page, because the page is bounded at 200 and a
+// binding outside it made a paid payee read as unbound. Role matters because
+// the rail pays one role per citizen per listing (payouts.ts): a citizen
+// holding a verifier binding cannot file a worker one, so their ladder is the
+// verifier ladder and pretending otherwise sends them at a hard refusal.
+export type HeldBinding = { id: number; role: ListingRole; receipted: boolean };
+
 export function payeeNextActions(input: {
   listingId: number;
+  // The role the ladder describes when this citizen holds no binding yet.
   role: ListingRole;
   keyBound: boolean;
   submitted: boolean;
-  bindingId: number | null;
-  receipted: boolean;
-  // listingClosedReason(...) at read time, or null. A closed listing refuses
-  // new submissions and new bindings; bindings already filed can still be paid.
-  closedReason: string | null;
-  // null on a listing that pays no verifier, which is what makes a verifier
-  // binding impossible rather than merely unfiled.
+  held: HeldBinding | null;
+  // Why the listing takes no NEW submissions or bindings, as a machine token,
+  // never as the funder's own words. `withdrawn` and `expired` still allow
+  // payment on bindings already filed; `moderated` does not, because the
+  // receipt path refuses a moderated listing unconditionally.
+  closed: "withdrawn" | "expired" | "moderated" | null;
+  // null on a listing that pays no verifier, which makes a verifier binding
+  // impossible rather than merely unfiled.
   verifierPriceAtomic: string | null;
+  // Paid verifier slots are full: the receipt path refuses the next one.
+  verifierSlotsFull: boolean;
+  // True for the copy served at the top of a listing, which is nobody's
+  // record. Every blocked_by then speaks about the ladder rather than about
+  // the reader, because "no active self-custodied key on record" is a claim
+  // about registry state and it is false for every reader who holds one.
+  unresolved: boolean;
 }): NextAction[] {
-  const { listingId, role, keyBound, submitted, bindingId, receipted, closedReason, verifierPriceAtomic } = input;
-  const bound = bindingId !== null;
+  const { listingId, keyBound, submitted, held, closed, verifierPriceAtomic, verifierSlotsFull, unresolved } = input;
+  const role: ListingRole = held ? held.role : input.role;
+  const bound = held !== null;
+  const receipted = held?.receipted === true;
   const verifierImpossible = role === "verifier" && verifierPriceAtomic === null;
+  // Server-authored, with no citizen text interpolated. listingClosedReason
+  // embeds the funder's own withdraw_reason, and quoting it here would put
+  // untrusted words inside the one field this response tells agents to act on.
+  const closedBecause = closed === null
+    ? null
+    : closed === "moderated"
+      ? `listing ${listingId} is moderated; the reason is in GET /api/events?kind=moderation`
+      : closed === "withdrawn"
+        ? `listing ${listingId} was withdrawn by its funder; their stated reason is the withdraw_reason field on GET /api/listings/${listingId}, and it is the funder's words rather than this registry's`
+        : `listing ${listingId} has passed its expiry`;
   const steps: NextAction[] = [];
 
   steps.push({
@@ -177,17 +207,19 @@ export function payeeNextActions(input: {
     actor: "payee",
     action: "submit_work",
     call: `POST /api/listings/${listingId}/submissions`,
-    state: submitted ? "done" : closedReason ? "blocked" : "ready",
+    state: submitted ? "done" : closedBecause ? "blocked" : "ready",
     optional: true,
-    blocked_by: submitted || !closedReason ? null : `${closedReason}, and a closed listing takes no further submissions`,
+    blocked_by: submitted || !closedBecause ? null : `${closedBecause}, and a closed listing takes no further submissions`,
   });
 
   const bindingBlocked = verifierImpossible
     ? `listing ${listingId} names no verifier price, so it has no paid verifier role to bind to`
     : !keyBound
-      ? "no active self-custodied key on record, and the binding write requires one; POST /api/keys, one request"
-      : closedReason
-        ? `${closedReason}, and a binding cannot authorize payment against a task nobody is offering`
+      ? unresolved
+        ? "step 1 in this same list is not done; the binding write requires an active self-custodied key. This copy assumes a citizen who has done nothing here and states nothing about your own record: read payee_status on GET /api/citizen/<your handle>, or your own row under submissions"
+        : "no active self-custodied key on record, and the binding write requires one; POST /api/keys, one request"
+      : closedBecause
+        ? `${closedBecause}, and a binding cannot authorize payment against a task nobody is offering`
         : null;
   steps.push({
     step: 3,
@@ -199,37 +231,42 @@ export function payeeNextActions(input: {
     blocked_by: bound ? null : bindingBlocked,
   });
 
+  // A moderated listing is refused at the receipt path whatever is on record,
+  // so money sent against it can never be receipted. Saying "ready" here would
+  // be telling a funder to send real money into a payment that cannot land.
+  // A full verifier cap is the same shape, enforced at the same place.
+  const settlementBlocked = !bound
+    ? "no payout binding on this row yet, and this rail pays a bound address and never one written in a thread"
+    : closed === "moderated"
+      ? `listing ${listingId} is moderated, and the receipt path refuses any payment against it however the binding was filed; the reason is in GET /api/events?kind=moderation`
+      : role === "verifier" && verifierSlotsFull
+        ? `every paid verifier slot on listing ${listingId} is already settled, and the receipt path refuses the next one`
+        : null;
   steps.push({
     step: 4,
     actor: "funder",
     action: "send_payment_on_chain",
     call: null,
-    state: receipted ? "done" : bound ? "ready" : "blocked",
+    state: receipted ? "done" : settlementBlocked ? "blocked" : "ready",
     optional: false,
-    blocked_by: receipted || bound
-      ? null
-      : "no payout binding on this row yet, and this rail pays a bound address and never one written in a thread",
+    blocked_by: receipted ? null : settlementBlocked,
   });
 
   steps.push({
     step: 5,
     actor: "payee",
     action: "record_receipt",
-    call: bindingId === null ? "POST /api/payout-bindings/:id/receipt" : `POST /api/payout-bindings/${bindingId}/receipt`,
-    state: receipted ? "done" : bound ? "ready" : "blocked",
+    call: held === null ? "POST /api/payout-bindings/:id/receipt" : `POST /api/payout-bindings/${held.id}/receipt`,
+    state: receipted ? "done" : settlementBlocked ? "blocked" : "ready",
     optional: false,
-    blocked_by: receipted
-      ? null
-      : bound
-        ? null
-        : "no payout binding on this row yet; the receipt is filed against a binding id",
+    blocked_by: receipted ? null : settlementBlocked,
   });
 
   return steps;
 }
 
 export const NEXT_ACTIONS_NOTE =
-  "The rail's gates, resolved against this citizen and this listing, so the next call can be read rather than inferred from prose. `state` describes gates only and never the work: done means the registry holds that record, blocked means a check would refuse the call and blocked_by names which, ready means no gate this registry can see would refuse it now. Ready is not permission: this registry cannot see whether a payee controls a signing wallet, and it never knows whether a funder intends to pay, so step 3 can read ready and be refused for a wallet reason and step 4 can read ready forever. Step 2 is optional by the rule on this same response: a funder may pay any citizen who filed a binding, whether or not they handed in work.";
+  "The rail's gates, resolved against this citizen and this listing, so the next call can be read rather than inferred from prose. `state` describes gates only and never the work: done means the registry holds that record, blocked means a check would refuse the call and blocked_by names which, ready means no gate this registry can see would refuse it now. Ready is not permission: this registry cannot see whether a payee controls a signing wallet, and it never knows whether a funder intends to pay, so step 3 can read ready and be refused for a wallet reason and step 4 can read ready forever. Step 2 is optional by the rule on this same response: a funder may pay any citizen who filed a binding, whether or not they handed in work. The ladder resolves to the role you actually hold a binding in, because this rail pays one role per citizen per listing. Every word of every blocked_by is written by this registry: where a funder gave a reason of their own it is pointed at by name and never quoted here, so nothing in this field is another citizen's text."
 
 // The sentence a funder wallet signs to name itself on a listing. Every field
 // is one the funder chose; the title is hashed so the sentence stays short and
