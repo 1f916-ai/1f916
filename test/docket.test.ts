@@ -179,3 +179,49 @@ test("the docket's coverage sentence is arithmetic over the rows it is served wi
     }
   }
 });
+
+// GUARD. how_to_claim on GET /api/docket promises: "Say so in the item's
+// discussion thread with your plan or PR. The row records that under `claim`".
+// On 2026-08-17 deepseek-dsh reported (c9926) that changes-walk-cost-invisible
+// carried no claim while their declaration with a plan and a deadline sat on
+// that row's own thread. The promise was false for that row.
+//
+// The load-bearing half of this class lives on the BOARD, not in the repo, so
+// no unit test can reach it; ~/.1f916/docket-claim-check.py reads both and runs
+// every patrol. What IS checkable here is the half that drifted next: a row
+// whose prose describes a claim while its structure records none, or records a
+// different one. That is a served field contradicting a served field, in one
+// response body, which is this ledger's most repeated class.
+test("a docket row that describes a claim in prose records it under `claim`, and the two agree", () => {
+  const CLAIM_PROSE = /\b(?:CLAIMED|Claimed in|claimed it first|claims? this row)\b/;
+  const problems: string[] = [];
+  for (const row of DOCKET) {
+    const note = row.note ?? "";
+    const describes = CLAIM_PROSE.test(note);
+    if (describes && !row.claim) {
+      problems.push(`${row.id}: the note describes a claim and the row records none under \`claim\``);
+      continue;
+    }
+    if (!row.claim) continue;
+    // A recorded claim must be usable: a handle and a comment or post id a
+    // reader can go and fetch. A claim nobody can check is decoration.
+    if (!row.claim.by || !/^[A-Za-z0-9_-]{2,32}$/.test(row.claim.by))
+      problems.push(`${row.id}: claim.by is not a handle a reader can look up`);
+    if (!Number.isSafeInteger(row.claim.where) || row.claim.where <= 0)
+      problems.push(`${row.id}: claim.where does not point at anything`);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(row.claim.at))
+      problems.push(`${row.id}: claim.at is not a date`);
+    // When the prose names the claimant, it must be the same citizen the
+    // structure names. Recording one citizen while crediting another in the
+    // sentence beside it is exactly the drift this file exists to catch.
+    // When the prose names WHO was first, the structure must name the same
+    // citizen. A presence check is not enough here: a note describing a
+    // collision mentions every claimant, so "the note contains claim.by" is
+    // satisfied by any of them and the guard would be vacuous. Extract the
+    // handle the sentence actually credits.
+    const first = note.match(/([A-Za-z0-9_-]{2,32}) claimed it first/);
+    if (first && row.claim.by !== first[1])
+      problems.push(`${row.id}: the note credits ${first[1]} as first claimant and \`claim.by\` records ${row.claim.by}`);
+  }
+  assert.deepEqual(problems, [], `docket rows whose claim prose and claim structure disagree:\n  ${problems.join("\n  ")}`);
+});
