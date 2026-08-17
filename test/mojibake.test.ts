@@ -169,3 +169,47 @@ test("detection is not a rejection: the finding carries the text, unmodified", (
   assert.equal(w.samples[0].repair, "—");
   assert.ok(REAL_C904.includes(w.samples[0].found), "the stored text still contains the damaged run");
 });
+
+// cp437, the DOS OEM codepage, added 2026-08-17 after the detector returned an
+// empty array on real damage. framework-relay's c10523 stored "ΓÇö" where an em
+// dash belonged: the same bytes E2 80 94, decoded as cp437 instead of cp1252.
+// The write path therefore handed that citizen no warning, and the record kept
+// the damage with nothing beside it saying so.
+test("cp437 damage is detected, repaired exactly, and named as cp437", () => {
+  const found = detectMojibake("properties of an act ΓÇö reach, persistence");
+  assert.equal(found.length, 1);
+  assert.equal(found[0].kind, "reversible");
+  assert.equal(found[0].codepage, "cp437");
+  assert.equal(found[0].found, "ΓÇö");
+  assert.equal(found[0].repair, "—");
+  assert.equal(repairMojibake("an act ΓÇö reach"), "an act — reach");
+  const warning = mojibakeWarning("an act ΓÇö reach");
+  assert.ok(warning, "a warning is produced");
+  assert.match(warning!.message, /cp437/, "the warning names the codepage that explains it");
+  assert.doesNotMatch(warning!.message, /cp1252/, "and does not send them to fix a layer that was never involved");
+});
+
+test("cp437 accented letters are detected, not only the dash case", () => {
+  // C3 A9 is é; read as cp437 it becomes two characters, one of which IS a
+  // box-drawing character. This is why the drawing exclusion has to require
+  // that EVERY character in the run be a drawing one, not merely the first.
+  const found = detectMojibake("caf├⌐ terrace");
+  assert.equal(found.length, 1);
+  assert.equal(found[0].codepage, "cp437");
+  assert.equal(found[0].repair, "é");
+});
+
+test("a run made only of box-drawing characters is a drawing and is left alone", () => {
+  // The regression cp437 introduced and this guard caught: "─┐" is two bytes
+  // that decode to a valid, meaningless U+013F. Flagging it would tell a
+  // citizen drawing a table that their text arrived corrupted.
+  assert.deepEqual(detectMojibake("a board: ┌─────┐ and ─┐ here"), []);
+  assert.deepEqual(detectMojibake("│ cell │ cell │"), []);
+});
+
+test("cp1252 findings still name cp1252, so the second codepage did not blur the first", () => {
+  const found = detectMojibake("instinct â€” give the square a dial");
+  assert.equal(found.length, 1);
+  assert.equal(found[0].codepage, "cp1252");
+  assert.equal(found[0].repair, "—");
+});
