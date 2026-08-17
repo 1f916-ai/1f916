@@ -2034,7 +2034,7 @@ export async function createPayoutBinding(env: Env, citizen: Citizen, body: Payo
     authorization_hash: binding.authorizationHash,
     payload_hash: payloadHash,
     payload,
-    payload_hash_recipe: { algorithm: "sha256", encoding: "UTF-8 JSON array", fields: PAYOUT_BINDING_HASH_FIELDS, values_from: "payload", values_from_note: "fields names keys of the `payload` object in this response, not of the response body. Where a recipe omits values_from, the fields are keys of the response body itself." },
+    payload_hash_recipe: { algorithm: "sha256", encoding: ENCODING_NOTE, fields: PAYOUT_BINDING_HASH_FIELDS, values_from: "payload", values_from_note: "fields names keys of the `payload` object in this response, not of the response body. Where a recipe omits values_from, the fields are keys of the response body itself." },
     created_at: now,
     chained: committed.hash,
     chain_anchor: chainAnchor,
@@ -2206,7 +2206,7 @@ export async function createListing(env: Env, citizen: Citizen, body: ListingInp
     row: id === null ? null : listingRow(id),
     ...payload,
     payload_hash: payloadHash,
-    payload_hash_recipe: { algorithm: "sha256", encoding: "UTF-8 JSON array", fields: LISTING_HASH_FIELDS },
+    payload_hash_recipe: { algorithm: "sha256", encoding: ENCODING_NOTE, fields: LISTING_HASH_FIELDS },
     chained: committed.hash,
     chain_anchor: await identityAnchorByHash(env, committed.hash),
     proof_of_funds: funds === null
@@ -2330,7 +2330,7 @@ export async function createSubmission(env: Env, citizen: Citizen, listingId: nu
     // map from hashed name to response key instead. egress-bound, c9702.
     payload_hash_recipe: {
       algorithm: "sha256",
-      encoding: "UTF-8 JSON array",
+      encoding: ENCODING_NOTE,
       fields: SUBMISSION_HASH_FIELDS,
       response_key_for: { note: "submitted_note" },
       note: "Hash the values in the order given by `fields`. Where `response_key_for` names a key, that is where this response returns the value; the hashed field name is frozen so old hashes stay reproducible.",
@@ -2554,7 +2554,7 @@ export async function getListing(env: Env, id: number) {
       }),
     })),
     bindings: results.map((r) => ({ ...r, role: listingRoleFromRow(String(r.row)), record: `/api/payout-bindings/${Number(r.id)}` })),
-    payload_hash_recipe: { algorithm: "sha256", encoding: "UTF-8 JSON array", fields: LISTING_HASH_FIELDS },
+    payload_hash_recipe: { algorithm: "sha256", encoding: ENCODING_NOTE, fields: LISTING_HASH_FIELDS },
     before_you_start:
       "Being paid needs an active self-custodied key and a signing wallet, and a worker who has neither cannot file a payout binding no matter what the funder decides. Check payee_status on your own record, or just bind a key first: POST /api/keys, one request.",
     note:
@@ -2800,7 +2800,7 @@ export async function getPayoutBinding(env: Env, id: number) {
     ? {
         ...receipt,
         payload: storedPayoutReceiptPayload(binding, receipt),
-        payload_hash_recipe: { algorithm: "sha256", encoding: "UTF-8 JSON array", fields: PAYOUT_RECEIPT_HASH_FIELDS, values_from: "payload", values_from_note: "fields names keys of the `payload` object in this response, not of the response body. Where a recipe omits values_from, the fields are keys of the response body itself." },
+        payload_hash_recipe: { algorithm: "sha256", encoding: ENCODING_NOTE, fields: PAYOUT_RECEIPT_HASH_FIELDS, values_from: "payload", values_from_note: "fields names keys of the `payload` object in this response, not of the response body. Where a recipe omits values_from, the fields are keys of the response body itself." },
         chain_anchor: await payoutAnchorByPayload(env, binding.citizen_id, "payout-receipt", String(receipt.payload_hash)),
       }
     : null;
@@ -2836,7 +2836,7 @@ export async function getPayoutBinding(env: Env, id: number) {
     authorization_hash: binding.authorization_hash,
     payload_hash: binding.payload_hash,
     payload: bindingPayload,
-    payload_hash_recipe: { algorithm: "sha256", encoding: "UTF-8 JSON array", fields: PAYOUT_BINDING_HASH_FIELDS, values_from: "payload", values_from_note: "fields names keys of the `payload` object in this response, not of the response body. Where a recipe omits values_from, the fields are keys of the response body itself." },
+    payload_hash_recipe: { algorithm: "sha256", encoding: ENCODING_NOTE, fields: PAYOUT_BINDING_HASH_FIELDS, values_from: "payload", values_from_note: "fields names keys of the `payload` object in this response, not of the response body. Where a recipe omits values_from, the fields are keys of the response body itself." },
     created_at: binding.created_at,
     chain_anchor: chainAnchor,
     receipt: receiptView,
@@ -3034,7 +3034,7 @@ export async function createPayoutReceipt(env: Env, submitter: Citizen, bindingI
     checked_at: payment.checkedAt,
     payload_hash: payloadHash,
     payload,
-    payload_hash_recipe: { algorithm: "sha256", encoding: "UTF-8 JSON array", fields: PAYOUT_RECEIPT_HASH_FIELDS, values_from: "payload", values_from_note: "fields names keys of the `payload` object in this response, not of the response body. Where a recipe omits values_from, the fields are keys of the response body itself." },
+    payload_hash_recipe: { algorithm: "sha256", encoding: ENCODING_NOTE, fields: PAYOUT_RECEIPT_HASH_FIELDS, values_from: "payload", values_from_note: "fields names keys of the `payload` object in this response, not of the response body. Where a recipe omits values_from, the fields are keys of the response body itself." },
     created_at: now,
     chained: committed.hash,
     chain_anchor: chainAnchor,
@@ -5878,6 +5878,22 @@ export async function identityLog(env: Env, kind: string | null = null, sinceId:
   };
 }
 
+// Every payload recipe on this registry serializes the same way, and "UTF-8
+// JSON array" did not say enough. JSON.stringify leaves non-ASCII characters
+// as themselves; Python's json.dumps, and several other standard libraries,
+// escape them to \uXXXX by DEFAULT. Both are valid JSON and they hash
+// differently, so a reader following the recipe in the wrong language got a
+// wrong hash and no way to tell why.
+//
+// Found on GET /api/attest, whose prose carries twelve non-ASCII characters:
+// the published recipe reproduced under one serializer and not the other. The
+// money-rail recipes have the same wording and the same exposure the moment a
+// citizen puts an accent or a dash in a listing title, which nothing stops.
+// Nobody reported this one; I hit it by following my own recipe as a stranger
+// would, which is the only way it surfaces.
+const ENCODING_NOTE =
+  "UTF-8 JSON array, compact: JSON.stringify semantics with no whitespace between elements, and NON-ASCII CHARACTERS ARE NOT ESCAPED. If your JSON library escapes them to \\uXXXX by default (Python's json.dumps does, with ensure_ascii=True), turn that off or you will hash different bytes and get a different digest for identical content.";
+
 // ---------- attestation ----------
 
 // The static prose GET /api/attest serves. Every one is a plain literal in
@@ -5929,7 +5945,7 @@ export async function attestation(env: Env, from = 0, witness: WitnessParams = {
     prose_content_hash: await sha256Hex(JSON.stringify(PROSE_FIELDS.map((f) => (result as Record<string, unknown>)[f] ?? null))),
     prose_content_recipe: {
       algorithm: "sha256",
-      encoding: "UTF-8 JSON array",
+      encoding: ENCODING_NOTE,
       fields: PROSE_FIELDS,
       note: "Hash the values of `fields`, in this order, as a JSON array of strings. Every one is returned by this same response. prose_content_hash moves when and only when those bytes move; prose_revision moves on every deployment, including ones that change none of them.",
     },

@@ -1209,3 +1209,51 @@ test("when one citizen holds two bindings on a row, the ladder resolves to the s
     "the ladder must resolve to the binding the money actually landed against, not the first one filed",
   );
 });
+
+// GUARD. A published hash recipe is a promise that a stranger can reproduce the
+// digest. "UTF-8 JSON array" did not say enough to keep that promise: JS leaves
+// non-ASCII characters as themselves and several standard libraries escape them
+// to backslash-u by default. Both are valid JSON, they hash differently, and
+// the reader has no way to tell which one the server meant.
+//
+// This was not reported by a citizen. It surfaced when the maintainer followed
+// his own recipe from Python against GET /api/attest, whose prose carries
+// twelve non-ASCII characters, and got a different digest. The money-rail
+// recipes carry the same wording, and a listing title with an accent or a dash
+// reaches the same trap. Nothing stops a citizen typing one.
+test("a listing whose text carries non-ASCII still reproduces its published hash, and the recipe says how", async () => {
+  const ed = generateKeyPairSync("ed25519");
+  const publicKey = (ed.publicKey.export({ format: "jwk" }) as { x: string }).x;
+  const { env } = makeEnv(publicKey);
+  const created = await createListing(env, FUNDER as never, {
+    title: "Reproduire le hachage: caract\u00e8res non ASCII et tirets \u2014 ici",
+    condition: "Cloner le d\u00e9p\u00f4t au commit nomm\u00e9, ex\u00e9cuter npm test, et le fichier test/listings.test.ts rapporte z\u00e9ro \u00e9chec.",
+    amount_atomic: "1000000",
+    expiry: NOW + 7 * 86400,
+  }) as unknown as Record<string, unknown>;
+
+  const body = await getListing(env, 1) as unknown as Record<string, unknown>;
+  const hashed = (body.payload_hash_recipe as { fields: readonly string[] }).fields.map((f) => body[f]);
+  const nonAscii = hashed
+    .filter((v) => typeof v === "string")
+    .join("")
+    .split("")
+    .filter((c) => c.charCodeAt(0) > 127).length;
+  assert.ok(nonAscii > 0, "this fixture must actually put non-ASCII into the hashed values, or it guards nothing");
+
+  // The escaping serializer, which is what a reader in another language gets by
+  // default. It must NOT reproduce the hash, and the recipe must be the thing
+  // that told them so.
+  const escaped = JSON.stringify(hashed).replace(
+    /[^\x00-\x7F]/g,
+    (c) => "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0"),
+  );
+  const escapedHash = createHash("sha256").update(escaped, "utf8").digest("hex");
+  assert.notEqual(body.payload_hash, escapedHash, "if both serializers agreed here the fixture is not exercising the trap");
+
+  assertRecipeReproduces(body, "GET /api/listings/:id with non-ASCII text");
+  assert.equal(body.payload_hash, created.payload_hash, "read and write must still agree on the hash");
+
+  const encoding = String((body.payload_hash_recipe as { encoding: string }).encoding);
+  assert.match(encoding, /NOT ESCAPED|not escaped/, `the recipe must tell a reader that non-ASCII is unescaped, or the promise it makes is unkeepable: ${encoding}`);
+});
