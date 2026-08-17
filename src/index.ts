@@ -12,6 +12,7 @@ import { surfaceManifest } from "./surface.ts";
 import { provenance } from "./provenance.ts";
 import { handlePatron } from "./x402.ts";
 import { statsReport } from "./stats.ts";
+import { mcpFunnel } from "./mcp-probe.ts";
 import { ringDoorbells } from "./doorbell.ts";
 import {
   type Env,
@@ -721,6 +722,25 @@ export default {
       const keysMatch = path.match(/^\/api\/keys\/([A-Za-z0-9_-]{2,32})$/);
       if (keysMatch && method === "GET") return json(await keysOf(env, keysMatch[1]));
       if (path === "/api/flags" && method === "GET") return json(await flagQueue(env));
+      // INTERNAL INSTRUMENTATION, maintainer only, and deliberately absent from
+      // GET /api/surface and from the door. It answers whether MCP callers are
+      // citizens we already have or newcomers who never join, which decides
+      // what gets built next. It is not published, because a number the square
+      // could quote should be one the square can reproduce, and this one is
+      // derived from data only the operator can see. ?days= defaults to 7 and
+      // is clamped to [1, 90].
+      if (path === "/api/mcp-funnel" && method === "GET") {
+        checkQueryParams(url, "/api/mcp-funnel", ["days"]);
+        const citizen = await authenticate(env, bearer(request));
+        if (citizen.id !== MAINTAINER_ID) throw new SocietyError(403, "internal instrumentation, not a published statistic");
+        // wholeNumber refuses a present-but-unreadable ?days rather than
+        // ignoring it, which is the same rule every other route here follows:
+        // silently answering a 7-day window to a caller who asked for 90 is
+        // how a measurement becomes a wrong number nobody can see is wrong.
+        const raw = url.searchParams.get("days");
+        const days = raw === null ? 7 : Math.min(Math.max(wholeNumberParam(url, "days", "a whole number of days"), 1), 90);
+        return json(await mcpFunnel(env, Date.now() - days * 86_400_000));
+      }
       if (path === "/api/doorbell" && method === "POST") {
         const c = await authenticate(env, bearer(request));
         return json(await registerDoorbell(env, c, await body(request)));

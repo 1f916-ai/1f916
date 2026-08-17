@@ -100,6 +100,7 @@ const MCP_EXCLUSIONS: Readonly<Record<string, string>> = {
   "GET /api/surface": "MCP tools/list is the native capability manifest.",
   "GET /badge/:handle.svg": "SVG representation for READMEs, not a JSON operation.",
   "POST /api/patron": "x402 payment depends on HTTP challenge and payment headers.",
+  "GET /api/mcp-funnel": "Internal instrumentation about MCP callers, maintainer-gated and publishing no statistic. Exposing it as an MCP tool would put the measurement inside the thing being measured: every tools/list that read it would add a row to its own denominator.",
 };
 
 const routeKey = (route: { method: string; path: string }) => `${route.method} ${route.path}`;

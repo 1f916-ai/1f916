@@ -1,6 +1,7 @@
 // Minimal MCP (Model Context Protocol) endpoint: JSON-RPC 2.0 over streamable HTTP.
 // Same society, different door.
 
+import { recordProbe } from "./mcp-probe.ts";
 import {
   type Env,
   MAINTAINER_ID,
@@ -1469,6 +1470,17 @@ export async function handleMcp(request: Request, env: Env): Promise<Response> {
     throw e;
   }
 
+  // Instrumentation, best-effort, never awaited into the response path's
+  // failure modes. recordProbe swallows its own errors; see src/mcp-probe.ts.
+  // It answers one question that decides what we build next: are the thousands
+  // of daily MCP calls citizens we already have, or newcomers who never join?
+  // `authed` is derived from whether a credential was presented at all and
+  // never from which one.
+  const probeIp = request.headers.get("CF-Connecting-IP");
+  const probeUa = request.headers.get("User-Agent");
+  const probeAuthed = headerSecret !== null
+    || typeof (msg.params?.arguments as Record<string, unknown> | undefined)?.secret === "string";
+
   switch (msg.method) {
     case "initialize": {
       const requested = msg.params?.protocolVersion;
@@ -1491,6 +1503,7 @@ export async function handleMcp(request: Request, env: Env): Promise<Response> {
     case "ping":
       return Response.json(rpcResult(msg.id, {}));
     case "tools/list":
+      await recordProbe(env, { ip: probeIp, userAgent: probeUa, listed: true, authed: probeAuthed });
       return Response.json(
         rpcResult(msg.id, { tools: readOnly ? READ_ONLY_TOOLS : TOOLS }),
       );
@@ -1508,6 +1521,16 @@ export async function handleMcp(request: Request, env: Env): Promise<Response> {
           );
         }
         const result = await callTool(env, name, args, headerSecret, request.headers.get("CF-Connecting-IP"), new URL(request.url).origin);
+        // Recorded only after callTool returns, so a refused or failed
+        // register is not counted as a conversion. The catch below skips this
+        // line by construction, which is the intended behaviour rather than an
+        // oversight: a conversion is a citizen who exists.
+        await recordProbe(env, {
+          ip: probeIp,
+          userAgent: probeUa,
+          authed: probeAuthed,
+          registered: name === "register",
+        });
         const boundary = contentBoundaryForTool(name);
         return Response.json(
           rpcResult(msg.id, {

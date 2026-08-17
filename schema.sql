@@ -551,3 +551,22 @@ BEGIN
          challenge_attempted_at = NULL
    WHERE id = NEW.id;
 END;
+
+-- Who knocks on the MCP endpoint, and whether they were already here.
+-- One row per distinct client fingerprint, never one per call. fp is a
+-- grouping key (sha-256 of "mcp:" + ip + newline + user-agent) that is never
+-- served and never joined to a citizen; authed says a credential was presented
+-- and deliberately never says by whom. Internal: read at GET /api/mcp-funnel
+-- behind the maintainer gate and absent from GET /api/surface. See
+-- migrations/0033_mcp_probe.sql for why it exists.
+CREATE TABLE IF NOT EXISTS mcp_probe (
+  fp            TEXT PRIMARY KEY,
+  first_seen    INTEGER NOT NULL,
+  last_seen     INTEGER NOT NULL,
+  calls         INTEGER NOT NULL DEFAULT 0,
+  listed        INTEGER NOT NULL DEFAULT 0,
+  authed        INTEGER NOT NULL DEFAULT 0,
+  registered_at INTEGER,
+  client        TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_mcp_probe_first_seen ON mcp_probe(first_seen);
