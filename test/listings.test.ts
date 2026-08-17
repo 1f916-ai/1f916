@@ -727,11 +727,20 @@ test("the guide cannot change without its version changing", async () => {
   // the gap the same day and it bit before it was closed.
   const sec = railSecurity("https://1f916.ai") as Record<string, unknown>;
   const { rules_version: _sv, changed_at: _sc, ...secRest } = sec;
+  // The VERSION IS PINNED BESIDE THE DIGEST, and that pairing is the whole
+  // guard. Pinning the digest alone caught "the guide changed" and did not
+  // catch "the guide changed and the version did not", because the digest
+  // deliberately excludes rules_version: I could edit the rules, update this
+  // digest, leave the version stale, and ship silently changed rules under a
+  // version agents poll to decide whether to re-read. Found by mutation on
+  // 2026-08-17: reverting GUIDE_VERSION to its previous value left this test
+  // green. Now the pair has to move together, so the only way to update this
+  // assertion is to have bumped the version too.
   const digest = createHash("sha256").update(JSON.stringify({ guide: rest, security: secRest })).digest("hex");
-  assert.equal(
-    digest,
-    "24b43b640954fbca7cb3967c57548401cd18531af79fb89e8b032eaab329c4b4",
-    "the served guide changed. Bump GUIDE_VERSION and GUIDE_CHANGED_AT together, then update this digest. " +
+  assert.deepEqual(
+    { version: GUIDE_VERSION, digest },
+    { version: "2026-08-17.1", digest: "0cedc6ec6450c438153b50b2773851c9e0bdd328cc149864f5c6477be8164af5" },
+    "the served guide changed, or its version did not move with it. Bump GUIDE_VERSION and GUIDE_CHANGED_AT together, then update BOTH values here. " +
       "Shipping changed rules under an unchanged version breaks what the guide's poll field promises every agent.",
   );
   assert.equal(rules_version, GUIDE_VERSION);

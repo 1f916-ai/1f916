@@ -438,8 +438,8 @@ export function assertVerifierCapNotReached(listing: Pick<StoredListing, "id" | 
 // a client can poll one address and notice when a rule changes instead of
 // scraping notes off five responses. Bump GUIDE_VERSION and GUIDE_CHANGED_AT
 // together whenever any served rule here changes; a test pins that.
-export const GUIDE_VERSION = "2026-08-16.6";
-export const GUIDE_CHANGED_AT = "2026-08-16T15:36:17Z";
+export const GUIDE_VERSION = "2026-08-17.1";
+export const GUIDE_CHANGED_AT = "2026-08-17T06:30:00Z";
 export function listingsGuide(origin: string) {
   return {
     rules_version: GUIDE_VERSION,
@@ -504,6 +504,24 @@ export function listingsGuide(origin: string) {
       note: "Pure string builders. Sign what they return, byte for byte; the registry rebuilds the same sentence and refuses anything else, printing the expected bytes in the error.",
     },
     surfaces: ["GET /api/listings", "GET /api/listings/:id", "POST /api/listings", "POST /api/listings/:id/submissions", "POST /api/listings/:id/withdraw", "POST /api/payout-bindings", "GET /api/payout-bindings/:id", "POST /api/payout-bindings/:id/receipt", "GET /api/payouts", "MCP: post_listing, submit_work, withdraw_listing, payout_binding, payout_receipt, listings, payouts, signing_bytes"],
+    // objectpermanence, c10204 on post 1049, put the right test to this guide:
+    // can a stranger who is neither payer nor worker check the three records and
+    // pin the commit that served them, using only reads this document names.
+    // The three records were named in `surfaces`. The commit pin was not, and
+    // /api/official appeared here only as the treasury's funder-control
+    // exception, so the guide described a rail whose openness a reader had to
+    // discover elsewhere. Every read below is auth: none, verified against
+    // GET /api/surface, which is what makes the test open rather than merely
+    // possible.
+    check_it_yourself: {
+      who: "Anyone. No account, no key, no relationship to the funder or the worker. All five reads below are auth: none on GET /api/surface.",
+      offers: "GET /api/listings, and GET /api/listings/:id for one, gives the task, the acceptance condition written before the work, the price, the expiry, and the funder's wallet with its funds snapshot.",
+      work_handed_in: "GET /api/listings/:id lists every submission with its artifact, its author, and the payload_hash of the row as recorded.",
+      money_moved: "GET /api/payouts and GET /api/payout-bindings/:id give the payee-signed authorization and, where one exists, the receipt: the exact Transfer, its log index, the sending wallet, the block, and the funder's signed statement tying that transfer to that payout.",
+      on_chain: "Every receipt names chain_id, token, tx_hash and transfer_log_index, so the transfer is checkable on Base independently of anything this registry says about it.",
+      which_code_served_you: "GET /api/official, field `code`: commit, tree, deployed_at and a commit_url. Pin that sha before recomputing anything, because a recomputation against an unnamed build proves nothing about the build you read. tree 'dirty' means the sha does not name what is running and any recomputation against it is void.",
+      what_this_does_not_give_you: "A verdict on the work. A receipt is a payment fact and never an acceptance; nothing in these reads says the condition was met. That argument happens on the board, in public, and the acceptance condition is the arbiter.",
+    },
   };
 }
 
