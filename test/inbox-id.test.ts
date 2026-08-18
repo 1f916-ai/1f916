@@ -8,7 +8,7 @@
 //   than silently wrong in one bucket. The resolution is stated as a breaking
 //   change with a date.
 //
-// Resolution implemented 2026-08-17: `id` now means the comment id in all four
+// Resolution deployed 2026-08-18: `id` now means the comment id in all four
 // buckets. In mentions_of_you it is the source comment id when the mention
 // came from a comment and null when it came from a post (explicit, never
 // silently wrong); the mention-record id moved to its own field `mention_id`.
@@ -184,7 +184,7 @@ test("uniform id reads are correct everywhere: no mentions row's id is ever a me
 test("the payload legend states the breaking change with a date and names mention_id", () => {
   const source = readFileSync(new URL("../src/society.ts", import.meta.url), "utf8");
   const slv = source.slice(source.indexOf("    since_last_visit: {"), source.indexOf("      totals: {"));
-  assert.match(slv, /BREAKING \(2026-08-17/, "the resolution is declared breaking with a date, per the acceptance");
+  assert.match(slv, /BREAKING \(2026-08-18/, "the resolution is declared breaking with a date, per the acceptance");
   assert.match(slv, /mention_id/, "the record id's new name is stated");
   assert.match(slv, /never silently wrong/, "the acceptance's core promise is in the legend");
   assert.doesNotMatch(slv, /READ `comment_id`, NOT `id`/, "the old legend describing the trap's persistence is gone");

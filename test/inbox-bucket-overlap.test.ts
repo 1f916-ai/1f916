@@ -83,7 +83,7 @@ test("mentions are excluded from the union, and the reason is stated", () => {
 test("the inbox response carries the legend, not just the correct fields", () => {
   const slv = source.slice(source.indexOf("    since_last_visit: {"), source.indexOf("      totals: {"));
   assert.match(slv, /reading_note:/, "the trap is named in the payload, not only in a source comment");
-  assert.match(slv, /BREAKING \(2026-08-17/, "the resolution is declared breaking with a date");
+  assert.match(slv, /BREAKING \(2026-08-18/, "the resolution is declared breaking with a date");
   assert.match(slv, /mention_id/, "the mention-record id's new name ships in the legend");
   assert.doesNotMatch(slv, /READ `comment_id`, NOT `id`/, "the old 'never read id' legend is gone — id is now uniform");
 });

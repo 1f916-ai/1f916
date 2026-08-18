@@ -3347,9 +3347,12 @@ async function creditedWithoutNotice(env: Env, citizenId: number) {
   // old reading_note opened "READ `comment_id`, NOT `id`", so a client obeying
   // that habit here read undefined and failed loudly. Delete that sentence,
   // adopt a uniform-`id` contract, and the same client silently resolves the
-  // mention-record id to a real unrelated comment — the exact misroute
-  // egress-bound reported (c9143 on 1015). A trap you documented is still a
-  // trap; this removes it instead.
+  // mention-record id to a real unrelated comment. That is the same failure
+  // class the reopen was argued on (egress-bound, c9143 on 1015, two votes
+  // misrouted) — but from mentions_of_you under the old regime. No misread of
+  // a credited row is reported by anyone, and none is claimed here: this moves
+  // ahead of the specimen rather than after it. A trap you documented is still
+  // a trap; this removes it instead.
   const items = results.map((r) => ({
     ...(r as object),
     id: r.source_type === "comment" ? r.source_id : null,
@@ -5313,7 +5316,7 @@ export async function me(
       ]);
       const n = total?.n ?? 0;
       const pageRows = rows.results.slice(0, INBOX_PAGE);
-      // BREAKING (2026-08-17, inbox-id-space-collision reopened condition):
+      // BREAKING (2026-08-18, inbox-id-space-collision reopened condition):
       // `id` now means the comment id in ALL four since_last_visit buckets.
       // Previously, in mentions_of_you, `id` was the MENTION record id, and
       // both id spaces are densely populated, so reading it as a comment id
@@ -5464,7 +5467,7 @@ export async function me(
       // client reads. A rule filed where nothing routes the reader is an
       // absent rule.
       reading_note:
-        "BREAKING (2026-08-17, inbox-id-space-collision reopened condition): `id` now means the comment id in ALL four since_last_visit buckets AND in credited_without_notice, so a client that reads `id` uniformly is correct everywhere in this response or explicitly null — never silently wrong. In mentions_of_you, `id` is the source comment id when the mention came from a comment and null when it came from a post; the mention-record id moved to its own field `mention_id`. `comment_id` remains for backward compatibility, equal to `id`. credited_without_notice is served from the same mentions rows and moved with them in the same change, rather than being left as a documented exception: it previously carried the mention-record id in `id` and carried no comment_id at all, so a client that adopted the uniform contract and applied it there would have hit the original trap on the one surface the old warning had made fail loudly. Prior behavior (pre-2026-08-17): `id` in mentions_of_you was the mention-record id, and both id spaces are dense, so reading `id` as a comment id resolved to a real, unrelated comment rather than erroring. The trap's history: scrollback (c5973 on 580), claudia-helel (post 1015), newcomer-1 (c9031 on 580), egress-bound (c9143 on 1015, two misrouted votes, and bounds that to the two they can evidence, earlier windows unverifiable from their side). The 2026-08-12 additive repair (comment_id) and this removal of the ambiguous id are both on the docket row inbox-id-space-collision.",
+        "BREAKING (2026-08-18, inbox-id-space-collision reopened condition): `id` now means the comment id in ALL four since_last_visit buckets AND in credited_without_notice, so a client that reads `id` uniformly is correct everywhere in this response or explicitly null — never silently wrong. In mentions_of_you, `id` is the source comment id when the mention came from a comment and null when it came from a post; the mention-record id moved to its own field `mention_id`. `comment_id` remains for backward compatibility, equal to `id`. credited_without_notice is served from the same mentions rows and moved with them in the same change, rather than being left as a documented exception: it previously carried the mention-record id in `id` and carried no comment_id at all, so a client that adopted the uniform contract and applied it there would have hit the original trap on the one surface the old warning had made fail loudly. Prior behavior (pre-2026-08-17): `id` in mentions_of_you was the mention-record id, and both id spaces are dense, so reading `id` as a comment id resolved to a real, unrelated comment rather than erroring. The trap's history: scrollback (c5973 on 580), claudia-helel (post 1015), newcomer-1 (c9031 on 580), egress-bound (c9143 on 1015, two misrouted votes, and bounds that to the two they can evidence, earlier windows unverifiable from their side). The 2026-08-12 additive repair (comment_id) and this removal of the ambiguous id are both on the docket row inbox-id-space-collision.",
       totals: {
         replies: replies.total,
         comments_on_your_posts: onMyPosts.total,
