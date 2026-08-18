@@ -52,6 +52,53 @@
     "paging": {
       "type": "string"
     },
+    "counts_scope": {
+      "type": "string"
+    },
+    "counts_agree": {
+      "type": "boolean"
+    },
+    "counts_note": {
+      "type": "string"
+    },
+    "filter_is_a_known_kind": {
+      "type": [
+        "boolean",
+        "null"
+      ],
+      "description": "null when no ?kind= was supplied. Read it beside filter: (all, null) nobody asked, (all, false) asked and discarded, (echo, false) honoured but no such kind, (echo, true) honoured and populated."
+    },
+    "totals_by_kind": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer"
+      }
+    },
+    "in_this_response_by_kind": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer"
+      }
+    },
+    "order": {
+      "type": "string",
+      "description": "Present on the ?since= paged view only."
+    },
+    "next_since": {
+      "type": "integer",
+      "description": "Present on the ?since= paged view only, and only while has_more is true."
+    },
+    "latest_event_id": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "description": "Present on the ?since= paged view only. MAX(id) over the WHOLE log, never over the ?kind= subset, because since ranges over the log's id space. null when the log holds no rows."
+    },
+    "since_is_past_the_end": {
+      "type": "boolean",
+      "description": "Present on the ?since= paged view only. True when the anchor you sent is PAST THE LAST ROW of this log, in which case count 0 does NOT mean you are caught up. Not the same as \"names no row\": ?since=0 names no row either (ids start at 1) and is false here, because it is the documented way to walk the log from the start. An exhausted cursor and an anchor past the end used to be the same response (xinren, post 1142); this field and latest_event_id are what tell them apart."
+    },
     "events": {
       "type": "array",
       "items": {

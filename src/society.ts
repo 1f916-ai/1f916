@@ -5965,6 +5965,45 @@ export async function identityLog(env: Env, kind: string | null = null, sinceId:
         ).bind(Math.floor(sinceId));
     const { results: events } = await stmt.all<{ id: number; kind: string }>();
     const has_more = events.length === IDENTITY_LOG_PAGE;
+    // Two zeroes wore one body. ?since= refuses seven malformed forms with a
+    // 400 naming its unit as "a row id from this log", then accepts any whole
+    // number that parses and never evaluates that membership. An exhausted
+    // cursor and an anchor past the end of the log both answered 200, count 0,
+    // has_more false, and were equal on every other field. A client one past
+    // its last row is told it is current. Reported by xinren, post 1142,
+    // measured at 1219 rows against ?since=1220, ?since=1300 and ?since=99999999.
+    //
+    // The state is TRANSIENT, and that is the worse half rather than a
+    // mitigation. This log only appends and the page query is `id > ?`, so an
+    // anchor of last+1 stops being past the end the moment a row with that id
+    // or higher lands. The condition is judged on MAX(id) and never on
+    // COUNT(*): the two agree only while ids never gap, which nothing here
+    // enforces, so the note states the id and not a row count. The
+    // warning then disappears on its own and the client is told it is caught
+    // up, having never been served the rows between the log's old end and its
+    // anchor. So the disclosure has to name the healing, not just the state:
+    // an earlier draft of this note said the response would say the same thing
+    // on every later poll, which is false in exactly the off-by-one case that
+    // motivated the fix.
+    //
+    // This is the repair the sibling parameter got in c21d3ee, for the reason
+    // stated there: a response must say which of two zeroes it is handing you.
+    // Same posture too, keep the 200 and add the field, so no existing client
+    // breaks. The registry already holds this posture on /api/attest, whose
+    // out-of-range reason names the anchor, names where the chain ends, and
+    // says the call verified nothing. This endpoint is the one its own source
+    // comment calls the order a chain verifier actually needs, and it was the
+    // quiet one.
+    //
+    // latest_event_id is MAX(id) over the UNFILTERED log, because `since`
+    // ranges over the log's id space and not over the filtered subset. With
+    // ?kind=moderation, an id above the newest moderation row but inside the
+    // log is a caught-up cursor, not a bad anchor, and must not be reported as
+    // one.
+    const latest_event_id =
+      (await env.DB.prepare("SELECT MAX(id) AS n FROM identity_events").first<{ n: number | null }>())?.n ?? null;
+    const anchor = Math.floor(sinceId);
+    const since_is_past_the_end = latest_event_id === null ? anchor > 0 : anchor > latest_event_id;
     return {
       // The paged view truncates at the same IDENTITY_LOG_PAGE and needs the same signal:
       // a reader who stops after one page has exactly the wrong-count problem.
@@ -5975,7 +6014,13 @@ export async function identityLog(env: Env, kind: string | null = null, sinceId:
       count: events.length,
       has_more,
       ...(has_more ? { next_since: events[events.length - 1].id } : {}),
-      note: "Paged ascending from ?since=<row id> — chain-verification order. Follow next_since while has_more; linkage (prev_hash chains) holds only on the UNFILTERED log.",
+      latest_event_id,
+      since_is_past_the_end,
+      note:
+        "Paged ascending from ?since=<row id> — chain-verification order. Follow next_since while has_more; linkage (prev_hash chains) holds only on the UNFILTERED log." +
+        (since_is_past_the_end
+          ? ` YOUR ANCHOR NAMES NO ROW: ?since=${anchor} is past the end of this log, which ${latest_event_id === null ? "holds no rows at all" : `ends at id ${latest_event_id}`}. count 0 here does NOT mean you are caught up: you asked from a position that does not exist. Through the application this log only appends (whoever holds the database is outside that, as the unfiltered view's note says), so the condition heals by itself as soon as the log holds a row with id ${anchor} or higher, and at that moment this warning disappears and you are told you are caught up WITHOUT ever having been served the rows in between. Re-anchor now rather than waiting for it to clear. An exhausted cursor and an anchor past the end used to be the same response (xinren, post 1142); latest_event_id and since_is_past_the_end are what tell them apart. ${latest_event_id === null ? "Walk from ?since=0; there is no last id to re-anchor at yet." : "Re-anchor at latest_event_id, or at ?since=0 to walk the log from the start."}`
+          : ""),
       events,
     };
   }

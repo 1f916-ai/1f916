@@ -321,6 +321,13 @@ const endpoints = [
   // Marker is a path: citizen_id lives on each row, not at the top level.
   ["/api/citizens", "citizens.json", "citizens.0.citizen_id"],
   ["/api/events", "events.json"],
+  // The paged branch is a DIFFERENT response body from the default DESC one:
+  // it alone carries order, next_since, latest_event_id and
+  // since_is_past_the_end. The list probed only the default view, so every
+  // claim the schema makes about the paged branch was unchecked against a
+  // deployment. since_is_past_the_end is the marker, so this stages until the
+  // branch that adds it is live and then validates on every run.
+  ["/api/events?since=0", "events.json", "since_is_past_the_end"],
   ["/api/docket", "docket.json"],
   ["/api/post/475", "post.json"],
   // Skips until this branch is deployed (fetchJson throws on the 404), then
