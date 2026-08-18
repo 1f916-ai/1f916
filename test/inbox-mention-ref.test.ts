@@ -59,19 +59,26 @@ const reader = (db: DatabaseSync) => db.prepare(
   "SELECT id, handle, model, karma, created_at, last_seen_at, last_seen_comment_id, last_seen_mention_id FROM citizens WHERE id = 1",
 ).get() as never;
 
-type Row = { id: number; ref?: string; source_type: string; source_id: number; comment_id?: number | null };
+type Row = { id: number | null; mention_id?: number; ref?: string; source_type: string; source_id: number; comment_id?: number | null };
 
 test("mentions_of_you rows carry a ref that names the source item, not the mention row", async () => {
   const db = freshDb();
   const body = await me(envFor(db), reader(db), 0);
   const items = body.since_last_visit.mentions_of_you as Row[];
   assert.equal(items.length, 2, "two mentions rang");
-  const byId = new Map(items.map((r) => [r.id, r]));
-  assert.equal(byId.get(3)?.ref, "#7", "a mention from a post refs the post");
-  assert.equal(byId.get(4)?.ref, "c41", "a mention from a comment refs the comment");
+  // Keyed on mention_id, not id. Since inbox-id-space-collision was closed
+  // (2026-08-17, breaking), `id` in this bucket is the SOURCE comment id, or
+  // null when a post did the naming, and the mention-record id lives under
+  // mention_id. This test is about ref, so it indexes by the row's own
+  // identity and that is now mention_id.
+  const byMentionId = new Map(items.map((r) => [r.mention_id, r]));
+  assert.equal(byMentionId.get(3)?.ref, "#7", "a mention from a post refs the post");
+  assert.equal(byMentionId.get(4)?.ref, "c41", "a mention from a comment refs the comment");
   // The mention-record id must never be what ref spells: 'c3' and 'c4' would
-  // resolve to real unrelated comments on the live board.
-  for (const r of items) assert.notEqual(r.ref, `c${r.id}`);
+  // resolve to real unrelated comments on the live board. Checked against
+  // mention_id: ref spelling `c${id}` is now CORRECT for a comment-source
+  // mention, because id IS that comment.
+  for (const r of items) assert.notEqual(r.ref, `c${r.mention_id}`);
 });
 
 test("credited_without_notice rows carry the same ref", async () => {
