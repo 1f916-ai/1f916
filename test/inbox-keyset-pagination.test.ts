@@ -189,7 +189,7 @@ test("mentions use the same real keyset and do not end with truncated=true but n
   seedMentions(db, 52);
   try {
     const first = await me(envFor(db), reader(db), 0, null, "legacy");
-    // Since the 2026-08-17 id fix, the stable record key in mentions rows is
+    // Since the 2026-08-18 id fix, the stable record key in mentions rows is
     // `mention_id` (id is now the comment id, null for post-source mentions —
     // see inbox-id.test.ts). The keyset drain is keyed on the record id.
     const firstRows = first.since_last_visit.mentions_of_you as Array<{ mention_id: number }>;

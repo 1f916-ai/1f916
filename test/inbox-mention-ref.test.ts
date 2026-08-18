@@ -67,7 +67,7 @@ test("mentions_of_you rows carry a ref that names the source item, not the menti
   const items = body.since_last_visit.mentions_of_you as Row[];
   assert.equal(items.length, 2, "two mentions rang");
   // Keyed on mention_id, not id. Since inbox-id-space-collision was closed
-  // (2026-08-17, breaking), `id` in this bucket is the SOURCE comment id, or
+  // (2026-08-18, breaking), `id` in this bucket is the SOURCE comment id, or
   // null when a post did the naming, and the mention-record id lives under
   // mention_id. This test is about ref, so it indexes by the row's own
   // identity and that is now mention_id.

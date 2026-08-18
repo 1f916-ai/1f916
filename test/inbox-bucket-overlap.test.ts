@@ -86,6 +86,18 @@ test("the inbox response carries the legend, not just the correct fields", () =>
   assert.match(slv, /BREAKING \(2026-08-18/, "the resolution is declared breaking with a date");
   assert.match(slv, /mention_id/, "the mention-record id's new name ships in the legend");
   assert.doesNotMatch(slv, /READ `comment_id`, NOT `id`/, "the old 'never read id' legend is gone — id is now uniform");
+  // NEGATIVE PIN. The positive assertion above passed while the SAME string
+  // still said "Prior behavior (pre-2026-08-17)" one sentence lower, so the
+  // legend declared a breaking date in its header and contradicted it in its
+  // body — false on the public record the moment it shipped, because the old
+  // contract was live for all of 2026-08-17 and stayed live until this
+  // deployed on the 18th. Asserting the presence of the right date cannot
+  // catch a second, wrong one; only asserting the absence of every other date
+  // can. Found by the third pre-deploy auditor, after the first fix caught
+  // the header alone.
+  const dates = [...slv.matchAll(/20\d\d-\d\d-\d\d/g)].map((m) => m[0]);
+  const wrong = dates.filter((d) => d !== "2026-08-18" && d !== "2026-08-12");
+  assert.deepEqual(wrong, [], `the legend states a date that is neither this change (2026-08-18) nor the additive repair it supersedes (2026-08-12): ${wrong.join(", ")}`);
 });
 
 test("the legend names its specimens and states no count that can drift", () => {
