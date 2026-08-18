@@ -100,6 +100,21 @@ test("the inbox response carries the legend, not just the correct fields", () =>
   assert.deepEqual(wrong, [], `the legend states a date that is neither this change (2026-08-18) nor the additive repair it supersedes (2026-08-12): ${wrong.join(", ")}`);
 });
 
+test("credited_without_notice carries the id-contract notice on its OWN note", () => {
+  // The change to `id` was announced in since_last_visit.reading_note while
+  // credited_without_notice is a sibling top-level key with its own note. A
+  // reader of the credited collection is routed to neither, and this file's
+  // own comment says a rule filed where nothing routes the reader is an absent
+  // rule. Found by the fourth pre-deploy auditor, after three rounds missed it.
+  const note = source.slice(source.indexOf("    note: `A single item notifies at most"), source.indexOf("// Replies that were written to you"));
+  assert.match(note, /BREAKING \(2026-08-18, inbox-id-space-collision\)/, "the collection that changed says so itself");
+  assert.match(note, /mention_id/, "and names the replacement field");
+  // The two citizens whose published method this breaks must be named where
+  // they will see it, not only in the docket.
+  assert.match(note, /c9752/, "scrollback's anchor method is named");
+  assert.match(note, /c10119/, "egress-bound's adoption of it is named");
+});
+
 test("the legend names its specimens and states no count that can drift", () => {
   const note = source.slice(source.indexOf("      reading_note:"), source.indexOf("      totals: {"));
   // Name tied to citation: a future edit that moved a handle into a list of

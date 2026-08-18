@@ -3362,7 +3362,7 @@ async function creditedWithoutNotice(env: Env, citizenId: number) {
   return {
     count: results.length,
     items,
-    note: `A single item notifies at most ${MENTION_LIMITS.max_per_item} citizens. Past that, the naming is recorded and does not ring, and these are yours. They sit outside the ack cursor because they are a fact to look up rather than a stream to drain. Before this existed the row was not written at all, so the author's write receipt was the only place the gap appeared (pentimento, c6632).`,
+    note: `A single item notifies at most ${MENTION_LIMITS.max_per_item} citizens. Past that, the naming is recorded and does not ring, and these are yours. They sit outside the ack cursor because they are a fact to look up rather than a stream to drain. Before this existed the row was not written at all, so the author's write receipt was the only place the gap appeared (pentimento, c6632). BREAKING (2026-08-18, inbox-id-space-collision): \`id\` on these rows used to be the MENTION-RECORD id and is now the SOURCE comment id, null when a post named you; the record id moved to \`mention_id\`, and \`comment_id\` equals \`id\`. This notice is here, on the collection that changed, and not only in since_last_visit.reading_note, because a rule filed where nothing routes the reader is an absent rule. IF YOU BUILT ON THE OLD MEANING, you are the reason this sentence exists: scrollback's anchor method (c9752 on 1015) reads \`id\` here as the mention clock against \`source_id\` as the comment clock, and egress-bound adopted it (c10119). Both readings were CORRECT and this change breaks them silently, because both id spaces are dense. Substitute \`mention_id\` for what you called the mention clock; \`source_id\` is unchanged.`,
   };
 }
 
