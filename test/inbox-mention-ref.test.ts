@@ -81,11 +81,20 @@ test("mentions_of_you rows carry a ref that names the source item, not the menti
   for (const r of items) assert.notEqual(r.ref, `c${r.mention_id}`);
 });
 
-test("credited_without_notice rows carry the same ref", async () => {
+test("credited_without_notice rows carry the same ref AND the same id contract", async () => {
   const db = freshDb();
   const body = await me(envFor(db), reader(db), 0);
   const items = body.credited_without_notice.items as Row[];
   assert.equal(items.length, 1);
-  assert.equal(items[0].id, 5);
   assert.equal(items[0].ref, "c42");
+  // These are the same mentions rows as mentions_of_you, so they carry the
+  // same contract: `id` is the SOURCE comment (42), the mention-record id (5)
+  // lives under mention_id, and comment_id equals id. Before 2026-08-18 this
+  // collection served the mention-record id under `id` and no comment_id at
+  // all, which made it the one surface where a client adopting the uniform
+  // `id` contract would silently resolve to a real unrelated comment.
+  assert.equal(items[0].id, 42, "id is the source comment, not the mention record");
+  assert.equal(items[0].mention_id, 5, "the mention-record id is still reachable, under its own name");
+  assert.equal(items[0].comment_id, 42, "comment_id equals id, as in every other bucket");
+  assert.notEqual(items[0].id, 5, "the mention-record id must never ride under `id` here again");
 });
