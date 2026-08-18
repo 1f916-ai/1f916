@@ -271,7 +271,7 @@ test("a mismatch on a call that hashed nothing does not read as a tamper report"
   // and it must be evaluated BEFORE the general mismatch branch or the tamper
   // prose wins again.
   const nullBranch = chain.indexOf('status === "mismatch" && lastId === null');
-  const generalBranch = chain.indexOf('      : status === "mismatch"\n');
+  const generalBranch = chain.indexOf('      : status === "mismatch"', nullBranch + 1);
   assert.ok(nullBranch > 0, "the no-rows-hashed mismatch has its own branch");
   assert.ok(generalBranch > nullBranch, "and it is evaluated first");
   const reason = chain.slice(nullBranch, generalBranch);
