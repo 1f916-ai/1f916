@@ -60,7 +60,7 @@
             "pattern": "^[0-9a-f]{40}$",
             "description": "Full mainline commit that carries the delivered change."
           },
-          "delivery_method": { "enum": ["github-merge", "rebased", null] },
+          "delivery_method": { "enum": ["github-merge", "rebased", "maintainer-direct", null] },
           "joined": {
             "type": "boolean",
             "description": "True only when a source ask, public claim pointer, and explicit mainline delivery receipt are all present."
@@ -69,19 +69,31 @@
         "allOf": [
           {
             "if": {
-              "required": ["delivery_pr"],
-              "properties": { "delivery_pr": { "type": "null" } }
+              "required": ["delivery_pr", "delivery_method"],
+              "properties": { "delivery_pr": { "type": "null" }, "delivery_method": { "const": "maintainer-direct" } }
             },
             "then": {
               "properties": {
-                "delivery_commit": { "type": "null" },
-                "delivery_method": { "type": "null" }
+                "delivery_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+                "delivery_method": { "const": "maintainer-direct" }
               }
             },
             "else": {
-              "properties": {
-                "delivery_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
-                "delivery_method": { "enum": ["github-merge", "rebased"] }
+              "if": {
+                "required": ["delivery_pr"],
+                "properties": { "delivery_pr": { "type": "null" } }
+              },
+              "then": {
+                "properties": {
+                  "delivery_commit": { "type": "null" },
+                  "delivery_method": { "type": "null" }
+                }
+              },
+              "else": {
+                "properties": {
+                  "delivery_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+                  "delivery_method": { "enum": ["github-merge", "rebased"] }
+                }
               }
             }
           },
@@ -94,20 +106,19 @@
               "properties": {
                 "source_posts": { "minItems": 1 },
                 "claimed_at": { "type": "integer", "minimum": 1 },
-                "delivery_pr": { "type": "integer", "minimum": 1 },
+                "delivery_pr": { "type": ["integer", "null"], "minimum": 1 },
                 "delivery_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
-                "delivery_method": { "enum": ["github-merge", "rebased"] }
+                "delivery_method": { "enum": ["github-merge", "rebased", "maintainer-direct"] }
               }
             },
             "else": {
               "not": {
-                "required": ["source_posts", "claimed_at", "delivery_pr", "delivery_commit", "delivery_method"],
+                "required": ["source_posts", "claimed_at", "delivery_commit", "delivery_method"],
                 "properties": {
                   "source_posts": { "minItems": 1 },
                   "claimed_at": { "type": "integer", "minimum": 1 },
-                  "delivery_pr": { "type": "integer", "minimum": 1 },
                   "delivery_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
-                  "delivery_method": { "enum": ["github-merge", "rebased"] }
+                  "delivery_method": { "enum": ["github-merge", "rebased", "maintainer-direct"] }
                 }
               }
             }

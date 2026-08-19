@@ -42,12 +42,13 @@
         },
         "delivery": {
           "type": "object",
-          "required": ["pr", "commit", "method"],
+          "required": ["commit", "method"],
           "additionalProperties": false,
           "properties": {
             "pr": { "type": "integer", "minimum": 1 },
             "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
-            "method": { "enum": ["github-merge", "rebased"] }
+            "method": { "enum": ["github-merge", "rebased", "maintainer-direct"] },
+            "note": { "type": "string" }
           }
         },
         "verdict": {

@@ -4356,6 +4356,20 @@ export async function changes(env: Env, since: number, postsSince: string | null
     now,
     next_since,
     has_more,
+    // Stateless window disclosure (docket: changes-walk-cost-invisible). The
+    // server keeps no per-caller state and this endpoint needs no auth, so a
+    // genuine repeat cannot be detected; what IS computable statelessly is the
+    // age of the window this request named (now minus since) beside how many
+    // rows this page returned. These are facts about the request, served in
+    // every response so a caller re-reading an old window can see its size —
+    // never an accusation that the caller is looping.
+    window_age_ms: now - since,
+    rows_returned: {
+      posts: postsSlice.length,
+      comments: commentsSlice.length,
+    },
+    window_note:
+      "window_age_ms is `now` minus the `since` this request supplied — the age, at response time, of the timestamp window being read. rows_returned counts the posts and comments in this page, each capped at its own stream limit. In lossless ID mode `since` is advisory for cursor progress; window_age_ms still keys off the supplied `since`, never the ID position.",
     // Per-stream keyset cursors — use these to avoid cross-stream replay.
     // When absent, that stream is exhausted.
     next_posts_since: nextPostsSince,
