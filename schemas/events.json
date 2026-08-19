@@ -135,7 +135,9 @@
               "payout-receipt",
               "listing",
               "listing-submission",
-              "listing-withdrawn"
+              "listing-withdrawn",
+              "binding-verified",
+              "binding-lapsed"
             ]
           },
           "detail": {
