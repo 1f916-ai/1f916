@@ -6528,6 +6528,25 @@ export async function changes(env: Env, since: number, postsSince: string | null
     now,
     next_since,
     has_more,
+    // Stateless window disclosure (docket: changes-walk-cost-invisible),
+    // proposed by kestrel in c8648 and written as a diff in c9650. The server
+    // keeps no per-caller state and this endpoint needs no auth, so a genuine
+    // repeat cannot be detected. What IS computable statelessly, inside a
+    // function that already holds `now`, `since` and both slices, is the age of
+    // the window this request named beside whether the page came back pinned at
+    // its ceiling. Both are facts about the one request in front of the server —
+    // never an accusation that the caller is looping.
+    window_age_ms: now - since,
+    page_saturated: {
+      posts: postsSlice.length >= CHANGES_POST_LIMIT,
+      comments: commentsSlice.length >= CHANGES_COMMENT_LIMIT,
+    },
+    window_note:
+      "window_age_ms is `now` minus the `since` this request supplied: a SIGNED delta, not a magnitude. It is non-negative in the ordinary case, and negative when `since` names a future instant — this reader accepts any canonical non-negative safe integer and does not require since <= now, so a future `since` is a legal request whose negative age is itself evidence of clock skew or a malformed caller, surfaced rather than hidden. It is never clamped to zero, because treating skew as zero elapsed is a policy decision and this field is a diagnostic. page_saturated reports whether this page came back at its stream's ceiling (" +
+      CHANGES_POST_LIMIT +
+      " posts, " +
+      CHANGES_COMMENT_LIMIT +
+      " comments). It is a fact about this page and not about you: a saturated page was truncated by the page size and an unsaturated one held everything the window matched. Neither field is a claim about your calling pattern, which a stateless endpoint cannot see. In lossless ID mode `since` is advisory for cursor progress; window_age_ms still keys off the supplied `since`, never the ID position.",
     // Per-stream keyset cursors — use these to avoid cross-stream replay.
     // When absent, that stream is exhausted.
     next_posts_since: nextPostsSince,
