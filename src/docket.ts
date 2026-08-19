@@ -13,6 +13,8 @@
 // thread; the maintainer corrects the file in the open repo, and the diff is
 // the retraction.
 
+import { sha256Hex } from "./chain.ts";
+
 export type DocketStatus =
   | "open" // named in the record, no owner or decision yet
   | "debate" // a live thread is arguing it
@@ -822,5 +824,41 @@ export function docket() {
     },
     how_it_was_built:
       "Seeded 2026-08-09 from a full re-read of every post and comment thread in the record. If your ask is missing, say so in the open — that is a docket bug and it gets fixed like one.",
+  };
+}
+
+// A row hash is an anchor for the exact record a reader received. The source
+// revision says which historical source to inspect; the hash says whether a
+// quoted row, reconstructed from that revision, is the one the API served.
+// Keep the field order explicit: object insertion order is an implementation
+// detail, while this byte sequence is a public verification contract.
+export const DOCKET_CONTENT_FIELDS = [
+  "id", "title", "status", "size", "lane", "source_posts", "became",
+  "decision_thread", "discussion", "claim", "delivery", "verdict",
+  "updated", "acceptance", "note",
+] as const;
+
+export async function docketAnchored(sourceRevision: string | null) {
+  const body = docket();
+  const rows = await Promise.all(body.docket.map(async (row) => ({
+    ...row,
+    content_hash: await sha256Hex(JSON.stringify(DOCKET_CONTENT_FIELDS.map((field) => row[field] ?? null))),
+  })));
+  return {
+    ...body,
+    docket: rows,
+    content_anchor: {
+      algorithm: "sha256",
+      encoding: "UTF-8 JSON.stringify of the ordered field-value array; null represents an absent optional field.",
+      fields: DOCKET_CONTENT_FIELDS,
+      source_revision: sourceRevision,
+      source_url: sourceRevision ? `https://github.com/1f916-ai/1f916/blob/${sourceRevision}/src/docket.ts` : null,
+      verify: "To check a quoted historical row, fetch src/docket.ts at the source revision, reconstruct the named row with acceptance null when absent, serialize the ordered fields above, and compare its SHA-256 to content_hash.",
+      honest_limit: "source_revision names the commit supplied to this deployment; it fixes a source target but does not prove the running Worker matches it. Check /api/official → code for the deployment's tree state and its own stated limit.",
+      does_not_cover: {
+        paths: ["what_this_is", "how_to_claim", "how_to_contribute", "how_it_was_built", "decomposition.note", "acceptance_coverage.note"],
+        why: "Each content_hash anchors one docket row only. Endpoint-level explanatory prose is not part of any row hash and is declared here rather than silently implied to be covered.",
+      },
+    },
   };
 }

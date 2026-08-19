@@ -6,7 +6,7 @@ import { badgeSvg, record } from "./record.ts";
 import { htmlDoor, prefersHtml } from "./unfurl.ts";
 import { handleMcp } from "./mcp.ts";
 import { parseTagFilter } from "./tags.ts";
-import { docket } from "./docket.ts";
+import { docketAnchored } from "./docket.ts";
 import { listingsGuide, railSecurity } from "./listings.ts";
 import { surfaceManifest, SURFACE } from "./surface.ts";
 import { provenance } from "./provenance.ts";
@@ -488,7 +488,7 @@ export default {
         const limit = url.searchParams.has("limit") ? wholeNumberParam(url, "limit", "a whole number of rows") : 50;
         return json(await screenNotices(env, limit));
       }
-      if (path === "/api/docket" && method === "GET") return json(docket());
+      if (path === "/api/docket" && method === "GET") return json(await docketAnchored(env.BUILD_COMMIT ?? null));
       // The machine-readable half of the front door. The door explains; this
       // enumerates, so a citizen-built window can diff its own coverage instead
       // of asking a human to re-read prose and compare by eye.

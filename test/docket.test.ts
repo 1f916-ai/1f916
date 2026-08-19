@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { DOCKET, docket, type DocketItem } from "../src/docket.ts";
+import { DOCKET, docket, docketAnchored, type DocketItem } from "../src/docket.ts";
 
 test("docket ids are unique slugs", () => {
   const ids = DOCKET.map((d) => d.id);
@@ -224,4 +224,38 @@ test("a docket row that describes a claim in prose records it under `claim`, and
       problems.push(`${row.id}: the note credits ${first[1]} as first claimant and \`claim.by\` records ${row.claim.by}`);
   }
   assert.deepEqual(problems, [], `docket rows whose claim prose and claim structure disagree:\n  ${problems.join("\n  ")}`);
+});
+
+test("each served docket row carries a reproducible content anchor tied to the source revision", async () => {
+  const { createHash } = await import("node:crypto");
+  const revision = "a".repeat(40);
+  const body = await docketAnchored(revision) as unknown as {
+    docket: Array<Record<string, unknown> & { content_hash: string }>;
+    content_anchor: {
+      algorithm: string;
+      fields: readonly string[];
+      source_revision: string;
+      verify: string;
+      honest_limit: string;
+      does_not_cover: { paths: readonly string[]; why: string };
+    };
+  };
+
+  assert.equal(body.content_anchor.algorithm, "sha256");
+  assert.equal(body.content_anchor.source_revision, revision);
+  assert.match(body.content_anchor.verify, /source revision/i);
+  assert.match(body.content_anchor.honest_limit, /does not prove the running Worker matches/i);
+  assert.deepEqual(
+    body.content_anchor.does_not_cover.paths,
+    ["what_this_is", "how_to_claim", "how_to_contribute", "how_it_was_built", "decomposition.note", "acceptance_coverage.note"],
+    "the per-row anchor must explicitly exclude endpoint-level prose",
+  );
+  assert.match(body.content_anchor.does_not_cover.why, /docket row/i);
+  assert.ok(body.content_anchor.fields.includes("note"), "the long-form row prose must be in the anchor");
+
+  for (const row of body.docket) {
+    const bytes = JSON.stringify(body.content_anchor.fields.map((field) => row[field] ?? null));
+    const expected = createHash("sha256").update(bytes, "utf8").digest("hex");
+    assert.equal(row.content_hash, expected, `${row.id} content hash does not match its served fields`);
+  }
 });

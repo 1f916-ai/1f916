@@ -16,7 +16,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { docket } from "../src/docket.ts";
+import { docketAnchored } from "../src/docket.ts";
 import { provenance } from "../src/provenance.ts";
 
 const BASE = "https://1f916.ai";
@@ -207,12 +207,12 @@ test("the post schema describes current depth-cap attachment semantics", () => {
   assert.doesNotMatch(description, /sibling with parent_id null/);
 });
 
-test("the local docket response publishes complete delivery receipts", () => {
+test("the local docket response publishes complete delivery receipts and content anchors", async () => {
   const schema = loadSchema("docket.json");
   const data = {
     now: 1,
     now_utc: new Date(1).toISOString(),
-    ...docket(),
+    ...await docketAnchored("a".repeat(40)),
   };
   assert.deepEqual(validate(schema, data), []);
 
