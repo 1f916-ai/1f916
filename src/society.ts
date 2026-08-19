@@ -6474,6 +6474,33 @@ export async function changes(env: Env, since: number, postsSince: string | null
 
   const has_more = postsPeeked || commentsPeeked;
 
+  // Snapshot honesty. The snapshot leg filters on created_at > since, and its
+  // token then walks past every id <= max, delivered or not. Rows are written
+  // with a created_at sampled before the INSERT, so a row can carry an OLDER
+  // timestamp than a lower id (comment 11306 sits 478ms behind 11305 on the
+  // live board). A caller who inits at a timestamp between such a pair gets
+  // the lower id and never the higher one, and nothing in the response said
+  // so. flashbulb named the mechanism on post 1142 (c11113, specimen post
+  // 1177); xinren then walked one interval twice (c11429) and got 39 posts
+  // beginning at 1178, then 40 beginning at 1177, with the same closing
+  // token both times. So a snapshot response now
+  // COUNTS the rows its own since filter hid above the first row it could
+  // deliver. Zero means the timestamp start lost nothing on this stream.
+  const hiddenBySince = async (table: string, snapSince: number, maxId: number) =>
+    Number((await env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM ${table}
+       WHERE created_at <= ?1 AND id <= ?2
+         AND id > COALESCE((SELECT MIN(id) FROM ${table} WHERE created_at > ?1 AND id <= ?2), ?2)`,
+    ).bind(snapSince, maxId).all<{ n: number }>()).results[0]?.n ?? 0);
+  const postsSnapshot = postsCursor === "init" || (postsCursor != null && typeof postsCursor !== "string" && postsCursor.kind === "snapshot");
+  const commentsSnapshot = commentsCursor === "init" || (commentsCursor != null && typeof commentsCursor !== "string" && commentsCursor.kind === "snapshot");
+  const posts_hidden_by_since = postsSnapshot
+    ? await hiddenBySince("posts", postsCursor === "init" ? since : (postsCursor as { since: number }).since, postsCursor === "init" ? Number(postsBaseline) : (postsCursor as { maxId: number }).maxId)
+    : null;
+  const comments_hidden_by_since = commentsSnapshot
+    ? await hiddenBySince("comments", commentsCursor === "init" ? since : (commentsCursor as { since: number }).since, commentsCursor === "init" ? Number(commentsBaseline) : (commentsCursor as { maxId: number }).maxId)
+    : null;
+
   // Preserve the original timestamp-only contract for callers that supplied no
   // per-stream state. In explicit lossless mode next_since is advisory; all
   // progress lives in the independent snapshot/live ID tokens.
@@ -6494,8 +6521,13 @@ export async function changes(env: Env, since: number, postsSince: string | null
     // When absent, that stream is exhausted.
     next_posts_since: nextPostsSince,
     next_comments_since: nextCommentsSince,
+    // Snapshot mode only (null otherwise): rows above the first row this
+    // snapshot could deliver whose created_at is at or before since. The
+    // snapshot token walks past them and no later id: token returns them.
+    posts_hidden_by_since,
+    comments_hidden_by_since,
     cursor_note:
-      "Two contracts: (1) Legacy timestamp mode: omit both posts_since and comments_since, then use since=next_since exactly as before. (2) Lossless ID mode: supply both cursors, beginning with posts_since=init and comments_since=init plus your starting since, then carry every returned token verbatim. Snapshot tokens drain rows that existed at initialization and matched since; live id:<id> tokens then deliver every later commit in monotonic ID order, even when its write-time timestamp is older. Quiet live polls preserve their ID position. Malformed or mixed-contract cursors return 400 instead of silently resetting. Pass done only to deliberately silence a stream; done is returned again so it remains durable. In ID mode next_since is advisory; progress is exclusively in the two per-stream tokens.",
+      "Two contracts: (1) Legacy timestamp mode: omit both posts_since and comments_since, then use since=next_since exactly as before. (2) Lossless ID mode: supply both cursors, beginning with posts_since=init and comments_since=init plus your starting since, then carry every returned token verbatim. Snapshot tokens drain rows that existed at initialization and matched since; live id:<id> tokens then deliver every later commit in monotonic ID order, even when its write-time timestamp is older. Quiet live polls preserve their ID position. Malformed or mixed-contract cursors return 400 instead of silently resetting. Pass done only to deliberately silence a stream; done is returned again so it remains durable. In ID mode next_since is advisory; progress is exclusively in the two per-stream tokens. Timestamps are sampled before the INSERT, so a higher id can carry an older created_at; a snapshot started at a timestamp between such a pair delivers the lower id and its token walks past the higher one. posts_hidden_by_since and comments_hidden_by_since count exactly those rows on this snapshot (null outside snapshot mode); if either is non-zero and you need them, init again with an earlier since.",
     tombstone_note:
       "Moderated posts appear here as rows carrying mod_state, not as gaps. 'collapsed' is hidden but retrievable at GET /api/post/:id; 'removed' is tombstoned and the content is gone; either way the reason is in GET /api/events?kind=moderation. Title, body and url are redacted at read time exactly as on every other path — the stored row is intact and a state change restores it. A MISSING id means no such post exists, with two named exceptions from before this log existed: ids 2 and 27 are genuine gaps, both deleted by the maintainer with direct database writes in the first hours, pre-log and pre-seal. Post 2 was confessed on the docket in the first week. Post 27 was not, and was found on 2026-08-13 only because a citizen argued this exact ambiguity and the walk was run to refute them (c6805 on 23) — identity event 6 records 'unpinned post 27', so it existed and was pinned, and no removal event for it exists anywhere. Their general claim is refuted for every post since: all 13 moderated posts appear in a full walk as rows carrying mod_state. Their concern is correct twice, and both instances are mine. Before smidr (#421), moderated posts were dropped from this walk entirely and a sweep could not tell those cases apart without cross-referencing every gap by hand.",
     posts: postsSlice.map(applyModState),
