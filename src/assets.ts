@@ -3,8 +3,8 @@
 // GET /treasury reported balanceOf for one asset — USDC — and nothing else.
 // That was honest about what it measured and silent about what it missed. The
 // society is the 95% fee beneficiary of an outside token's pool on Base. That
-// claim is enforceable, has never been collected, and is worth several times
-// the USDC balance. It was reported as nothing, because nothing asked.
+// claim is enforceable and is worth several times the USDC balance; whether it
+// has been drawn on is derived per request, never asserted here. It was reported as nothing, because nothing asked.
 //
 // Two axes, deliberately kept apart:
 //
@@ -12,7 +12,7 @@
 //            speculative coin. One blended total tells a reader less than
 //            three subtotals that refuse to blend.
 //   LOCATION where it is. 'wallet' is at the address in this on-chain read.
-//            'claimable' is an enforceable on-chain claim not yet collected.
+//            'claimable' is an enforceable on-chain claim, drawn on or not.
 //            Money the society can take but has not taken is still money.
 //            Reporting it as zero is the bug this file exists to fix.
 //
@@ -337,7 +337,7 @@ export const CLAIM_SOURCES: ClaimSource[] = [
     decimals: 18,
     totalSupply: 100_000_000_000n * 10n ** 18n,
     tickSpacing: 200,
-    note: "An outside party's token, launched via Bankr, which named the treasury as its fee beneficiary at a 95% share. The society did not launch it, does not endorse it, and has never collected from it. It is listed because the claim is real, not because the token is ours.",
+    note: "An outside party's token, launched via Bankr, which named the treasury as its fee beneficiary at a 95% share. The society did not launch it and does not endorse it. It is listed because the claim is real, not because the token is ours. Whether it has ever been collected from is served as assets.collection, computed from getLastCumulatedFees on every request rather than asserted here.",
   },
 ];
 
@@ -587,6 +587,22 @@ export interface AssetReadResult {
   errors: string[];
   /** Oldest underlying on-chain read represented in this assembled result. */
   checked_at: number;
+  /**
+   * Whether this beneficiary has ever taken from the pool, DERIVED from the
+   * same `getLastCumulatedFees` reads the claim arithmetic already uses.
+   *
+   * It exists because prose about collection used to be typed as constants
+   * beside numbers computed live, and on 2026-08-20 the two disagreed for ten
+   * hours: `lastCumulated0` went 0 -> 6500556237554846227 at 03:27:29Z and
+   * five served sentences still said "never collected". A sentence about a
+   * quantity a transaction can change must be computed from that quantity.
+   * `null` means the reads did not complete — never assume "not collected".
+   */
+  collection: {
+    collected: boolean | null;
+    last_cumulated_0: string | null;
+    last_cumulated_1: string | null;
+  };
 }
 
 export async function readTreasuryAssets(treasuryAddress: string, rpcUrls: string[]): Promise<AssetReadResult> {
@@ -682,6 +698,13 @@ export async function readTreasuryAssets(treasuryAddress: string, rpcUrls: strin
     errors.push("fees-manager reads incomplete; the claim on the pool is unavailable and is NOT being reported as zero");
   }
   const sharePct = shares === null ? null : Number(shares) / 1e16;
+  // Derived, never typed. Either side being non-zero means this beneficiary has
+  // taken from the pool at least once, so every sentence below about whether
+  // collection has happened is computed from these two words rather than
+  // asserted by a constant that no transaction can update.
+  const lastCum0 = last0Raw === null ? null : word(last0Raw, 0);
+  const lastCum1 = last1Raw === null ? null : word(last1Raw, 0);
+  const hasCollected = lastCum0 === null || lastCum1 === null ? null : lastCum0 > 0n || lastCum1 > 0n;
   // A recipe that names the calls but not the arithmetic is not a recipe. The
   // first version of this string listed the four reads and left the reader to
   // guess how they combine; Atlas-Hermes (#206) ran the simulated collectFees
@@ -716,7 +739,14 @@ export async function readTreasuryAssets(treasuryAddress: string, rpcUrls: strin
     price_source: `Chainlink ETH/USD on Base (${BASE_CONTRACTS.CHAINLINK_ETH_USD})`,
     value_cents: claimWeth === null ? null : priceEth(claimWeth),
     notional: false,
-    note: `Trading fees payable to the treasury from the ${src.symbol} pool at a ${sharePct ?? "?"}% share, never collected. Collecting requires the treasury's key, which no citizen holds and no citizen should ever be asked for.`,
+    note:
+      `Trading fees payable to the treasury from the ${src.symbol} pool at a ${sharePct ?? "?"}% share. ` +
+      (hasCollected === null
+        ? `Whether this beneficiary has ever collected could not be read on this request, so nothing here asserts either way. `
+        : hasCollected
+          ? `It HAS been collected from: getLastCumulatedFees reads ${lastCum0}/${lastCum1}, which is what this beneficiary has already taken, so the figure above is only what has accrued since. `
+          : `It has never been collected from: both getLastCumulatedFees words read zero. `) +
+      `Collecting through collectFees pays msg.sender, so that route needs the treasury's key — which no citizen holds and no citizen should ever be asked for. It is not the only path the deployed FeesManager exposes, so do not read this claim as unreachable without that key.`,
     verify: claimVerify,
   });
 
@@ -832,5 +862,10 @@ export async function readTreasuryAssets(treasuryAddress: string, rpcUrls: strin
     token_usd: tokenUsd,
     errors,
     checked_at: checkedAt,
+    collection: {
+      collected: hasCollected,
+      last_cumulated_0: lastCum0 === null ? null : lastCum0.toString(),
+      last_cumulated_1: lastCum1 === null ? null : lastCum1.toString(),
+    },
   };
 }

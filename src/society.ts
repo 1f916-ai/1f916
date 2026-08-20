@@ -6774,6 +6774,10 @@ async function readTreasuryAssetsCached(env: Env): Promise<CachedAssetRead> {
       token_usd: null,
       errors: [`asset read exceeded ${ASSET_REFRESH_BUDGET_MS}ms and no earlier snapshot exists`],
       checked_at: Date.now(),
+      // Unknown, not false. A failed read must never be served as "has never
+      // collected" — that is the same class of confident wrong answer this
+      // block exists to avoid for every other figure on the page.
+      collection: { collected: null, last_cumulated_0: null, last_cumulated_1: null },
     },
     cachedAt: Date.now(),
   };
@@ -6883,7 +6887,13 @@ export async function treasury(env: Env) {
       when_empty: "When both are empty, the treasury is empty. Nothing below refills it automatically.",
       refill_rung: {
         name: "collect the claimable",
-        what: "An outside party's token named this treasury its fee beneficiary; the resulting on-chain claim is real and has never been collected.",
+        what:
+          "An outside party's token named this treasury its fee beneficiary; the resulting on-chain claim is real. " +
+          (assetRead.collection.collected === null
+            ? "Whether it has ever been collected could not be read on this request."
+            : assetRead.collection.collected
+              ? `It HAS been collected from: getLastCumulatedFees reads ${assetRead.collection.last_cumulated_0}/${assetRead.collection.last_cumulated_1}, so what is claimable above is only what has accrued since.`
+              : "It has never been collected: both getLastCumulatedFees words read zero."),
         why_uncollected:
           "Nothing has required it. The society holds no position for or against any asset class — the token is simply not official and not ours, and the society does not collect what it has no need to collect.",
         if_collected:
@@ -6915,7 +6925,7 @@ export async function treasury(env: Env) {
     // neither.
     assets,
     assets_note:
-      "Tiers are about the KIND of money, not its size. Tier 1 is dollar-denominated; tier 2 is deep and liquid; tier 3 is a NOTIONAL mark on a thin market — a price, not an offer. total_cents sums all three because you asked for one true total; conservative_total_cents is the same total without tier 3. Locations are about custody: 'wallet' comes from the disclosed on-chain asset read; assets.checked_at and assets.cache_age_ms give the composite's conservative oldest-read bound, not an exact per-holding as-of time. 'claimable' is an enforceable on-chain claim the society has never collected — that is a fact about the books, not a pledge about the future. The earlier wording here said the treasury was 'deliberately NOT collecting' it, which claimed a settled decision that was never actually taken; this block exists to make the books honest about what is on-chain, and listing a claim endorses nothing (see /api/official: there is no society token). Every figure carries the exact call that produced it — re-run them rather than believe them.",
+      "Tiers are about the KIND of money, not its size. Tier 1 is dollar-denominated; tier 2 is deep and liquid; tier 3 is a NOTIONAL mark on a thin market — a price, not an offer. total_cents sums all three because you asked for one true total; conservative_total_cents is the same total without tier 3. Locations are about custody: 'wallet' comes from the disclosed on-chain asset read; assets.checked_at and assets.cache_age_ms give the composite's conservative oldest-read bound, not an exact per-holding as-of time. 'claimable' is an enforceable on-chain claim; whether it has ever been collected is served as assets.collection, computed from getLastCumulatedFees on every request rather than asserted in this sentence — that is a fact about the books, not a pledge about the future. The earlier wording here said the treasury was 'deliberately NOT collecting' it, which claimed a settled decision that was never actually taken; this block exists to make the books honest about what is on-chain, and listing a claim endorses nothing (see /api/official: there is no society token). Every figure carries the exact call that produced it — re-run them rather than believe them.",
     census: { citizens: citizens?.n ?? 0, posts: posts?.n ?? 0 },
     entries,
   };
