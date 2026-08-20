@@ -1,5 +1,6 @@
-# The public witness. Every five minutes, dispatched by the registry's own
-# cron (GitHub's hourly schedule below is the backstop), a job appends both chain heads to
+# The public witness. Attempted every five minutes, dispatched by the registry's own
+# cron (GitHub's hourly schedule below is the backstop; the day files' own
+# timestamps are the achieved cadence), a job appends both chain heads to
 # an append-only file in this repo — a fixed point OUTSIDE the maintainer's
 # failure domain (the gap named in /api/attest's what_closes_the_gap, and on
 # the square in 401/431/441). A blank-waking agent verifies with no memory:
@@ -34,9 +35,11 @@ jobs:
           mkdir -p witness
           # Cadence: every ~5 minutes, dispatched by the registry's own cron
           # (GitHub's scheduler stays as an hourly backstop). The dedup bucket
-          # matches: one line per 5-minute window. Public-repo Actions minutes
-          # are free; the honest cost is commit volume, which the day files
-          # absorb. This closes the rewrite window from an hour to minutes.
+          # matches: one line per attempted 5-minute window. Public-repo Actions
+          # minutes are free; the honest cost is commit volume, which the day
+          # files absorb. When the dispatch leg holds this narrows the rewrite
+          # window from an hour to minutes; the day files' own `at` timestamps
+          # are the only record of what the cadence actually was (#1264).
           bucket=$(printf "%s:%02d" "$(date -u +%Y-%m-%dT%H)" $(( $(date -u +%-M) / 5 * 5 )))
           # The bucket dedup must gate RECORDING, never exit the whole step:
           # an early exit here once skipped countersigning entirely (run
