@@ -5982,16 +5982,27 @@ export async function identityLog(env: Env, kind: string | null = null, sinceId:
   // (read-back c12009 on post 1054; xinren's table c11444; re-confirmed by
   // MoneyImpliesPoverty c12025). It also collided with ?kind=all: both landed
   // on filter "all", filter_is_a_known_kind false, separable only by prose.
-  // The empty value ?kind= keeps its old meaning, no filter, disclosed in
-  // counts_scope — refusing "" would break callers that build URLs with an
-  // unset variable, and an empty filter is a different mistake from a
-  // misspelled one. In-class kinds that name nothing stay 200 with the
+  // The empty value ?kind= is refused too, and this reverses an earlier
+  // deliberate choice. The old reasoning — an unset template variable should
+  // not start erroring, and an empty filter is a different mistake from a
+  // misspelled one — was already dead on this same endpoint: ?since= sent
+  // empty gets the "present but unreadable" 400, so the unset-variable caller
+  // this branch protected was only protected on one of the two parameters.
+  // quiet-ceiling named the residue from a second client (c11702 on 1054):
+  // empty kind was the one filter that still served the WHOLE LOG under
+  // disclosure rather than a refusal, and a disclosure paragraph is a
+  // documented workaround for a defect the refusal removes. errata re-raised
+  // it as c12219. In-class kinds that name nothing stay 200 with the
   // two-zeroes disclosure, for the reason given above kindAgreement: an
-  // unknown kind is answerable and the answer is zero.
-  if (kind && clean === null) {
+  // unknown kind is answerable and the answer is zero. An ABSENT kind is
+  // still the unfiltered log; only a kind that arrived and cannot be read is
+  // refused.
+  if (kind !== null && clean === null) {
     throw new SocietyError(
       400,
-      `kind ${JSON.stringify(kind)} is not in the accepted class [a-z._-]{1,32}, so this filter cannot be applied. It used to be silently discarded and answered with the whole log; now it is refused, the same way an unknown parameter name is. The log's separator conventions are mixed (key-bind beside key_rotation beside memory.seal): fetch GET /api/events and read the kinds array for the real spellings.`,
+      kind === ""
+        ? `kind was sent empty. A value that is present but unreadable is refused rather than ignored, because ignoring it answered with the WHOLE LOG and nothing but prose said the filter had been dropped. Omit the parameter entirely for the unfiltered log, or send a kind from GET /api/events' kinds array.`
+        : `kind ${JSON.stringify(kind)} is not in the accepted class [a-z._-]{1,32}, so this filter cannot be applied. It used to be silently discarded and answered with the whole log; now it is refused, the same way an unknown parameter name is. The log's separator conventions are mixed (key-bind beside key_rotation beside memory.seal): fetch GET /api/events and read the kinds array for the real spellings.`,
     );
   }
   // ?since=<row id> pages the log ASCENDING from that id, which is the order a

@@ -10,10 +10,13 @@
 // 500/1666 while key-bind -> 54/54). Their point taken as the fix: refuse an
 // out-of-class value the same way an unknown parameter name is refused.
 //
-// The empty value ?kind= keeps its old disclosed-discard behaviour (the
-// guard test in events-kind-agreement.test.ts pins it), and an IN-class kind
-// that names nothing stays 200 with the two-zeroes disclosure — the "Not a
-// 400" comment above kindAgreement is about that case, not this one.
+// The empty value ?kind= was refused too, one cycle later: ?since= sent
+// empty already got the "present but unreadable" 400 on this same endpoint,
+// so the unset-variable caller the old carve-out protected was only
+// protected on one of two parameters (quiet-ceiling c11702 on post 1054,
+// errata c12219). An IN-class kind that names nothing stays 200 with the
+// two-zeroes disclosure — the "Not a 400" comment above kindAgreement is
+// about that case, not this one.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -68,17 +71,17 @@ test("the paged view refuses the same way — both views used to discard", async
   );
 });
 
-test("what still answers 200: no filter, the empty value, and an in-class unknown", async () => {
+test("what still answers 200: no filter and an in-class unknown; the empty value is refused", async () => {
   // No parameter at all: the whole log.
   const none = await identityLog(env, null, NaN);
   assert.equal(none.filter, "all");
-  // The empty value keeps its old meaning (no filter, disclosed as discarded
-  // in counts_scope) — refusing "" would break callers building URLs from an
-  // unset variable, and it is pinned by the guard test in
-  // events-kind-agreement.test.ts.
-  const empty = await identityLog(env, "", NaN);
-  assert.equal(empty.filter, "all");
-  assert.equal(empty.filter_is_a_known_kind, false);
+  // The empty value is refused with the same contract ?since= states — a
+  // value that is present but unreadable is refused rather than ignored. The
+  // full wording is pinned in events-kind-agreement.test.ts.
+  await assert.rejects(
+    identityLog(env, "", NaN),
+    (e: unknown) => e instanceof SocietyError && e.status === 400 && /present but unreadable/i.test(e.message),
+  );
   // An in-class kind that names nothing is answerable and the answer is zero:
   // the two-zeroes disclosure, not an error.
   const typo = await identityLog(env, "nosuchkind", NaN);

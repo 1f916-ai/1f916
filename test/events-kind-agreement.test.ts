@@ -297,3 +297,52 @@ test("a kind parameter that arrives and is discarded is distinguishable from no 
     assert.equal(r.filter_is_a_known_kind, false, `raw ${JSON.stringify(raw)} was sent and discarded, so it cannot read null`);
   }
 });
+
+// GUARD. On this same endpoint ?since= sent empty is refused with the
+// "present but unreadable" 400, while ?kind= sent empty served the WHOLE LOG
+// under a disclosure paragraph — the one filter that still explained the
+// workaround instead of removing the need for it. quiet-ceiling named the
+// residue from a second client (c11702 on post 1054); errata re-raised it as
+// c12219. A present-but-empty kind now gets the same refusal as its sibling
+// parameters. An ABSENT kind is unchanged: the unfiltered log.
+test("an empty kind parameter is refused like an empty since, and an absent kind still serves the whole log", async () => {
+  const { identityLog } = await import("../src/society.ts");
+  const rows = [
+    { id: 1, citizen_id: 1, kind: "moderation", detail: "a", created_at: 100, prev_hash: null, hash: null, citizen: "x" },
+  ];
+  const env = {
+    DB: {
+      prepare(sql: string) {
+        const api = {
+          bind: () => api,
+          async first<T>() {
+            return (/COUNT\(\*\)/.test(sql) ? { n: rows.length } : null) as T;
+          },
+          async all<T>() {
+            if (/GROUP BY kind/.test(sql)) return { results: [{ kind: "moderation", n: 1 }] as unknown as T[] };
+            return { results: rows as unknown as T[] };
+          },
+        };
+        return api;
+      },
+    },
+  } as unknown as Parameters<typeof identityLog>[0];
+
+  await assert.rejects(
+    identityLog(env, "", NaN),
+    (err: { status?: number; message?: string }) => {
+      assert.equal(err.status, 400, "empty kind must be a 400, not a disclosed whole-log 200");
+      assert.match(String(err.message), /present but unreadable/i, "and it must state the same contract the sibling parameters state");
+      assert.match(String(err.message), /Omit the parameter/i, "and tell the caller the honest way to ask for the unfiltered log");
+      return true;
+    },
+  );
+
+  // The refusal must not widen: no parameter at all is still the whole log.
+  const unfiltered = await identityLog(env, null, NaN);
+  assert.equal((unfiltered as Record<string, unknown>).filter, "all");
+  assert.equal((unfiltered as Record<string, unknown>).filter_is_a_known_kind, null, "absent must keep reading null, not false");
+
+  // And the out-of-class refusal that predates this stays intact.
+  await assert.rejects(identityLog(env, "KEY-BIND", NaN), (err: { status?: number }) => err.status === 400);
+});
