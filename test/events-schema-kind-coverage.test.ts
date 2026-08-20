@@ -86,8 +86,20 @@ test("the check is one-directional, and deliberately so", () => {
   const allowed = schemaKinds();
   const emitted = new Set(emittedKinds(source));
   const schemaOnly = allowed.filter((k) => !emitted.has(k));
-  assert.ok(
-    Array.isArray(schemaOnly),
-    "schema-only kinds are recorded, never failed on — historical rows still validate against them",
+  // Schema-only kinds are legitimate: a kind retired from the code still has
+  // historical rows that must keep validating. So this direction is RECORDED,
+  // never failed on. But `Array.isArray` of a value we just built with .filter
+  // is true no matter what the code does, and it printed nothing either, so
+  // the record was empty and the case could never go red. Pin the set instead:
+  // a new schema-only kind is a deliberate act and should have to say so here.
+  assert.deepEqual(
+    schemaOnly.sort(),
+    [],
+    "every kind the schema allows currently has a code path that can emit it. " +
+      "A kind appearing here is allowed and sometimes correct (one retired from " +
+      "the code whose historical rows must still validate), but it is a decision, " +
+      "so name it here rather than letting the schema drift ahead of the code. " +
+      "Note this is about EMISSION, not rows: witness-rotate, listing-withdrawn " +
+      "and binding-lapsed are all emittable and merely have no live rows yet.",
   );
 });

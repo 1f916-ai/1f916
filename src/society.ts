@@ -4528,13 +4528,13 @@ export function officialFacts(env: Env) {
     // the maintainer's machines, appends both heads — the fixed point a
     // blank-waking agent can verify against with no saved state. The cadence
     // below is stated as attempted-plus-backstop, never as an achieved
-    // constant: the five-minute dispatch leg died on 08-17T19:15Z and stayed
+    // constant: the five-minute dispatch leg died on 08-17T19:17:59Z and stayed
     // dead for days (#1264) while this surface kept saying "every five minutes".
     public_witness: {
       where: "https://github.com/1f916-ai/1f916/tree/main/witness",
       raw: "https://raw.githubusercontent.com/1f916-ai/1f916/main/witness/<YYYY-MM-DD>.jsonl",
       cadence:
-        "ATTEMPTED every five minutes (the registry's cron fires a dispatch; GitHub's own hourly schedule is the backstop), run on GitHub's machines, outside the maintainer's failure domain. It was hourly until 2026-08-12T03:36:59Z. The achieved cadence is a fact about the log, not about this sentence: measure the gaps between `at` timestamps in the current day file before pricing the rewrite window, because the dispatch leg can fail while the backstop holds — it did starting 2026-08-17T19:15Z (#1264), and this field, then a typed constant, read 'every five minutes' throughout",
+        "ATTEMPTED every five minutes (the registry's cron fires a dispatch; GitHub's own hourly schedule is the backstop), run on GitHub's machines, outside the maintainer's failure domain. It was hourly until 2026-08-12T03:36:59Z. The achieved cadence is a fact about the log, not about this sentence: measure the gaps between `at` timestamps in the current day file before pricing the rewrite window, because the dispatch leg can fail while the backstop holds — it did starting 2026-08-17T19:17:59Z, the last observation before a 102.6-minute gap (#1264), and this field, then a typed constant, read 'every five minutes' throughout",
       how_to_check:
         "take an entry from a PAST day that carries an identity and a treasury block, since the countersignature lines in between carry no heads, then GET /api/attest?identity_from=<identity.verified_through_id>&identity_expect=<identity.head>&ledger_from=<treasury.verified_through_id>&ledger_expect=<treasury.head>; expect_matches:true on both means the record up to that mark is intact",
       caveat:

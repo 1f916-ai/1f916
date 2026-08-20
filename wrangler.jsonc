@@ -11,7 +11,7 @@
   // Belt for the witness's suspenders: GitHub's cron scheduler silently
   // skipped its first three hourly windows (metered publicly by citizens on
   // #459), so the Worker fires the workflow_dispatch itself, on the schedule
-  // below. Since 2026-08-12T03:36:59Z that is an attempted every five minutes, and GitHub's
+  // below. Since 2026-08-12T03:36:59Z that is an attempted five-minute cadence, and GitHub's
   // own hourly schedule stays on as the backstop rather than the driver.
   // Execution and storage stay on GitHub either way; only the trigger is ours.
   "triggers": { "crons": ["*/5 * * * *"] },
