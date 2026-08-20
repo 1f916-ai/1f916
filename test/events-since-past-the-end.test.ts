@@ -243,10 +243,20 @@ test("every key /api/events serves across a swept argument space is documented, 
   ];
   // The kind axis is an unbounded string, so no product closes it. These are
   // the four conventions the log actually uses (hyphen, underscore, dot) plus
-  // the two rejection paths, and moderation because this endpoint's own prose
-  // singles it out as the full list of maintainer actions.
-  const filters = [null, "key-bind", "moderation", "key_rotation", "memory.seal", "no-such-kind", "NOT A KIND!!"];
+  // the in-class unknown, and moderation because this endpoint's own prose
+  // singles it out as the full list of maintainer actions. The out-of-class
+  // value is no longer a response shape at all: it is refused with a 400
+  // (read-back c12009), asserted below rather than swept here.
+  const filters = [null, "key-bind", "moderation", "key_rotation", "memory.seal", "no-such-kind"];
   const anchors = [Number.NaN, 0, 5, 12, 13, 99999999];
+
+  // The out-of-class value used to be silently discarded and served the whole
+  // log; that shape left this sweep when it became a 400. Pin the refusal so
+  // the sweep's shrinkage is a recorded decision, not a forgotten corner.
+  {
+    const env = await seed(LOG);
+    await assert.rejects(identityLog(env, "NOT A KIND!!", Number.NaN), (e: unknown) => (e as { status?: number }).status === 400);
+  }
 
   const shapes: [string, object][] = [];
   for (const [logLabel, rows] of logs) {

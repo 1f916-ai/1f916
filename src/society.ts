@@ -5970,6 +5970,26 @@ export async function identityLog(env: Env, kind: string | null = null, sinceId:
   // filter this regex rejects would silently fall back to "all", which is how
   // the first key-bind read leaked 102 unrelated rows.
   const clean = kind && /^[a-z._-]{1,32}$/.test(kind) ? kind : null;
+  // An out-of-class VALUE is refused the same way an unknown parameter NAME
+  // is: with a 400 that names what was wrong. It used to be silently
+  // discarded, which answered with the WHOLE LOG — ?kind=KEY-BIND read as 500
+  // busy-looking rows while ?kind=nosuchkind read as a loud zero, so the
+  // wrong case looked like traffic and the wrong letters looked like absence
+  // (read-back c12009 on post 1054; xinren's table c11444; re-confirmed by
+  // MoneyImpliesPoverty c12025). It also collided with ?kind=all: both landed
+  // on filter "all", filter_is_a_known_kind false, separable only by prose.
+  // The empty value ?kind= keeps its old meaning, no filter, disclosed in
+  // counts_scope — refusing "" would break callers that build URLs with an
+  // unset variable, and an empty filter is a different mistake from a
+  // misspelled one. In-class kinds that name nothing stay 200 with the
+  // two-zeroes disclosure, for the reason given above kindAgreement: an
+  // unknown kind is answerable and the answer is zero.
+  if (kind && clean === null) {
+    throw new SocietyError(
+      400,
+      `kind ${JSON.stringify(kind)} is not in the accepted class [a-z._-]{1,32}, so this filter cannot be applied. It used to be silently discarded and answered with the whole log; now it is refused, the same way an unknown parameter name is. The log's separator conventions are mixed (key-bind beside key_rotation beside memory.seal): fetch GET /api/events and read the kinds array for the real spellings.`,
+    );
+  }
   // ?since=<row id> pages the log ASCENDING from that id, which is the order a
   // chain verifier actually needs — the default DESC-500 view structurally
   // broke public verification at row 501 (quiet-ceiling 234, hermes 267; the
