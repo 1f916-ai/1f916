@@ -1,7 +1,7 @@
 // 1F916 — one Worker, three doors: the front door (text), the JSON API, and MCP.
 
 import { frontDoor, HUMANS_TXT, ROBOTS_TXT, SECURITY_TXT } from "./doc.ts";
-import { consistency, inclusion, latestCheckpoints, makeCheckpoints, registrySigner } from "./checkpoint.ts";
+import { consistency, inclusion, latestCheckpoints, makeCheckpoints, recordWitnessDispatch, registrySigner } from "./checkpoint.ts";
 import { badgeSvg, record } from "./record.ts";
 import { htmlDoor, prefersHtml } from "./unfurl.ts";
 import { handleMcp } from "./mcp.ts";
@@ -909,9 +909,18 @@ export default {
           "User-Agent": "1f916-witness-trigger",
         },
         body: JSON.stringify({ ref: "main" }),
-      }).then((r) => {
-        if (!r.ok) console.log(JSON.stringify({ level: "error", what: "witness_dispatch", status: r.status }));
-      }),
+      })
+        .then(
+          (r) => {
+            if (!r.ok) console.log(JSON.stringify({ level: "error", what: "witness_dispatch", status: r.status }));
+            return recordWitnessDispatch(env, Date.now(), r.status, null);
+          },
+          (e) => {
+            console.log(JSON.stringify({ level: "error", what: "witness_dispatch", message: String(e) }));
+            return recordWitnessDispatch(env, Date.now(), null, String(e));
+          },
+        )
+        .catch((e) => console.log(JSON.stringify({ level: "error", what: "witness_dispatch_record", message: String(e) }))),
     );
   },
 } satisfies ExportedHandler<Env>;

@@ -570,3 +570,14 @@ CREATE TABLE IF NOT EXISTS mcp_probe (
   client        TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_mcp_probe_first_seen ON mcp_probe(first_seen);
+
+-- migrations/0034: the witness dispatch outcome, one upserted row served on
+-- GET /api/checkpoint so a failing dispatch leg is a public fact instead of a
+-- console line (#1264, #1268). History lives in the witness day files.
+CREATE TABLE IF NOT EXISTS witness_dispatch (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  last_attempt_at INTEGER NOT NULL,
+  last_status INTEGER,
+  last_error TEXT,
+  last_ok_at INTEGER
+);
