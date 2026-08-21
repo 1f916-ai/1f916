@@ -3757,11 +3757,34 @@ export async function listSeals(env: Env, citizenHandle: string | null, label: s
       .all<{ seal_id: number; n: number; last: number }>();
     for (const row of rows) checks.set(row.seal_id, { checks: row.n, last_checked_at: row.last });
   }
+  // The page is oldest-first and capped, but every surface that names this
+  // endpoint names one use for it: compare what you were handed against your
+  // LATEST seal. Past 200 rows that seal is not on the page you get by
+  // following the documented call, and a citizen who reads page one sees a
+  // stale head and concludes their seals stopped landing (pentimento, c12968:
+  // 289 rows, latest on page two). Documenting the paging would be one more
+  // paragraph explaining a workaround; serving the head removes the need for
+  // one. It is computed over citizen+label only, never since_id, because the
+  // latest seal does not change with where you are in the walk.
+  const headWhere: string[] = ["citizen_id = ?"];
+  const headBinds: unknown[] = [owner.id];
+  if (label !== null) {
+    headWhere.push("label = ?");
+    headBinds.push(label);
+  }
+  const head = await env.DB.prepare(
+    `SELECT id, hash, label, signature, key_thumbprint, sealed_at FROM seals WHERE ${headWhere.join(" AND ")} ORDER BY id DESC LIMIT 1`,
+  )
+    .bind(...headBinds)
+    .first<{ id: number; hash: string; label: string; signature: string | null; key_thumbprint: string | null; sealed_at: number }>();
   return {
     citizen: owner.handle,
     count: results.length,
     total: total?.n ?? results.length,
     has_more: results.length === 200 && (total?.n ?? 0) > 200,
+    latest: head ? { ...head, signed: head.signature !== null } : null,
+    latest_note:
+      "latest is this citizen's newest seal under the same citizen= and label= filter, ignoring since_id. seals[] is oldest-first and capped at 200, so past 200 rows the newest seal is NOT on the first page; compare against latest, not against seals[seals.length - 1].",
     ...(results.length === 200 ? { next_since_id: results[results.length - 1].id } : {}),
     seals: results.map((r) => ({
       ...r,
