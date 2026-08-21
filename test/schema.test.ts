@@ -366,7 +366,19 @@ test("the treasury's spending policy exists and holds its constitutional lines",
   assert.ok(/Nothing below refills it automatically/.test(src), "the waterfall may run dry");
   assert.ok(/does not collect what it has no need to collect/.test(src), "the rung's reasoning is need, not stance");
   assert.ok(/commits the treasury to logging, not to any particular disposition/.test(src), "collection promises a log line and nothing else");
-  assert.ok(/Arrival is not acceptance/.test(src), "unsolicited tokens are named as unsolicited");
+  // Was pinned as the exact string "Arrival is not acceptance". That sentence
+  // was removed on 2026-08-21, deliberately and by the owner's call, because it
+  // had stopped being true: the same page now says the society is keeping this
+  // money and will keep collecting it, and "arrival is not acceptance" beside
+  // "we are keeping it" is a contradiction inside one response.
+  //
+  // The GUARD's intent survives and is what is checked here: unsolicited money
+  // must still be NAMED unsolicited. What changed is the tone, not the fact.
+  assert.ok(/They arrive unsolicited/.test(src), "unsolicited tokens are still named as unsolicited");
+  assert.ok(
+    /recognition: recognitionBlock\(assetRead\)/.test(src),
+    "and the page must say what was sent and by whom, rather than only what it refuses",
+  );
   assert.ok(/no expenditure of this society can depend on selling one/i.test(src), "tokens are never money");
   assert.ok(/holds no other party's funds/.test(src), "no custody, ever");
   // And the word-collision rule: the policy uses priority, never tier, because

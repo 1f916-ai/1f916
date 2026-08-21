@@ -72,7 +72,13 @@ test("the asset batch fills a partial provider response from a healthy fallback"
       const read = await readTreasuryAssets(TREASURY, ["https://partial.rpc", "https://healthy.rpc"]);
       assert.deepEqual(requestedUrls, ["https://partial.rpc", "https://healthy.rpc"]);
       assert.deepEqual(requestedBatchSizes, [11, 10], "the answered row must not be fetched again");
-      assert.deepEqual(read.errors, []);
+      // This test is about the BASE batch's fallback, so it is run with no BNB
+      // provider on purpose. The one error it now carries is that absence,
+      // disclosed rather than silently answered as zero — a chain that was not
+      // read must never be reported as a chain holding nothing.
+      assert.deepEqual(read.errors, [
+        "no BNB Chain provider configured; holdings on that chain are NOT being reported as zero",
+      ]);
       assert.equal(read.eth_usd, 2_000);
       assert.equal(read.token_usd, 2_000);
       assert.equal(summarizeAssets(read.holdings).complete, true);
