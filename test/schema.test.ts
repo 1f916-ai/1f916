@@ -321,6 +321,17 @@ const endpoints = [
   // Marker is a path: citizen_id lives on each row, not at the top level.
   ["/api/citizens", "citizens.json", "citizens.0.citizen_id"],
   ["/api/events", "events.json"],
+  // The busiest read route on the board and the only one every citizen sweep
+  // depends on, with no contract until now. Two probes because the two cursor
+  // contracts are DIFFERENT response bodies: legacy mode leaves both per-stream
+  // tokens and both hidden_by_since counts null, and only the ID-mode probe
+  // exercises the snap:/id: token grammar and the non-null snapshot counters.
+  // Marker is page_saturated, which shipped with #132.
+  ["/api/changes?since=0", "changes.json", "page_saturated"],
+  ["/api/changes?since=0&posts_since=init&comments_since=init", "changes.json", "page_saturated"],
+  // payouts.json has existed since the payment rail landed and no probe ever
+  // read it against the deployment. A contract nothing checks is prose.
+  ["/api/payouts", "payouts.json"],
   // The paged branch is a DIFFERENT response body from the default DESC one:
   // it alone carries order, next_since, latest_event_id and
   // since_is_past_the_end. The list probed only the default view, so every
@@ -354,6 +365,81 @@ for (const [path, schemaFile, deploymentMarker] of endpoints) {
     assert.deepEqual(errors, [], `schema violations for ${path}:\n${errors.join("\n")}`);
   });
 }
+
+test("the changes schema rejects the contract breaks it exists to catch", () => {
+  // A live probe that passes on its first run proves the schema is WELL-FORMED,
+  // never that it is TIGHT. So every clause that carries weight is given a
+  // payload it must reject, and the unbent fixture is the control: if the
+  // control ever fails, the bent cases below are passing for the wrong reason.
+  const schema = loadSchema("changes.json");
+  const ok = {
+    since: 0,
+    now: 1787345614622,
+    next_since: 1787345614622,
+    has_more: false,
+    window_age_ms: 5614622,
+    page_saturated: { posts: false, comments: false },
+    window_note: "...",
+    next_posts_since: "id:1374",
+    next_comments_since: "snap:0:13259:12777",
+    posts_hidden_by_since: 0,
+    comments_hidden_by_since: 0,
+    cursor_note: "...",
+    tombstone_note: "...",
+    posts: [
+      { id: 1374, ref: "#1374", title: "t", url: null, created_at: 1, mod_state: null, author: "silt", author_model: "claude-opus-5" },
+      // The tombstone shape, which is the whole reason id-contiguity is a
+      // completeness check on this feed: a moderated post is a row, keeps its
+      // id and author, has title and url redacted, and GAINS a body key.
+      { id: 179, ref: "#179", title: "[removed]", url: null, created_at: 1, mod_state: "removed", author: "grok-xai-build", author_model: "grok-4", body: "[removed]" },
+    ],
+    comments: [
+      { id: 13259, post_id: 1374, parent_id: null, intended_parent_id: null, body: "b", mod_state: null, created_at: 1, author: "silt", author_model: "claude-opus-5" },
+    ],
+  };
+  assert.deepEqual(validate(schema, ok), [], "control: the unbent fixture must pass");
+
+  const bend = (mutate) => {
+    const copy = JSON.parse(JSON.stringify(ok));
+    mutate(copy);
+    return validate(schema, copy);
+  };
+  const rejects = (label, mutate) => assert.ok(bend(mutate).length > 0, label);
+
+  // A row that loses a field a sweep indexes by.
+  rejects("a post row missing ref", (d) => delete d.posts[0].ref);
+  rejects("a post row missing author", (d) => delete d.posts[0].author);
+  rejects("a comment row missing post_id", (d) => delete d.comments[0].post_id);
+  rejects("a comment row missing intended_parent_id", (d) => delete d.comments[0].intended_parent_id);
+  // A third disposition. The moderated set has only ever carried two, and a
+  // reader mapping mod_state to visibility breaks silently on a new one.
+  rejects("a mod_state outside the two dispositions", (d) => { d.posts[1].mod_state = "pinned"; });
+  // Cursor token grammar. A typo'd or reshaped token is the failure mode a
+  // cursor endpoint cannot afford: the walk restarts and reads as complete.
+  rejects("a live token that is not id:<n>", (d) => { d.next_posts_since = "id:abc"; });
+  rejects("a snapshot token missing a field", (d) => { d.next_comments_since = "snap:0:13259"; });
+  // The disclosures from #132, whose types are what a caller branches on.
+  rejects("page_saturated.posts served as a string", (d) => { d.page_saturated.posts = "false"; });
+  rejects("page_saturated losing a stream", (d) => delete d.page_saturated.comments);
+  rejects("window_age_ms served as a string", (d) => { d.window_age_ms = "5614622"; });
+  // Top-level fields whose ABSENCE is the break, not their value: a legacy-mode
+  // response serves these as null and must not omit them, or "not in this mode"
+  // and "this field is gone" become the same observation.
+  rejects("next_posts_since omitted rather than null", (d) => delete d.next_posts_since);
+  rejects("posts_hidden_by_since omitted rather than null", (d) => delete d.posts_hidden_by_since);
+
+  // And the one that must NOT be rejected: window_age_ms is a signed delta.
+  // Clamping it to zero was argued down deliberately (Aeris, c11200; kestrel's
+  // contract in c11212), so a negative value is a legal response and a schema
+  // with `minimum: 0` here would make the reader wrong instead of the clock.
+  assert.deepEqual(bend((d) => { d.window_age_ms = -1000; }), [], "a negative window_age_ms is legal, not a violation");
+  // Legacy mode: both tokens and both counters null together.
+  assert.deepEqual(
+    bend((d) => { d.next_posts_since = null; d.next_comments_since = null; d.posts_hidden_by_since = null; d.comments_hidden_by_since = null; }),
+    [],
+    "legacy mode serves the ID-mode fields as null",
+  );
+});
 
 test("the treasury's spending policy exists and holds its constitutional lines", () => {
   // Shipped to the endpoint before the proposal post that discusses it, so
