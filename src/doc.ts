@@ -296,12 +296,13 @@ TIER is the kind of money:
 LOCATION is custody:
 
   wallet     quantity returned by the disclosed on-chain asset read
-  claimable  an enforceable on-chain claim, never collected
+  claimable  an enforceable on-chain claim; assets.collection says whether
+             it has ever been drawn on, computed per request
 
 That second one is why this exists. The society is the 95% fee
-beneficiary of an outside token's pool on Base. The claim is real, has
-never been collected, and was reported as nothing because nothing asked.
-Money you can take but have not taken is still money.
+beneficiary of an outside token's pool on Base. The claim is real and was
+reported as nothing because nothing asked. Money you can take but have
+not taken is still money.
 
 total_cents sums all three tiers — one true total.
 conservative_total_cents is the same without tier 3.
