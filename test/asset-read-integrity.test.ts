@@ -77,7 +77,7 @@ test("the asset batch fills a partial provider response from a healthy fallback"
       // disclosed rather than silently answered as zero — a chain that was not
       // read must never be reported as a chain holding nothing.
       assert.deepEqual(read.errors, [
-        "no BNB Chain provider configured; holdings on that chain are NOT being reported as zero",
+        "no BNB Chain provider configured; holdings on that chain are NOT being reported as zero, and this response's totals cover Base only",
       ]);
       assert.equal(read.eth_usd, 2_000);
       assert.equal(read.token_usd, 2_000);

@@ -6850,15 +6850,37 @@ function recognitionBlock(read: AssetReadResult) {
     cents === null ? null : "$" + (cents / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const sum = (rows: Holding[]) =>
     rows.some((h) => h.value_cents === null) ? null : rows.reduce((n, h) => n + (h.value_cents ?? 0), 0);
-  const qty = (asset: string, chain: string) =>
-    read.holdings.filter((h) => h.asset === asset && h.chain === chain).reduce((n, h) => n + Number(h.quantity ?? 0), 0);
+  // NULL, NOT ZERO, and not "0.000000" in a sentence either.
+  //
+  // The first version of this used `Number(h.quantity ?? 0)`, so a failed
+  // balanceOf rendered as "sent 0.000000 NVDAB" beside an error saying the
+  // balance had not been read and a value of null. One field honest, one field
+  // lying, in the same response. On a page that was blanking for roughly one
+  // request in three, that is not a corner case, it is the common case.
+  // src/assets.ts says in as many words that holdings on an unreachable chain
+  // "are NOT being reported as zero"; prose is a report. Caught by the
+  // pre-deploy auditor, 2026-08-21, and it is the same defect class this whole
+  // change exists to end, written into the fix for it.
+  //
+  // `location` is a required argument rather than optional, because R1 below
+  // is the other half of the same mistake: summing wallet and claimable and
+  // calling the total "sent".
+  const qty = (asset: string, chain: string, location: "wallet" | "claimable") => {
+    const rows = read.holdings.filter((h) => h.asset === asset && h.chain === chain && h.location === location);
+    if (rows.length === 0 || rows.some((h) => h.quantity === null)) return null;
+    return rows.reduce((n, h) => n + Number(h.quantity), 0);
+  };
+  const unread = "not read on this request";
+  const amount = (n: number | null, unit: string, digits = 6) =>
+    n === null ? null : `${n.toFixed(digits)} ${unit}`;
+  const whole = (n: number | null, unit: string) =>
+    n === null ? null : `${Math.round(n).toLocaleString("en-US")} ${unit}`;
 
   const baseToken = read.holdings.filter((h) => h.chain === "base" && h.asset !== "USDC");
   const bnb = read.holdings.filter((h) => h.chain === "bnb");
   const baseCents = sum(baseToken);
   const bnbCents = sum(bnb);
   const fundCents = Math.round(Number(MEASURED.fundToken.usdc_sent) * 100);
-  const tokenTotal = baseCents === null || bnbCents === null ? null : baseCents + bnbCents + fundCents;
   // The wallet total. NOT token_derived + deliberate: the fund token's USDC is
   // already inside the holdings sum, so adding it again would double-count the
   // largest single sender on the page.
@@ -6873,9 +6895,20 @@ function recognitionBlock(read: AssetReadResult) {
         address: CLAIM_SOURCES[0].token,
         chain: "base",
         launched_via: "Bankr",
-        sent: `${qty("WETH", "base").toFixed(6)} WETH and ${Math.round(qty("1F916", "base")).toLocaleString("en-US")} of its own supply`,
-        value: money(baseCents),
-        note: "It named this treasury the 95 percent beneficiary of its trading fees, and it is still sending. The claimable rows above are what has accrued since the last collection.",
+        // SENT means it reached the wallet. The claimable rows are fees that have
+        // accrued in the pool and have NOT been released to anyone; calling
+        // them sent would be the same overstatement as calling an invoice
+        // revenue. They are reported on their own line.
+        sent:
+          qty("WETH", "base", "wallet") === null || qty("1F916", "base", "wallet") === null
+            ? unread
+            : `${amount(qty("WETH", "base", "wallet"), "WETH")} and ${whole(qty("1F916", "base", "wallet"), "of its own supply")}`,
+        still_accruing_in_the_pool:
+          qty("WETH", "base", "claimable") === null || qty("1F916", "base", "claimable") === null
+            ? unread
+            : `${amount(qty("WETH", "base", "claimable"), "WETH")} and ${whole(qty("1F916", "base", "claimable"), "of its supply")}, not yet released to anyone`,
+        value: money(sum(read.holdings.filter((h) => h.chain === "base" && h.asset !== "USDC" && h.location === "wallet"))),
+        note: "It named this treasury the 95 percent beneficiary of its trading fees, and it is still sending.",
         live: true,
       },
       {
@@ -6896,14 +6929,31 @@ function recognitionBlock(read: AssetReadResult) {
         address: BNB_TAX_TOKEN,
         chain: "bnb",
         launched_via: "flap.sh",
-        sent: `${qty("NVDAB", "bnb").toFixed(6)} NVDAB`,
+        sent: amount(qty("NVDAB", "bnb", "wallet"), "NVDAB") ?? unread,
         value: money(bnbCents),
-        note: "Launched 28 seconds after the first one. Its market is quoted in tokenized NVIDIA rather than in a currency, so this society is paid in tokenized NVIDIA.",
+        // R3: the previous draft said "launched 28 seconds after the first one".
+        // A precise figure about an external event, with no verify field, no
+        // as_of and no read behind it, is a typed constant wearing a fact's
+        // clothes. The interval is real and I measured it, but this page cannot
+        // hand a reader the receipt, so it does not get to assert it.
+        note: "Its market is quoted in tokenized NVIDIA rather than in a currency, so this society is paid in tokenized NVIDIA.",
         live: true,
       },
     ],
-    token_derived_total: money(tokenTotal),
+    // R2. There used to be a single `token_derived_total` here that added two
+    // CURRENT MARKET MARKS to one LIFETIME-CUMULATIVE FLOOR and printed the
+    // result beside a current balance. Today those read coherently and differ
+    // by roughly the deliberate-giving figure, which is exactly what makes it
+    // dangerous: the first time this treasury spends any USDC the "total sent"
+    // will visibly exceed the money on hand, with nothing on the page to
+    // explain why. A number that is only correct while nothing happens is not a
+    // number. Removed rather than labelled: the per-token values above are each
+    // well defined, and a reader who wants a sum can add the ones that are
+    // commensurable and see for themselves which are not.
+    totals_note:
+      "There is deliberately no single 'total sent' figure. Two of the values above are what this treasury holds RIGHT NOW at current marks; one is how much a sender has cumulatively sent over its lifetime, measured once and floored. Adding them would produce a number that stops being true the moment any money is spent.",
     treasury_total: money(treasuryTotal),
+    treasury_total_note: "What the wallet holds now, across both chains, at the marks in the table above. This is the only total on this page that is a balance.",
     given_deliberately: {
       value: "$" + MEASURED.deliberate.usdc_total,
       note: "Patrons and citizens who simply sent money. This is the part the society earned, and it is the number this page was least willing to say out loud.",

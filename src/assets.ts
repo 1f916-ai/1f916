@@ -1058,12 +1058,22 @@ export async function readTreasuryAssets(
   // than the one it prints, which is the exact state this page was in until
   // 2026-08-21.
   if (bnbRpcUrls.length === 0) {
-    errors.push("no BNB Chain provider configured; holdings on that chain are NOT being reported as zero");
+    // The comment that used to sit above this said the totals "go incomplete"
+    // when no provider is configured. Measured by the pre-deploy auditor on
+    // 2026-08-21: they do not. With no BNB holding pushed at all, every
+    // remaining holding is priced, so `complete` stays TRUE and a Base-only
+    // total is served as though it were the whole portfolio. That is latent
+    // rather than live, because bnbRpcUrls() always returns four entries and
+    // the `||` absorbs an empty binding, so production cannot reach this
+    // branch. It is still a false comment beside a real branch, which is how
+    // every defect repaired today started. The error below is what actually
+    // happens: disclosed in `errors`, and the chain simply absent from
+    // by_chain rather than present at zero.
+    errors.push("no BNB Chain provider configured; holdings on that chain are NOT being reported as zero, and this response's totals cover Base only");
   } else {
     const bnb = await readBnbHoldings(treasuryAddress, bnbRpcUrls);
     holdings.push(...bnb.holdings);
     errors.push(...bnb.errors);
-    checkedAt = Math.min(checkedAt, Date.now());
   }
 
   // Stamped in one pass at the end so every row carries an origin and none can
