@@ -225,6 +225,109 @@ test("the collection state a served sentence points at is actually on the served
     );
     assert.ok(!("why_uncollected" in rung), "a key whose NAME presupposes one state cannot be answered in the other");
     assert.ok(!("if_collected" in rung), "same, one axis over: 'if' is false once it has happened");
+
+    // 5. AGENCY. getLastCumulatedFees says THAT the beneficiary was drawn on and
+    //    never BY WHOM, so no branch selected by that boolean may claim who did
+    //    it. The first fix for this was a text edit with no guard, and the
+    //    auditor reverted the sentence verbatim with the whole suite green
+    //    (NEW-3). A doesNotMatch list alone cannot hold a class — pin the
+    //    replacement's PRESENCE too, so deleting it fails rather than passing.
+    assert.doesNotMatch(
+      JSON.stringify(rung),
+      /did not collect this|society did not collect/,
+      "no branch may assert agency from a read that carries none",
+    );
+    assert.match(
+      rung.posture,
+      /record the amount drawn, never the address that drew it/,
+      "say what the read can and cannot attribute, rather than asserting who acted",
+    );
+
+    // 6. NEW-4: the same false claim lives on CLAIM_SOURCES.note, which is
+    //    served on TWO holdings. Test 1 pins only the exact historical string,
+    //    so a freshly worded version of it walked straight through onto both.
+    //    Match the CLASS on every served note, not one remembered sentence.
+    for (const h of holdings) {
+      assert.doesNotMatch(
+        h.note ?? "",
+        /never (been )?collected|never drawn|never collected from it/,
+        `holding note contradicts collected:true — ${h.location}`,
+      );
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+
+// NEW-1, the auditor's sharpest one. Every executable assertion above runs the
+// `collected === true` path. The `null` path is REACHABLE IN PRODUCTION — the
+// 6s ASSET_REFRESH_BUDGET_MS timeout and any provider outage land there — and
+// nothing executed it, so its branch could be replaced with a confident false
+// and the suite stayed green at 791. src/society.ts:6777 says in a comment that
+// a failed read must never be served as "has never collected"; this is that
+// comment turned into something that fails.
+//
+// The `false` path is deliberately NOT tested here: lastCumulated is monotonic
+// and already non-zero on-chain, so it is unreachable for this pool forever.
+// Testing an unreachable state would be theatre; saying why is not.
+test("a failed read serves unknown, and no sentence in that response claims it was never collected", async () => {
+  // A DIFFERENT treasury address from the test above, on purpose. The asset
+  // cache is a process-global Map keyed by address+RPC (src/society.ts:6733),
+  // so reusing 0x...37 here served that test's collected:true snapshot through
+  // the stale-cache path and this assertion read `true` instead of `null`. The
+  // cache working exactly as designed; the test isolating itself badly.
+  const TREASURY = "0x0000000000000000000000000000000000000038";
+  const stubEnv = () =>
+    ({
+      DB: {
+        prepare(sql: string) {
+          return {
+            async all<T>() {
+              return { results: [] as T[] };
+            },
+            async first<T>() {
+              if (sql.includes("SUM(amount_cents)")) return { balance: 0 } as T;
+              return { n: 0 } as T;
+            },
+          };
+        },
+      },
+      TREASURY_ADDRESS: TREASURY,
+      BASE_RPC_URL: "https://rpc.test",
+    }) as unknown as Env;
+
+  const originalFetch = globalThis.fetch;
+  try {
+    // Every provider down. The reader must resolve honest nulls, not defaults.
+    globalThis.fetch = (async () => {
+      throw new Error("provider unreachable");
+    }) as unknown as typeof fetch;
+
+    const body = await treasury(stubEnv());
+    const assets = body.assets as unknown as Record<string, unknown>;
+    const collection = assets.collection as { collected: boolean | null };
+    assert.equal(collection.collected, null, "an unreadable claim is unknown, never false");
+
+    const rung = (body.spending_policy as { refill_rung: Record<string, string> }).refill_rung;
+    assert.match(rung.what, /could not be read on this request/);
+    assert.match(rung.posture, /could not be read on this request|nothing here characterises/);
+
+    // Every NARRATIVE surface, not just the one field. Scoped to refill_rung and
+    // the holdings' notes rather than the whole body on purpose: the `verify`
+    // recipe legitimately contains the phrase "0 if it has never collected"
+    // while EXPLAINING what the word means, which is a description of the read
+    // and not a claim about its value. A guard that cannot tell those apart
+    // gets deleted for crying wolf, which is how the last one died.
+    const narrative = [
+      ...Object.values(rung),
+      ...(assets.holdings as Array<{ note?: string }>).map((h) => h.note ?? ""),
+    ].join("\n");
+    assert.doesNotMatch(
+      narrative,
+      /has never been collected|never been collected from|has never collected|never drawn/,
+      "a failed read must not be served as an assertion that collection never happened",
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }

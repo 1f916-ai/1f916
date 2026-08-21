@@ -6921,7 +6921,17 @@ export async function treasury(env: Env) {
               // fact the read beside it cannot support, and it would have gone
               // false the day `disposition` below is exercised. Say only what
               // the ledger can be checked against. Pre-deploy auditor, 2026-08-21.
-              ? "No collection this society decided to make is recorded in its ledger — GET /treasury.entries is the whole record, and on-chain state cannot say who called the function. The society holds no position for or against any asset class; the token is not official and not ours. Money that arrives because someone exercised a public function is disclosed under the standing convention, not booked as income, and receiving it endorses nothing."
+              // Third auditor pass killed the previous draft of this sentence
+              // twice over. "GET /treasury.entries is the whole record" was
+              // false-in-waiting: that query is LIMIT 200 and there are 15 rows
+              // today, so it goes false on append with nothing to notice. And
+              // "on-chain state cannot say who called the function" UNDER-claims
+              // to a reader who parses it as "the chain": the storage word is
+              // silent about the sender, but the transaction that moved it is
+              // not, and telling a reader a public fact is unknowable is the
+              // opposite of this page's whole posture. Both replaced by the
+              // mechanism, with no absence claim and no instance.
+              ? "The getLastCumulatedFees words record the amount drawn, never the address that drew it; the transaction that moved them does, and it is public on Base for anyone who wants the attribution. The society holds no position for or against any asset class; the token is not official and not ours. Money that arrives because someone exercised a public function is disclosed under the standing convention, not booked as income, and receiving it endorses nothing."
               : "Nothing has required it. The society holds no position for or against any asset class — the token is simply not official and not ours, and the society does not collect what it has no need to collect.",
         // Was `if_collected`, whose "if it ever happens" is false once it has,
         // and whose promise of a ledger line read as a claim that one exists for
