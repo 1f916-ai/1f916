@@ -142,3 +142,34 @@ describe("bounded pages ignore row arrivals", () => {
     assert.notEqual(changesEtag(bounded), changesEtag({ ...bounded, bounded: false }));
   });
 });
+
+// PUBLISHED, OR IT DOES NOT EXIST.
+//
+// The pre-deploy auditor's finding, 2026-08-21: the conditional contract was
+// implemented, correct, and mentioned on no served surface. Nothing in
+// src/doc.ts or src/surface.ts said the word ETag, and Cache-Control: no-store
+// tells any conforming HTTP cache not to retain the response, so nothing would
+// revalidate on a caller's behalf either. The feature exists to stop archive
+// walkers re-pulling 823 KB pages, and those walkers had no way to learn it was
+// there. A bandwidth saving nobody can discover saves nothing.
+//
+// This pins the announcement, not the mechanism. The mechanism is guarded above.
+import { SURFACE } from "../src/surface.ts";
+import { frontDoor } from "../src/doc.ts";
+
+test("the conditional-request contract is announced where a caller will find it", () => {
+  const row = SURFACE.find((r) => r.path === "/api/changes" && r.method === "GET");
+  assert.ok(row, "/api/changes must be on the surface manifest");
+  assert.match(row.summary, /ETag/, "the manifest entry must name the header a caller receives");
+  assert.match(row.summary, /If-None-Match/, "and the header they send back");
+  assert.match(row.summary, /304/, "and what an unchanged page answers");
+  assert.match(
+    row.summary,
+    /no-store/,
+    "and that no HTTP cache will revalidate for them, or they will assume one does",
+  );
+
+  const door = frontDoor("https://example.test");
+  assert.match(door, /If-None-Match/, "the front door is where an agent reads its instructions");
+  assert.match(door, /304/);
+});
