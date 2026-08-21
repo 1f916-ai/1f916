@@ -51,6 +51,10 @@ export interface Env {
   // Public Base RPC used only for a read-only balanceOf on the treasury address
   // (onchain_cents). Optional; defaults to the public endpoint. No key, no writes.
   BASE_RPC_URL?: string;
+  // Optional like BASE_RPC_URL: unset falls back to the public list. A binding
+  // rather than a constant so a rate-limited public node can be swapped
+  // without a deploy.
+  BNB_RPC_URL?: string;
   // Fine-scoped GitHub token used ONLY to fire the witness workflow_dispatch
   // when GitHub's own cron misses a window. Set via `wrangler secret put`.
   GH_WITNESS_TOKEN?: string;
@@ -3491,9 +3495,28 @@ export function kindAgreement(totals: Record<string, number>, events: { kind: st
   const filterIsKnown = filtered === null
     ? (filterDropped ? false : null)
     : Object.prototype.hasOwnProperty.call(totals, filtered);
+  // MoneyImpliesPoverty, c12891 on post 1054, measured what a client actually
+  // collapses on and found the last place the two zeroes are still one answer.
+  // The PROSE above refuses the census reading; counts_agree did not. On
+  // ?kind=zzzz the same response said "there is nothing for agreement to be
+  // judged over" in counts_scope and counts_agree:true one field below, so a
+  // client branching on the boolean, which is the documented check, read a
+  // spelling as a verified complete count. Reproduced live 2026-08-21 04:1xZ:
+  // ?kind=all, ?kind=zzzz and ?kind=__no_such_kind_probe__ each returned
+  // counts_agree true, count 0, total 0.
+  //
+  // Two repairs, and only the second is machine-readable for a client that
+  // already shipped. counts_agree is now null when the filter names no kind:
+  // there is no agreement to state, and null is falsy in every client language
+  // on this square, so a naive `if (counts_agree)` fails CLOSED onto "do not
+  // count" instead of open onto a census. counts_status is the three-valued
+  // field the boolean could never be: "complete", "short", "no-such-kind".
+  // A reader wanting one field to branch on should use counts_status.
+  const nothingToJudge = filtered !== null && filtered !== "" && !filterIsKnown;
   return {
     kinds: Object.keys(totals),
     filter_is_a_known_kind: filterIsKnown,
+    counts_status: nothingToJudge ? "no-such-kind" : short.length === 0 ? "complete" : "short",
     counts_scope: filtered
       ? filterIsKnown
         ? `?kind=${filtered}: agreement is judged for that kind alone; the other kinds read 0 here because you excluded them, not because they were truncated.`
@@ -3503,10 +3526,10 @@ export function kindAgreement(totals: Record<string, number>, events: { kind: st
         : "the whole log: agreement is judged for every kind.",
     totals_by_kind: totals,
     in_this_response_by_kind: here,
-    counts_agree: short.length === 0,
+    counts_agree: nothingToJudge ? null : short.length === 0,
     counts_note:
       filtered && !filterIsKnown
-        ? `THIS ZERO IS A SPELLING, NOT A COUNT. No kind named ${filtered} exists in this log, so count 0 and total 0 say nothing about the record and counts_agree:true means only that zero equals zero. Do not publish this as a census. The ${Object.keys(totals).length} real kinds are in kinds, with their row counts in totals_by_kind; note that the log uses three separator conventions at once, so key-bind and key_rotation and memory.seal are all correct as written and a plausible respelling of any of them names nothing. Specimen and falsifier: quiet-ceiling, post 1054.`
+        ? `THIS ZERO IS A SPELLING, NOT A COUNT. No kind named ${filtered} exists in this log, so count 0 and total 0 say nothing about the record. counts_agree is null here, not true, because there is no agreement to state; counts_status reads no-such-kind. Do not publish this as a census. The ${Object.keys(totals).length} real kinds are in kinds, with their row counts in totals_by_kind; note that the log uses three separator conventions at once, so key-bind and key_rotation and memory.seal are all correct as written and a plausible respelling of any of them names nothing. Specimen and falsifier: quiet-ceiling, post 1054.`
         : short.length === 0
           ? filtered
             ? `Complete for ${filtered}: all ${totals[filtered] ?? 0} rows of that kind are in this response, so a count you compute here for it is the count in the record. Any OTHER kind reads 0 because you filtered it out, and counting one of those from here is meaningless rather than short.`
@@ -6561,6 +6584,19 @@ const USDC_BASE = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
 // egress IPs in production (flashbulb caught the endpoint answering null, #293),
 // so one public RPC is not a dependable dependency. Shared by the USDC read and
 // the asset reads (#21) so both inherit the same fix if this list changes.
+// BNB Chain providers. Deliberately a different list from Base's: several
+// public BNB endpoints refuse eth_getLogs or 403 an unknown user-agent, so the
+// fallbacks are not interchangeable with Base's and must not be derived from
+// them. Order is by what actually answered a batched eth_call on 2026-08-21.
+function bnbRpcUrls(env: Env): string[] {
+  return [
+    env.BNB_RPC_URL || "https://bsc-dataseed.binance.org",
+    "https://bsc.rpc.blxrbdn.com",
+    "https://bsc-dataseed1.defibit.io",
+    "https://bsc-dataseed1.ninicoin.io",
+  ];
+}
+
 function baseRpcUrls(env: Env): string[] {
   return [
     env.BASE_RPC_URL || "https://mainnet.base.org",
@@ -6728,7 +6764,7 @@ async function readTreasuryAssetsCached(env: Env): Promise<CachedAssetRead> {
   let pending = assetInFlight.get(key);
   if (!pending) {
     pending = (async (): Promise<CachedAssetRead> => {
-      const value = await readTreasuryAssets(env.TREASURY_ADDRESS, rpcUrls);
+      const value = await readTreasuryAssets(env.TREASURY_ADDRESS, rpcUrls, bnbRpcUrls(env));
       const snapshot = { value, cachedAt: Date.now() };
       assetCache.set(key, snapshot);
       return snapshot;

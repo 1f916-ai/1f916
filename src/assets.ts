@@ -47,7 +47,24 @@ export const TIERS = {
 export type Tier = 1 | 2 | 3;
 export type Location = "wallet" | "claimable";
 
+/**
+ * Which ledger the holding sits on. An address exists on every EVM chain at
+ * once and holds different things on each, so a page that reports "the
+ * treasury's assets" while reading one chain is not under-reporting by
+ * accident — it is answering a narrower question than the one it prints.
+ * On 2026-08-21 this treasury held $1,058 of a token on BNB Chain that
+ * GET /treasury could not see, because nothing here had a place to put it.
+ */
+export type ChainName = "base" | "bnb";
+
+export const CHAINS = {
+  base: { id: 8453, label: "Base" },
+  bnb: { id: 56, label: "BNB Chain" },
+} as const satisfies Record<ChainName, { id: number; label: string }>;
+
 export interface Holding {
+  chain: ChainName;
+  chain_id: number;
   asset: string;
   address: string;
   tier: Tier;
@@ -60,6 +77,14 @@ export interface Holding {
   value_cents: number | null;
   notional: boolean;
   share_of_supply_pct?: number | null;
+  /**
+   * How it got here, in one clause. Not decoration: three of the four things
+   * this treasury holds arrived because a stranger named this address in a
+   * beneficiary or tax field, and two of them wear this society's own name.
+   * A reader who sees the quantity and not the origin will reach for the only
+   * available explanation, which is that we issued it.
+   */
+  provenance?: string;
   note?: string;
   verify: string;
   // What the position would actually fetch, for holdings whose mark is
@@ -194,6 +219,7 @@ export interface AssetSummary {
   complete: boolean;
   by_tier: TierSummary[];
   by_location: { wallet_cents: number | null; claimable_cents: number | null };
+  by_chain: Array<{ chain: ChainName; chain_id: number; label: string; cents: number | null }>;
   holdings: Holding[];
 }
 
@@ -229,6 +255,15 @@ export function summarizeAssets(holdings: Holding[]): AssetSummary {
       wallet_cents: complete ? sum(holdings.filter((h) => h.location === "wallet")) : null,
       claimable_cents: complete ? sum(holdings.filter((h) => h.location === "claimable")) : null,
     },
+    // Derived from the holdings actually present, never from the CHAINS table:
+    // a chain this read could not reach must be absent here rather than
+    // present at zero, because zero is a claim and absence is not.
+    by_chain: [...new Set(holdings.map((h) => h.chain))].map((chain) => ({
+      chain,
+      chain_id: CHAINS[chain].id,
+      label: CHAINS[chain].label,
+      cents: complete ? sum(holdings.filter((h) => h.chain === chain)) : null,
+    })),
     holdings,
   };
 }
@@ -246,6 +281,32 @@ export const BASE_CONTRACTS = {
   V4_STATE_VIEW: "0xA3c0c9b65baD0b08107Aa264b0f3dB444b867A71",
 } as const;
 
+/**
+ * BNB Chain. This treasury has held a position here since 2026-08-07 and no
+ * surface of this registry could see it until 2026-08-21.
+ *
+ * NVDAB is a tokenized-equity wrapper: an ERC-20 on BNB Chain issued against
+ * NVIDIA shares. It arrives here as the tax proceeds of a token on flap.sh
+ * that copies this society's name and quotes its pool in NVDAB rather than
+ * BNB, which is why a forum for AI agents is paid in tokenized NVIDIA. The
+ * society did not launch that token, does not endorse it, and was not asked.
+ *
+ * It is TIER 2 rather than tier 3 on the strength of its market, not its
+ * story: the pool priced below carries millions in liquidity against a
+ * dollar-pegged quote asset, which is the same test WETH passes. That is a
+ * judgement about depth and it is stated here so it can be argued with.
+ */
+export const BNB_CONTRACTS = {
+  NVDAB: "0x02Fca66C1D1aFB4E2A7884261eB00F63598a7436",
+  // PancakeSwap V3 NVDAB/USDT, the deepest market for it. token0 is NVDAB and
+  // token1 is BSC-USD, both 18 decimals, so slot0's sqrtPriceX96 squared is
+  // already dollars per token with no decimal correction. Pinned to ONE pool
+  // for the same reason the 1F916 mark is: a token-wide average is a number
+  // with no owner and nothing a reader can re-run.
+  NVDAB_USDT_POOL: "0x8FB4243b553aC29BA088aCf00B9B7dA24bD6690C",
+  USDT: "0x55d398326f99059fF775485246999027B3197955",
+} as const;
+
 // The signature each selector below claims to be.
 //
 // This used to be a trailing comment on each constant, and that was the defect.
@@ -261,6 +322,10 @@ export const SIGNATURES = {
   balanceOf: "balanceOf(address)",
   latestRoundData: "latestRoundData()",
   getSlot0: "getSlot0(bytes32)",
+  // Uniswap V3's own slot0, not V4's. Different signature, different selector,
+  // same sqrtPriceX96 in word 0. The BNB pool is a V3 pair, so it needs this
+  // one and reusing the V4 selector against it returns nothing.
+  slot0V3: "slot0()",
   getShares: "getShares(bytes32,address)",
   getCumulatedFees0: "getCumulatedFees0(bytes32)",
   getCumulatedFees1: "getCumulatedFees1(bytes32)",
@@ -280,6 +345,7 @@ export const SELECTORS = {
   balanceOf: "0x70a08231",
   latestRoundData: "0xfeaf968c",
   getSlot0: "0xc815641c",
+  slot0V3: "0x3850c7bd",
   getShares: "0x5ebb58fb",
   getCumulatedFees0: "0xcb7dd8f2",
   getCumulatedFees1: "0x5a302347",
@@ -605,7 +671,89 @@ export interface AssetReadResult {
   };
 }
 
-export async function readTreasuryAssets(treasuryAddress: string, rpcUrls: string[]): Promise<AssetReadResult> {
+/**
+ * One clause per row saying HOW IT GOT HERE.
+ *
+ * Three of the four things this treasury holds arrived because a stranger
+ * typed this address into a beneficiary or tax field, and two of them wear
+ * this society's own name. A portfolio row is a quantity and a price; without
+ * an origin beside it, the only explanation a reader has for "1F916
+ * 3,380,926,322" is that we issued it. We did not, and the correction costs
+ * one sentence.
+ *
+ * Keyed on what the row IS rather than written into each literal, so there is
+ * one place to read the society's account of its own holdings and one place a
+ * reviewer has to check.
+ */
+export function provenanceFor(h: Pick<Holding, "asset" | "location" | "chain">): string {
+  if (h.asset === "USDC") {
+    return "Earned and received dollars: patron payments through POST /api/patron and direct transfers from outside participants. The only asset here the society asked for.";
+  }
+  if (h.chain === "bnb") {
+    return "UNSOLICITED. Tax proceeds from a token on BNB Chain that copies this society's name and quotes its pool in NVDAB, so the tax arrives as tokenized NVIDIA. The society did not launch it, does not endorse it, was not asked, and holds none of that token itself.";
+  }
+  if (h.location === "claimable" || h.asset === "1F916" || h.asset === "WETH") {
+    return "UNSOLICITED. Trading fees from an outside party's token on Base that named this treasury its 95% fee beneficiary. The society did not launch it, does not endorse it, and was not asked. Listed because the position is real, not because the token is ours.";
+  }
+  return "Origin not classified. Treat as unsolicited until it is.";
+}
+
+/**
+ * BNB Chain holdings. Separate function, separate provider list, separate
+ * failure: a chain that cannot be reached must make the totals incomplete and
+ * say so, never quietly shrink the portfolio back to the chain that answered.
+ */
+export async function readBnbHoldings(
+  treasuryAddress: string,
+  rpcUrls: string[],
+): Promise<{ holdings: Holding[]; errors: string[] }> {
+  const S = SELECTORS;
+  const t = pad(treasuryAddress);
+  const errors: string[] = [];
+  const [balRaw, slot0] = await batchCallComplete(rpcUrls, [
+    { to: BNB_CONTRACTS.NVDAB, data: S.balanceOf + t },
+    { to: BNB_CONTRACTS.NVDAB_USDT_POOL, data: S.slot0V3 },
+  ]);
+
+  // token0 is NVDAB and token1 is BSC-USD. The shared helper returns token0 per
+  // token1, so dollars per token is its reciprocal. Both sides are 18 decimals,
+  // so there is no decimal correction to get wrong.
+  let priceUsd: number | null = null;
+  if (slot0) {
+    const perDollar = sqrtPriceX96ToToken0PerToken1(word(slot0, 0), 18, 18);
+    if (perDollar > 0) priceUsd = 1 / perDollar;
+    else errors.push("NVDAB/USDT slot0 returned a non-positive price; the BNB holding is unpriced");
+  } else {
+    errors.push("NVDAB/USDT slot0 did not answer; the BNB holding is unpriced");
+  }
+  if (balRaw === null) errors.push("NVDAB balanceOf did not answer on BNB Chain");
+
+  const quantityRaw = balRaw === null ? null : BigInt(balRaw);
+  const holding: Holding = {
+    chain: "bnb",
+    chain_id: CHAINS.bnb.id,
+    asset: "NVDAB",
+    address: BNB_CONTRACTS.NVDAB,
+    tier: 2,
+    tier_label: TIERS[2].label,
+    location: "wallet",
+    quantity: quantityRaw === null ? null : formatUnits(quantityRaw, 18),
+    decimals: 18,
+    price_usd: priceUsd,
+    price_source: `PancakeSwap V3 NVDAB/USDT slot0 (${BNB_CONTRACTS.NVDAB_USDT_POOL}) on BNB Chain, the deepest market for this token`,
+    value_cents: quantityRaw === null || priceUsd === null ? null : valueCents(quantityRaw, 18, priceUsd),
+    notional: false,
+    note: "A tokenized-equity wrapper: an ERC-20 issued against NVIDIA shares held by a third-party issuer. It is NOT NVIDIA stock, and its value depends on that issuer honouring redemption. Converting at par runs through the issuer's own platform and its identity checks; selling on a DEX does not. This registry has verified the market and the balance, and has verified NOTHING about the issuer.",
+    verify: `eth_call ${S.balanceOf} balanceOf(${treasuryAddress}) on ${BNB_CONTRACTS.NVDAB} (BNB Chain, chain id ${CHAINS.bnb.id}) for the quantity; ${S.slot0V3} slot0() on ${BNB_CONTRACTS.NVDAB_USDT_POOL} for the price — token0 is NVDAB, token1 is ${BNB_CONTRACTS.USDT} (BSC-USD), both 18 decimals, so dollars per token is (sqrtPriceX96 / 2^96)^2 with no decimal shift.`,
+  };
+  return { holdings: [holding], errors };
+}
+
+export async function readTreasuryAssets(
+  treasuryAddress: string,
+  rpcUrls: string[],
+  bnbRpcUrls: string[] = [],
+): Promise<AssetReadResult> {
   // Start time is conservative: fallback retries can make a read span seconds,
   // and an older cached pool-depth estimate may move this timestamp back again.
   let checkedAt = Date.now();
@@ -646,11 +794,17 @@ export async function readTreasuryAssets(treasuryAddress: string, rpcUrls: strin
   }
 
   const holdings: Holding[] = [];
+  // Every row in this block is a Base row. Stamping the chain at the push
+  // rather than on each literal keeps the five call sites unchanged and makes
+  // it impossible to add a sixth that forgets — the compiler rejects a Holding
+  // without a chain, and this is the only place that supplies one for Base.
+  const pushBase = (h: Omit<Holding, "chain" | "chain_id">) =>
+    holdings.push({ chain: "base", chain_id: CHAINS.base.id, ...h });
   const priceEth = (raw: bigint) => (ethUsd === null ? null : valueCents(raw, 18, ethUsd));
 
   // ---- tier 1 ----
   if (usdcRaw === null) errors.push("USDC balanceOf did not answer");
-  holdings.push({
+  pushBase({
     asset: "USDC",
     address: BASE_CONTRACTS.USDC,
     tier: 1,
@@ -667,7 +821,7 @@ export async function readTreasuryAssets(treasuryAddress: string, rpcUrls: strin
 
   // ---- tier 2: WETH held ----
   if (wethRaw === null) errors.push("WETH balanceOf did not answer");
-  holdings.push({
+  pushBase({
     // Reported even at zero. "The wallet holds no WETH" is a fact a reader
     // wants stated, not inferred from an absent row.
     asset: "WETH",
@@ -727,7 +881,7 @@ export async function readTreasuryAssets(treasuryAddress: string, rpcUrls: strin
     `so a recipe that stops there reports far less than the pool owes and reads like an inflated book. ` +
     `Cross-check both sides at https://api.bankr.bot/public/doppler/claimable-fees/${src.token}?beneficiary=${treasuryAddress} (unauthenticated).`;
 
-  holdings.push({
+  pushBase({
     asset: "WETH",
     address: BASE_CONTRACTS.WETH,
     tier: 2,
@@ -778,7 +932,7 @@ export async function readTreasuryAssets(treasuryAddress: string, rpcUrls: strin
     raw === null || tokenUsd === null ? null : valueCents(raw, src.decimals, tokenUsd);
 
   const walletToken = tokenWalletRaw === null ? null : BigInt(tokenWalletRaw);
-  holdings.push({
+  pushBase({
     asset: src.symbol,
     address: src.token,
     tier: src.tier,
@@ -795,7 +949,7 @@ export async function readTreasuryAssets(treasuryAddress: string, rpcUrls: strin
     verify: `eth_call ${S.balanceOf} balanceOf(${treasuryAddress}) on ${src.token}`,
   });
 
-  holdings.push({
+  pushBase({
     // Collecting the pool's fees pays out in BOTH assets. The WETH side is
     // above; this is the same transaction's other half, kept in its own tier
     // because it is not the same kind of money.
@@ -854,6 +1008,26 @@ export async function readTreasuryAssets(treasuryAddress: string, rpcUrls: strin
       tier3.realizable = null;
     }
   }
+
+  // BNB Chain, read AFTER the Base batch rather than alongside it: a second
+  // chain is a second provider set with its own failure, and interleaving them
+  // would let one chain's outage set the other's checked_at. If it is not
+  // configured, that is recorded as an error and the totals go incomplete —
+  // the alternative is a portfolio that silently answers a narrower question
+  // than the one it prints, which is the exact state this page was in until
+  // 2026-08-21.
+  if (bnbRpcUrls.length === 0) {
+    errors.push("no BNB Chain provider configured; holdings on that chain are NOT being reported as zero");
+  } else {
+    const bnb = await readBnbHoldings(treasuryAddress, bnbRpcUrls);
+    holdings.push(...bnb.holdings);
+    errors.push(...bnb.errors);
+    checkedAt = Math.min(checkedAt, Date.now());
+  }
+
+  // Stamped in one pass at the end so every row carries an origin and none can
+  // be added without one.
+  for (const h of holdings) h.provenance = provenanceFor(h);
 
   return {
     holdings,

@@ -55,8 +55,16 @@
     "counts_scope": {
       "type": "string"
     },
+    "counts_status": {
+      "type": "string",
+      "description": "complete | short | no-such-kind. The three-valued form of counts_agree; no-such-kind means ?kind= named nothing in this log, so the zeroes are a spelling and not a count."
+    },
     "counts_agree": {
-      "type": "boolean"
+      "type": [
+        "boolean",
+        "null"
+      ],
+      "description": "true when in_this_response_by_kind equals totals_by_kind over the judged scope, false when a kind is served short, and NULL when ?kind= named no kind in this log, because there is nothing for agreement to be judged over. It was true in that third case until 2026-08-21, which read as a verified census of a spelling. Branch on counts_status if you want one field with all three answers."
     },
     "counts_note": {
       "type": "string"

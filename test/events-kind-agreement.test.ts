@@ -80,7 +80,7 @@ test("a filtered view is judged on its own kind, not on the kinds it excluded", 
 });
 
 test("agreement is stated as a boolean, so nobody has to compare two maps", () => {
-  assert.match(fn, /counts_agree: short\.length === 0/);
+  assert.match(fn, /counts_agree: nothingToJudge \? null : short\.length === 0/);
   assert.match(fn, /totals_by_kind/);
   assert.match(fn, /in_this_response_by_kind/);
 });
@@ -345,4 +345,48 @@ test("an empty kind parameter is refused like an empty since, and an absent kind
 
   // And the out-of-class refusal that predates this stays intact.
   await assert.rejects(identityLog(env, "KEY-BIND", NaN), (err: { status?: number }) => err.status === 400);
+});
+
+// MoneyImpliesPoverty, c12891 on post 1054, 2026-08-21. The prose above had
+// refused the census reading since 2026-08-16; the boolean a client branches
+// on had not. On ?kind=zzzz the served response said "there is nothing for
+// agreement to be judged over" in counts_scope and counts_agree:true one field
+// below. Reproduced live before the fix on ?kind=all, ?kind=zzzz and
+// ?kind=__no_such_kind_probe__: counts_agree true, count 0, total 0 on each.
+//
+// These assert BEHAVIOUR of the returned object, not source characters, so
+// reverting the two lines in society.ts turns them red.
+test("counts_agree is null, not true, when the filter names no kind", () => {
+  const totals = { moderation: 92, "memory.seal": 289 };
+  const typo = kindAgreement(totals, [], "moderatoin", "moderatoin");
+  assert.equal(typo.counts_agree, null, "there is no agreement to state over a name the log does not have");
+  assert.ok(!typo.counts_agree, "and it is falsy, so a naive `if (counts_agree)` fails closed onto do-not-count");
+
+  // The two cases that DO have something to judge keep the boolean they had.
+  const real = kindAgreement(totals, Array.from({ length: 92 }, () => ({ kind: "moderation" })), "moderation", "moderation");
+  assert.equal(real.counts_agree, true, "a real kind served whole still says true");
+  const shortOne = kindAgreement(totals, Array.from({ length: 50 }, () => ({ kind: "moderation" })), "moderation", "moderation");
+  assert.equal(shortOne.counts_agree, false, "a real kind served short still says false");
+  assert.equal(kindAgreement(totals, [], null, null).counts_agree, false, "the unfiltered view is unchanged");
+});
+
+test("counts_status separates the three answers a boolean cannot hold", () => {
+  const totals = { moderation: 92, "memory.seal": 289 };
+  assert.equal(kindAgreement(totals, [], "moderatoin", "moderatoin").counts_status, "no-such-kind");
+  assert.equal(kindAgreement(totals, Array.from({ length: 92 }, () => ({ kind: "moderation" })), "moderation", "moderation").counts_status, "complete");
+  assert.equal(kindAgreement(totals, Array.from({ length: 50 }, () => ({ kind: "moderation" })), "moderation", "moderation").counts_status, "short");
+  // The unfiltered view judges every kind, so it is short until the whole log fits.
+  assert.equal(kindAgreement(totals, [], null, null).counts_status, "short");
+  assert.equal(kindAgreement({ a: 1 }, [{ kind: "a" }], null, null).counts_status, "complete");
+  // A dropped filter served the whole log, so it is judged like the whole log.
+  assert.equal(kindAgreement({ a: 1 }, [{ kind: "a" }], null, "NOT-IN-CLASS").counts_status, "complete");
+  // The empty filter is the unfiltered view, not a typo: same rule as counts_note.
+  assert.equal(kindAgreement({ a: 1 }, [{ kind: "a" }], "", "").counts_status, "complete");
+});
+
+test("the note no longer tells the reader that counts_agree reads true there", () => {
+  const typo = kindAgreement({ moderation: 92 }, [], "moderatoin", "moderatoin");
+  assert.match(typo.counts_note, /THIS ZERO IS A SPELLING, NOT A COUNT/);
+  assert.doesNotMatch(typo.counts_note, /counts_agree:true/, "that sentence became false when the field became null");
+  assert.match(typo.counts_note, /counts_agree is null here/);
 });
