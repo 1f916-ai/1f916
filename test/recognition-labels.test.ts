@@ -242,3 +242,81 @@ test("a chain with no rows at all reports unread, not zero", async () => {
 // itself rather than of the system. So: the branch is defensive, it is
 // unreachable by construction, and if bnbRpcUrls() is ever changed to return an
 // empty list, this comment is the thing that should stop you.
+
+
+// THE SECOND VACUOUS GUARD IN THIS FILE, and the auditor caught it the same way
+// it caught the first: by reverting the fix and watching the suite stay green.
+//
+// The test above needs a claimable of 3 whole tokens so that wallet-only and
+// wallet-plus-claimable round to DIFFERENT integers, which is what makes the
+// "sent is wallet-only" assertion bite. But Math.round(3) is 3 with or without
+// whole()'s sub-1 floor, so the very fixture that arms one assertion disarms the
+// one beside it. Exactly the shape of the 0.4-against-5 collision I had already
+// been caught on once in this same file.
+//
+// The lesson is not "write better fixtures". It is that a hazard which must be
+// large for one assertion and small for another needs TWO fixtures, and that a
+// negative assertion (doesNotMatch) proves nothing unless something in the same
+// run proves the branch executed at all. Both checks below are positive.
+test("a sub-1 claimable renders as a bound, and a true zero still renders as zero", async () => {
+  const word = (v: bigint) => v.toString(16).padStart(64, "0");
+  const originalFetch = globalThis.fetch;
+  const run = async (uncollected1: bigint, address: string) => {
+    globalThis.fetch = (async (_i: RequestInfo | URL, init?: RequestInit) => {
+      const payload = JSON.parse(String(init?.body));
+      if (!Array.isArray(payload)) return Response.json({ jsonrpc: "2.0", id: 1, result: "0x" + word(0n) });
+      const roundData = "0x" + [0n, 2_000n * 100_000_000n, 0n, BigInt(Math.floor(Date.now() / 1000)), 0n].map(word).join("");
+      return Response.json(
+        payload.map(({ id, params }: { id: number; params?: [{ data: string }, "latest"] }) => {
+          const data = params?.[0].data ?? "";
+          if (data === SELECTORS.latestRoundData) return { id, result: roundData };
+          if (data.startsWith(SELECTORS.getSlot0)) return { id, result: "0x" + [1n << 96n, 0n, 0n, 3_000n].map(word).join("") };
+          if (data.startsWith(SELECTORS.slot0V3)) return { id, result: "0x" + [1n << 96n, 0n, 0n, 0n, 0n, 0n, 0n].map(word).join("") };
+          if (data.startsWith(SELECTORS.collectFees)) return { id, result: "0x" + word(0n) + word(uncollected1) };
+          if (data.startsWith(SELECTORS.getShares)) return { id, result: "0x" + word(10n ** 18n) };
+          if (data.startsWith(SELECTORS.balanceOf)) return { id, result: "0x" + word(5n * 10n ** 18n) };
+          return { id, result: "0x" + word(0n) };
+        }),
+      );
+    }) as typeof fetch;
+    const body = await treasury(stubEnv(address));
+    const rec = (body.spending_policy as { recognition: { tokens: Array<Record<string, unknown>> } }).recognition;
+    return String(rec.tokens[0].still_accruing_in_the_pool);
+  };
+
+  try {
+    // 0.4 tokens. Math.round takes it to 0; the holdings row prices it in dollars.
+    const dust = await run(4n * 10n ** 17n, "0x0000000000000000000000000000000000000044");
+    assert.match(dust, /less than 1 of its supply/, "a sub-1 claimable must render as a bound, never as the digit 0");
+
+    // And the converse, so the fix cannot be 'improved' into never saying zero:
+    // a genuine zero must still read as zero, not as a bound over nothing.
+    const zero = await run(0n, "0x0000000000000000000000000000000000000045");
+    assert.match(zero, /0 of its supply/, "a real zero is a fact and must be stated as one");
+    assert.doesNotMatch(zero, /less than/, "a bound over an empty pool would be an invented uncertainty");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+// N5. `totals_note` asserts an ABSENCE — "there is deliberately no single
+// 'total sent' figure" — and an absence claim in served prose has to be
+// mechanical or it is just a sentence. Restoring token_derived_total would put a
+// field with exactly that meaning beside a sentence denying it exists: a
+// self-contradiction inside one response, which is different in kind from a
+// response that is merely thinner.
+test("the recognition block carries no total but the one it says it carries", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = (async () => {
+      throw new Error("down");
+    }) as unknown as typeof fetch;
+    const body = await treasury(stubEnv("0x0000000000000000000000000000000000000046"));
+    const rec = (body.spending_policy as { recognition: Record<string, unknown> }).recognition;
+    const totals = Object.keys(rec).filter((k) => /_total$/.test(k));
+    assert.deepEqual(totals, ["treasury_total"], "the only total on this block is the one that is a balance");
+    assert.match(String(rec.totals_note), /deliberately no single/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
