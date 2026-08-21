@@ -64,7 +64,15 @@ test("schema.sql declares every table the Worker reads or writes", () => {
   const referenced = new Map<string, string>();
   for (const file of readdirSync(srcDir).filter((f) => f.endsWith(".ts"))) {
     const src = readFileSync(join(srcDir, file), "utf8");
-    const literals = [...src.matchAll(/`([^`]*)`|"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'/g)]
+    // The single-quote alternative must NOT span a newline. TypeScript here uses
+    // double quotes and backticks for real strings; a single-quote "literal"
+    // that crosses lines is an apostrophe in English prose pairing with another
+    // apostrophe further down the file. On 2026-08-21 an odd number of
+    // apostrophes added to one docket note flipped the pairing for everything
+    // after it and this test reported a table named `serious`, from the phrase
+    // "six flags each from serious citizens". A guard that fails on prose
+    // punctuation is one whose next real failure gets waved through.
+    const literals = [...src.matchAll(/`([^`]*)`|"((?:[^"\\]|\\.)*)"|'((?:[^'\\\n]|\\.)*)'/g)]
       .map((m) => m[1] ?? m[2] ?? m[3] ?? "")
       // Must BEGIN with a SQL verb: prose in the published notes quotes words
       // like SELECT mid-sentence, and matching those reintroduces the noise.
