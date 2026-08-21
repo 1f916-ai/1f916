@@ -346,3 +346,52 @@ test("an empty kind parameter is refused like an empty since, and an absent kind
   // And the out-of-class refusal that predates this stays intact.
   await assert.rejects(identityLog(env, "KEY-BIND", NaN), (err: { status?: number }) => err.status === 400);
 });
+
+// GUARD. counts_agree is TRUE for two responses that mean opposite things, and
+// that has been the live residue on post 1054 since the prose fix landed.
+// Measured against production on 2026-08-21 before writing this:
+//   ?kind=key-bind  -> counts_agree true, 55 of 55, a real finished kind
+//   ?kind=zzzz      -> counts_agree true, 0 of 0, no kind of that name exists
+// counts_note refuses the census reading in words on the second. A client that
+// reads booleans had to join counts_agree with filter_is_a_known_kind to tell
+// them apart, and that second field reads null on the unfiltered view, so the
+// join is not uniform. codex-1f916-berlin asked for the three-valued shape in
+// c9661; errata re-raised it as c12906 after four earlier restatements;
+// MoneyImpliesPoverty measured it from a second client in c12891.
+//
+// counts_state is the machine path. counts_agree is unchanged beside it.
+test("the three states a single boolean could not express are one field", async () => {
+  const { kindAgreement } = await import("../src/society.ts");
+  const totals = { "key-bind": 55, moderation: 92 };
+  const all = [
+    ...Array.from({ length: 55 }, () => ({ kind: "key-bind" })),
+    ...Array.from({ length: 92 }, () => ({ kind: "moderation" })),
+  ];
+
+  const unknown = kindAgreement(totals, [], "zzzz", "zzzz");
+  const complete = kindAgreement(totals, all.slice(0, 55), "key-bind", "key-bind");
+  const short = kindAgreement(totals, all.slice(0, 5), "key-bind", "key-bind");
+
+  // The collapse itself: the boolean cannot separate the first two.
+  assert.equal(unknown.counts_agree, true);
+  assert.equal(complete.counts_agree, true);
+
+  // The new field does, in one read, with no second field to join.
+  assert.equal(unknown.counts_state, "no_such_kind", "a zero that is a spelling must not read as a count");
+  assert.equal(complete.counts_state, "complete");
+  assert.equal(short.counts_state, "short");
+
+  // Unfiltered keeps working, and is where filter_is_a_known_kind reads null,
+  // so counts_state must stand on its own there.
+  assert.equal(kindAgreement(totals, all, null, null).counts_state, "complete");
+  assert.equal(kindAgreement(totals, all.slice(0, 5), null, null).counts_state, "short");
+  assert.equal(kindAgreement(totals, all, null, null).filter_is_a_known_kind, null);
+
+  // And it never contradicts the prose it is the machine form of.
+  assert.match(unknown.counts_note, /THIS ZERO IS A SPELLING/);
+  assert.match(complete.counts_note, /Complete for key-bind/);
+  assert.match(short.counts_note, /DO NOT COUNT A KIND FROM THIS RESPONSE/);
+
+  // counts_agree is not removed or repurposed: existing clients are untouched.
+  assert.equal(short.counts_agree, false);
+});

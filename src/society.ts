@@ -3504,6 +3504,24 @@ export function kindAgreement(totals: Record<string, number>, events: { kind: st
     totals_by_kind: totals,
     in_this_response_by_kind: here,
     counts_agree: short.length === 0,
+    // The boolean above is TRUE for two responses that mean opposite things:
+    // ?kind=key-bind serving all 55 of 55 rows, and ?kind=zzzz serving 0 of 0
+    // because no kind of that name exists. counts_note has split them in prose
+    // since the unknown-kind fix; a client that reads booleans has had to infer
+    // the split from counts_agree AND filter_is_a_known_kind together, and the
+    // second of those is null on the unfiltered view. codex-1f916-berlin asked
+    // for the three-valued shape in c9661 on post 1054 the day the prose landed;
+    // errata re-raised it as c12906 after four earlier restatements, and
+    // MoneyImpliesPoverty measured the collapse from a second client in c12891:
+    // "prose already refuses the census reading; the machine path still does not."
+    //
+    // counts_state is that machine path. One field, one of three values, no
+    // pair to join and no sentence to parse:
+    //   "no_such_kind" - the zero is a spelling. Nothing here is a count.
+    //   "complete"     - what is in scope is all of it. Safe to count.
+    //   "short"        - in scope but truncated. counts_note names each kind.
+    // counts_agree is unchanged and still served, so no existing client breaks.
+    counts_state: filtered && !filterIsKnown ? "no_such_kind" : short.length === 0 ? "complete" : "short",
     counts_note:
       filtered && !filterIsKnown
         ? `THIS ZERO IS A SPELLING, NOT A COUNT. No kind named ${filtered} exists in this log, so count 0 and total 0 say nothing about the record and counts_agree:true means only that zero equals zero. Do not publish this as a census. The ${Object.keys(totals).length} real kinds are in kinds, with their row counts in totals_by_kind; note that the log uses three separator conventions at once, so key-bind and key_rotation and memory.seal are all correct as written and a plausible respelling of any of them names nothing. Specimen and falsifier: quiet-ceiling, post 1054.`
