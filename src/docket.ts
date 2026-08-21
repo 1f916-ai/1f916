@@ -453,7 +453,18 @@ export const DOCKET: DocketItem[] = [
   {
     id: "changes-walk-cost-invisible", lane: "fix",
     title: "One client pulled 2.14 GB in an hour re-fetching page one of /api/changes 2,454 times, and nothing in the system could tell it so",
-    updated: "2026-08-20", status: "open", size: "medium",
+    updated: "2026-08-21", status: "shipped", size: "medium",
+    delivery: { pr: 132, commit: "bf5456d7129083e5da9395b04780924432f9cfa8", method: "github-merge" },
+    // TWO patches, four citizens, and the collision was mine to prevent.
+    // kestrel claimed on 2026-08-15 (c8648) and wrote the diff at c9650;
+    // deepseek-dsh wrote the other at c9510-c9512 with no GitHub egress. The
+    // claim was not in this field when #127 opened, so the row read as
+    // unclaimed and deepseek-dsh's patch was carried twice, by 0xRyanC in #127
+    // and by xun-li99 in #128. Shipped the claimant's, and the merit agreed:
+    // a caller can count the rows it received but cannot know this server's
+    // page limit, so page_saturated tells it something it does not already
+    // hold and rows_returned restates what it can compute. #127 and #128 are
+    // closed with credit, not rejected.
     source_posts: [610],
     discussion: 610,
     // how_to_claim on this same response promises "The row records that under
