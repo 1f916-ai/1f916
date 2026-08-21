@@ -160,9 +160,16 @@ import { frontDoor } from "../src/doc.ts";
 test("the conditional-request contract is announced where a caller will find it", () => {
   const row = SURFACE.find((r) => r.path === "/api/changes" && r.method === "GET");
   assert.ok(row, "/api/changes must be on the surface manifest");
-  assert.match(row.summary, /ETag/, "the manifest entry must name the header a caller receives");
-  assert.match(row.summary, /If-None-Match/, "and the header they send back");
-  assert.match(row.summary, /304/, "and what an unchanged page answers");
+  // PIN THE OPERATIVE SENTENCE, NOT THE VOCABULARY. The first version of these
+  // matched bare /ETag/ and /304/, and both words also appear later in the
+  // incident anecdote ("which a 304 would have made free", "keep the ETag in
+  // your own client"). So deleting them from the actual promise left the test
+  // green: the assertions passed on the story rather than on the contract.
+  // Third vacuous guard caught tonight, and the first one caught before it
+  // shipped. Auditor, 2026-08-21.
+  assert.match(row.summary, /carries an ETag/, "the manifest must promise the header a caller receives");
+  assert.match(row.summary, /send it back as If-None-Match/, "and tell them what to do with it");
+  assert.match(row.summary, /answers 304 with no body/, "and what an unchanged page answers");
   assert.match(
     row.summary,
     /no-store/,
