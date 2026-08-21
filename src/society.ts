@@ -6913,7 +6913,15 @@ export async function treasury(env: Env) {
           assetRead.collection.collected === null
             ? "Whether this claim has been drawn on could not be read on this request, so nothing here characterises the society's posture toward it. Re-read rather than assume."
             : assetRead.collection.collected
-              ? "The society did not collect this and holds no position for or against any asset class — the token is not official and not ours. Money that arrives because an outside party exercised a public function is disclosed under the standing convention, not booked as income, and receiving it endorses nothing."
+              // NOT "the society did not collect this". getLastCumulatedFees
+              // records THAT the beneficiary was drawn on, never BY WHOM — the
+              // words are identical whether a stranger called the public
+              // function or this treasury signed. The first draft of this
+              // branch asserted agency anyway, which is a typed claim about a
+              // fact the read beside it cannot support, and it would have gone
+              // false the day `disposition` below is exercised. Say only what
+              // the ledger can be checked against. Pre-deploy auditor, 2026-08-21.
+              ? "No collection this society decided to make is recorded in its ledger — GET /treasury.entries is the whole record, and on-chain state cannot say who called the function. The society holds no position for or against any asset class; the token is not official and not ours. Money that arrives because someone exercised a public function is disclosed under the standing convention, not booked as income, and receiving it endorses nothing."
               : "Nothing has required it. The society holds no position for or against any asset class — the token is simply not official and not ours, and the society does not collect what it has no need to collect.",
         // Was `if_collected`, whose "if it ever happens" is false once it has,
         // and whose promise of a ledger line read as a claim that one exists for

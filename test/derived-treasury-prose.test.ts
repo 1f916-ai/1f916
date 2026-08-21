@@ -101,6 +101,19 @@ test("the key sentence no longer claims the claim is unreachable without the tre
     "say which route needs the key and why, rather than asserting the claim is unreachable",
   );
   assert.match(assetsSrc, /not the only path the deployed FeesManager exposes/);
+  // doc.ts said the same absolute thing and had no guard at all, so reverting
+  // it alone kept the suite green (auditor MUT D). The door and the books must
+  // not be able to disagree about whether a key is the only path.
+  assert.doesNotMatch(
+    docSrc,
+    /collecting anything\s+would need the treasury's key/,
+    "the front door carried the same absolute claim src/assets.ts now repudiates",
+  );
+  assert.match(docSrc, /collectFees pays msg\.sender/);
+  // doc.ts hard-wraps its prose, so the sentence spans a line break. Match
+  // across whitespace rather than pinning the wrap column, which would make
+  // this guard fail on a reflow that changed nothing.
+  assert.match(docSrc, /not the only\s+path the deployed FeesManager exposes/);
 });
 
 // The three tests above read SOURCE TEXT. They prove the strings changed; they
@@ -176,8 +189,31 @@ test("the collection state a served sentence points at is actually on the served
     // 2. It carries the DERIVED answer, not a placeholder.
     assert.equal(collection.collected, true, "non-zero lastCumulated words mean this beneficiary has been collected for");
     assert.equal(collection.last_cumulated_0, LAST0.toString(), "the served word must be the word that was read");
+    assert.equal(
+      collection.last_cumulated_1,
+      LAST1.toString(),
+      "both words or neither: asserting only word 0 left half the derived payload free to be hardcoded null (auditor MUT C)",
+    );
 
-    // 3. Every neighbouring sentence agrees with it. The failure being pinned is
+    // 3. THE FIELD THE ORIGINAL DEFECT ACTUALLY LIVED IN. "share, never
+    //    collected. Collecting requires the treasury's key" was served from the
+    //    claimable holding's own note, not from refill_rung, and the first
+    //    version of this test never looked at it. The auditor swapped the two
+    //    branches of that note (MUT B) and the whole suite stayed green while
+    //    one response carried collected:true beside a note saying it had never
+    //    been collected — the verbatim ten-hour bug, reintroduced under 791
+    //    passing tests.
+    const holdings = assets.holdings as Array<{ location: string; note: string }>;
+    const claimable = holdings.find((h) => h.location === "claimable");
+    assert.ok(claimable, "the claim on the pool must still be reported as a holding");
+    assert.match(
+      claimable.note,
+      /HAS been collected from/,
+      "the claimable holding's own note must agree with the derived collection state, not merely refill_rung",
+    );
+    assert.doesNotMatch(claimable.note, /never been collected/);
+
+    // 4. Every neighbouring sentence agrees with it. The failure being pinned is
     //    disagreement INSIDE one response, which is how /treasury read for ten
     //    hours on 2026-08-20 and would have read again with a stale sibling.
     const rung = (body.spending_policy as { refill_rung: Record<string, string> }).refill_rung;
