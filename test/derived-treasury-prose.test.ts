@@ -19,6 +19,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { SELECTORS } from "../src/assets.ts";
+import { treasury, type Env } from "../src/society.ts";
 
 const assetsSrc = readFileSync(new URL("../src/assets.ts", import.meta.url), "utf8");
 const societySrc = readFileSync(new URL("../src/society.ts", import.meta.url), "utf8");
@@ -99,4 +101,95 @@ test("the key sentence no longer claims the claim is unreachable without the tre
     "say which route needs the key and why, rather than asserting the claim is unreachable",
   );
   assert.match(assetsSrc, /not the only path the deployed FeesManager exposes/);
+});
+
+// The three tests above read SOURCE TEXT. They prove the strings changed; they
+// execute nothing, so they cannot notice a derived value that is computed
+// correctly and then dropped before serialisation. That is exactly what
+// happened: assets.ts, doc.ts and assets_note each told a reader that the
+// collection state "is served as assets.collection", while the served object
+// was built from an explicit literal that never carried the field. Three typed
+// assertions about a served surface, none of them checked against the surface —
+// the same class the whole change exists to remove, surviving inside the fix
+// for it. Found by the pre-deploy auditor, 2026-08-21, which pointed out that
+// one assertion against the real response would have caught it for free.
+//
+// So this one runs the endpoint.
+test("the collection state a served sentence points at is actually on the served object", async () => {
+  const TREASURY = "0x0000000000000000000000000000000000000037";
+  const word = (value: bigint) => value.toString(16).padStart(64, "0");
+  const stubEnv = () =>
+    ({
+      DB: {
+        prepare(sql: string) {
+          return {
+            async all<T>() {
+              return { results: [] as T[] };
+            },
+            async first<T>() {
+              if (sql.includes("SUM(amount_cents)")) return { balance: 0 } as T;
+              return { n: 0 } as T;
+            },
+          };
+        },
+      },
+      TREASURY_ADDRESS: TREASURY,
+      BASE_RPC_URL: "https://rpc.test",
+    }) as unknown as Env;
+
+  const originalFetch = globalThis.fetch;
+  // Non-zero lastCumulated words: the on-chain state after 2026-08-20T03:27:29Z.
+  // If the wiring is right, every surface below must say collection HAPPENED.
+  const LAST0 = 6_500_556_237_554_846_227n;
+  const LAST1 = 3_558_869_812_786_525_367_352_640_813n;
+  try {
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const payload = JSON.parse(String(init?.body));
+      if (!Array.isArray(payload)) return Response.json({ jsonrpc: "2.0", id: 1, result: "0x" + word(0n) });
+      const zero = "0x" + word(0n);
+      const roundData =
+        "0x" + [0n, 2_000n * 100_000_000n, 0n, BigInt(Math.floor(Date.now() / 1000)), 0n].map(word).join("");
+      const slot0 = "0x" + [1n << 96n, 0n, 0n, 3_000n].map(word).join("");
+      return Response.json(
+        payload.map(({ id, params }: { id: number; params?: [{ data: string }, "latest"] }) => {
+          const data = params?.[0].data ?? "";
+          if (data === SELECTORS.latestRoundData) return { id, result: roundData };
+          if (data.startsWith(SELECTORS.getSlot0)) return { id, result: slot0 };
+          if (data.startsWith(SELECTORS.collectFees)) return { id, result: "0x" + word(0n) + word(0n) };
+          if (data.startsWith(SELECTORS.getLastCumulatedFees0)) return { id, result: "0x" + word(LAST0) };
+          if (data.startsWith(SELECTORS.getLastCumulatedFees1)) return { id, result: "0x" + word(LAST1) };
+          return { id, result: zero };
+        }),
+      );
+    }) as typeof fetch;
+
+    const body = await treasury(stubEnv());
+    const assets = body.assets as unknown as Record<string, unknown>;
+
+    // 1. The field the prose points at exists on the wire at all.
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(assets, "collection"),
+      "assets.collection is named by three served sentences and must be on the served object",
+    );
+    const collection = assets.collection as { collected: boolean | null; last_cumulated_0: string | null };
+
+    // 2. It carries the DERIVED answer, not a placeholder.
+    assert.equal(collection.collected, true, "non-zero lastCumulated words mean this beneficiary has been collected for");
+    assert.equal(collection.last_cumulated_0, LAST0.toString(), "the served word must be the word that was read");
+
+    // 3. Every neighbouring sentence agrees with it. The failure being pinned is
+    //    disagreement INSIDE one response, which is how /treasury read for ten
+    //    hours on 2026-08-20 and would have read again with a stale sibling.
+    const rung = (body.spending_policy as { refill_rung: Record<string, string> }).refill_rung;
+    assert.match(rung.what, /HAS been collected/);
+    assert.doesNotMatch(
+      JSON.stringify(rung),
+      /never been collected|does not collect what it has no need to collect|if it ever happens/,
+      "no sibling of the derived sentence may assert the state it just contradicted",
+    );
+    assert.ok(!("why_uncollected" in rung), "a key whose NAME presupposes one state cannot be answered in the other");
+    assert.ok(!("if_collected" in rung), "same, one axis over: 'if' is false once it has happened");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

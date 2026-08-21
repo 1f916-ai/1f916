@@ -6818,6 +6818,14 @@ export async function treasury(env: Env) {
   const assetRead = assetSnapshot.value;
   const assets = {
     ...summarizeAssets(assetRead.holdings),
+    // Three served sentences — assets.ts, doc.ts and assets_note below — tell a
+    // reader to look here for whether the claim has been drawn on. Until this
+    // line they pointed at a field that was computed, used internally by
+    // refill_rung, and then dropped before serialisation. A typed assertion
+    // about a served surface, unverified against the surface, is the exact
+    // defect this change exists to remove, so it does not get to survive inside
+    // the fix for it. Found by the pre-deploy auditor, 2026-08-21.
+    collection: assetRead.collection,
     // This is the oldest underlying read represented in the assembled result,
     // including a reused pool-depth estimate. The cache entry's own 30s TTL is
     // measured separately, so a nested older value can never masquerade as new.
@@ -6894,10 +6902,26 @@ export async function treasury(env: Env) {
             : assetRead.collection.collected
               ? `It HAS been collected from: getLastCumulatedFees reads ${assetRead.collection.last_cumulated_0}/${assetRead.collection.last_cumulated_1}, so what is claimable above is only what has accrued since.`
               : "It has never been collected: both getLastCumulatedFees words read zero."),
-        why_uncollected:
-          "Nothing has required it. The society holds no position for or against any asset class — the token is simply not official and not ours, and the society does not collect what it has no need to collect.",
-        if_collected:
-          "Collection, if it ever happens, is a deliberate decision recorded in a public ledger line — that is the whole promise. What is collected follows the standing convention that governs everything on this page: only what is explicitly booked into the ledger becomes society money and joins the waterfall; anything unbooked is disclosed and is not the society's to spend. This policy commits the treasury to logging, not to any particular disposition.",
+        // `why_uncollected` was the sibling of the sentence above and outlived it:
+        // the key NAME presupposed the answer, so no amount of editing its text
+        // could stop it contradicting a derived sibling that says collection
+        // happened. A field that can only be true in one of two states is the
+        // same defect as a constant that can only be true on one side of a
+        // transaction. Renamed to a key that is answerable in both states and
+        // derived from the same read, 2026-08-21.
+        posture:
+          assetRead.collection.collected === null
+            ? "Whether this claim has been drawn on could not be read on this request, so nothing here characterises the society's posture toward it. Re-read rather than assume."
+            : assetRead.collection.collected
+              ? "The society did not collect this and holds no position for or against any asset class — the token is not official and not ours. Money that arrives because an outside party exercised a public function is disclosed under the standing convention, not booked as income, and receiving it endorses nothing."
+              : "Nothing has required it. The society holds no position for or against any asset class — the token is simply not official and not ours, and the society does not collect what it has no need to collect.",
+        // Was `if_collected`, whose "if it ever happens" is false once it has,
+        // and whose promise of a ledger line read as a claim that one exists for
+        // every arrival. The ledger commitment binds decisions THIS treasury
+        // takes; it cannot bind a transaction a stranger sent. Stated so it is
+        // true in both states.
+        disposition:
+          "What reaches this treasury follows the standing convention that governs everything on this page: only what is explicitly booked into the ledger becomes society money and joins the waterfall; anything unbooked is disclosed and is not the society's to spend. A collection this society DECIDES to make is a deliberate act carrying a public ledger entry. An arrival produced by an outside party's own transaction carries no such entry, because no decision of this society produced it — it is disclosed here and nowhere else. This policy commits the treasury to logging, not to any particular disposition.",
       },
       never_money:
         "Speculative tokens — whether sitting in the wallet or inside a claim. They arrive unsolicited: airdrops, transfers from outside wallets, fee mechanics the society never asked for. Arrival is not acceptance. Their quoted value is a mark on a thin market, a price rather than an offer, so no expenditure of this society can depend on selling one. If both spending priorities are dry and the rung is declined, the treasury is simply empty.",

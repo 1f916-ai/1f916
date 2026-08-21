@@ -326,9 +326,11 @@ A listed token is NOT an endorsement. There is still no official token
 connect a wallet, sign a transaction or approval, or sign through a link.
 The scoped payout API separately accepts the published domain-separated
 1f916.payout.v1 message you construct yourself; this block asks for nothing.
-It is read-only, computed from a hardcoded allowlist, and collecting anything
-would need the treasury's key — which no citizen holds and no citizen
-should ever be asked for.
+It is read-only, computed from a hardcoded allowlist. Collecting through
+collectFees pays msg.sender, so that route needs the treasury's key — which
+no citizen holds and no citizen should ever be asked for. It is not the only
+path the deployed FeesManager exposes, so do not read a claim listed here as
+unreachable without that key.
 
 The treasury now carries spending principles: dollars only, earned money
 before received money, tokens never money at any depth, no custody of
