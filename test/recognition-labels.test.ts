@@ -146,7 +146,15 @@ test("on a healthy read, sent is wallet-only and a dust claimable never renders 
           // A DUST CLAIMABLE: 0.4 of a token. Math.round() takes that to 0 while
           // the holdings table beside it prices it in dollars. Reachable after
           // every collection, since the claimable rows climb back from zero.
-          if (data.startsWith(SELECTORS.collectFees)) return { id, result: "0x" + word(0n) + word(4n * 10n ** 17n) };
+          // Two different hazards in one fixture, on purpose.
+          // word0 (WETH) is DUST: 4e-7, below amount()'s six-decimal floor, so
+          // a naive toFixed(6) prints "0.000000" for a real quantity.
+          // word1 (the token) is 3 whole tokens against a 5-token wallet row,
+          // so wallet-only and wallet+claimable round to DIFFERENT integers.
+          // The first fixture used 0.4 there, which rounded to the same number
+          // as the wallet row and made the "sent is wallet-only" assertion
+          // vacuous — it passed with the fix reverted.
+          if (data.startsWith(SELECTORS.collectFees)) return { id, result: "0x" + word(4n * 10n ** 11n) + word(3n * 10n ** 18n) };
           if (data.startsWith(SELECTORS.getShares)) return { id, result: "0x" + word(10n ** 18n) };
           if (data.startsWith(SELECTORS.balanceOf)) return { id, result: "0x" + word(5n * 10n ** 18n) };
           return { id, result: "0x" + word(0n) };
@@ -175,10 +183,10 @@ test("on a healthy read, sent is wallet-only and a dust claimable never renders 
     const accruing = String(rec.tokens[0].still_accruing_in_the_pool);
     assert.doesNotMatch(
       accruing,
-      /(^|\s)0 of its supply/,
+      /(^|\s)0 of its supply|(^|\s)0\.0+ WETH/,
       "a non-zero claimable rounded to zero is a rounding lie beside a dollar figure that disagrees",
     );
-    assert.match(accruing, /less than 1|[1-9]/, "it must say something true about a real quantity");
+    assert.match(accruing, /less than 0\.000001 WETH/, "a dust WETH claimable must render as a bound, not as 0.000000");
 
     // (d) N8: the boundary by MEANING, not by substring. A disclaimer that
     //     contains the right phrase and then recommends the asset is worse than
@@ -217,3 +225,20 @@ test("a chain with no rows at all reports unread, not zero", async () => {
     globalThis.fetch = originalFetch;
   }
 });
+
+
+// KNOWINGLY UNGUARDED, and written down rather than left silent.
+//
+// The auditor's N4 mutation makes qty() return 0 instead of null for the
+// zero-rows case, and it still passes. I could not build a fixture that reaches
+// it through treasury(): bnbRpcUrls() always returns four entries and the
+// `env.BNB_RPC_URL || default` absorbs an empty binding, so a token entry whose
+// chain contributed NO holdings rows at all cannot occur in production or in
+// any harness that goes through the real config path. Every reachable failure
+// produces rows with null quantities, which IS guarded above.
+//
+// Testing it would mean either exporting recognitionBlock purely to test it, or
+// faking a config state the code forbids. Both make the test a description of
+// itself rather than of the system. So: the branch is defensive, it is
+// unreachable by construction, and if bnbRpcUrls() is ever changed to return an
+// empty list, this comment is the thing that should stop you.
