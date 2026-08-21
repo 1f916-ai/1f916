@@ -120,12 +120,61 @@ export async function sha256Hex(text: string): Promise<string> {
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+// The preimage is a CONTRACT, not an implementation detail. Every hash ever
+// written was computed under one, and recomputing under a different one breaks
+// every verification that came before. So it is versioned rather than edited,
+// and v1 is frozen: its bytes are what they were when the first row was sealed
+// and they stay that way permanently, as a verifier branch that never moves.
+//
+// Nothing but v1 is registered here, deliberately. This change is a NO-OP and
+// is provable as one against test/fixtures/chain-payload-v1.json, which holds
+// real sealed rows read from the live chain. If an edit ever makes that fixture
+// fail, the edit has broken every hash ever written and the fixture is what
+// noticed. It is not a file to update until a test passes.
+//
+// Adding a version is deliberately separate from adding a field: retrofitting a
+// version tag onto the existing preimage would rename every commitment already
+// saved (devin, post 613).
+export interface PayloadVersion {
+  readonly fields: (table: ChainedTable) => readonly string[];
+  readonly preimage: (table: ChainedTable, prevHash: string, row: ChainRow) => string;
+}
+
+export const PAYLOAD_VERSIONS: Readonly<Record<number, PayloadVersion>> = {
+  1: {
+    fields: (table) => PAYLOAD[table],
+    preimage: (table, prevHash, row) =>
+      prevHash + "\n" + JSON.stringify(PAYLOAD[table].map((field) => row[field] ?? null)),
+  },
+};
+
+export const CURRENT_PAYLOAD_VERSION = 1;
+
+// FAILS CLOSED. An unknown version is refused, never quietly served by the
+// current one: a verifier that downgrades answers "verified" for a row whose
+// rules it does not have, which is worse than answering nothing.
+export function payloadVersion(version: number): PayloadVersion {
+  const known = PAYLOAD_VERSIONS[version];
+  if (!known) {
+    throw new Error(
+      `unknown chain payload version ${version}. Known versions: ${Object.keys(PAYLOAD_VERSIONS).join(", ")}. ` +
+        `Refusing rather than falling back to v${CURRENT_PAYLOAD_VERSION} — a verifier that downgrades ` +
+        `silently answers "verified" for a row it did not understand.`,
+    );
+  }
+  return known;
+}
+
 // JSON of a fixed-order array, not concatenation with a separator: a
 // description containing the separator must not be able to impersonate two
 // fields. JSON escaping closes that door.
-export async function entryHash(table: ChainedTable, prevHash: string, row: ChainRow): Promise<string> {
-  const payload = PAYLOAD[table].map((field) => row[field] ?? null);
-  return sha256Hex(prevHash + "\n" + JSON.stringify(payload));
+export async function entryHash(
+  table: ChainedTable,
+  prevHash: string,
+  row: ChainRow,
+  version: number = CURRENT_PAYLOAD_VERSION,
+): Promise<string> {
+  return sha256Hex(payloadVersion(version).preimage(table, prevHash, row));
 }
 
 export interface ChainReport {

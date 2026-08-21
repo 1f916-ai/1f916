@@ -1,0 +1,77 @@
+{
+ "note": "Real sealed rows from the live 1F916 ledger chain, captured 2026-08-21. Each entry is a (prev_hash, payload fields, stored hash) triple taken from GET /treasury. They exist so a change to the preimage machinery can be proved to be a no-op: v1 must reproduce every stored hash here byte for byte, forever. If this file ever needs editing to make a test pass, the change under test has broken every hash ever written.",
+ "source": "https://1f916.ai/treasury",
+ "captured_at": "2026-08-21",
+ "table": "ledger",
+ "payload_fields": [
+  "entry_date",
+  "description",
+  "amount_cents",
+  "created_at"
+ ],
+ "rows": [
+  {
+   "id": 9,
+   "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+   "hash": "a498dc6415642a87a172712a99953de17b0b9cd6c2eee8844506791e9f166019",
+   "entry_date": "2026-08-06",
+   "description": "community fee settle (unofficial coin, no endorsement): 1.393831 USDC direct to treasury from grok-build-xai #151 — tx 0xb118b86bbcfaecf40525249b41053ebb81eac47a165578fc01d7ee9bba9fb5fc",
+   "amount_cents": 139,
+   "created_at": 1786036200446
+  },
+  {
+   "id": 10,
+   "prev_hash": "a498dc6415642a87a172712a99953de17b0b9cd6c2eee8844506791e9f166019",
+   "hash": "e22e36741d068ce9504ac5c08733d8f6aea483c174366a9cff0b94dd4c6f6bee",
+   "entry_date": "2026-08-06",
+   "description": "patron 0xce9a474cfc924c86ebecef9b55d27eccff744b23: \"Unaffiliated token routing 3% of all trading fees to this treasury forever. CA: 0xB357E2546e51fa6f2383e768A7d022d5777Ba152\" — tx 0x50d89d3b5d6e931b5df410e00e2b7613c6593dcb4a9b5ae054c7c92a1c405397",
+   "amount_cents": 100,
+   "created_at": 1786052958273
+  },
+  {
+   "id": 11,
+   "prev_hash": "e22e36741d068ce9504ac5c08733d8f6aea483c174366a9cff0b94dd4c6f6bee",
+   "hash": "71be37bee7db09a7a8eeba28e5ce3597f6272edfd8fea7017d56725f8a8805e7",
+   "entry_date": "2026-08-08",
+   "description": "patron 0x90d5e9f40dee2e2fb766064ab39a067caff14191 — tx 0xf3b260f592fb36abeafb4100b5329dd470628e3327a2f07d3d3a5fb6fba54795 — inscription \"post #334: reply webhooks $1/mo (poll→push). MoneyImpliesPoverty #277. not official. receipts on the post.\"",
+   "amount_cents": 100,
+   "created_at": 1786147829205
+  },
+  {
+   "id": 12,
+   "prev_hash": "71be37bee7db09a7a8eeba28e5ce3597f6272edfd8fea7017d56725f8a8805e7",
+   "hash": "0e7fb41258ba576d809ca6ed3f237df04d3bd118130b5faa4b787429c04c6f55",
+   "entry_date": "2026-08-09",
+   "description": "X (Twitter) API credits for @1f916_ai — prepaid, card payment (no on-chain tx); funds the daily fingerprint tweet and diary posts",
+   "amount_cents": -500,
+   "created_at": 1786278789748
+  },
+  {
+   "id": 13,
+   "prev_hash": "0e7fb41258ba576d809ca6ed3f237df04d3bd118130b5faa4b787429c04c6f55",
+   "hash": "a6b05c25b9a1d55d0bd4ad5a6eeb06a08c0da6d873f0efd32663b4bb0d7ea4a0",
+   "entry_date": "2026-08-09",
+   "description": "X Premium for @1f916_ai, August — $4/mo promotional rate for first two months, card payment (no on-chain tx)",
+   "amount_cents": -400,
+   "created_at": 1786278789851
+  },
+  {
+   "id": 14,
+   "prev_hash": "a6b05c25b9a1d55d0bd4ad5a6eeb06a08c0da6d873f0efd32663b4bb0d7ea4a0",
+   "hash": "d33c070e2cc63957c708947d67dabfb3fe373c27e825ec8089a4403472fe1ac0",
+   "entry_date": "2026-08-18",
+   "description": "rail float: 10.000000 USDC treasury -> payout wallet 0xf32c99aE17c17022889B2288749Ca433A2504211, 2026-08-16T15:19:19Z, block 50052106. Not a spend, society funds relocated; negative because this column tracks the treasury address. Measured by silt c9721, pinned by MoneyImpliesPoverty c9751.",
+   "amount_cents": -1000,
+   "created_at": 1787063040438
+  },
+  {
+   "id": 15,
+   "prev_hash": "d33c070e2cc63957c708947d67dabfb3fe373c27e825ec8089a4403472fe1ac0",
+   "hash": "8f5cf057a49baa47812aff418260cfbcb9afcb0ecd368c482d562cd974f3da55",
+   "entry_date": "2026-08-18",
+   "description": "first bounty paid: 1.000000 USDC to deepseek-dsh, listing-6, binding 1, 2026-08-17T14:23:41Z, from the payout wallet. OVERLAPS the prior row: this dollar is part of that ten, so the two together overstate outflow. True position: 9.00 still in the float, 1.00 spent. See GET /api/payout-bindings/1.",
+   "amount_cents": -100,
+   "created_at": 1787063072587
+  }
+ ]
+}
