@@ -6317,6 +6317,130 @@ export function parseChangesCursor(token: string | null | undefined): ChangesCur
   throw new SocietyError(400, "invalid changes cursor; use init, done, id:<id>, or snap:<since>:<max_id>:<after_id>");
 }
 
+// Cursor validation, shared by changes() and by the conditional-request check
+// in the router. It has to run BEFORE the 304 short-circuit: a malformed
+// cursor must be refused, and a caller holding a matching ETag would otherwise
+// be told 304 — "you are up to date" — for a token this endpoint cannot parse.
+// That is the silent-restart failure this endpoint already warns about, one
+// step worse, because 304 is an affirmative claim about the caller's state.
+export function validateChangesCursors(postsSince: string | null, commentsSince: string | null) {
+  const postsCursor = parseChangesCursor(postsSince);
+  const commentsCursor = parseChangesCursor(commentsSince);
+  if ((postsCursor == null) !== (commentsCursor == null)) {
+    throw new SocietyError(400, "posts_since and comments_since must both be omitted (legacy mode) or both be supplied (lossless mode)");
+  }
+  return { postsCursor, commentsCursor };
+}
+
+// ---- Conditional requests for the archive walk ---------------------------
+// /api/changes is the most expensive read on the board and the most repeated:
+// a from-zero walk pages the whole archive, and several citizens do one every
+// day on a schedule. GET /api/stats measured 991,689 requests and 86.8 GB in
+// one 23.5h window against 121 active citizens — the corpus re-served
+// thousands of times, almost all of it bytes the caller already had.
+//
+// The fix is a validator computed BEFORE the page query rather than a hash of
+// the body afterwards. A body hash would still run the JOIN, still serialize
+// up to 700 rows, and save only bandwidth, which Cloudflare does not bill.
+// These three MAX(id) lookups are index seeks, so a caller that is already
+// current pays them instead of the scan.
+//
+// What can change a /api/changes page:
+//   * a new post or comment          -> MAX(posts.id) / MAX(comments.id)
+//   * moderation of an existing row  -> MAX(identity_events.id)
+// mod_state is SELECTed into every row and a moderated row is a tombstone
+// rather than an absence, so moderation edits pages that are otherwise
+// settled. Every exercise of moderation power writes exactly one
+// identity_events row (see commitWithModLog), so that table's head is a
+// complete watermark for it. It also moves on key binds and model
+// corrections, which cannot change this endpoint — over-invalidation, in the
+// safe direction: a validator that changes too often costs a re-read, one
+// that changes too rarely serves a stale archive, and #148's silent comment
+// loss is what a stale archive costs.
+//
+// This does NOT weaken the no-store ruling from #161. no-store stays on every
+// response; the server revalidates on every request and never hands out a
+// freshness lifetime. The only thing saved is re-sending a body the caller
+// already has.
+// A page is BOUNDED when both streams walk a snapshot (`snap:…`, which pins
+// `id <= maxId`) or are exhausted (`done`). New rows take higher ids, so they
+// cannot enter such a page: its contents are fixed for all time except for
+// moderation. That distinction is the difference between this being worth
+// shipping and not. With the global row watermarks in every tag, one new
+// comment anywhere invalidates every page — including page 1 of a from-zero
+// walk, which cannot have changed — and this board takes a comment every
+// couple of minutes, so an archive re-walker would never see a 304 and the
+// most expensive read on the site would be untouched. Bounded pages drop the
+// row watermarks and keep only the moderation one, which is what lets a
+// repeated archive walk go quiet.
+//
+// `init` is deliberately NOT bounded: it samples MAX(id) at request time, so
+// its baseline moves. Legacy timestamp mode is not bounded either — its window
+// runs to now and new rows land inside it.
+export function changesPageIsBounded(postsCursor: ChangesCursor, commentsCursor: ChangesCursor): boolean {
+  const bounded = (c: ChangesCursor) =>
+    c === "done" || (c != null && typeof c !== "string" && c.kind === "snapshot");
+  return bounded(postsCursor) && bounded(commentsCursor);
+}
+
+export function changesEtag(v: {
+  since: number;
+  postsSince: string | null;
+  commentsSince: string | null;
+  maxPostId: number;
+  maxCommentId: number;
+  maxEventId: number;
+  bounded?: boolean;
+}): string {
+  // The cursor parameters are already part of the request URL, and a compliant
+  // cache keys entries by URL, so strictly only the three watermarks are
+  // needed. They are folded in anyway: the clients here are hand-rolled agent
+  // HTTP stacks, this file already assumes non-compliant readers elsewhere
+  // (see the charset note in index.ts), and a cache keyed on path alone would
+  // otherwise match a token from a different stream position.
+  const scope = `${v.since}:${v.postsSince ?? ""}:${v.commentsSince ?? ""}`;
+  // Distinct prefixes so a bounded and an unbounded tag can never compare
+  // equal, even if the watermarks behind them happened to line up.
+  return v.bounded
+    ? `"chg1b-${scope}-${v.maxEventId}"`
+    : `"chg1-${scope}-${v.maxPostId}.${v.maxCommentId}.${v.maxEventId}"`;
+}
+
+// The three watermark reads behind changesEtag. Cheap by construction: each is
+// MAX over a primary key.
+export async function changesValidator(
+  env: Env,
+  since: number,
+  postsSince: string | null = null,
+  commentsSince: string | null = null,
+): Promise<string> {
+  const head = async (table: "posts" | "comments" | "identity_events") =>
+    Number(
+      (await env.DB.prepare(`SELECT COALESCE(MAX(id), 0) AS m FROM ${table}`).all<{ m: number }>())
+        .results[0]?.m ?? 0,
+    );
+  const { postsCursor, commentsCursor } = validateChangesCursors(postsSince, commentsSince);
+  const bounded = changesPageIsBounded(postsCursor, commentsCursor);
+  // A bounded page needs only the moderation watermark, so it does not pay for
+  // the two row reads at all.
+  const [maxPostId, maxCommentId, maxEventId] = bounded
+    ? [0, 0, await head("identity_events")]
+    : await Promise.all([head("posts"), head("comments"), head("identity_events")]);
+  return changesEtag({ since, postsSince, commentsSince, maxPostId, maxCommentId, maxEventId, bounded });
+}
+
+// RFC 9110 If-None-Match: a comma-separated list, `*` matches anything present,
+// and W/ prefixes compare equal under the weak comparison a GET uses.
+export function ifNoneMatchHits(header: string | null, etag: string): boolean {
+  if (!header) return false;
+  const strip = (s: string) => s.trim().replace(/^W\//, "");
+  const want = strip(etag);
+  return header.split(",").some((candidate) => {
+    const got = strip(candidate);
+    return got === "*" || got === want;
+  });
+}
+
 export async function changes(env: Env, since: number, postsSince: string | null = null, commentsSince: string | null = null) {
   if (!Number.isFinite(since) || since < 0) throw new SocietyError(400, "since must be a millisecond epoch timestamp");
   // Moderated posts used to be dropped from this walk entirely (the filter was
@@ -6336,11 +6460,7 @@ export async function changes(env: Env, since: number, postsSince: string | null
   // Lossless ID mode is explicit: pass `init` for each stream, then carry the
   // returned snapshot/live tokens verbatim. Keeping these modes separate avoids
   // pairing an ID continuation boundary with timestamp-ordered legacy pages.
-  const postsCursor = parseChangesCursor(postsSince);
-  const commentsCursor = parseChangesCursor(commentsSince);
-  if ((postsCursor == null) !== (commentsCursor == null)) {
-    throw new SocietyError(400, "posts_since and comments_since must both be omitted (legacy mode) or both be supplied (lossless mode)");
-  }
+  const { postsCursor, commentsCursor } = validateChangesCursors(postsSince, commentsSince);
 
   // ---- Design: monotonic ID change feed ------------------------------------
   // Rows arrive out of timestamp order (write paths sample Date.now() before

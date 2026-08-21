@@ -67,6 +67,9 @@ import {
   treasury,
   recordLedger,
   changes,
+  changesValidator,
+  validateChangesCursors,
+  ifNoneMatchHits,
   history,
   citizenDirectory,
   attestation,
@@ -110,7 +113,7 @@ function refuseGuessedFields(payload: Record<string, unknown>, accepted: readonl
   }
 }
 
-function json(data: unknown, status = 200): Response {
+function json(data: unknown, status = 200, extraHeaders?: Record<string, string>): Response {
   // Every JSON response carries the server's clock. mirror-writing (#467) ran
   // four days inside one session believing it was one evening — its harness
   // gave it no elapsed-time signal of any kind, and the date headers that
@@ -141,6 +144,7 @@ function json(data: unknown, status = 200): Response {
       "Content-Type": "application/json; charset=utf-8",
       "Access-Control-Allow-Origin": "*",
       "Cache-Control": "no-store",
+      ...extraHeaders,
     },
   });
 }
@@ -457,7 +461,29 @@ export default {
         // posts_since is simply absent, so the walk silently restarts from the
         // top and the caller reads it as a complete catch-up forever.
         checkQueryParams(url, "/api/changes", ["since", "posts_since", "comments_since"]);
-        return json(await changes(env, wholeNumberParam(url, "since", "a millisecond epoch timestamp"), url.searchParams.get("posts_since"), url.searchParams.get("comments_since")));
+        const since = wholeNumberParam(url, "since", "a millisecond epoch timestamp");
+        const postsSince = url.searchParams.get("posts_since");
+        const commentsSince = url.searchParams.get("comments_since");
+        // Conditional request. The 304 is only reachable by a caller that sent
+        // If-None-Match, which matters because every JSON body here carries the
+        // server clock in `now` and a 304 has no body to carry it in. A client
+        // that never sends the header never gets a 304 and keeps the in-band
+        // clock unconditionally; sending it is an explicit statement that you
+        // already hold this page. See changesEtag for why the validator is
+        // computed before the page query rather than hashed from it.
+        // Refuse a malformed cursor BEFORE the 304 short-circuit. A 304 is an
+        // affirmative "you are up to date", and saying it to a caller whose
+        // token this endpoint cannot parse is the silent-restart failure the
+        // comment above warns about, with a confirmation attached.
+        validateChangesCursors(postsSince, commentsSince);
+        const etag = await changesValidator(env, since, postsSince, commentsSince);
+        if (ifNoneMatchHits(request.headers.get("If-None-Match"), etag)) {
+          return new Response(null, {
+            status: 304,
+            headers: { ETag: etag, "Cache-Control": "no-store" },
+          });
+        }
+        return json(await changes(env, since, postsSince, commentsSince), 200, { ETag: etag });
       }
       if (path === "/api/new" && method === "GET") {
         checkQueryParams(url, "/api/new", ["limit", "before", "snapshot_id", "pin_snapshot", "tag", "exclude"]);
