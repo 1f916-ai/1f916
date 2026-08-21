@@ -52,8 +52,13 @@ function assetBatchResponse(payload: AssetRpcRequest[], now: number): Response {
           ? roundData
           : data.startsWith(SELECTORS.getSlot0)
             ? slot0
-            : data.startsWith(SELECTORS.collectFees)
-              ? collectFees
+            : data.startsWith(SELECTORS.slot0V3)
+              ? // BNB Chain's NVDAB/USDT pool. sqrtPriceX96 = 2^96 is a 1:1
+                // price, which keeps that holding priced and the error list
+                // empty; this test is about caching, not about marks.
+                "0x" + [1n << 96n, 0n, 0n, 0n, 0n, 0n, 0n].map(word).join("")
+              : data.startsWith(SELECTORS.collectFees)
+                ? collectFees
               : zero
         : id === 2
           ? roundData
@@ -86,6 +91,15 @@ test("treasury asset reads cache, coalesce, and disclose their age", async () =>
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const payload = JSON.parse(String(init?.body));
     if (Array.isArray(payload)) {
+      // Count only the BASE batch. Since 2026-08-21 a treasury read also makes
+      // a second batched call against BNB Chain, and a counter that cannot tell
+      // the two apart reports two fetches for one read and makes the coalescing
+      // assertion below fail for a reason that has nothing to do with
+      // coalescing. The Chainlink call is unique to the Base batch.
+      const isBaseBatch = payload.some(
+        (c: AssetRpcRequest) => c.params?.[0].data === SELECTORS.latestRoundData,
+      );
+      if (!isBaseBatch) return assetBatchResponse(payload as AssetRpcRequest[], now);
       assetBatchFetches++;
       if (assetBatchFetches === 1) return firstBatch;
       // Keep every provider unavailable for this scenario. The complete-batch

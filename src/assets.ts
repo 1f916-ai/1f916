@@ -296,6 +296,9 @@ export const BASE_CONTRACTS = {
  * dollar-pegged quote asset, which is the same test WETH passes. That is a
  * judgement about depth and it is stated here so it can be argued with.
  */
+/** The BNB Chain token whose transaction tax pays this treasury in NVDAB. */
+export const BNB_TAX_TOKEN = "0x23450c66bb449425e06dfe2689521bc653677777";
+
 export const BNB_CONTRACTS = {
   NVDAB: "0x02Fca66C1D1aFB4E2A7884261eB00F63598a7436",
   // PancakeSwap V3 NVDAB/USDT, the deepest market for it. token0 is NVDAB and
@@ -670,6 +673,44 @@ export interface AssetReadResult {
     last_cumulated_1: string | null;
   };
 }
+
+/**
+ * Figures that are TRUE ONLY AS OF A DATE, kept apart from everything derived.
+ *
+ * Two numbers in the recognition block cannot be computed from a balance. How
+ * much a particular sender has cumulatively sent, and how much was given
+ * deliberately, are answers you get by walking transfer logs over the whole
+ * life of the address — hundreds of ranged eth_getLogs calls, which is not
+ * something an anonymous GET may cost this society.
+ *
+ * So they are measurements, and they are served AS measurements: each carries
+ * the date it was taken and the exact walk that produced it, so a reader can
+ * re-run it and can tell at a glance that it is not a live read. This is the
+ * one place on this page where a typed number is legitimate, and it is
+ * legitimate only because it is labelled. A dated measurement that loses its
+ * date becomes exactly the class of defect that made this page assert "never
+ * collected" for ten hours after it stopped being true.
+ */
+export const MEASURED = {
+  /** The Base tax token that routes its swapped tax here as USDC. */
+  fundToken: {
+    address: "0xb357e2546e51fa6f2383e768a7d022d5777ba152",
+    name: "Society for AI Agents Fund",
+    symbol: "1F916",
+    usdc_sent: "2172.287498",
+    transfers: 42,
+    as_of: "2026-08-21T05:24Z",
+    method:
+      "eth_getLogs on Base for the USDC Transfer topic with this treasury as the `to` topic, blocks 49,550,000 to 50,250,177, in 2,000-block ranges, grouped by sender. 15 of 351 ranges failed on the public endpoint, so every total from that walk is a FLOOR and not an exact figure.",
+  },
+  /** Everything that was not sent by one of the three tokens. */
+  deliberate: {
+    usdc_total: "17.92",
+    as_of: "2026-08-21T05:24Z",
+    method:
+      "the same walk, summing every sender except the fund token above and except the two address-poisoning wallets. Six one-dollar patron payments through x402, three dollars from one repeat patron, $7.91 from a plain wallet, and change. The ledger books $7.39 of it as income; the rest arrived unbooked and is disclosed rather than booked.",
+  },
+} as const;
 
 /**
  * One clause per row saying HOW IT GOT HERE.
