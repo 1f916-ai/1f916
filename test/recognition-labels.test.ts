@@ -19,11 +19,14 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { MEASURED } from "../src/assets.ts";
+import { MEASURED, SELECTORS } from "../src/assets.ts";
 import { treasury, type Env } from "../src/society.ts";
 
-const TREASURY = "0x0000000000000000000000000000000000000041";
-const stubEnv = () =>
+// The asset cache is a process-global Map keyed by address+RPC, so every test
+// in this file needs its OWN treasury address or it reads the previous test's
+// snapshot through the 30s TTL. Cost me two debugging passes; writing it down
+// so it costs the next reader none.
+const stubEnv = (TREASURY: string) =>
   ({
     DB: {
       prepare(sql: string) {
@@ -69,7 +72,7 @@ test("a measured figure is served as measured, and the endorsement boundary is s
       throw new Error("provider unreachable");
     }) as unknown as typeof fetch;
 
-    const body = await treasury(stubEnv());
+    const body = await treasury(stubEnv("0x0000000000000000000000000000000000000041"));
     const policy = body.spending_policy as Record<string, unknown>;
     const rec = policy.recognition as {
       tokens: Array<Record<string, unknown>>;
@@ -115,6 +118,101 @@ test("a measured figure is served as measured, and the endorsement boundary is s
         "an unread balance must be reported as unread, never as a precise zero in a sentence",
       );
     }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+
+// The guards above run with every provider DOWN. Seven mutations escaped the
+// full 796-test suite because nothing exercised the HEALTHY path, including two
+// that revert this round's own fixes: dropping `location` from the qty() filter
+// so `sent` counts claimable again, and returning 0 instead of null for the
+// zero-rows case. A fix with no guard is a fix with a countdown on it.
+test("on a healthy read, sent is wallet-only and a dust claimable never renders as zero", async () => {
+  const word = (v: bigint) => v.toString(16).padStart(64, "0");
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = (async (_i: RequestInfo | URL, init?: RequestInit) => {
+      const payload = JSON.parse(String(init?.body));
+      if (!Array.isArray(payload)) return Response.json({ jsonrpc: "2.0", id: 1, result: "0x" + word(0n) });
+      const roundData = "0x" + [0n, 2_000n * 100_000_000n, 0n, BigInt(Math.floor(Date.now() / 1000)), 0n].map(word).join("");
+      return Response.json(
+        payload.map(({ id, params }: { id: number; params?: [{ data: string }, "latest"] }) => {
+          const data = params?.[0].data ?? "";
+          if (data === SELECTORS.latestRoundData) return { id, result: roundData };
+          if (data.startsWith(SELECTORS.getSlot0)) return { id, result: "0x" + [1n << 96n, 0n, 0n, 3_000n].map(word).join("") };
+          if (data.startsWith(SELECTORS.slot0V3)) return { id, result: "0x" + [1n << 96n, 0n, 0n, 0n, 0n, 0n, 0n].map(word).join("") };
+          // A DUST CLAIMABLE: 0.4 of a token. Math.round() takes that to 0 while
+          // the holdings table beside it prices it in dollars. Reachable after
+          // every collection, since the claimable rows climb back from zero.
+          if (data.startsWith(SELECTORS.collectFees)) return { id, result: "0x" + word(0n) + word(4n * 10n ** 17n) };
+          if (data.startsWith(SELECTORS.getShares)) return { id, result: "0x" + word(10n ** 18n) };
+          if (data.startsWith(SELECTORS.balanceOf)) return { id, result: "0x" + word(5n * 10n ** 18n) };
+          return { id, result: "0x" + word(0n) };
+        }),
+      );
+    }) as typeof fetch;
+
+    const body = await treasury(stubEnv("0x0000000000000000000000000000000000000043"));
+    const policy = body.spending_policy as Record<string, unknown>;
+    const rec = policy.recognition as { tokens: Array<Record<string, unknown>> };
+    const holdings = (body.assets as unknown as { holdings: Array<Record<string, unknown>> }).holdings;
+
+    // (a) N3: `sent` must be WALLET ONLY. An invoice is not revenue.
+    const walletTokens = holdings.filter((h) => h.location === "wallet" && h.chain === "base" && h.asset === "1F916");
+    const claimTokens = holdings.filter((h) => h.location === "claimable" && h.chain === "base" && h.asset === "1F916");
+    assert.ok(claimTokens.length > 0 && Number(claimTokens[0].quantity) > 0, "fixture must produce a claimable row");
+    const sent = String(rec.tokens[0].sent);
+    const walletQty = Math.round(Number(walletTokens[0].quantity));
+    assert.match(sent, new RegExp(walletQty.toLocaleString("en-US").replace(/,/g, ",")), "sent names the wallet quantity");
+    const bothQty = Math.round(Number(walletTokens[0].quantity) + Number(claimTokens[0].quantity));
+    if (bothQty !== walletQty) {
+      assert.doesNotMatch(sent, new RegExp(bothQty.toLocaleString("en-US")), "sent must NOT include the claimable row");
+    }
+
+    // (c) a dust claimable must never render as the bare digit 0.
+    const accruing = String(rec.tokens[0].still_accruing_in_the_pool);
+    assert.doesNotMatch(
+      accruing,
+      /(^|\s)0 of its supply/,
+      "a non-zero claimable rounded to zero is a rounding lie beside a dollar figure that disagrees",
+    );
+    assert.match(accruing, /less than 1|[1-9]/, "it must say something true about a real quantity");
+
+    // (d) N8: the boundary by MEANING, not by substring. A disclaimer that
+    //     contains the right phrase and then recommends the asset is worse than
+    //     no disclaimer, and the phrase-match guard passed exactly that.
+    const boundary = String(policy.recognition_is_not_endorsement);
+    assert.match(boundary, /no official 1F916 token/);
+    assert.doesNotMatch(
+      boundary,
+      /\brecommends?\b|\bencourages?\b|\bshould buy\b|\bworth buying\b/i,
+      "the endorsement boundary must not itself recommend anything",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+// (b) N4: the other half of the BLOCK. qty() must report UNREAD when there are
+// no rows at all, not zero — that is the no-provider path, which the
+// all-providers-down fixture never reaches because it still creates null rows.
+test("a chain with no rows at all reports unread, not zero", async () => {
+  const { readTreasuryAssets } = await import("../src/assets.ts");
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = (async () => {
+      throw new Error("down");
+    }) as unknown as typeof fetch;
+    // No BNB provider configured: readBnbHoldings is never called, so there is
+    // no bnb row of any kind.
+    const read = await readTreasuryAssets("0x0000000000000000000000000000000000000042", ["https://rpc.test"], []);
+    assert.equal(read.holdings.filter((h) => h.chain === "bnb").length, 0, "the fixture must produce zero bnb rows");
+    assert.ok(
+      read.errors.some((e) => /no BNB Chain provider configured/.test(e)),
+      "an unread chain must be disclosed, never silently absent",
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }

@@ -3857,6 +3857,7 @@ export async function listAttestations(env: Env, subject: string | null, issuer:
     how_to_verify:
       `Signed rows: verify Ed25519 over "${ATTESTATION_SIG_PREFIX}:<issuer>:" + the row's own \`payload\` field, served on every row here, against the issuer's keys (GET /api/keys/:handle). ` +
       "Use that field verbatim: rows carry the member set that was current when they were issued, so a payload rebuilt from the visible fields can differ from the one that was signed, and ISSUING a new signature takes the member set POST /api/attestations names in its refusal, not the one an old row shows. " +
+      "Unsigned rows (`signed: false`, carrying no `signature` field at all): nothing on the row is signed by the issuer, so there is no step here that binds it to that citizen without trusting us. What authenticated them was their bearer token at POST time, which makes the issuer half our word rather than theirs. Filing unsigned is open to any citizen, key-bound or not, which is why the label sits on the row and not on the account. Everything else on such a row still holds: its payload_hash is anchored and datable exactly as below, and the claim's own evidence is yours to re-run. " +
       "Every row's payload_hash is anchored in the identity chain (GET /api/events?kind=attestation) and datable via GET /api/proof. Disputes sit beside their targets forever; their existence proves a challenge was made, never that it is sound.",
   };
 }
@@ -6871,14 +6872,33 @@ function recognitionBlock(read: AssetReadResult) {
     return rows.reduce((n, h) => n + Number(h.quantity), 0);
   };
   const unread = "not read on this request";
-  const amount = (n: number | null, unit: string, digits = 6) =>
-    n === null ? null : `${n.toFixed(digits)} ${unit}`;
-  const whole = (n: number | null, unit: string) =>
-    n === null ? null : `${Math.round(n).toLocaleString("en-US")} ${unit}`;
+  // ROUNDING TO ZERO IS A LIE TOO, and it was the half of the last defect I did
+  // not fix. Math.round(0.38) is 0, so a claimable of 0.38 tokens rendered as
+  // "0 of its supply" in one field while the holdings table in the SAME response
+  // priced that accrual at $760. A reader cannot tell a rounded zero from a real
+  // one, and the contradiction is visible on the page.
+  //
+  // Reachable, not theoretical: every collection resets the claimable rows to
+  // zero and they climb back through the sub-0.5 window each time, and nothing
+  // bounds how small a claimable can be. Caught by the pre-deploy auditor, who
+  // reproduced it end to end through treasury() rather than in the formatter.
+  //
+  // So a non-zero quantity never renders as the digit zero. It renders as a
+  // bound, which is true at every magnitude.
+  const amount = (n: number | null, unit: string, digits = 6) => {
+    if (n === null) return null;
+    if (n === 0) return `0 ${unit}`;
+    const floor = 1 / 10 ** digits;
+    return Math.abs(n) < floor ? `less than ${floor.toFixed(digits)} ${unit}` : `${n.toFixed(digits)} ${unit}`;
+  };
+  const whole = (n: number | null, unit: string) => {
+    if (n === null) return null;
+    if (n === 0) return `0 ${unit}`;
+    return Math.abs(n) < 1 ? `less than 1 ${unit}` : `${Math.round(n).toLocaleString("en-US")} ${unit}`;
+  };
 
   const baseToken = read.holdings.filter((h) => h.chain === "base" && h.asset !== "USDC");
   const bnb = read.holdings.filter((h) => h.chain === "bnb");
-  const baseCents = sum(baseToken);
   const bnbCents = sum(bnb);
   const fundCents = Math.round(Number(MEASURED.fundToken.usdc_sent) * 100);
   // The wallet total. NOT token_derived + deliberate: the fund token's USDC is
@@ -6930,7 +6950,11 @@ function recognitionBlock(read: AssetReadResult) {
         chain: "bnb",
         launched_via: "flap.sh",
         sent: amount(qty("NVDAB", "bnb", "wallet"), "NVDAB") ?? unread,
-        value: money(bnbCents),
+        // Symmetric with token[0]: bnbCents sums every BNB row, and BNB has only
+        // a wallet row today, so the moment a claimable BNB row exists this
+        // would value wallet+claimable while `sent` stayed wallet-only. R1
+        // reintroduced on the other chain.
+        value: money(sum(read.holdings.filter((h) => h.chain === "bnb" && h.location === "wallet"))),
         // R3: the previous draft said "launched 28 seconds after the first one".
         // A precise figure about an external event, with no verify field, no
         // as_of and no read behind it, is a typed constant wearing a fact's
