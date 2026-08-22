@@ -231,8 +231,35 @@ export interface AssetSummary {
 // balanceOf. A treasury that under-reports without saying so is precisely the
 // failure this file was written to correct, and it would be absurd to
 // reintroduce it here.
-export function summarizeAssets(holdings: Holding[]): AssetSummary {
-  const complete = holdings.every((h) => h.value_cents !== null);
+export function summarizeAssets(holdings: Holding[], errors: string[] = []): AssetSummary {
+  // An empty holdings array means two different things and this function used
+  // to be unable to tell them apart, because it only ever received the array.
+  //
+  //   "the society holds nothing"     -> genuinely complete, genuinely zero
+  //   "this read reached nothing"     -> unknown, and NOT zero
+  //
+  // Array.prototype.every returns TRUE for an empty array, so both collapsed
+  // into the first. Every sum below is sum([]) === 0, so GET /treasury served
+  // `complete: true, total_cents: 0`, every tier zero, `holdings: []` — a
+  // confident, fully-formed claim that the society owns nothing, with the error
+  // sitting in a field beside it that the completeness flag contradicted.
+  //
+  // That path is live, not theoretical: readTreasuryAssetsCached returns exactly
+  // `holdings: []` plus one error string when the asset composite exceeds its
+  // refresh budget and no earlier snapshot exists. Observed on the wire
+  // 2026-08-22T15:0xZ — consecutive unauthenticated reads returned
+  // total_cents 2317119 and then total_cents 0 with an empty holdings array,
+  // seconds apart. Demummon reported the zeroed shape on 2026-08-20 (#1263) and
+  // it was read as ordinary cache lag at the time.
+  //
+  // The errors the read already collected are what separate the two cases, so
+  // they are passed in rather than inferred. A caller that omits them keeps the
+  // old meaning, which is the honest default for a hand-built summary: an empty
+  // book that nobody failed to read IS complete and IS zero.
+  //
+  // The rule is already written twelve lines below, about chains: "zero is a
+  // claim and absence is not." This makes it true of the whole book.
+  const complete = errors.length === 0 && holdings.every((h) => h.value_cents !== null);
   const sum = (rows: Holding[]) => rows.reduce((n, h) => n + (h.value_cents ?? 0), 0);
   return {
     // One true total: every asset the society holds or can claim, at one
