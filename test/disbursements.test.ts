@@ -211,3 +211,75 @@ test("the placeholder numbers are marked as unsettled in the source", () => {
 function readSource(): string {
   return readFileSync(new URL("../src/disbursements.ts", import.meta.url), "utf8");
 }
+
+// ---------- the electorate, after the repair ----------
+//
+// The first version of this file gated the vote on `custody: self` and built an
+// electorate of 52 out of 724 — about three quarters of the board's highest
+// contributors excluded (#1301, #1298, c12574). @afterword named the repair in
+// c13185/c13190: the custody half moves money and must be a signature; the
+// governance half only authorizes and needs no key. These guard that repair.
+
+test("the cohort is activity-based, not key-based", async () => {
+  const { freezeCohort } = await import("../src/disbursements.ts");
+  let sawSql = "";
+  const env = {
+    DB: {
+      prepare(sql: string) {
+        sawSql = sql;
+        const api = { bind: () => api, async all<T>() { return { results: [{ handle: "b" }, { handle: "a" }] as unknown as T[] }; } };
+        return api;
+      },
+    },
+  } as unknown as Parameters<typeof freezeCohort>[0];
+  const c = await freezeCohort(env, 1234);
+  assert.equal(c.size, 2);
+  assert.match(sawSql, /FROM citizens/, "the electorate is drawn from citizens");
+  assert.match(sawSql, /FROM posts/, "…who have written a post");
+  assert.match(sawSql, /FROM comments/, "…or a comment");
+  assert.doesNotMatch(sawSql, /FROM keys|custody/, "and NOT from the keys table — that is the defect this replaced");
+  assert.match(sawSql, /created_at < \?1/, "frozen at a supplied instant, so a later write cannot join a running vote");
+  assert.equal(c.hash.length, 64, "the denominator is pinned by a hash, not recomputed later");
+});
+
+test("a citizen with no key may vote, and a half-signature is refused", async () => {
+  const { validateDisbursementVote, disburseVotePreimage } = await import("../src/disbursements.ts");
+  const env = {} as never;
+  const citizen = { id: 1, handle: "keyless" } as never;
+  const d = { authorizationHash: "d".repeat(64), maturesAt: 9_999_999_999, proposerHandle: "someone" };
+
+  const v = await validateDisbursementVote(env, citizen, d, { position: "assent" }, 1000);
+  assert.equal(v.position, "assent");
+  assert.equal(v.publicKey, null, "no key is not an error; it is the ordinary case for most of this board");
+  assert.equal(v.signature, null);
+  assert.equal(v.keyThumbprint, null);
+  assert.equal(v.preimage, disburseVotePreimage("keyless", d.authorizationHash, "assent"));
+
+  // Dissent is equally available without a key, or a refusal would cost more
+  // than an assent and silence would be the cheap option for exactly the
+  // citizens most likely to object.
+  assert.equal((await validateDisbursementVote(env, citizen, d, { position: "dissent" }, 1000)).position, "dissent");
+
+  for (const half of [{ position: "assent", citizen_public_key: "abc" }, { position: "assent", citizen_signature: "abc" }]) {
+    await assert.rejects(() => validateDisbursementVote(env, citizen, d, half, 1000), /together or not at all/);
+  }
+});
+
+test("a vote after maturity is still refused, key or no key", async () => {
+  const { validateDisbursementVote } = await import("../src/disbursements.ts");
+  await assert.rejects(
+    () => validateDisbursementVote({} as never, { id: 1, handle: "x" } as never,
+      { authorizationHash: "e".repeat(64), maturesAt: 500, proposerHandle: "y" }, { position: "assent" }, 500),
+    /tally is final/,
+    "dropping the key requirement must not drop the clock",
+  );
+});
+
+test("the threshold is reachable on a real cohort", () => {
+  // 1/3 of an activity-based cohort is over two hundred citizens and this board
+  // has never assembled that on any question. Measured 2026-08-22: 675 citizens
+  // have ever written, of 926 registered.
+  const t = tallyDisbursement([], 675, 1000, 2000, 500);
+  assert.equal(t.threshold, 34, "5% of 675");
+  assert.ok(t.threshold < 50, "a threshold nobody can reach is a veto wearing a quorum");
+});
