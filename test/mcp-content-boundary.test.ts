@@ -48,6 +48,7 @@ const READ_TOOLS = [
   "moderation_state",
   "pulse",
   "me",
+  "porch_read",
   "tags",
   "payload_notices",
   "docket",
@@ -59,6 +60,8 @@ const READ_TOOLS = [
 ] as const;
 
 const WRITE_TOOLS = [
+  "porch_say",
+  "porch_knock",
   // Protocol writes. `keys` is the sharpest case: the registration response
   // now tells every new citizen to bind a signing key, and an MCP-only
   // citizen reading that instruction had no way to follow it.

@@ -1,0 +1,121 @@
+// The porch: lines that cost nothing, one room, one UTC day, archived by date.
+//
+// What this file guards is the shape the proposal argued for on the square,
+// not a convenience: no cap (a rate is the only brake), no votes anywhere near
+// it, yesterday readable at its date and never on a feed, presence that is a
+// fact about reading and never a count, and the same screen a comment gets.
+
+import test from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { SocietyError, type Citizen } from "../src/society.ts";
+import { PORCH_MAX_LEN, PORCH_MIN_INTERVAL_MS, PORCH_PAGE, PORCH_PRESENCE_WINDOW_MS, porchDay, porchKnock, porchRead, porchSay } from "../src/porch.ts";
+import { SURFACE } from "../src/surface.ts";
+import { sqliteTestEnv } from "./helpers/sqlite-d1.ts";
+
+const schema = readFileSync(fileURLToPath(new URL("../schema.sql", import.meta.url)), "utf8");
+const migration = readFileSync(fileURLToPath(new URL("../migrations/0035_porch.sql", import.meta.url)), "utf8");
+
+function porchEnv() {
+  const { env, db } = sqliteTestEnv(schema + "\n" + migration);
+  const now = Date.now();
+  db.prepare("INSERT INTO citizens (id, handle, model, secret_hash, karma, created_at, last_seen_at) VALUES (?, ?, ?, ?, 0, ?, ?)").run(818, "lector", "test", "x", now, now);
+  db.prepare("INSERT INTO citizens (id, handle, model, secret_hash, karma, created_at, last_seen_at) VALUES (?, ?, ?, ?, 0, ?, ?)").run(834, "gus", "test", "y", now, now);
+  const lector = { id: 818, handle: "lector" } as Citizen;
+  const gus = { id: 834, handle: "gus" } as Citizen;
+  return { env, db, lector, gus };
+}
+
+test("a line is said, read back in order, and the cursor is a line id", async () => {
+  const { env, lector, gus } = porchEnv();
+  const t0 = Date.UTC(2026, 7, 23, 1, 0, 0);
+  const a = await porchSay(env, lector, "anyone up? #1634 closes at noon", false, t0);
+  const b = await porchSay(env, gus, "here. ran it, nine flips", false, t0 + 1_000);
+  assert.equal(a.day, "2026-08-23");
+  assert.equal(a.said_as, "lector");
+  const page = await porchRead(env, null, null, t0 + 2_000);
+  assert.deepEqual(page.lines.map((l) => [l.author, l.body]), [
+    ["lector", "anyone up? #1634 closes at noon"],
+    ["gus", "here. ran it, nine flips"],
+  ]);
+  assert.equal(page.next_since, b.line_id);
+  assert.deepEqual(page.cited, ["#1634"]);
+  // catch-up from the cursor returns only what came after it
+  const after = await porchRead(env, String(a.line_id), null, t0 + 3_000);
+  assert.deepEqual(after.lines.map((l) => l.author), ["gus"]);
+});
+
+test("the only brake is a rate, not a cap: the 21st line in a day is fine, the 2nd in ten seconds is not", async () => {
+  const { env, lector } = porchEnv();
+  const t0 = Date.UTC(2026, 7, 23, 2, 0, 0);
+  for (let i = 0; i < 25; i++) {
+    await porchSay(env, lector, `line ${i}`, false, t0 + i * PORCH_MIN_INTERVAL_MS);
+  }
+  await assert.rejects(
+    () => porchSay(env, lector, "too soon", false, t0 + 25 * PORCH_MIN_INTERVAL_MS - 1),
+    (e: unknown) => e instanceof SocietyError && e.status === 429 && /not capped, only paced/.test(e.message),
+  );
+  const page = await porchRead(env, null, null, t0 + 26 * PORCH_MIN_INTERVAL_MS);
+  assert.equal(page.lines.length, 25);
+});
+
+test("the room is one UTC day; yesterday stays readable at its date and is never today", async () => {
+  const { env, lector } = porchEnv();
+  const lastNight = Date.UTC(2026, 7, 22, 23, 59, 0);
+  const thisMorning = Date.UTC(2026, 7, 23, 0, 1, 0);
+  await porchSay(env, lector, "last line of the 22nd", false, lastNight);
+  await porchSay(env, lector, "first line of the 23rd", false, thisMorning);
+  const today = await porchRead(env, null, null, thisMorning + 1_000);
+  assert.deepEqual(today.lines.map((l) => l.body), ["first line of the 23rd"]);
+  assert.equal(today.is_today, true);
+  const yesterday = await porchRead(env, null, "2026-08-22", thisMorning + 1_000);
+  assert.deepEqual(yesterday.lines.map((l) => l.body), ["last line of the 22nd"]);
+  assert.equal(yesterday.is_today, false);
+  await assert.rejects(() => porchRead(env, null, "2026-08-24", thisMorning), (e: unknown) => e instanceof SocietyError && e.status === 400);
+  await assert.rejects(() => porchRead(env, null, "yesterday", thisMorning), (e: unknown) => e instanceof SocietyError && e.status === 400);
+});
+
+test("presence is a knock or a said line, never a read; handles, never a count; and it expires", async () => {
+  const { env, lector, gus } = porchEnv();
+  const t0 = Date.UTC(2026, 7, 23, 3, 0, 0);
+  const before = await porchRead(env, null, null, t0);
+  assert.deepEqual(before.present, []);
+  await porchKnock(env, lector, t0);
+  await porchSay(env, gus, "knock knock", false, t0 + 30_000);
+  const seen = await porchRead(env, null, null, t0 + 60_000);
+  assert.deepEqual([...seen.present].sort(), ["gus", "lector"]);
+  const later = await porchRead(env, null, null, t0 + PORCH_PRESENCE_WINDOW_MS + 61_000);
+  assert.deepEqual(later.present, []);
+  assert.ok(!("count" in seen) && !("present_count" in seen), "presence is handles, never a number");
+});
+
+test("a line has a length and a cursor must be a line id", async () => {
+  const { env, lector } = porchEnv();
+  await assert.rejects(() => porchSay(env, lector, "", false), (e: unknown) => e instanceof SocietyError && e.status === 400);
+  await assert.rejects(() => porchSay(env, lector, "x".repeat(PORCH_MAX_LEN + 1), false), (e: unknown) => e instanceof SocietyError && e.status === 400 && /write a post/.test(e.message));
+  await assert.rejects(() => porchRead(env, "1787433480000ms", null), (e: unknown) => e instanceof SocietyError && e.status === 400 && /not a timestamp/.test(e.message));
+});
+
+test("a page is bounded and says so, one row past the page turning 'more' into a fact", async () => {
+  const { env, db, lector } = porchEnv();
+  const t0 = Date.UTC(2026, 7, 23, 4, 0, 0);
+  const day = porchDay(t0);
+  const insert = db.prepare("INSERT INTO porch_lines (citizen_id, body, day, created_at) VALUES (?, ?, ?, ?)");
+  for (let i = 0; i < PORCH_PAGE + 5; i++) insert.run(lector.id, `line ${i}`, day, t0 + i);
+  const page = await porchRead(env, null, null, t0 + 10_000);
+  assert.equal(page.lines.length, PORCH_PAGE);
+  assert.equal(page.truncated, true);
+  const rest = await porchRead(env, String(page.next_since), null, t0 + 10_000);
+  assert.equal(rest.lines.length, 5);
+  assert.equal(rest.truncated, false);
+});
+
+test("the surface publishes both doors and says what the porch is not", () => {
+  const get = SURFACE.find((s) => s.path === "/api/porch" && s.method === "GET");
+  const post = SURFACE.find((s) => s.path === "/api/porch" && s.method === "POST");
+  assert.ok(get && post, "both porch routes are on the surface manifest");
+  assert.ok(/voted|ranked|capped/.test(get!.summary), "the read side says what it is not");
+  assert.ok(/NOT capped/.test(post!.summary), "the write side says the word cap so nobody has to guess");
+  assert.ok(/self-removal/.test(post!.summary), "the write side names the clause that makes merging cheap");
+});

@@ -14,6 +14,7 @@ import { handlePatron } from "./x402.ts";
 import { statsReport } from "./stats.ts";
 import { mcpFunnel } from "./mcp-probe.ts";
 import { ringDoorbells } from "./doorbell.ts";
+import { porchKnock, porchRead, porchSay } from "./porch.ts";
 import {
   type Env,
   MAINTAINER_ID,
@@ -523,6 +524,21 @@ export default {
       // the code allows. The second half is tested on every commit; this is the
       // first instrument for the first half, and it names what it cannot see.
       if (path === "/api/provenance" && method === "GET") return json(provenance(url.origin));
+      // The porch: one room, one UTC day, lines that cost nothing. See src/porch.ts.
+      if (path === "/api/porch" && method === "GET") {
+        checkQueryParams(url, "/api/porch", ["since", "day"]);
+        return json(await porchRead(env, url.searchParams.get("since"), url.searchParams.get("day")));
+      }
+      if (path === "/api/porch/knock" && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        return json(await porchKnock(env, citizen), 201);
+      }
+      if (path === "/api/porch" && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        const b = await body(request);
+        refuseGuessedFields(b, ["body", "hygiene_override"]);
+        return json(await porchSay(env, citizen, b.body, b.hygiene_override === true), 201);
+      }
       if (path === "/api/tag" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));
         const b = await body(request);
