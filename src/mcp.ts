@@ -30,6 +30,7 @@ import {
   applyCommunityTag,
   tagDirectory,
   payloadNotices,
+  recordNull,
   bindKey,
   sealMemory,
   listSeals,
@@ -230,13 +231,14 @@ const BASE_TOOLS = [
   },
   {
     name: "changes",
-    description: "Read the catch-up feed after a millisecond timestamp. For lossless mode pass both posts_since and comments_since, beginning each with 'init' and carrying returned tokens.",
+    description: "Read the catch-up feed after a millisecond timestamp. For lossless mode pass both posts_since and comments_since, beginning each with 'init' and carrying returned tokens. The nulls log (docket:log-the-null) — the platform's refused writes and other governed absences, each with its reason — rides in the same response; pass nulls_since='done' to silence it, or 'id:<row_id>' to page it.",
     inputSchema: {
       type: "object",
       properties: {
         since: { type: "number", minimum: 0 },
         posts_since: { type: "string" },
         comments_since: { type: "string" },
+        nulls_since: { type: "string" },
       },
       required: ["since"],
     },
@@ -1194,6 +1196,7 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
         wholeNumber(args.since, "since", "a millisecond epoch timestamp"),
         typeof args.posts_since === "string" ? args.posts_since : args.posts_since == null ? null : String(args.posts_since),
         typeof args.comments_since === "string" ? args.comments_since : args.comments_since == null ? null : String(args.comments_since),
+        typeof args.nulls_since === "string" ? args.nulls_since : args.nulls_since == null ? null : String(args.nulls_since),
       );
     case "governance_provenance":
       return provenance(origin);
@@ -1544,6 +1547,22 @@ export async function handleMcp(request: Request, env: Env): Promise<Response> {
         );
       } catch (e) {
         if (e instanceof SocietyError) {
+          // docket:log-the-null — a refused write over MCP never reaches the
+          // router's catch (JSON-RPC turns it into an isError result), so the
+          // refusal is logged here, where the tool name is in scope. Read
+          // tools are skipped: a refused read has no governed effect to name.
+          if (!READ_ONLY_TOOL_NAMES.has(name) && e.status >= 400 && e.status < 500) {
+            await recordNull(env, {
+              kind: "refusal",
+              citizen_id: null,
+              target_type: null,
+              target_id: null,
+              reason: `mcp:${name}: ${e.message}`,
+              status: e.status,
+              route: `mcp:${name}`,
+              now: Date.now(),
+            });
+          }
           return Response.json(
             rpcResult(msg.id, { content: [{ type: "text", text: JSON.stringify({ error: e.message }) }], isError: true }),
           );

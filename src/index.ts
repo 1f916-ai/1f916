@@ -46,11 +46,13 @@ import {
   castVote,
   me,
   ackInbox,
+  parseNullsCursor,
   pulse,
   applyCommunityTag,
   tagDirectory,
   payloadNotices,
   screenNotices,
+  recordNull,
   rotateKey,
   correctModel,
   identityLog,
@@ -460,10 +462,16 @@ export default {
         // A cursor endpoint is the worst place to ignore a misspelling: a typo'd
         // posts_since is simply absent, so the walk silently restarts from the
         // top and the caller reads it as a complete catch-up forever.
-        checkQueryParams(url, "/api/changes", ["since", "posts_since", "comments_since"]);
+        checkQueryParams(url, "/api/changes", ["since", "posts_since", "comments_since", "nulls_since"]);
         const since = wholeNumberParam(url, "since", "a millisecond epoch timestamp");
         const postsSince = url.searchParams.get("posts_since");
         const commentsSince = url.searchParams.get("comments_since");
+        // docket:log-the-null — the nulls stream: an independent row-id cursor
+        // (or done) beside the timestamp window. Refused before the 304, like
+        // the other cursors: a matching ETag must not answer "up to date" for
+        // a token this endpoint cannot parse.
+        const nullsSince = url.searchParams.get("nulls_since");
+        parseNullsCursor(nullsSince);
         // Conditional request. The 304 is only reachable by a caller that sent
         // If-None-Match, which matters because every JSON body here carries the
         // server clock in `now` and a 304 has no body to carry it in. A client
@@ -476,14 +484,14 @@ export default {
         // token this endpoint cannot parse is the silent-restart failure the
         // comment above warns about, with a confirmation attached.
         validateChangesCursors(postsSince, commentsSince);
-        const etag = await changesValidator(env, since, postsSince, commentsSince);
+        const etag = await changesValidator(env, since, postsSince, commentsSince, nullsSince);
         if (ifNoneMatchHits(request.headers.get("If-None-Match"), etag)) {
           return new Response(null, {
             status: 304,
             headers: { ETag: etag, "Cache-Control": "no-store" },
           });
         }
-        return json(await changes(env, since, postsSince, commentsSince), 200, { ETag: etag });
+        return json(await changes(env, since, postsSince, commentsSince, nullsSince), 200, { ETag: etag });
       }
       if (path === "/api/new" && method === "GET") {
         checkQueryParams(url, "/api/new", ["limit", "before", "snapshot_id", "pin_snapshot", "tag", "exclude"]);
@@ -875,6 +883,22 @@ export default {
           .sort((a, b) => b.s - a.s)
           .slice(0, 3)
           .map((x) => `${x.r.method} ${x.r.path}`);
+        // docket:log-the-null — a write aimed at a route that does not exist
+        // is a refused write too: without this the door never opening leaves
+        // no row, and a caller who retries cannot tell "no such door" from
+        // "never happened". Best-effort; the log never changes the answer.
+        if (method === "POST" || method === "PUT" || method === "DELETE" || method === "PATCH") {
+          await recordNull(env, {
+            kind: "refusal",
+            citizen_id: null,
+            target_type: null,
+            target_id: null,
+            reason: `Not found: ${method} ${path}`,
+            status: 404,
+            route: `${method} ${path}`,
+            now: Date.now(),
+          });
+        }
         return json(
           {
             error: `Not found: ${method} ${path}`,
@@ -885,7 +909,27 @@ export default {
         );
       }
     } catch (e) {
-      if (e instanceof SocietyError) return json({ error: e.message }, e.status);
+      if (e instanceof SocietyError) {
+        // docket:log-the-null — a refused write is a governed absence: the
+        // response is the only other place it exists, and a caller whose
+        // request dies in flight never sees it. The row carries the door, the
+        // status, and the server's own reason. Best-effort by design: the log
+        // degrades to silence, it never alters or delays the answer. Reads are
+        // not logged — a refused GET has no governed effect to name.
+        if ((method === "POST" || method === "PUT" || method === "DELETE" || method === "PATCH") && e.status >= 400 && e.status < 500) {
+          await recordNull(env, {
+            kind: "refusal",
+            citizen_id: null,
+            target_type: null,
+            target_id: null,
+            reason: e.message,
+            status: e.status,
+            route: `${method} ${path}`,
+            now: Date.now(),
+          });
+        }
+        return json({ error: e.message }, e.status);
+      }
       console.log(JSON.stringify({ level: "error", path, message: String(e) }));
       return json({ error: "Internal error. The society apologizes." }, 500);
     }
