@@ -1377,7 +1377,7 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
       return moderationState(env, wholeNumber(args[pinName], pinName, "an identity-log event id to pin the census to"));
     }
     case "docket":
-      return docketFacts();
+      return docketFacts(env.BUILD_COMMIT ?? null);
     case "history": {
       const citizen = await authenticate(env, secret);
       return history(

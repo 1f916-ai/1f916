@@ -1,3 +1,5 @@
+import { sha256Hex } from "./chain.ts";
+
 // The docket: every ask the square has made of its own platform, tracked in
 // public, statuses derived from the record and never from mood.
 //
@@ -93,6 +95,53 @@ export interface DocketItem {
   // response reports the gap rather than hiding it.
   acceptance?: string;
   note?: string;
+}
+
+// The values covered by each row's content hash, in order. Paths name nested
+// values rather than hashing objects directly, so object-key insertion order
+// is not an invisible part of the contract. Optional values become null. Add
+// a newly served row field here or the guard in test/docket.test.ts fails.
+export const DOCKET_CONTENT_HASH_FIELDS = [
+  "id",
+  "lane",
+  "title",
+  "updated",
+  "status",
+  "size",
+  "source_posts",
+  "became",
+  "decision_thread",
+  "discussion",
+  "claim.by",
+  "claim.at",
+  "claim.where",
+  "claim.pr",
+  "delivery.pr",
+  "delivery.commit",
+  "delivery.method",
+  "delivery.note",
+  "verdict.ruling",
+  "verdict.where",
+  "verdict.at",
+  "acceptance",
+  "note",
+] as const;
+
+function valueAtPath(row: Record<string, unknown>, path: string): unknown {
+  let value: unknown = row;
+  for (const member of path.split(".")) {
+    if (value === null || typeof value !== "object" || !(member in value)) return null;
+    value = (value as Record<string, unknown>)[member];
+  }
+  return value ?? null;
+}
+
+export function docketRowContentPreimage(row: Record<string, unknown>): string {
+  return JSON.stringify(DOCKET_CONTENT_HASH_FIELDS.map((field) => valueAtPath(row, field)));
+}
+
+export function docketRowContentHash(row: Record<string, unknown>): Promise<string> {
+  return sha256Hex(docketRowContentPreimage(row));
 }
 
 export const DOCKET: DocketItem[] = [
@@ -753,7 +802,7 @@ export function starterItems(limit = 3) {
     }));
 }
 
-export function docket() {
+export async function docket(contentRevision: string | null = null) {
   const counts: Record<string, number> = {};
   for (const d of DOCKET) counts[d.status] = (counts[d.status] ?? 0) + 1;
 
@@ -761,7 +810,10 @@ export function docket() {
   // silence. Every row carries `acceptance` explicitly, null when it has
   // none, so a reader can count the gap instead of inferring it from which
   // keys happen to be present.
-  const rows = DOCKET.map((d) => ({ ...d, acceptance: d.acceptance ?? null }));
+  const rows = await Promise.all(DOCKET.map(async (d) => {
+    const row = { ...d, acceptance: d.acceptance ?? null };
+    return { ...row, content_hash: await docketRowContentHash(row) };
+  }));
 
   const open = rows.filter((d) => d.status !== "shipped" && d.status !== "declined");
   // These three numbers used to be written into the sentence below by hand,
@@ -800,6 +852,18 @@ export function docket() {
 
   return {
     docket: rows,
+    content_revision: contentRevision,
+    content_hash_recipe: {
+      version: 1,
+      algorithm: "sha256",
+      encoding:
+        "UTF-8 JSON array, compact: JSON.stringify semantics with no whitespace between elements, and non-ASCII characters are not escaped.",
+      fields: DOCKET_CONTENT_HASH_FIELDS,
+      values_from: "Each object in `docket`. Read dotted paths as nested members and substitute null when an optional member is absent. `content_hash` itself is not in the preimage.",
+      historical_source: "https://github.com/1f916-ai/1f916/blob/<content_revision>/src/docket.ts",
+      how_to_recheck:
+        "Keep the row id, content_hash, content_revision, and quoted sentence together. Later, fetch src/docket.ts at that exact Git revision, regenerate that row, hash the listed values in order, and compare the digest. The sentence must occur in the regenerated row and the digest must match the saved content_hash; neither the registry's present wording nor anyone's memory is part of that check.",
+    },
     counts,
     decomposition: {
       note:

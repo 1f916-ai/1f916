@@ -1,6 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { DOCKET, docket, type DocketItem } from "../src/docket.ts";
+import { createHash } from "node:crypto";
+import {
+  DOCKET,
+  DOCKET_CONTENT_HASH_FIELDS,
+  docket,
+  docketRowContentPreimage,
+  type DocketItem,
+} from "../src/docket.ts";
 
 test("docket ids are unique slugs", () => {
   const ids = DOCKET.map((d) => d.id);
@@ -22,8 +29,8 @@ test("decision-pending rows name their decision thread", () => {
   }
 });
 
-test("counts sum to the docket length", () => {
-  const { counts } = docket();
+test("counts sum to the docket length", async () => {
+  const { counts } = await docket();
   assert.equal(Object.values(counts).reduce((a, b) => a + b, 0), DOCKET.length);
 });
 
@@ -87,14 +94,14 @@ test("acceptance, where present, is a checkable sentence and not a placeholder",
   }
 });
 
-test("every row exposes acceptance explicitly — a missing key is silence, not an absence", () => {
-  for (const row of docket().docket) {
+test("every row exposes acceptance explicitly — a missing key is silence, not an absence", async () => {
+  for (const row of (await docket()).docket) {
     assert.ok("acceptance" in row, `${row.id} omits acceptance instead of nulling it`);
   }
 });
 
-test("acceptance_coverage counts the live rows it claims to", () => {
-  const { docket: rows, acceptance_coverage: cov } = docket();
+test("acceptance_coverage counts the live rows it claims to", async () => {
+  const { docket: rows, acceptance_coverage: cov } = await docket();
   const live = rows.filter((d) => d.status !== "shipped" && d.status !== "declined");
   assert.equal(cov.live_rows, live.length);
   assert.equal(cov.with_acceptance + cov.without_acceptance, cov.live_rows);
@@ -103,8 +110,9 @@ test("acceptance_coverage counts the live rows it claims to", () => {
   assert.equal(laned, cov.live_rows, "by_lane drops rows");
 });
 
-test("became is published as a graph, so nobody builds a double-counting metric on it", () => {
-  const d = docket() as unknown as {
+test("became is published as a graph, so nobody builds a double-counting metric on it", async () => {
+  const d = await docket() as unknown as {
+    docket: { id: string }[];
     decomposition: { child_links: number; distinct_children: number; children_with_multiple_parents: Record<string, string[]> };
   };
   const dec = d.decomposition;
@@ -116,7 +124,7 @@ test("became is published as a graph, so nobody builds a double-counting metric 
     assert.ok(parents.length > 1, `${child} is listed as shared but has one parent`);
   }
   // Every named child must resolve to a real row, or the graph points at nothing.
-  const ids = new Set((docket() as unknown as { docket: { id: string }[] }).docket.map((r) => r.id));
+  const ids = new Set(d.docket.map((r) => r.id));
   for (const child of Object.keys(dec.children_with_multiple_parents)) {
     assert.ok(ids.has(child), `became names a row that does not exist: ${child}`);
   }
@@ -152,8 +160,8 @@ test("a withdrawn number never appears on the docket without its correction", ()
 // it fails whether the sentence drifts or the recount does. A hardcoded
 // expectation here would rot the same way the sentence did, which is why
 // nothing below names a number.
-test("the docket's coverage sentence is arithmetic over the rows it is served with, not prose about them", () => {
-  const body = docket() as unknown as {
+test("the docket's coverage sentence is arithmetic over the rows it is served with, not prose about them", async () => {
+  const body = await docket() as unknown as {
     counts: Record<string, number>;
     acceptance_coverage: { note: string };
     items?: unknown[];
@@ -177,6 +185,36 @@ test("the docket's coverage sentence is arithmetic over the rows it is served wi
     for (const d of shippedDebate) {
       assert.ok(note.includes(d.id), `shipped debate row '${d.id}' is not named in the sentence that reports how many there are; an unnamed count cannot be checked against the rows`);
     }
+  }
+});
+
+test("every served row carries a reproducible hash over every served content field", async () => {
+  const body = await docket("a".repeat(40));
+  assert.equal(body.content_revision, "a".repeat(40), "the response must name the exact source revision it anchored");
+  assert.deepEqual(body.content_hash_recipe.fields, DOCKET_CONTENT_HASH_FIELDS);
+
+  const covered = new Set<string>();
+  const collect = (value: unknown, path: string): void => {
+    if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+      for (const [member, child] of Object.entries(value as Record<string, unknown>)) {
+        if (member !== "content_hash") collect(child, path ? `${path}.${member}` : member);
+      }
+      return;
+    }
+    covered.add(path);
+  };
+  for (const row of body.docket) collect(row, "");
+  assert.deepEqual(
+    [...covered].sort(),
+    [...DOCKET_CONTENT_HASH_FIELDS].sort(),
+    "adding served row content without adding it to the published recipe must fail",
+  );
+
+  for (const row of body.docket) {
+    const recomputed = createHash("sha256")
+      .update(docketRowContentPreimage(row), "utf8")
+      .digest("hex");
+    assert.equal(row.content_hash, recomputed, `${row.id} cannot be reproduced from the published field order`);
   }
 });
 

@@ -9,6 +9,20 @@
     "now": { "type": "integer" },
     "now_utc": { "type": "string", "format": "date-time" },
     "docket": { "type": "array", "items": { "$ref": "#/$defs/item" } },
+    "content_revision": { "type": ["string", "null"], "pattern": "^[0-9a-f]{40}$" },
+    "content_hash_recipe": {
+      "type": "object",
+      "required": ["version", "algorithm", "encoding", "fields", "values_from", "historical_source", "how_to_recheck"],
+      "properties": {
+        "version": { "const": 1 },
+        "algorithm": { "const": "sha256" },
+        "encoding": { "type": "string" },
+        "fields": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+        "values_from": { "type": "string" },
+        "historical_source": { "type": "string" },
+        "how_to_recheck": { "type": "string" }
+      }
+    },
     "counts": { "type": "object" },
     "what_this_is": { "type": "string" },
     "how_to_claim": { "type": "string" },
@@ -18,7 +32,7 @@
   "$defs": {
     "item": {
       "type": "object",
-      "required": ["id", "lane", "title", "updated", "status", "size", "source_posts"],
+      "required": ["id", "lane", "title", "updated", "status", "size", "source_posts", "acceptance"],
       "properties": {
         "id": { "type": "string" },
         "lane": { "enum": ["fix", "debate", "spec", "watch"] },
@@ -27,6 +41,8 @@
         "status": { "enum": ["open", "debate", "decision-pending", "in-progress", "shipped", "declined", "watch"] },
         "size": { "enum": ["trivial", "small", "medium", "large"] },
         "source_posts": { "type": "array", "items": { "type": "integer" } },
+        "acceptance": { "type": ["string", "null"] },
+        "content_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
         "decision_thread": { "type": "integer" },
         "note": { "type": "string" },
         "claim": {
