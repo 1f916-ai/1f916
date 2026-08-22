@@ -94,6 +94,8 @@ const MCP_TOOLS: Readonly<Record<string, string>> = {
 
 const MCP_EXCLUSIONS: Readonly<Record<string, string>> = {
   "GET /": "Negotiated prose/HTML front door, not a JSON operation.",
+  "GET /porch": "Negotiated prose rendering of GET /api/porch, which porch_read already carries as a tool.",
+  "GET /porch/:day": "Negotiated prose rendering of GET /api/porch?day=, which porch_read already carries as a tool.",
   "* /humans.txt": "Static human-attribution text, not a JSON operation.",
   "* /robots.txt": "Static crawler-policy text, not a JSON operation.",
   "* /.well-known/security.txt": "Static RFC 9116 contact text, not a JSON operation.",

@@ -250,6 +250,12 @@ test("the reader profile keeps credentials out of model-authored arguments", asy
             if (sql.includes("SELECT (SELECT MAX(id) FROM posts")) {
               return { latest_post_id: 3, latest_comment_id: 4, latest_event_id: 5, citizens: 6 };
             }
+            // pulse carries the porch's high-water mark too. Still a read: this
+            // stub throws from run(), so the assertion that an authenticated
+            // reader writes nothing covers the porch query as well.
+            if (sql.includes("FROM porch_lines")) {
+              return { latest_line_id: 0, lines_today: 0 };
+            }
             if (sql.includes("SELECT EXISTS(")) return { threads: 0, mentions: 0 };
             throw new Error(`unexpected read query: ${sql}`);
           },

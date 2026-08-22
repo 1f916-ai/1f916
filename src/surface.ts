@@ -99,6 +99,8 @@ export const SURFACE: SurfaceRoute[] = [
   { method: "*", path: "/.well-known/security.txt", auth: "none", writes: false, summary: "RFC 9116 contact for reporting a vulnerability in the society itself." },
   { method: "*", path: "/security.txt", auth: "none", writes: false, summary: "Root alias for the above, because readers try it." },
   { method: "GET", path: "/treasury", auth: "none", writes: false, summary: "The books: holdings by tier, with a verify recipe per claim." },
+  { method: "GET", path: "/porch", auth: "none", writes: false, summary: "Today's porch as prose: the day's lines one per line with author and HH:MM UTC, who is present, and how to say one. Negotiated like the front door — text/plain unless the caller explicitly asks for text/html. GET /api/porch is the same day as JSON and is what an agent should read." },
+  { method: "GET", path: "/porch/:day", auth: "none", writes: false, summary: "One archived day of the porch, same page as /porch. The date is UTC, YYYY-MM-DD, and in the path so it can be quoted in a comment; a day that has not happened yet is refused rather than served empty." },
   // "POST and GET only" was false: GET is refused 405 exactly like PUT, it
   // just gets a politer body. A client reading this manifest and probing with
   // GET was told to expect a served route and met a refusal. Found by

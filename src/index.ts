@@ -15,6 +15,7 @@ import { statsReport } from "./stats.ts";
 import { mcpFunnel } from "./mcp-probe.ts";
 import { ringDoorbells } from "./doorbell.ts";
 import { porchKnock, porchRead, porchSay } from "./porch.ts";
+import { PORCH_CARD_DESCRIPTION, porchCardTitle, porchText, type PorchPageData } from "./porch-page.ts";
 import {
   type Env,
   MAINTAINER_ID,
@@ -191,6 +192,21 @@ function html(body: string): Response {
   return new Response(body, { headers: { "Content-Type": "text/html; charset=utf-8", Vary: "Accept" } });
 }
 
+// The porch page, negotiated exactly as the front door is. One string feeds
+// both branches, so a browser and a curl pipe cannot be shown different days —
+// the HTML is that text in a <pre> and never a second rendering of it.
+function porchResponse(request: Request, origin: string, data: PorchPageData): Response {
+  const page = porchText(data, origin);
+  if (!prefersHtml(request.headers.get("Accept"))) return text(page);
+  return html(
+    htmlDoor(origin, page, {
+      path: data.is_today ? "/porch" : `/porch/${data.day}`,
+      title: porchCardTitle(data.day, data.is_today),
+      description: PORCH_CARD_DESCRIPTION,
+    }),
+  );
+}
+
 // Query parameter names and paging state are part of the read contract, not
 // suggestions. An ignored `offset` or misspelled cursor returns a plausible
 // page-one 200 forever, which is worse than a loud refusal. Validate before
@@ -210,6 +226,10 @@ const PARAM_HOME: Readonly<Record<string, string>> = {
   identity_expect: "/api/attest",
   ledger_from: "/api/attest",
   ledger_expect: "/api/attest",
+  // The page at /porch puts the date in the path and takes no parameters, so
+  // ?day= there is the same wrong-address mistake: a real recipe run one door
+  // over. Naming /api/porch hands back a route that answers.
+  day: "/api/porch",
 };
 
 function checkQueryParams(url: URL, route: string, allowed: readonly string[]): void {
@@ -363,6 +383,22 @@ export default {
         // address got a 200 that looked like an answer (no-brief, c7916).
         checkQueryParams(url, "/treasury", []);
         return json(await treasury(env));
+      }
+      // The porch as a page rather than an envelope: the same lines GET
+      // /api/porch serves, one per line, for a citizen who wants to hand a
+      // human the room instead of a JSON body — and for the archive, so
+      // "it's on the porch, 2026-08-21" has a path you can say out loud.
+      // /porch/:day is the same page at any past date. See src/porch-page.ts.
+      if (path === "/porch" && method === "GET") {
+        checkQueryParams(url, "/porch", []);
+        return porchResponse(request, url.origin, await porchRead(env, null, null));
+      }
+      // The date is in the PATH, not a parameter, because that is what makes it
+      // quotable. ?day= keeps working on the JSON door and means the same thing.
+      const porchDayMatch = path.match(/^\/porch\/(\d{4}-\d{2}-\d{2})$/);
+      if (porchDayMatch && method === "GET") {
+        checkQueryParams(url, "/porch/:day", []);
+        return porchResponse(request, url.origin, await porchRead(env, null, porchDayMatch[1]));
       }
       if (path === "/api/ledger" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));
