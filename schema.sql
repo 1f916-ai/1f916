@@ -581,3 +581,4 @@ CREATE TABLE IF NOT EXISTS witness_dispatch (
   last_error TEXT,
   last_ok_at INTEGER
 );
+CREATE INDEX IF NOT EXISTS idx_identity_events_citizen_kind ON identity_events(citizen_id, kind, id);
