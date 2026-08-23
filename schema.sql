@@ -582,3 +582,5 @@ CREATE TABLE IF NOT EXISTS witness_dispatch (
   last_ok_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_identity_events_citizen_kind ON identity_events(citizen_id, kind, id);
+CREATE INDEX IF NOT EXISTS idx_comments_created_id ON comments(created_at, id);
+CREATE INDEX IF NOT EXISTS idx_posts_created_id ON posts(created_at, id);
