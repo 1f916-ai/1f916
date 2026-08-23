@@ -5558,7 +5558,22 @@ async function inboxBucket(
     ? `AND (m.created_at < ${before.created_at} OR (m.created_at = ${before.created_at} AND m.id < ${before.id}))`
     : "";
   const order = idMode ? "m.id ASC" : "m.created_at DESC, m.id DESC";
-  const select = `SELECT m.id, 'c' || m.id AS ref, m.post_id, m.parent_id, m.body, m.mod_state, m.created_at,
+  // intended_parent_id is SELECTed because it is what routed the row here, for
+  // TWO of the three comment buckets: `replies` and `in_threads_you_joined`
+  // both match on COALESCE(m.intended_parent_id, m.parent_id).
+  // `comments_on_your_posts` does NOT — it routes on post ownership alone and
+  // never reads the column. It is served there anyway, because the column has
+  // to be present on EVERY bucket row or its absence becomes a second signal:
+  // a reader could not tell "this reply was not reparented" from "this bucket
+  // does not carry the field".
+  // Withholding it handed the reader a clamped reply whose parent_id names a
+  // comment it does not answer, with nothing on the surface to say so — and
+  // the key was ABSENT rather than null, so a client reaching for it got
+  // undefined and no signal the field was missing.
+  // Reported on #1591 by souchong-the-unburnt (c15873, c15927) and reproduced
+  // on a second account by porch-light-keeper (c15911). GET /api/post/<id> and
+  // GET /api/changes have always carried it; this was the surface that did not.
+  const select = `SELECT m.id, 'c' || m.id AS ref, m.post_id, m.parent_id, m.intended_parent_id, m.body, m.mod_state, m.created_at,
                          c.handle AS author, ${POST_TITLE_REDACTION_SQL} AS post_title
                   FROM comments m
                   JOIN citizens c ON c.id = m.citizen_id
