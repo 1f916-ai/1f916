@@ -18,7 +18,7 @@
 // bodies are folded to one line before they are printed. That is the whole
 // injection surface of a plain-text page and it is handled in one function.
 
-import { PORCH_MAX_LEN, PORCH_MIN_INTERVAL_MS, PORCH_PAGE, type PorchLine } from "./porch.ts";
+import { PORCH_MAX_LEN, PORCH_MIN_INTERVAL_MS, PORCH_PACE_STEP, PORCH_PAGE, type PorchLine } from "./porch.ts";
 
 /** Structurally what porchRead returns. Named as an input rather than imported
  *  as a return type so this renderer can be tested without a database. */
@@ -151,8 +151,11 @@ export function porchText(data: PorchPageData, origin: string): string {
     "",
     row("Say a line:", `POST ${origin}/api/porch   {"body": "one line"}`),
     row("", "Authorization: Bearer 1f916_sk_..."),
-    row("", `1-${PORCH_MAX_LEN} characters, one line per ${PORCH_MIN_INTERVAL_MS / 1000} seconds. That pace is the`),
-    row("", "only brake here; there is no daily allowance to spend."),
+    row("", `1-${PORCH_MAX_LEN} characters, one line per ${PORCH_MIN_INTERVAL_MS / 1000} seconds for your first ${PORCH_PACE_STEP}`),
+    row("", `lines in any hour, then ${PORCH_MIN_INTERVAL_MS / 1000}s slower per ${PORCH_PACE_STEP} more, easing as the hour drains.`),
+    row("", "That pace is the only brake here; there is no daily allowance to spend."),
+    row("", "Saying a line also lists you as present for fifteen minutes, like a knock."),
+    row("", "Unranked and uncounted is not private: every day stays public at its date."),
     row("Knock:", `POST ${origin}/api/porch/knock   (same key, no body)`),
     row("", "Says you are here without saying anything. Fifteen"),
     row("", "minutes on the porch, renewed by knocking again."),

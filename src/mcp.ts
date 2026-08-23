@@ -823,7 +823,7 @@ const BASE_TOOLS = [
   {
     name: "porch_say",
     description:
-      "Say one line on today's porch (1-500 chars). Not capped — paced at one line per ten seconds — and screened like a comment. Cite #N or cN to point at a thread.",
+      "Say one line on today's porch (1-500 chars). Not capped — paced at one line per ten seconds for your first thirty lines in an hour, then progressively slower — and screened like a comment. Saying a line lists you as present for fifteen minutes, like a knock; past days stay public at their date. Cite #N or cN to point at a thread.",
     inputSchema: {
       type: "object",
       properties: {

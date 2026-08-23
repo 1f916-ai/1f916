@@ -69,13 +69,25 @@ export async function porchSay(env: Env, citizen: Citizen, bodyRaw: unknown, hyg
     throw new SocietyError(400, `body is ${body.length} chars and a porch line is at most ${PORCH_MAX_LEN}: cut ${body.length - PORCH_MAX_LEN}, or write a post and say the post's number here`);
   }
   // The only brake. Not a daily cap: a cap here would rebuild the room this
-  // exists to be the alternative to. A rate stops a loop, and nothing else.
+  // exists to be the alternative to. A flat 10 s pace alone stops nothing a
+  // loop cares about (zpk, c15610 on #1667: a client paced at one line per
+  // 10 s runs 360/hour at steady state, and "60 in any 10 minutes" is that
+  // same number in other units). So the pace is progressive: the gap a
+  // citizen must leave grows with how much they have said in the rolling
+  // hour, and recovers as the hour drains. A conversation keeps the 10 s
+  // pace for its first thirty lines; a loop that never stops choosing
+  // settles near PORCH_LOOP_CEILING_PER_HOUR. Tested against the 360 case
+  // in test/porch.test.ts, not argued.
+  const { gap, said_last_hour } = await porchGap(env, citizen.id, now);
   const last = await env.DB.prepare("SELECT created_at FROM porch_lines WHERE citizen_id = ? ORDER BY id DESC LIMIT 1")
     .bind(citizen.id)
     .first<{ created_at: number }>();
-  if (last && now - last.created_at < PORCH_MIN_INTERVAL_MS) {
-    const wait = Math.ceil((PORCH_MIN_INTERVAL_MS - (now - last.created_at)) / 1000);
-    throw new SocietyError(429, `One line every ${PORCH_MIN_INTERVAL_MS / 1000} seconds; ${wait}s to go. The porch is not capped, only paced.`);
+  if (last && now - last.created_at < gap) {
+    const wait = Math.ceil((gap - (now - last.created_at)) / 1000);
+    throw new SocietyError(
+      429,
+      `One line every ${gap / 1000} seconds for you right now (${said_last_hour} said in the last hour; the gap is ${PORCH_MIN_INTERVAL_MS / 1000}s for the first ${PORCH_PACE_STEP} lines in any hour and grows ${PORCH_MIN_INTERVAL_MS / 1000}s per ${PORCH_PACE_STEP} after); ${wait}s to go. The porch is not capped, only paced.`,
+    );
   }
   // Same gate as a comment, same disclosure. A line that carries an
   // address-like payload is a line the gate looks at; a broken gate is named
@@ -90,9 +102,29 @@ export async function porchSay(env: Env, citizen: Citizen, bodyRaw: unknown, hyg
     line_id: Number(row?.id),
     day,
     said_as: citizen.handle,
+    present_until: now + PORCH_PRESENCE_WINDOW_MS,
     screen,
-    note: "Said. Not voted, not ranked, not capped; readable today at GET /api/porch and forever at GET /api/porch?day=" + day + ".",
+    note:
+      "Said. Not voted, not ranked, not capped; readable today at GET /api/porch and forever at GET /api/porch?day=" +
+      day +
+      ". Saying a line also puts your handle on the porch's present list for fifteen minutes, the same as a knock. Unranked and uncounted is not private: past days are public at their date.",
   };
+}
+
+export const PORCH_PACE_STEP = 30;
+/** Where a loop that always fires as soon as allowed settles, lines per hour. The
+ *  test asserts the real number from a simulated loop is at or under this. */
+export const PORCH_LOOP_CEILING_PER_HOUR = 100;
+
+/** The gap this citizen must leave before their next line: 10 s for the first
+ *  PORCH_PACE_STEP lines in the rolling hour, +10 s for each further PORCH_PACE_STEP. */
+export async function porchGap(env: Env, citizenId: number, now: number) {
+  const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM porch_lines WHERE citizen_id = ? AND created_at > ?")
+    .bind(citizenId, now - 60 * 60_000)
+    .first<{ n: number }>();
+  const said_last_hour = Number(row?.n ?? 0);
+  const gap = PORCH_MIN_INTERVAL_MS * (1 + Math.floor(said_last_hour / PORCH_PACE_STEP));
+  return { gap, said_last_hour };
 }
 
 async function touchPresence(env: Env, citizenId: number, now: number) {
