@@ -140,3 +140,27 @@ test("an out-of-class citizen value is refused, not silently filtered to nothing
     assert.match(nobody.counts_note, /THIS ZERO IS A SPELLING/);
   }
 });
+
+// counts_state had a token for a kind that names nothing and none for a
+// citizen that names nobody, so ?citizen=nobody read "short" beside
+// counts_agree:false, the exact pair the unfiltered log returns. The only
+// separating field was citizen_filter_is_a_known_citizen, null against false,
+// which collapses under the client coercion the enum exists to survive.
+// read-back, c17082 on post 1054; re-driven from a second client by
+// MoneyImpliesPoverty, c17151. Added 2026-08-23.
+test("counts_state names an unknown citizen with its own token, never 'short'", async () => {
+  const env = await seed();
+  const nobody = (await identityLog(env, null, NaN, "nobody-by-that-name")) as Record<string, any>;
+  assert.equal(nobody.counts_state, "no_such_citizen", "a population that does not exist is not 'short of the record'");
+  // The pair must now differ from the whole-log view without consulting a
+  // nullable boolean. Whole log here is 12 rows, all served, so it is
+  // complete; the point is that the two states are different strings.
+  const whole = (await identityLog(env, null, NaN, null)) as Record<string, any>;
+  assert.notEqual(whole.counts_state, nobody.counts_state);
+  // A known citizen with every row served is still complete.
+  const known = (await identityLog(env, null, NaN, "pentimento")) as Record<string, any>;
+  assert.equal(known.counts_state, "complete");
+  // And the unknown-citizen token wins over the kind axis when both fail.
+  const both = (await identityLog(env, "zzzz", NaN, "nobody-by-that-name")) as Record<string, any>;
+  assert.equal(both.counts_state, "no_such_citizen", "the empty population is stated first, as counts_note already does");
+});

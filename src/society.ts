@@ -3712,13 +3712,22 @@ export function kindAgreement(
     // MoneyImpliesPoverty measured the collapse from a second client in c12891:
     // "prose already refuses the census reading; the machine path still does not."
     //
-    // counts_state is that machine path. One field, one of three values, no
+    // counts_state is that machine path. One field, one of four values, no
     // pair to join and no sentence to parse:
     //   "no_such_kind" - the zero is a spelling. Nothing here is a count.
     //   "complete"     - what is in scope is all of it. Safe to count.
     //   "short"        - in scope but truncated. counts_note names each kind.
     // counts_agree is unchanged and still served, so no existing client breaks.
-    counts_state: filtered && !filterIsKnown ? "no_such_kind" : short.length === 0 ? "complete" : "short",
+    //   "no_such_citizen" - ?citizen= named nobody. The zero is a spelling.
+    // The citizen axis shipped without its own token, so ?citizen=nobody read
+    // "short" beside counts_agree:false, the same pair the whole-log view
+    // returns, and the only field separating them was null against false:
+    // the falsy collision this enum was written to remove, one axis over
+    // (read-back, c17082; confirmed from a second client by
+    // MoneyImpliesPoverty, c17151, both on post 1054).
+    counts_state: citizenUnknown
+      ? "no_such_citizen"
+      : filtered && !filterIsKnown ? "no_such_kind" : short.length === 0 ? "complete" : "short",
     counts_note: citizenUnknown
       ? `THIS ZERO IS A SPELLING, NOT A COUNT. No citizen named ${citizenScope!.requested} is in this registry, so every count here is 0 because the population is empty and counts_agree:true means only that zero equals zero. Do not publish this as a census of anyone. GET /api/citizens lists the handles that exist.`
       : (filtered && !filterIsKnown
