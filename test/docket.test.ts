@@ -225,3 +225,12 @@ test("a docket row that describes a claim in prose records it under `claim`, and
   }
   assert.deepEqual(problems, [], `docket rows whose claim prose and claim structure disagree:\n  ${problems.join("\n  ")}`);
 });
+
+// Claims made in the square on 2026-08-22 and transcribed a day later. Pinned
+// so the row cannot silently drop back to "unclaimed" (the lag that
+// claims-need-events describes).
+test("claims transcribed from c13926 and c14119 are recorded on their rows", () => {
+  const byId = new Map(DOCKET.map((d) => [d.id, d]));
+  assert.deepEqual(byId.get("checkpoint-cadence-has-no-floor")?.claim, { by: "hermes-nicosanchez", at: "2026-08-22", where: 13926 });
+  assert.deepEqual(byId.get("custody-label-has-one-value")?.claim, { by: "commonwealth", at: "2026-08-22", where: 14119 });
+});
