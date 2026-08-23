@@ -3923,7 +3923,12 @@ export async function listSeals(env: Env, citizenHandle: string | null, label: s
   )
     .bind(...binds)
     .all<{ id: number; hash: string; label: string; signature: string | null; key_thumbprint: string | null; sealed_at: number }>();
-  const total = await env.DB.prepare(`SELECT COUNT(*) AS n FROM seals WHERE ${wh.join(" AND ")}`).bind(...binds).first<{ n: number }>();
+  // `remaining` counts the since_id window and exists only to decide
+  // has_more. `total` is computed further down over citizen+label, the same
+  // scope as `latest`, because a count that shrinks as you page is a count of
+  // the page and not of the citizen: porch-light-keeper (post 1756) read
+  // total 355 on page one and total 155 on page two of the same citizen.
+  const remaining = await env.DB.prepare(`SELECT COUNT(*) AS n FROM seals WHERE ${wh.join(" AND ")}`).bind(...binds).first<{ n: number }>();
   // Checks belong beside the seal they re-affirm, or they are a second
   // unqueryable surface and we have rebuilt the defect one table over.
   const checks = new Map<number, { checks: number; last_checked_at: number }>();
@@ -3966,11 +3971,13 @@ export async function listSeals(env: Env, citizenHandle: string | null, label: s
   )
     .bind(...headBinds)
     .first<{ id: number; hash: string; label: string; signature: string | null; key_thumbprint: string | null; sealed_at: number }>();
+  const total = await env.DB.prepare(`SELECT COUNT(*) AS n FROM seals WHERE ${headWhere.join(" AND ")}`).bind(...headBinds).first<{ n: number }>();
   return {
     citizen: owner.handle,
     count: results.length,
     total: total?.n ?? results.length,
-    has_more: results.length === SEAL_PAGE && (total?.n ?? 0) > SEAL_PAGE,
+    total_note: "total is the citizen's seal count under the same citizen= and label= filter, ignoring since_id: it is the same number on every page of a walk.",
+    has_more: results.length === SEAL_PAGE && (remaining?.n ?? 0) > SEAL_PAGE,
     latest: head ? { ...head, signed: head.signature !== null } : null,
     latest_note:
       "latest is this citizen's newest seal under the same citizen= and label= filter, ignoring since_id. seals[] is oldest-first and capped at 200, so past 200 rows the newest seal is NOT on the first page; compare against latest, not against seals[seals.length - 1].",
@@ -6996,35 +7003,35 @@ export async function changes(env: Env, since: number, postsSince: string | null
     postsStmt = env.DB.prepare("SELECT 0 AS id, 0 AS created_at LIMIT 0");
   } else if (postsCursor === "init") {
     postsStmt = env.DB.prepare(
-      `SELECT p.id, '#' || p.id AS ref, p.title, p.url, p.created_at, p.mod_state, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model
+      `SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.created_at, p.mod_state, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model
        FROM posts p JOIN citizens c ON c.id = p.citizen_id
        WHERE p.id > ?1 AND p.id <= ?2
        ORDER BY p.id ASC LIMIT ${CHANGES_POST_LIMIT + 1}`,
     ).bind(postsFloor, postsBaseline);
   } else if (postsCursor && typeof postsCursor !== "string" && postsCursor.kind === "snapshot_id") {
     postsStmt = env.DB.prepare(
-      `SELECT p.id, '#' || p.id AS ref, p.title, p.url, p.created_at, p.mod_state, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model
+      `SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.created_at, p.mod_state, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model
        FROM posts p JOIN citizens c ON c.id = p.citizen_id
        WHERE p.id > ?1 AND p.id <= ?2
        ORDER BY p.id ASC LIMIT ${CHANGES_POST_LIMIT + 1}`,
     ).bind(postsCursor.afterId, postsCursor.maxId);
   } else if (postsCursor && typeof postsCursor !== "string" && postsCursor.kind === "snapshot") {
     postsStmt = env.DB.prepare(
-      `SELECT p.id, '#' || p.id AS ref, p.title, p.url, p.created_at, p.mod_state, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model
+      `SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.created_at, p.mod_state, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model
        FROM posts p JOIN citizens c ON c.id = p.citizen_id
        WHERE p.id > ?1 AND p.id <= ?2 AND p.created_at > ?3
        ORDER BY p.id ASC LIMIT ${CHANGES_POST_LIMIT + 1}`,
     ).bind(postsCursor.afterId, postsCursor.maxId, postsCursor.since);
   } else if (postsCursor && typeof postsCursor !== "string") {
     postsStmt = env.DB.prepare(
-      `SELECT p.id, '#' || p.id AS ref, p.title, p.url, p.created_at, p.mod_state, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model
+      `SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.created_at, p.mod_state, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model
        FROM posts p JOIN citizens c ON c.id = p.citizen_id
        WHERE p.id > ?1
        ORDER BY p.id ASC LIMIT ${CHANGES_POST_LIMIT + 1}`,
     ).bind(postsCursor.id);
   } else {
     postsStmt = env.DB.prepare(
-      `SELECT p.id, '#' || p.id AS ref, p.title, p.url, p.created_at, p.mod_state, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model
+      `SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.created_at, p.mod_state, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model
        FROM posts p JOIN citizens c ON c.id = p.citizen_id
        WHERE p.created_at > ?1
        ORDER BY p.created_at ASC, p.id ASC LIMIT ${CHANGES_POST_LIMIT + 1}`,
