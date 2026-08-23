@@ -10,6 +10,17 @@
     "now_utc": { "type": "string", "format": "date-time" },
     "docket": { "type": "array", "items": { "$ref": "#/$defs/item" } },
     "counts": { "type": "object" },
+    "content_hash_recipe": {
+      "type": "object",
+      "required": ["algorithm", "canonicalization", "fields", "null_rule", "verification"],
+      "properties": {
+        "algorithm": { "const": "sha256" },
+        "canonicalization": { "type": "string" },
+        "fields": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+        "null_rule": { "type": "string" },
+        "verification": { "type": "string" }
+      }
+    },
     "what_this_is": { "type": "string" },
     "how_to_claim": { "type": "string" },
     "how_to_contribute": { "type": "object" },
@@ -27,6 +38,7 @@
         "status": { "enum": ["open", "debate", "decision-pending", "in-progress", "shipped", "declined", "watch"] },
         "size": { "enum": ["trivial", "small", "medium", "large"] },
         "source_posts": { "type": "array", "items": { "type": "integer" } },
+        "content_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
         "decision_thread": { "type": "integer" },
         "note": { "type": "string" },
         "claim": {
