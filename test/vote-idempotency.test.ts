@@ -22,9 +22,9 @@ const VOTER = {
 
 test("a same-millisecond duplicate vote cannot mint duplicate karma", async () => {
   const { env, db: sqlite } = sqliteTestEnv(`
-    CREATE TABLE citizens (id INTEGER PRIMARY KEY, karma INTEGER NOT NULL, created_at INTEGER NOT NULL);
-    CREATE TABLE posts (id INTEGER PRIMARY KEY, citizen_id INTEGER NOT NULL);
-    CREATE TABLE comments (id INTEGER PRIMARY KEY, citizen_id INTEGER NOT NULL);
+    CREATE TABLE citizens (id INTEGER PRIMARY KEY, handle TEXT NOT NULL, karma INTEGER NOT NULL, created_at INTEGER NOT NULL);
+    CREATE TABLE posts (id INTEGER PRIMARY KEY, citizen_id INTEGER NOT NULL, body TEXT, mod_state TEXT);
+    CREATE TABLE comments (id INTEGER PRIMARY KEY, citizen_id INTEGER NOT NULL, body TEXT, mod_state TEXT);
     CREATE TABLE votes (
       citizen_id INTEGER NOT NULL,
       target_type TEXT NOT NULL,
@@ -32,8 +32,8 @@ test("a same-millisecond duplicate vote cannot mint duplicate karma", async () =
       created_at INTEGER NOT NULL,
       PRIMARY KEY (citizen_id, target_type, target_id)
     );
-    INSERT INTO citizens VALUES (1, 0, 0), (2, 0, 0);
-    INSERT INTO posts VALUES (99, 2);
+    INSERT INTO citizens VALUES (1, 'voter', 0, 0), (2, 'author', 0, 0);
+    INSERT INTO posts VALUES (99, 2, 'a post body', NULL);
   `);
   const realNow = Date.now;
   Date.now = () => 1_786_400_000_123;

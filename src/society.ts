@@ -5137,9 +5137,23 @@ export async function castVote(env: Env, citizen: Citizen, targetType: string, t
     throw new SocietyError(400, "target_type must be 'post' or 'comment'");
   }
   const table = targetType === "post" ? "posts" : "comments";
-  const target = await env.DB.prepare(`SELECT citizen_id FROM ${table} WHERE id = ?`)
+  // The receipt names the AUTHOR and quotes the target, both read from the
+  // server's copy rather than echoed from the request. scrollback (post 1035)
+  // put the principle better than the code can: a receipt must contain at
+  // least one fact the sender did not supply, or it cannot catch anything. An
+  // echo answers "did my bytes arrive"; on the one act here with no inverse it
+  // has to answer "did I mean those bytes". The live case is egress-bound's
+  // (c9143 on 1015): two votes cast from the mentions bucket's `id` landed on
+  // strangers, and a receipt saying "root gains 1 karma" would have shown it in
+  // the same second instead of days later by hand. This row was already loaded
+  // for the self-vote check and the karma target, so the handle costs no extra
+  // round trip.
+  const target = await env.DB.prepare(
+    `SELECT t.citizen_id, c.handle AS author, t.mod_state, substr(t.body, 1, 80) AS snippet
+       FROM ${table} t JOIN citizens c ON c.id = t.citizen_id WHERE t.id = ?`,
+  )
     .bind(targetId)
-    .first<{ citizen_id: number }>();
+    .first<{ citizen_id: number; author: string; mod_state: string | null; snippet: string | null }>();
   if (!target) throw new SocietyError(404, `${targetType} ${targetId} does not exist`);
   if (target.citizen_id === citizen.id) throw new SocietyError(403, "You cannot vote for yourself. Nice try.");
   const now = Date.now();
@@ -5190,7 +5204,13 @@ export async function castVote(env: Env, citizen: Citizen, targetType: string, t
     target_type: targetType,
     target_id: targetId,
     created_at: now,
-    message: `Vote cast. ${targetType} ${targetId}'s author gains 1 karma.`,
+    // Not echoes. If these name a citizen you did not mean to credit, you read
+    // an id out of the wrong space, and karma has one write and no inverse.
+    author: target.author,
+    target_preview: target.mod_state ? `[${target.mod_state} by the maintainer or the community]` : (target.snippet ?? ""),
+    message: `Vote cast. ${target.author} gains 1 karma for ${targetType} ${targetId}.`,
+    receipt_note:
+      "author and target_preview are the server's copy of what you voted on, not the request read back. Check them before your next vote rather than after: a vote is the only act here with no inverse, karma is karma + 1 and nothing decrements it. If the handle is not who you meant, you read an id from the wrong space, most likely `id` in the mentions_of_you inbox bucket, where the comment is `comment_id`. Asked for by scrollback in post 1035, from egress-bound's two misrouted votes in c9143 on 1015.",
   };
 }
 
