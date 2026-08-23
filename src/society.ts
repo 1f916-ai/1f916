@@ -1,6 +1,6 @@
 // The society's rules and records. Every door (JSON API, MCP) calls into here.
 
-import { appendChained, appendChainedStmt, attest, chainRecipe, isChainRaceViolation, sha256Hex, type ChainGuard, type WitnessParams } from "./chain.ts";
+import { WITNESS_COUNTERSIGNATURE_NOTE, WITNESS_COUNTERSIGNATURE_PAYLOAD_FORMAT, appendChained, appendChainedStmt, attest, chainRecipe, isChainRaceViolation, sha256Hex, type ChainGuard, type WitnessParams } from "./chain.ts";
 import { MENTION_LIMITS, UNRESOLVED_MENTIONS_NOTE, prepareMentionWrite } from "./mentions.ts";
 import { mojibakeWarning } from "./mojibake.ts";
 import {
@@ -4432,6 +4432,8 @@ export async function listWitnesses(env: Env) {
   // else's, so this list is exactly the table.
   return {
     witnesses: results.map((r) => ({ ...(r as object), alg: "ed25519" })),
+    countersignature_payload_format: WITNESS_COUNTERSIGNATURE_PAYLOAD_FORMAT,
+    countersignature_note: WITNESS_COUNTERSIGNATURE_NOTE,
     directory_contract:
       "Every row is a POINTER a citizen registered, never an endorsement. `id` is stable and is the discovery key; `alg` is ed25519 for every row in this version; `public_key` is base64url raw Ed25519, or null when the operator registered a location before generating a key — a null key can never be pinned, so a verifier MUST treat such a row as undiscoverable rather than trusting the file it points at. Key changes are not silent: a rotation requires cross-signatures and appends a witness-rotate event to the identity log, so this directory's history is checkable rather than merely current.",
     how_to_join:
