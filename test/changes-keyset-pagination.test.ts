@@ -32,6 +32,19 @@ describe("changes cursor parsing", () => {
     });
   });
 
+  test("capped init walks carry a snapi token that needs no timestamp filter", () => {
+    assert.deepEqual(parseChangesCursor("snapi:1000:500"), {
+      kind: "snapshot_id",
+      maxId: 1000,
+      afterId: 500,
+    });
+    assert.deepEqual(parseChangesCursor("snapi:0:0"), {
+      kind: "snapshot_id",
+      maxId: 0,
+      afterId: 0,
+    });
+  });
+
   for (const malformed of [
     "",
     ":",
@@ -45,6 +58,13 @@ describe("changes cursor parsing", () => {
     "snap:1:2",
     "snap:1:2:1:0",
     "snap:1.5:2:1",
+    "snapi:2:3",
+    "snapi:1",
+    "snapi:1:2:3",
+    "snapi:3:2:9",
+    "snapi:3:2:",
+    "snapi:1.5:2",
+    "snapi:",
     "DONE",
     "done:extra",
   ]) {

@@ -4,7 +4,21 @@
 // a caller who inits at a timestamp between such a pair loses the higher id
 // with no signal. flashbulb named the mechanism (c11113 on 1142, specimen post
 // 1177); xinren walked one interval twice (c11429) and got 39 posts then 40,
-// same closing token. The response must count what its own since hid.
+// same closing token.
+//
+// The first answer to that was to COUNT what since hid, in
+// posts_hidden_by_since / comments_hidden_by_since, so a caller at least knew
+// a number was missing. Disclosure was the honest floor, not the fix: the rows
+// stayed unreachable and the note had to tell callers to init again at an
+// earlier since to get them.
+//
+// The ID-floor fix supersedes that. init now resolves since to an id floor
+// ONCE and the snapshot drains the contiguous id range above it, so a row that
+// commits late with an early stamp is DELIVERED rather than counted as lost.
+// The counters stay on the response, because a client reading them is entitled
+// to keep reading them, and they are now 0 by construction on a snapshot init:
+// nothing above the floor is hidden any more. The first test below pins that
+// inversion by name, on the exact fixture that used to lose p3.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -34,26 +48,44 @@ function board() {
   return { db, env };
 }
 
-test("a snapshot init counts the rows its since filter hid above the first delivered id", async () => {
+test("the rows the since filter used to hide are now delivered, not merely counted", async () => {
   const { db, env } = board();
   try {
     // since=600 sits between p3/c3's stamp (522) and p2/c2's stamp (1000).
+    // This is flashbulb's mechanism as a fixture: p3 has a HIGHER id than p2
+    // and an OLDER stamp, so a created_at filter drops it while the closing
+    // token walks past it. That is the row that used to disappear.
     const first = await changes(env, 600, "init", "init");
-    assert.deepEqual(first.posts.map((r) => r.id), [2, 4], "p3 is hidden by the timestamp filter");
-    assert.deepEqual(first.comments.map((r) => r.id), [2, 5]);
-    assert.equal(first.next_posts_since, "id:4", "and the token walks past it");
-    assert.equal(first.posts_hidden_by_since, 1, "the response says one post was hidden");
-    assert.equal(first.comments_hidden_by_since, 2, "and two comments");
+    assert.deepEqual(
+      first.posts.map((r) => r.id),
+      [2, 3, 4],
+      "p3 commits late with an early stamp and is DELIVERED, not skipped",
+    );
+    assert.deepEqual(
+      first.comments.map((r) => r.id),
+      [2, 3, 4, 5],
+      "c3 and c4 likewise: the id floor carries them, their timestamps do not",
+    );
+    assert.equal(
+      first.posts_hidden_by_since,
+      0,
+      "zero by construction now: nothing above the floor is hidden, so the counter has nothing to report",
+    );
+    assert.equal(first.comments_hidden_by_since, 0);
 
-    // A snapshot that hides nothing above its window says zero, not null.
-    const clean = await changes(env, 1500, "init", "init");
-    assert.deepEqual(clean.posts.map((r) => r.id), [4]);
-    assert.equal(clean.posts_hidden_by_since, 0);
-    assert.equal(clean.comments_hidden_by_since, 0);
+    // The counters remain present and zero rather than being dropped. An
+    // absent key is indistinguishable on the wire from an old deployment.
+    assert.ok("posts_hidden_by_since" in first);
+    assert.ok("comments_hidden_by_since" in first);
 
-    // Rows below the first delivered id are before since by design, not hidden.
+    // The floor is still a floor. Rows stamped at or below `since` that also
+    // sit below it stay below it: this is a watermark, not a full replay.
+    const late = await changes(env, 1500, "init", "init");
+    assert.deepEqual(late.posts.map((r) => r.id), [4], "only the row above the floor");
+    assert.equal(late.posts_hidden_by_since, 0);
+
     const all = await changes(env, 0, "init", "init");
-    assert.deepEqual(all.posts.map((r) => r.id), [1, 2, 3, 4]);
+    assert.deepEqual(all.posts.map((r) => r.id), [1, 2, 3, 4], "since=0 floors at the bottom and delivers everything");
     assert.equal(all.posts_hidden_by_since, 0);
 
     // Live and legacy modes carry no snapshot and report null.
@@ -62,6 +94,31 @@ test("a snapshot init counts the rows its since filter hid above the first deliv
     assert.equal(live.comments_hidden_by_since, null);
     const legacy = await changes(env, 600);
     assert.equal(legacy.posts_hidden_by_since, null);
+  } finally {
+    db.close();
+  }
+});
+
+test("the walk loses nothing: two passes over the same board agree", async () => {
+  // xinren's test, c11429: walk one interval twice and compare. They got 39
+  // posts then 40 with the same closing token. A full drain from init must
+  // reach every row exactly once, in id order, with no row reachable only by
+  // hand-crafting a token.
+  const { db, env } = board();
+  try {
+    const seen: number[] = [];
+    let postsCursor = "init";
+    let commentsCursor = "init";
+    for (let guard = 0; guard < 20; guard++) {
+      const page: Awaited<ReturnType<typeof changes>> = await changes(env, 0, postsCursor, commentsCursor);
+      seen.push(...page.posts.map((r) => r.id));
+      if (page.next_posts_since === null || page.next_posts_since === "done") break;
+      if (page.next_posts_since === postsCursor) break;
+      postsCursor = page.next_posts_since;
+      commentsCursor = page.next_comments_since ?? "done";
+      if (page.posts.length === 0) break;
+    }
+    assert.deepEqual(seen, [1, 2, 3, 4], "every post exactly once, in id order");
   } finally {
     db.close();
   }
