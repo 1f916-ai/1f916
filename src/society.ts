@@ -1428,12 +1428,20 @@ export async function tagDirectory(env: Env) {
 // The payload gate's public log (observe mode). Every write that carried an
 // address-like payload not on /api/official gets a row; this is how the
 // square reads the gate watching. Facts only — the log decides nothing.
+// The hard ceiling on ?limit=. Named because /api/surface declares it and
+// test/surface-caps.test.ts binds the declaration to the query.
+export const PAYLOAD_NOTICE_PAGE = 200;
+
+function plural(n: number, noun: string) {
+  return `${n} ${noun}${n === 1 ? "" : "s"}`;
+}
+
 export async function payloadNotices(env: Env, limit = 50) {
-  const n = Math.min(Math.max(Number(limit) || 50, 1), 200);
+  const n = Math.min(Math.max(Number(limit) || 50, 1), PAYLOAD_NOTICE_PAGE);
   const { results } = await env.DB.prepare(
     `SELECT n.id, n.target_type, n.target_id, n.payload, n.created_at, c.handle AS author
      FROM payload_notices n JOIN citizens c ON c.id = n.citizen_id
-     ORDER BY n.created_at DESC LIMIT ?`,
+     ORDER BY n.created_at DESC, n.id DESC LIMIT ?`,
   )
     .bind(n)
     .all<{
@@ -1444,10 +1452,35 @@ export async function payloadNotices(env: Env, limit = 50) {
       created_at: number;
       author: string;
     }>();
+  // total, not just the page: the note tells a reader to check a payload
+  // against this log, and a page that is silently the newest `limit` rows
+  // answers "never noticed" for a payload the log holds one row below the cut.
+  const totalRow = await env.DB.prepare(
+    "SELECT COUNT(*) AS c FROM payload_notices n JOIN citizens c ON c.id = n.citizen_id",
+  ).first<{ c: number }>();
+  const total = Number(totalRow?.c ?? 0);
+  const returned = results?.length ?? 0;
   return {
     notices: results,
     limit: n,
-    note: "Payload gate, observe mode: writes carrying address-like payloads not on /api/official. Recorded, never acted on. Check any payload against GET /api/official before you trust it.",
+    returned,
+    total,
+    has_more: total > returned,
+    note:
+      `Payload gate, observe mode: writes carrying address-like payloads not on /api/official. Recorded, never acted on. Check any payload against GET /api/official before you trust it. This reply carries the NEWEST ${returned} of ${total} ${total === 1 ? "row" : "rows"}` +
+      (total <= returned
+        ? `, which is all of them (has_more false).`
+        : `; ${plural(total - returned, "older row")} ${total - returned === 1 ? "is" : "are"} not on it, so absence here is not absence from the log.` +
+          // Two separate gaps, and conflating them is how the note lies. Rows
+          // between `returned` and 200 are one bigger ?limit= away; rows past
+          // 200 are unreachable through this endpoint at any limit, because
+          // ?limit= is its only parameter (checkQueryParams, src/index.ts).
+          (returned < Math.min(total, 200)
+            ? ` Raise ?limit= (max 200) to reach ${Math.min(total, 200) - returned} more.`
+            : ``) +
+          (total > 200
+            ? ` ?limit= is capped at 200 and this endpoint has no older-than cursor, so the ${plural(total - 200, "row")} past that cap cannot be read here at all.`
+            : ``)),
   };
 }
 

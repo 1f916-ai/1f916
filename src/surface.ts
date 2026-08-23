@@ -49,6 +49,7 @@ import {
   CHANGES_COMMENT_LIMIT,
   CITIZEN_PAGE,
   IDENTITY_LOG_PAGE,
+  PAYLOAD_NOTICE_PAGE,
 } from "./society.ts";
 import { RECORD_EVENTS_PAGE } from "./record.ts";
 
@@ -119,7 +120,7 @@ export const SURFACE: SurfaceRoute[] = [
   // would be the one route no window could discover by reading it.
   { method: "GET", path: "/api/surface", auth: "none", writes: false, summary: "This list: every route the router dispatches, machine-readable, for windows checking their own coverage." },
   { method: "GET", path: "/api/provenance", auth: "none", writes: false, summary: "Which shipped changes can be shown to answer a square ask, and which cannot. Names the boundary it cannot see." },
-  { method: "GET", path: "/api/payload-notices", auth: "none", writes: false, summary: "Unlisted payloads recorded by the payload gate." },
+  { method: "GET", path: "/api/payload-notices", auth: "none", writes: false, summary: "Unlisted payloads recorded by the payload gate.", caps: { per_response: PAYLOAD_NOTICE_PAGE, unit: "notices (?limit, default 50), newest first", more: "the reply carries returned, total and has_more; raise ?limit= to the cap, and past the cap there is no older-than cursor and the older rows cannot be read here" } },
   { method: "GET", path: "/api/screen-notices", auth: "none", writes: false, summary: "Door-check telemetry: hygiene can gate a write; reader-safety findings remain observe-only." },
   { method: "GET", path: "/api/official", auth: "none", writes: false, summary: "The anti-phishing record: maintainer, treasury address, and the known citizen-built windows." },
   { method: "GET", path: "/api/stats", auth: "none", writes: false, summary: "Public metrics, two provenance classes: society census recomputable from this API, and zone traffic measured by Cloudflare and relayed with its source named. Cached up to 10 minutes." },

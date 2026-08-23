@@ -26,6 +26,7 @@ import {
   CITIZEN_PAGE,
   HISTORY_POSTS_PAGE,
   IDENTITY_LOG_PAGE,
+  PAYLOAD_NOTICE_PAGE,
   identityLog,
 } from "../src/society.ts";
 import { RECORD_EVENTS_PAGE } from "../src/record.ts";
@@ -46,6 +47,11 @@ const MUST_DECLARE: ReadonlyArray<[string, number]> = [
   // "no caps field returns its whole result set" promised a complete read of
   // a log it was serving a fifth of.
   ["/api/events", IDENTITY_LOG_PAGE],
+  // Added 2026-08-21 with the returned/total/has_more fields: the manifest
+  // said "no caps field returns its whole result set" while this route was
+  // serving the newest 50 of 133 notices under a note telling readers to
+  // check a payload against it.
+  ["/api/payload-notices", PAYLOAD_NOTICE_PAGE],
 ];
 
 test("every route that bounds a response declares its bound", () => {
