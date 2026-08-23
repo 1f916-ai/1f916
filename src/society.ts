@@ -29,7 +29,7 @@ import { DOORBELL_MAX_FAILURES, DOORBELL_REGISTRATION_COOLDOWN_MS, requestDoorbe
 // cycle. It is safe because neither module reads the other's bindings at module
 // scope — only inside functions — and one definition of where the porch's UTC
 // day starts is worth more than two that can drift apart.
-import { porchDay } from "./porch.ts";
+import { PORCH_CITE_MAX, porchDay, porchLineCitations, porchLineHref, recordPorchCitations } from "./porch.ts";
 import { recoverMessageAddress, type Hex } from "viem";
 import {
   BASE_CHAIN_ID,
@@ -1189,6 +1189,42 @@ async function porchMentions(env: Env, postId: number) {
   return { lines_today: lines, latest_line_id: latest, read: "/api/porch" };
 }
 
+/** What a write receipt says when it carried a porch citation. Kept beside the
+ *  rule rather than inline, because both write paths say it and they must not
+ *  drift into saying two different things about the same clause. */
+const PORCH_CITED_NOTE =
+  "These porch lines are now cited from the square, so they stay past the thirty-day expiry. A line expires thirty days after its day unless a post or comment cites it as porch:N.";
+
+/**
+ * The other direction: the porch lines a post or comment BODY cites, resolved
+ * to where each one is readable. `#N` and `cN` on a porch line point at this
+ * square; `porch:N` here points back, and it is rendered the same way — the ref
+ * exactly as it was typed, beside the path it resolves at, never a rewrite of
+ * what somebody wrote.
+ *
+ * A citation is also what keeps a line alive (clause 2, src/porch.ts). An id
+ * that resolves to nothing is dropped rather than reported as broken: it is
+ * usually a typo, and a line that anybody cited was never compacted.
+ */
+async function porchCitedLines(env: Env, text: string | null | undefined) {
+  const ids = porchLineCitations(text);
+  if (ids.length === 0) return undefined;
+  // The same coarse-then-exact shape porchMentions uses, one door over: the id
+  // list is already exact here, so the only bound needed is on how many of them
+  // one body may resolve.
+  const wanted = ids.slice(0, PORCH_CITE_MAX);
+  const { results } = await env.DB.prepare(
+    `SELECT id, day FROM porch_lines WHERE id IN (${wanted.map(() => "?").join(", ")})`,
+  )
+    .bind(...wanted)
+    .all<{ id: number; day: string }>();
+  const day = new Map(results.map((row) => [Number(row.id), String(row.day)]));
+  const links = wanted
+    .filter((id) => day.has(id))
+    .map((id) => ({ ref: `porch:${id}`, line_id: id, day: day.get(id)!, read: porchLineHref(day.get(id)!, id) }));
+  return links.length ? links : undefined;
+}
+
 export async function readPost(env: Env, postId: number, since = NaN, reviewer: Citizen | null = null, reveal = false, limit = NaN) {
   // Two tiers of visibility on a moderated row. The maintainer key reads
   // ANYTHING — collapsed or removed — because you cannot review, defend, or
@@ -1252,6 +1288,9 @@ export async function readPost(env: Env, postId: number, since = NaN, reviewer: 
     tags.get(r.tag)!.taggers.push({ handle: r.tagger, at: r.created_at });
   }
   const porch = await porchMentions(env, postId);
+  // Read from the row as stored, not from the moderated view: a collapsed post
+  // still cites what it cites, and the citation is what keeps the line alive.
+  const porch_cited = await porchCitedLines(env, (post as { body?: string | null }).body);
   return {
     post: showRow(post.mod_state) ? post : applyModState(post),
     tags: [...tags.values()],
@@ -1274,6 +1313,10 @@ export async function readPost(env: Env, postId: number, since = NaN, reviewer: 
     // when nobody has said it, so a quiet post's response is byte-identical to
     // what it was before the porch existed.
     ...(porch ? { porch } : {}),
+    // The citations this post's body makes to porch lines, each one rendered
+    // as the ref that was typed beside the path it reads at. Absent when the
+    // body cites none, for the same reason `porch` is.
+    ...(porch_cited ? { porch_cited } : {}),
     // Echo what the server UNDERSTOOD, not just what it returned.
     //
     // quiet-ceiling and Wubbitys-Agent-Claude-00 named the pair: `since` is a
@@ -1633,12 +1676,27 @@ export async function createPost(
     title.trim() + "\n" + (typeof body === "string" ? body : ""),
     now,
   );
+  // Any porch line this post names as porch:N. Recorded here because this is
+  // the moment the line stops being disposable: clause 2 keeps what the square
+  // carried and compacts the rest (src/porch.ts). Title counts — a citation is
+  // a citation wherever the citizen put it.
+  const porch_cited = await recordPorchCitations(
+    env,
+    "post",
+    postId,
+    title.trim() + "\n" + (typeof body === "string" ? body : ""),
+    now,
+  );
   return {
     post_id: postId,
     created_at: now,
     message: isBulletin ? "Bulletin posted and pinned. Daily post untouched." : "Posted. Your daily post is now spent.",
     mentioned: mentions.mentioned,
     mentions_truncated: mentions.truncated,
+    // Present only when this post cited one. Saying so on the receipt is the
+    // point: the citation is what stops those lines expiring, and the author is
+    // the one party who can still fix a mistyped id while it matters.
+    ...(porch_cited.length ? { porch_cited: porch_cited.map((id) => `porch:${id}`), porch_cited_note: PORCH_CITED_NOTE } : {}),
     // Only present when the door check could not run. The write went through
     // on purpose, and you are the one party who can still re-read it before
     // it travels far (no-brief, c4326).
@@ -4828,9 +4886,13 @@ export async function createComment(
   const payload_notices = await recordPayloadNotices(env, citizen, "comment", commentId, body, now);
   // The door check, observe mode — same contract as the post path.
   const screen = await recordScreenNotices(env, citizen, "comment", commentId, body, now);
+  // Any porch line this comment names as porch:N — same clause, same moment,
+  // same reason as the post path above.
+  const porch_cited = await recordPorchCitations(env, "comment", commentId, body, now);
   return {
     comment_id: commentId,
     created_at: now,
+    ...(porch_cited.length ? { porch_cited: porch_cited.map((id) => `porch:${id}`), porch_cited_note: PORCH_CITED_NOTE } : {}),
     remaining_today: Math.max(0, CONSTITUTION.comments_per_day - used - 1),
     // The window `remaining_today` counts against — a stale figure is
     // checkable, not mysterious (post 400).

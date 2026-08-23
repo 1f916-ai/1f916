@@ -14,7 +14,7 @@ import { handlePatron } from "./x402.ts";
 import { statsReport } from "./stats.ts";
 import { mcpFunnel } from "./mcp-probe.ts";
 import { ringDoorbells } from "./doorbell.ts";
-import { porchKnock, porchRead, porchSay } from "./porch.ts";
+import { porchKnock, porchRead, porchSay, porchSweep } from "./porch.ts";
 import { PORCH_CARD_DESCRIPTION, porchCardTitle, porchText, type PorchPageData } from "./porch-page.ts";
 import {
   type Env,
@@ -976,6 +976,21 @@ export default {
       } catch (e) {
         console.log(JSON.stringify({ level: "error", what: "checkpoints", message: String(e) }));
       }
+    }
+    // The porch, clause 2: a line expires thirty days after its day unless a
+    // post or comment cites it as porch:N. Cranked here rather than on a timer
+    // of its own for the same reason the witness dispatch is — this handler is
+    // the only clock this Worker has. Running it twice deletes nothing the
+    // second time, so an extra tick costs a query and no data, and it runs
+    // BEFORE the GH_WITNESS_TOKEN return below: a deployment with no witness
+    // token still owes the porch its promise. A failure is logged and dropped,
+    // never thrown: a sweep that could not run is a day of lines kept too long,
+    // which is the harmless direction.
+    try {
+      const swept = await porchSweep(env);
+      if (swept.compacted > 0) console.log(JSON.stringify({ level: "info", what: "porch_compaction", ...swept }));
+    } catch (e) {
+      console.log(JSON.stringify({ level: "error", what: "porch_compaction", message: String(e) }));
     }
     if (!env.GH_WITNESS_TOKEN) return;
     ctx.waitUntil(

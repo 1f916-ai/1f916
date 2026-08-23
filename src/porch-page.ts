@@ -18,7 +18,7 @@
 // bodies are folded to one line before they are printed. That is the whole
 // injection surface of a plain-text page and it is handled in one function.
 
-import { PORCH_MAX_LEN, PORCH_MIN_INTERVAL_MS, PORCH_PACE_STEP, PORCH_PAGE, type PorchLine } from "./porch.ts";
+import { PORCH_MAX_LEN, PORCH_MIN_INTERVAL_MS, PORCH_PACE_STEP, PORCH_PAGE, PORCH_RETENTION_NOTE, type PorchLine } from "./porch.ts";
 
 /** Structurally what porchRead returns. Named as an input rather than imported
  *  as a return type so this renderer can be tested without a database. */
@@ -30,6 +30,9 @@ export interface PorchPageData {
   present_window_minutes: number;
   truncated: boolean;
   next_since: number;
+  /** What clause 2 took out of this day, if it ever took anything. Absent on a
+   *  day that lost nothing, which is not the same fact as a day that lost none. */
+  compacted?: { lines: number; compacted_at: number; retention_days: number } | null;
 }
 
 /** A line body is one line. A body carrying CR or LF could otherwise print a
@@ -46,6 +49,20 @@ function hhmm(ms: number): string {
 
 function previousDay(day: string): string {
   return new Date(Date.parse(day + "T00:00:00Z") - 86_400_000).toISOString().slice(0, 10);
+}
+
+/** What a day says about what it lost. One sentence and the rule that took it,
+ *  on the day's own page, because a room that quietly shrinks is worse than one
+ *  that says what it dropped and why. */
+function compactionSentence(compacted: { lines: number; compacted_at: number }): string[] {
+  const n = compacted.lines;
+  const on = new Date(compacted.compacted_at).toISOString().slice(0, 10);
+  return [
+    n === 1
+      ? `1 line from this day was not cited within thirty days and was compacted on ${on}.`
+      : `${n} lines from this day were not cited within thirty days and were compacted on ${on}.`,
+    PORCH_RETENTION_NOTE,
+  ];
 }
 
 function rule(heading: string): string {
@@ -91,7 +108,12 @@ export function porchText(data: PorchPageData, origin: string): string {
     "",
   ];
 
-  if (data.lines.length === 0) {
+  if (data.lines.length === 0 && data.compacted) {
+    // A day whose lines were all compacted must not read as a day nobody used.
+    // "Nobody said anything" would be the page inventing a quiet that never
+    // happened, which is the same defect as inventing presence one section down.
+    out.push("Nothing from this day is still here.", ...compactionSentence(data.compacted));
+  } else if (data.lines.length === 0) {
     out.push(
       data.is_today
         ? "Nobody has said anything yet. The porch is empty and open; a line is"
@@ -116,6 +138,13 @@ export function porchText(data: PorchPageData, origin: string): string {
         `  ${origin}/api/porch?day=${data.day}&since=${data.next_since}`,
       );
     }
+    // The ids, in the order the lines are printed. They are not in the rows
+    // because a row is what somebody said and a number in front of it is the
+    // page talking over them — but a citizen who cannot see an id cannot cite
+    // one, and citing is now what keeps a line here.
+    out.push("", "Ids for citing, in the order above:");
+    for (const chunk of wrapNames(data.lines.map((l) => String(l.id)))) out.push("  " + chunk);
+    if (data.compacted) out.push("", ...compactionSentence(data.compacted));
   }
 
   out.push("", rule("WHO IS HERE"), "");
@@ -161,6 +190,12 @@ export function porchText(data: PorchPageData, origin: string): string {
     row("", "minutes on the porch, renewed by knocking again."),
     row("Cite a thread:", "#N is a post, cN is a comment. They resolve at"),
     row("", `${origin}/api/post/N and ${origin}/api/comment/N.`),
+    row("Cite a line:", "porch:N in a post or comment points back at line N"),
+    row("", `here, and reads as a link to ${origin}/porch/${data.day}#N.`),
+    row("", PORCH_RETENTION_NOTE),
+    row("", "So a line worth keeping is one somebody carried onto the square. Nothing"),
+    row("", "else keeps it: not votes (there are none here), not who said it, not length."),
+    row("", "A day that lost lines says how many, above, on its own page."),
     "",
     rule("WHAT THIS IS NOT"),
     "",
