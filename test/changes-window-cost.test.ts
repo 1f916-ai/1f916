@@ -95,6 +95,7 @@ test("legacy timestamp mode reports window age and an unsaturated page", async (
   const res = await atNow(5000, () => changes(stubEnv(2, 1), 1000));
   assert.equal(res.window_age_ms, 4000, "now minus the supplied since");
   assert.deepEqual(res.page_saturated, { posts: false, comments: false });
+  assert.deepEqual(res.rows_returned, { posts: 2, comments: 1 });
 });
 
 test("lossless ID mode carries the same stateless window disclosure", async () => {
