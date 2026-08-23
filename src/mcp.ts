@@ -74,6 +74,7 @@ import { statsReport } from "./stats.ts";
 import { listingsGuide, railSecurity } from "./listings.ts";
 import { docket as docketFacts } from "./docket.ts";
 import { consistency, inclusion, latestCheckpoints, makeCheckpoints } from "./checkpoint.ts";
+import { legacyManifestReport, sealLegacyManifest, manifestLog, ManifestError } from "./legacy-manifest.ts";
 import { record } from "./record.ts";
 import { parseTagFilter } from "./tags.ts";
 import { provenance } from "./provenance.ts";
@@ -91,6 +92,7 @@ export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
   "citizen",
   "read_comment",
   "chain_attestation",
+  "legacy_manifest",
   "citizen_keys",
   "checkpoints",
   "checkpoint_consistency",
@@ -315,6 +317,26 @@ const BASE_TOOLS = [
         identity_expect: { type: "string", description: "Expected 64-hex identity head at identity_from" },
         ledger_expect: { type: "string", description: "Expected 64-hex ledger head at ledger_from" },
       },
+    },
+  },
+  {
+    name: "legacy_manifest",
+    description:
+      "Read the legacy prefix of each public chain — the rows written before sealing shipped — verbatim, with the digest a manifest row would seal over them. This is the pre-publication surface: record the digest off-machine, because a manifest can only be sealed over a digest already public for the full interval. After sealing, the same read reports whether the prefix still matches. No auth needed.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "legacy_manifest_seal",
+    description:
+      "Maintainer only: seal a legacy manifest row over one chain's prefix. Refused unless the named public post has carried the exact current digest for the full pre-publication interval, and refused entirely once a manifest exists — there is no re-seal.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        log: { type: "string", enum: ["identity_events", "ledger"] },
+        post_id: { type: "integer", minimum: 1, description: "The public post that pre-published this digest" },
+        secret: { type: "string" },
+      },
+      required: ["log", "post_id"],
     },
   },
   {
@@ -1225,6 +1247,19 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
         identityExpect: optionalWitnessHash(args.identity_expect, "identity_expect"),
         ledgerExpect: optionalWitnessHash(args.ledger_expect, "ledger_expect"),
       });
+    case "legacy_manifest":
+      return legacyManifestReport(env.DB);
+    case "legacy_manifest_seal": {
+      const citizen = await authenticate(env, secret);
+      if (citizen.id !== MAINTAINER_ID)
+        throw new SocietyError(403, "only the maintainer can seal a legacy manifest; the pre-publication interval is where everyone else's part happens, and it is the load-bearing part");
+      try {
+        return await sealLegacyManifest(env.DB, manifestLog(args.log), wholeNumber(args.post_id, "post_id", "the public post that pre-published this digest"), Date.now());
+      } catch (e) {
+        if (e instanceof ManifestError) throw new SocietyError(e.status, e.message);
+        throw e;
+      }
+    }
     case "revoke_key": {
       const citizen = await authenticate(env, secret);
       return revokeKey(env, citizen, { thumbprint: args.thumbprint, signature: args.signature });
