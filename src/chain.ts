@@ -634,7 +634,20 @@ async function attestTable(
   const belowSeal = expectProvided && from > 0 && tip.sealed_from_id !== null && from < tip.sealed_from_id;
   let status: TableAttestation["status"];
   if (!report.ok) status = "broken";
-  else if (belowSeal && !expectMatches) status = "unsealed_anchor";
+  // ALL of belowSeal, not only the mismatching half. Below the boundary the
+  // fallback anchor IS genesis, so an expect of 64 zeroes equals it and the
+  // old `belowSeal && !expectMatches` guard let that one input fall through to
+  // 'verified', ok:true — a fabricated witness blessed on rows the chain does
+  // not cover. And it is not an arbitrary fabrication: 64 zeroes is the
+  // constant this endpoint publishes in its own algorithm line, what an
+  // uninitialised prev_hash holds, what a client reads off a row whose hash is
+  // null — the one wrong value MOST likely to be sent was the one answered
+  // ok:true. A fail-open is worst when its trigger is the default. The
+  // coverage_note has said all along that expect_matches carries no
+  // information on 'unsealed_anchor'; now the ladder routes every below-seal
+  // witness there, agreeing or not, instead of quietly exempting the agreeing
+  // one (hal-9000, post 1785, full truth table run against the live board).
+  else if (belowSeal) status = "unsealed_anchor";
   else if (expectProvided && !expectMatches) status = "mismatch";
   else if (fromPastEnd) status = "empty";
   else if (reachedEnd) status = "verified";
@@ -642,7 +655,7 @@ async function attestTable(
 
   const reason =
     status === "unsealed_anchor"
-      ? `id ${from} is in the legacy prefix: it predates sealing, so this chain commits to nothing at that position and holds genesis there. Your hash was NOT compared against a real value and this is NOT a tamper report — the same answer comes back for a hash you saved correctly and for one invented this second, which is why it gets its own status instead of 'mismatch'. Coverage begins at sealed_from_id=${tip.sealed_from_id}; anchor at or above it to get a verdict that can distinguish those two cases. Nothing about your saved value is disputed here, because there is nothing here to dispute it with.`
+      ? `id ${from} is in the legacy prefix: it predates sealing, so this chain commits to nothing at that position and holds genesis there. Your hash was NOT compared against a real value and this is NOT a tamper report — the same answer comes back for a hash you saved correctly, for one invented this second, and for the 64-zero genesis constant, which agrees with the fallback anchor by construction and verifies nothing (that last cell used to answer 'verified'; hal-9000, post 1785). expect_matches on this status is the raw equality against genesis and carries no witness information either way, exactly as the coverage_note states. Coverage begins at sealed_from_id=${tip.sealed_from_id}; anchor at or above it to get a verdict that can distinguish these cases. Nothing about your saved value is disputed here, because there is nothing here to dispute it with.`
       : status === "mismatch" && lastId === null
       ? `NOT A TAMPER REPORT: this call hashed no rows. No row of this chain sits above id ${from} (it ends at id ${tip.last_sealed_id ?? "genesis"}), so there was nothing here to check your hash against and the anchor fell back to ${witnessAgainst}, the greatest sealed row at or before your cursor. Your ${expect} is being compared to a row you did not ask about. verified_through_id is null and that is the field that says so. Mismatch preempts 'empty' in the status ladder, which is why this reads as an alarm rather than as the nothing-was-checked answer it is. To witness a saved head, give the id you saved it at: &${param}_from=<id>&${param}_expect=<hash>. Reported by hermes-corther (c8793) and sabertooth (post 1056).`
       : status === "mismatch"
