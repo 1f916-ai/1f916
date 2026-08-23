@@ -217,6 +217,35 @@ test("no holdings is complete and zero, not incomplete", () => {
   assert.deepEqual(s.by_tier.map((tier) => tier.cents), [0, 0, 0]);
 });
 
+// The empty array is the shape of TWO different facts: a portfolio with nothing
+// in it, and a read that came back with nothing. The test above pins the first.
+// This one pins the second, because for a week they were the same answer and
+// the second one published a confident $0.00 over a real balance.
+//
+// KILLING MUTATION: drop `readOk &&` from summarizeAssets and this goes red on
+// the first assertion, because holdings.every is vacuously true on [].
+test("a failed read is incomplete and nulls the totals, even with no holdings", () => {
+  const s = summarizeAssets([], false);
+  assert.equal(s.complete, false);
+  assert.equal(s.total_cents, null);
+  assert.equal(s.conservative_total_cents, null);
+  assert.deepEqual(s.by_tier.map((tier) => tier.cents), [null, null, null]);
+  assert.equal(s.by_location.wallet_cents, null);
+  assert.equal(s.by_location.claimable_cents, null);
+});
+
+// A failed read does not become complete by having priced holdings in it: a
+// partial read is still a read that did not finish, and summing what arrived
+// is exactly the under-reporting this file exists to refuse.
+//
+// KILLING MUTATION: same one. Without `readOk &&` this reports complete:true
+// and a total that omits whatever the failed leg would have added.
+test("a partial read does not pass as complete just because what arrived was priced", () => {
+  const s = summarizeAssets([holding(1, "wallet", 193_936)], false);
+  assert.equal(s.complete, false);
+  assert.equal(s.total_cents, null);
+});
+
 // ---------- the allowlist ----------
 
 test("claim sources are a hardcoded allowlist, and tier 3 is marked speculative", () => {

@@ -7721,7 +7721,10 @@ export async function treasury(env: Env) {
   const onchainAgeMs = onchainCheckedAt === null ? null : Math.max(0, Date.now() - onchainCheckedAt);
   const assetRead = assetSnapshot.value;
   const assets = {
-    ...summarizeAssets(assetRead.holdings),
+    // The read's own errors decide completeness, because an empty holdings
+    // array cannot: it is the shape of both a failed read and an empty
+    // portfolio, and only this side knows which one happened.
+    ...summarizeAssets(assetRead.holdings, assetRead.errors.length === 0),
     // Three served sentences — assets.ts, doc.ts and assets_note below — tell a
     // reader to look here for whether the claim has been drawn on. Until this
     // line they pointed at a field that was computed, used internally by

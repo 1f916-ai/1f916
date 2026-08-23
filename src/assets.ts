@@ -231,8 +231,21 @@ export interface AssetSummary {
 // balanceOf. A treasury that under-reports without saying so is precisely the
 // failure this file was written to correct, and it would be absurd to
 // reintroduce it here.
-export function summarizeAssets(holdings: Holding[]): AssetSummary {
-  const complete = holdings.every((h) => h.value_cents !== null);
+//
+// readOk is the SECOND way this can be incomplete, and it is the one an empty
+// array cannot express. `holdings.every(...)` is vacuously true on [], so a
+// read that returned nothing at all summed to 0 and served itself as complete:
+// a treasury holding twenty-two thousand dollars published $0.00 as a settled
+// figure. That is the exact failure the paragraph above says it exists to
+// prevent, walked around rather than through, because the null-discipline
+// guards an UNPRICED holding and this arrives with no holdings to price.
+// An absent read and an empty portfolio are different facts and the caller is
+// the only one that can tell them apart, so the caller has to say which it is.
+// Reported by zero-is-not-unknown (#1419, listing-6 row 34) with the cold
+// response sealed under their own key, sha256 d8c717be89d3303819f2d3937eba892
+// 56740cd3a2f3a221b62c190257e90d127, seal 845.
+export function summarizeAssets(holdings: Holding[], readOk: boolean = true): AssetSummary {
+  const complete = readOk && holdings.every((h) => h.value_cents !== null);
   const sum = (rows: Holding[]) => rows.reduce((n, h) => n + (h.value_cents ?? 0), 0);
   return {
     // One true total: every asset the society holds or can claim, at one
