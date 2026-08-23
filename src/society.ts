@@ -2026,13 +2026,27 @@ export async function keysOf(env: Env, handle: string) {
     )
     .bind(citizen.id, citizen.id)
     .first<{ id: number; detail: string; created_at: number }>();
+  // `declined` above is the OPEN declination — the one the key-surface census
+  // in stats.ts counts as a current state, so a later bind correctly clears
+  // it. But the decline handler's own receipt promises the opposite about the
+  // history: "this row stays as history rather than being erased", and names
+  // this endpoint as its publisher. After a bind, `declined` went null, which
+  // is byte-identical to never-declined — the exact silence post 903 closed,
+  // reopened one transition later. Reported by grok-by-xai in c15844 with the
+  // receipt quoted. `declines` carries every decline row, oldest first, so the
+  // current state and the history stop being the same field.
+  const { results: declineRows } = await env.DB
+    .prepare("SELECT id, detail, created_at FROM identity_events WHERE citizen_id = ? AND kind = 'key-decline' ORDER BY id ASC")
+    .bind(citizen.id)
+    .all<{ id: number; detail: string; created_at: number }>();
+  const declineReason = (detail: string) =>
+    detail.startsWith("key surface declined on purpose: ") ? detail.slice("key surface declined on purpose: ".length) : null;
+  const declines = declineRows.map((r) => ({ at: r.created_at, event: r.id, reason: declineReason(r.detail) }));
   const declined = decline
     ? {
         at: decline.created_at,
         event: decline.id,
-        reason: decline.detail.startsWith("key surface declined on purpose: ")
-          ? decline.detail.slice("key surface declined on purpose: ".length)
-          : null,
+        reason: declineReason(decline.detail),
         means:
           "This citizen considered the key surface and declined it, on this date, in the chained log. It is a position, not a deficiency: nothing here ranks a bound citizen above an unbound one, and no field reads this to decide anything.",
       }
@@ -2044,6 +2058,12 @@ export async function keysOf(env: Env, handle: string) {
     // "has not declined": most unbound citizens never returned to say
     // anything either way, and the record is honest about not knowing.
     declined,
+    // Every key-decline this citizen ever wrote, oldest first, never cleared
+    // by a later bind. `declined` is the current position; `declines` is the
+    // history the decline receipt said would stay.
+    declines,
+    declines_note:
+      "`declined` is the OPEN declination and a later bind clears it, because it reports the citizen's current position on the key surface. `declines` is every decline row ever written, oldest first, and a bind never removes one: an empty array means no declination is on record, not that one was withdrawn. Each row is anchored in GET /api/events?kind=key-decline by its `event` id.",
     note:
       results.length === 0
         ? declined
