@@ -246,3 +246,50 @@ test("errors and advisories can both be non-empty, and errors is what decides", 
     },
   );
 });
+
+// The invariant behind all of the above, stated once as a rule rather than as
+// another instance: if the totals are null, some served list says why. An
+// incomplete read with both lists empty is a page that went blank without a
+// reason, on a page whose contract is that read failures are named.
+//
+// KILLING MUTATION: remove the `if (tokenWalletRaw === null) errors.push(...)`
+// line in src/assets.ts and this goes red, because that row was the last one in
+// the Base batch with no error of its own.
+test("an incomplete read always names a cause: null totals with both lists empty is impossible", async () => {
+  await withMockFetch(
+    async (_input, init) => {
+      const payload = JSON.parse(String(init?.body)) as RpcRequest[];
+      return Response.json(
+        payload.map(({ id, params }) => {
+          const call = params[0];
+          // The 1F916 wallet balance alone goes unanswered. Everything else,
+          // including the tick walk, answers normally.
+          if (call.data.startsWith(SELECTORS.balanceOf) && call.to.toLowerCase() === CLAIM_SOURCES[0].token.toLowerCase()) {
+            return { id, result: null, error: { code: -32000, message: "no answer" } };
+          }
+          if (call.data.startsWith(SELECTORS.getCumulatedFees1)) return { id, result: abi(5_000n * 10n ** 18n) };
+          if (call.data.startsWith(SELECTORS.getLastCumulatedFees1)) return { id, result: abi(0n) };
+          if (call.data.startsWith(SELECTORS.getShares)) return { id, result: abi(10n ** 18n) };
+          if (call.data.startsWith(SELECTORS.collectFees)) return { id, result: abi(0n, 0n) };
+          if (call.data.startsWith(SELECTORS.slot0V3)) return { id, result: abi(Q96, 0n, 0n, 0n, 0n, 0n, 0n) };
+          return { id, result: resultFor(call) };
+        }),
+      );
+    },
+    async () => {
+      const read = await readTreasuryAssets(TREASURY, ["https://no-token-balance.rpc"], ["https://bnb.rpc"]);
+      const summary = summarizeAssets(read.holdings, read.errors.length === 0);
+
+      // The read is genuinely incomplete: a holding could not be priced.
+      assert.equal(summary.complete, false);
+      assert.equal(summary.total_cents, null);
+
+      // And it says so. This is the assertion that matters.
+      assert.ok(
+        read.errors.length > 0,
+        "totals went null with errors [] and advisories [] — a blank page with no stated cause",
+      );
+      assert.match(read.errors.join("\n"), /balanceOf did not answer/i);
+    },
+  );
+});

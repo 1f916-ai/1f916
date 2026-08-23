@@ -996,6 +996,12 @@ export async function readTreasuryAssets(
   const tokenValue = (raw: bigint | null) =>
     raw === null || tokenUsd === null ? null : valueCents(raw, src.decimals, tokenUsd);
 
+  // The last row in the Base batch with no error of its own. Every other
+  // unanswered read names itself, so a null total always had a stated cause
+  // except this one: an unanswered balanceOf here nulled the whole book with
+  // errors [] and advisories [], against a page that promises read failures
+  // are named. Found in the pre-deploy audit of the cold-zero fix.
+  if (tokenWalletRaw === null) errors.push(`${src.symbol} balanceOf did not answer on Base; the wallet holding is unpriced`);
   const walletToken = tokenWalletRaw === null ? null : BigInt(tokenWalletRaw);
   pushBase({
     asset: src.symbol,
