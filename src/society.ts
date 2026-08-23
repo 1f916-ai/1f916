@@ -7525,6 +7525,7 @@ async function readTreasuryAssetsCached(env: Env): Promise<CachedAssetRead> {
       eth_usd_updated_at: null,
       token_usd: null,
       errors: [`asset read exceeded ${ASSET_REFRESH_BUDGET_MS}ms and no earlier snapshot exists`],
+      advisories: [],
       checked_at: Date.now(),
       // Unknown, not false. A failed read must never be served as "has never
       // collected" — that is the same class of confident wrong answer this
@@ -7744,6 +7745,12 @@ export async function treasury(env: Env) {
     // number below was read; a non-empty one means the totals are null and this
     // says why.
     errors: assetRead.errors,
+    // What could not be COMPUTED, as against what could not be READ. These
+    // leave every figure above intact and valid, and they are listed so the
+    // absence of an enrichment (a realizable block, say) is a stated fact
+    // rather than a silence a reader has to notice for themselves.
+    advisories: assetRead.advisories,
+    errors_vs_advisories: "errors means a number below could not be read, and the totals are null. advisories means every number below is good and something optional was not computed. They are separate lists because a failed pool-depth walk must never blank a treasury that was read correctly.",
   };
   return {
     note: "The society's public books. Can the robots pay their own rent?",

@@ -667,6 +667,14 @@ export interface AssetReadResult {
   eth_usd_updated_at: number | null;
   token_usd: number | null;
   errors: string[];
+  /**
+   * Failures of OPTIONAL enrichment, which leave every holding priced and every
+   * total correct. They are published so a reader sees what was not computed,
+   * and they are kept out of `errors` because `errors` now decides whether the
+   * totals may be summed at all: a depth walk that did not answer must not
+   * blank a treasury that was read perfectly.
+   */
+  advisories: string[];
   /** Oldest underlying on-chain read represented in this assembled result. */
   checked_at: number;
   /**
@@ -812,6 +820,9 @@ export async function readTreasuryAssets(
   // and an older cached pool-depth estimate may move this timestamp back again.
   let checkedAt = Date.now();
   const errors: string[] = [];
+  // Kept apart from `errors` on purpose. See AssetReadResult.advisories: a
+  // failure in here must never blank a total that was read correctly.
+  const advisories: string[] = [];
   const t = pad(treasuryAddress);
   const src = CLAIM_SOURCES[0];
   const S = SELECTORS;
@@ -1035,7 +1046,12 @@ export async function readTreasuryAssets(
   if (claimToken !== null && claimToken > 0n) {
     const { depth, error, checked_at } = await readPoolDepth(src, claimToken, rpcUrls);
     checkedAt = Math.min(checkedAt, checked_at);
-    if (error) errors.push(error);
+    // ADVISORY, not an error. The block comment above promises this failure
+    // "leaves every existing figure untouched"; routing it into `errors` broke
+    // that promise the moment `errors` began gating `complete`, because a tick
+    // walk that did not answer would null a treasury whose every holding was
+    // priced. Caught in pre-deploy audit of the cold-zero fix, before ship.
+    if (error) advisories.push(error);
     if (depth) {
       const realizableCents = ethUsd === null ? null : valueCents(depth.realizable0, 18, ethUsd);
       tier3.realizable = {
@@ -1099,6 +1115,7 @@ export async function readTreasuryAssets(
     eth_usd_updated_at: ethUpdatedAt,
     token_usd: tokenUsd,
     errors,
+    advisories,
     checked_at: checkedAt,
     collection: {
       collected: hasCollected,
