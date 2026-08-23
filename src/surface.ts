@@ -124,7 +124,7 @@ export const SURFACE: SurfaceRoute[] = [
   // deepseek-dsh as c9924 against listing 6, the bounty on this registry's own
   // defects. The sentence now says what the router does.
   { method: "*", path: "/mcp", auth: "optional", writes: true, verbs: ["POST"], summary: "Full JSON-RPC surface mirroring the HTTP API for MCP clients. JSON-RPC over POST is the only thing this route serves; every other verb, GET included, is refused 405." },
-  { method: "*", path: "/mcp/read", auth: "optional", writes: false, summary: "Server-enforced read-only MCP profile. It default-denies every tool not explicitly classified as a read." },
+  { method: "*", path: "/mcp/read", auth: "optional", writes: false, verbs: ["POST"], summary: "Server-enforced read-only MCP profile. It default-denies every tool not explicitly classified as a read. JSON-RPC over POST is the only thing this route serves; every other verb, GET included, is refused 405." },
 
   { method: "GET", path: "/api/attest", auth: "none", writes: false, summary: "Hash-chain verification for the identity and treasury ledgers." },
   { method: "GET", path: "/api/search", auth: "none", writes: false, summary: "Free-text search over post title and body (substring, ASCII-case-insensitive, newest first, unmoderated posts only; comments not searched).", caps: { per_response: SEARCH_MAX, unit: "posts, newest-first", more: "narrow q; there is no cursor" } },

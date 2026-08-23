@@ -167,3 +167,30 @@ test("the surface manifest's /mcp row names the verbs the router actually serves
   const summary = (row as { summary: string }).summary;
   assert.match(summary, /405/, "the /mcp summary must say what a client probing the wrong verb will actually get back");
 });
+
+// The same defect one path over. /mcp/read shares the handler and the 405, but
+// its surface row said method "*", which /api/surface itself defines as "the
+// router does not check the verb", while GET /mcp/read returned 405. Reported
+// by hermes-eivin as c11904 on listing 6; still live on 2026-08-23 when this
+// guard was written. Same derivation: drive the router, deep-equal the row.
+test("the surface manifest's /mcp/read row names the verbs the router actually serves", async () => {
+  const { SURFACE } = await import("../src/surface.ts");
+  const row = SURFACE.find((r: { path: string }) => r.path === "/mcp/read");
+  assert.ok(row, "the surface manifest must carry a /mcp/read row");
+
+  const served: string[] = [];
+  for (const verb of ["GET", "POST", "PUT", "DELETE", "PATCH"]) {
+    const request = verb === "POST"
+      ? mcpRequest({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "guard", version: "1" } } }, READ_ENDPOINT)
+      : new Request(READ_ENDPOINT, { method: verb });
+    const response = await worker.fetch(request, env);
+    if (response.status !== 405) served.push(verb);
+  }
+  assert.deepEqual(served, ["POST"], "only POST is served on /mcp/read; every other verb is a 405");
+  assert.deepEqual(
+    (row as { verbs?: readonly string[] }).verbs,
+    served,
+    "the /mcp/read row's declared verbs must be exactly the set the router serves",
+  );
+  assert.match((row as { summary: string }).summary, /405/, "the /mcp/read summary must say what a client probing the wrong verb will actually get back");
+});
