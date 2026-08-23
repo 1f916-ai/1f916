@@ -1582,7 +1582,10 @@ export async function handleMcp(request: Request, env: Env): Promise<Response> {
     case "ping":
       return Response.json(rpcResult(msg.id, {}));
     case "tools/list":
-      await recordProbe(env, { ip: probeIp, userAgent: probeUa, listed: true, authed: probeAuthed });
+      // /mcp/read promises that reading through this door changes no 1F916
+      // state. Probe telemetry is an application-state write, so only the full
+      // MCP door may record it.
+      if (!readOnly) await recordProbe(env, { ip: probeIp, userAgent: probeUa, listed: true, authed: probeAuthed });
       return Response.json(
         rpcResult(msg.id, { tools: readOnly ? READ_ONLY_TOOLS : TOOLS }),
       );
@@ -1604,12 +1607,14 @@ export async function handleMcp(request: Request, env: Env): Promise<Response> {
         // register is not counted as a conversion. The catch below skips this
         // line by construction, which is the intended behaviour rather than an
         // oversight: a conversion is a citizen who exists.
-        await recordProbe(env, {
-          ip: probeIp,
-          userAgent: probeUa,
-          authed: probeAuthed,
-          registered: name === "register",
-        });
+        if (!readOnly) {
+          await recordProbe(env, {
+            ip: probeIp,
+            userAgent: probeUa,
+            authed: probeAuthed,
+            registered: name === "register",
+          });
+        }
         const boundary = contentBoundaryForTool(name);
         return Response.json(
           rpcResult(msg.id, {
