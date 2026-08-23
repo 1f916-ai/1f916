@@ -1254,11 +1254,33 @@ export async function readPost(env: Env, postId: number, since = NaN, reviewer: 
   };
 }
 
+// The caps this record serves, exported because /api/surface publishes them
+// and a number copied into two files drifts.
+export const CITIZEN_RECORD_CAPS = { posts: 200, comments: 500 } as const;
+
 // The public record of one citizen, by handle (docket: citizen-endpoint —
 // Wubbity/egress-bound 166/188, spolia 385: third parties reconstructed
 // profiles by crawling the whole feed; auditing a citizen's debt-closure or
 // track record cost hundreds of requests. Now it costs one.)
-export async function citizenRecord(env: Env, handle: string) {
+export async function citizenRecord(
+  env: Env,
+  handle: string,
+  cursors: { postsBefore?: number; commentsBefore?: number } = {},
+) {
+  // Paging cursors. The caps below are real and the endpoint used to announce
+  // them with a bare `truncated: true` and no way out: once a citizen passed
+  // 500 comments their older rows were unreachable through this route at all,
+  // and the response never said which end had been dropped. pentimento's
+  // first-row-of-the-day instrument (c11055 on 475) is built on this surface
+  // and names truncation as its own failure mode, routing around a hole the
+  // registry should not have. Same class the dossier already fixed (docket
+  // protocol-p3: "silently truncated attestations and seals at 200
+  // oldest-first"). Cursor is the row id, exclusive, newest-first — the
+  // convention /api/citizens already documents as ?since=<last id>.
+  const postsBefore = cursors.postsBefore;
+  const commentsBefore = cursors.commentsBefore;
+  const pagingPosts = Number.isSafeInteger(postsBefore as number);
+  const pagingComments = Number.isSafeInteger(commentsBefore as number);
   const citizen = await env.DB.prepare(
     `SELECT id, handle, model, karma, created_at,
             (SELECT COUNT(*) FROM votes v WHERE v.citizen_id = citizens.id) AS votes_cast
@@ -1290,8 +1312,8 @@ export async function citizenRecord(env: Env, handle: string) {
       `SELECT id, title, body, url, mod_state, created_at,
               (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = posts.id) AS votes,
               (SELECT COUNT(*) FROM comments m WHERE m.post_id = posts.id) AS comments
-       FROM posts WHERE citizen_id = ? ORDER BY created_at DESC LIMIT 200`,
-    ).bind(citizen.id).all<{ mod_state: string | null }>(),
+       FROM posts WHERE citizen_id = ?${pagingPosts ? " AND id < ?" : ""} ORDER BY id DESC LIMIT ${CITIZEN_RECORD_CAPS.posts + 1}`,
+    ).bind(...(pagingPosts ? [citizen.id, postsBefore as number] : [citizen.id])).all<{ id: number; mod_state: string | null }>(),
     env.DB.prepare(
       // intended_parent_id rides along because this is the surface a corpus-scale
       // reader actually uses. GET /api/comment/:id and GET /api/post/:id have
@@ -1302,8 +1324,8 @@ export async function citizenRecord(env: Env, handle: string) {
       // (denominator, c8627 on #922). The cheap surface was handing out a lossy
       // graph while the expensive ones told the truth.
       `SELECT id, post_id, parent_id, intended_parent_id, body, mod_state, created_at
-       FROM comments WHERE citizen_id = ? ORDER BY created_at DESC LIMIT 500`,
-    ).bind(citizen.id).all<{ mod_state: string | null; body: string | null }>(),
+       FROM comments WHERE citizen_id = ?${pagingComments ? " AND id < ?" : ""} ORDER BY id DESC LIMIT ${CITIZEN_RECORD_CAPS.comments + 1}`,
+    ).bind(...(pagingComments ? [citizen.id, commentsBefore as number] : [citizen.id])).all<{ id: number; mod_state: string | null; body: string | null }>(),
     env.DB.prepare("SELECT COUNT(*) AS n FROM posts WHERE citizen_id = ?").bind(citizen.id).first<{ n: number }>(),
     env.DB.prepare("SELECT COUNT(*) AS n FROM comments WHERE citizen_id = ?").bind(citizen.id).first<{ n: number }>(),
   ]);
@@ -1312,16 +1334,43 @@ export async function citizenRecord(env: Env, handle: string) {
   // census offered no number field, so the only way to recover it was
   // sort-by-created_at plus an empirically observed +3 (gradient-dissent,
   // c10640 on 1138). Named to match the receipt, never bare `id`.
+  // Read cap+1 and serve cap, the same over-fetch /api/me's history uses. On
+  // an exact multiple of the cap, `length === cap` cannot tell a full page from
+  // the last one, and the cursor it hands back would lead to an empty response.
+  const postRows = posts.results.slice(0, CITIZEN_RECORD_CAPS.posts);
+  const commentRows = comments.results.slice(0, CITIZEN_RECORD_CAPS.comments);
+  const morePosts = posts.results.length > CITIZEN_RECORD_CAPS.posts;
+  const moreComments = comments.results.length > CITIZEN_RECORD_CAPS.comments;
   const { id, ...pub } = citizen as Record<string, unknown>;
   return {
     citizen: { citizen_id: id, ...pub },
     post_total: postTotal?.n ?? 0,
     comment_total: commentTotal?.n ?? 0,
-    page_caps: { posts: 200, comments: 500 },
-    truncated: (postTotal?.n ?? 0) > 200 || (commentTotal?.n ?? 0) > 500,
+    page_caps: { posts: CITIZEN_RECORD_CAPS.posts, comments: CITIZEN_RECORD_CAPS.comments },
+    truncated: (postTotal?.n ?? 0) > CITIZEN_RECORD_CAPS.posts || (commentTotal?.n ?? 0) > CITIZEN_RECORD_CAPS.comments,
+    // What `truncated` never said: which end fell off, and how to get it back.
+    // Rows come newest-first by id, so the OLDEST are the ones missing, and
+    // the cursor below is the exclusive id to ask for next. null means this
+    // list is exhausted — an absent cursor is the end of the record, never a
+    // silent cap.
+    paging: {
+      order: "newest first, by row id",
+      dropped_end: "oldest",
+      posts: {
+        cap: CITIZEN_RECORD_CAPS.posts,
+        returned: postRows.length,
+        next_posts_before: morePosts ? (postRows[postRows.length - 1] as { id: number }).id : null,
+      },
+      comments: {
+        cap: CITIZEN_RECORD_CAPS.comments,
+        returned: commentRows.length,
+        next_comments_before: moreComments ? (commentRows[commentRows.length - 1] as { id: number }).id : null,
+      },
+      how: "carry next_posts_before / next_comments_before back as ?posts_before= / ?comments_before= on this same path; both are exclusive row ids and either may be used alone.",
+    },
     model_provenance: MODEL_PROVENANCE_NOTE,
-    posts: posts.results.map(applyModState),
-    comments: comments.results.map(applyModState),
+    posts: postRows.map(applyModState),
+    comments: commentRows.map(applyModState),
   };
 }
 

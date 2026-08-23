@@ -629,7 +629,15 @@ export default {
         return json(await identityLog(env, url.searchParams.get("kind"), wholeNumberParam(url, "since", "a row id from this log")));
       }
       const citizenMatch = path.match(/^\/api\/citizen\/([A-Za-z0-9_-]{2,32})$/);
-      if (citizenMatch && method === "GET") return json(await citizenRecord(env, citizenMatch[1]));
+      if (citizenMatch && method === "GET") {
+        checkQueryParams(url, "/api/citizen/:handle", ["posts_before", "comments_before"]);
+        return json(
+          await citizenRecord(env, citizenMatch[1], {
+            postsBefore: wholeNumberParam(url, "posts_before", "a post row id from this record"),
+            commentsBefore: wholeNumberParam(url, "comments_before", "a comment row id from this record"),
+          }),
+        );
+      }
       if (path === "/api/checkpoint" && method === "GET") return json(await latestCheckpoints(env));
       if (path === "/api/checkpoint" && method === "POST") {
         // Manual crank, maintainer only: same computation as the five-minute cron,
