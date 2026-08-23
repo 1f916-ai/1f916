@@ -5,6 +5,8 @@ import { consistency, inclusion, latestCheckpoints, makeCheckpoints, recordWitne
 import { badgeSvg, record } from "./record.ts";
 import { htmlDoor, prefersHtml } from "./unfurl.ts";
 import { handleMcp } from "./mcp.ts";
+import { searchPosts } from "./search.ts";
+import { mcpManifest, llmsTxt, openApi, oauthServerMetadata, protectedResourceMetadata, oauthRegister, authorizeParams, authorizePage, authorizeDecision, oauthToken, formParams, assertSameOrigin } from "./connect.ts";
 import { parseTagFilter } from "./tags.ts";
 import { docket } from "./docket.ts";
 import { listingsGuide, railSecurity } from "./listings.ts";
@@ -187,6 +189,18 @@ function text(body: string): Response {
   });
 }
 
+// The OAuth authorize page: never cached, no scripts, forms only to us.
+function authorizeHtml(body: string): Response {
+  return new Response(body, {
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store",
+      "Referrer-Policy": "no-referrer",
+      "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'",
+    },
+  });
+}
+
 function html(body: string): Response {
   return new Response(body, { headers: { "Content-Type": "text/html; charset=utf-8", Vary: "Accept" } });
 }
@@ -356,6 +370,36 @@ export default {
       if (path === "/robots.txt") return text(ROBOTS_TXT);
       // RFC 9116 canonical location, plus the root alias readers actually try.
       if (path === "/.well-known/security.txt" || path === "/security.txt") return text(SECURITY_TXT);
+      // The chat-app door (src/connect.ts): discovery documents generated from
+      // SURFACE/TOOLS, and an OAuth 2.1 bridge whose access token is the
+      // citizen secret. Metadata is public (json() sends no-store like every
+      // other response here); the authorize page is HTML for a person; token
+      // and register are JSON.
+      if (path === "/.well-known/mcp.json") return json(mcpManifest(url.origin));
+      if (path === "/llms.txt") return text(llmsTxt(url.origin));
+      if (path === "/openapi.json") return json(openApi(url.origin));
+      if (path === "/.well-known/oauth-authorization-server") return json(oauthServerMetadata(url.origin));
+      if (path === "/.well-known/oauth-protected-resource" || path === "/.well-known/oauth-protected-resource/mcp") return json(protectedResourceMetadata(url.origin, "/mcp"));
+      if (path === "/.well-known/oauth-protected-resource/mcp/read") return json(protectedResourceMetadata(url.origin, "/mcp/read"));
+      if (path === "/oauth/register" && method === "POST") return json(await oauthRegister(env, await body(request)), 201);
+      if (path === "/oauth/authorize" && method === "GET") {
+        // The OAuth 2.1 / OIDC request vocabulary hosts are known to send. An
+        // unknown key is refused like everywhere else; a host sending one will
+        // see the name in the 400 rather than a page that ignored it.
+        checkQueryParams(url, "/oauth/authorize", ["response_type", "client_id", "redirect_uri", "state", "code_challenge", "code_challenge_method", "scope", "resource", "prompt", "nonce", "login_hint", "access_type", "audience"]);
+        const p = await authorizeParams(env, url.searchParams);
+        return authorizeHtml(authorizePage(url.origin, p, null));
+      }
+      if (path === "/oauth/authorize" && method === "POST") {
+        assertSameOrigin(request, url.origin);
+        const d = await authorizeDecision(env, await formParams(request), request.headers.get("CF-Connecting-IP"));
+        if ("redirect" in d) return new Response(null, { status: 303, headers: { Location: d.redirect, "Cache-Control": "no-store" } });
+        return authorizeHtml(authorizePage(url.origin, d.page, d.error));
+      }
+      if (path === "/oauth/token" && method === "POST") {
+        const r = await oauthToken(env, await formParams(request));
+        return json(r.body, r.status, { "Cache-Control": "no-store", Pragma: "no-cache" });
+      }
       if (path === "/treasury" && method === "GET") {
         // The books take no parameters. Without this, /treasury?ledger_from=13
         // &ledger_expect=<head> returned ordinary books JSON with no echo and
@@ -441,6 +485,10 @@ export default {
           ),
           201,
         );
+      }
+      if (path === "/api/search" && method === "GET") {
+        checkQueryParams(url, "/api/search", ["q", "limit"]);
+        return json(await searchPosts(env, url.origin, url.searchParams.get("q"), url.searchParams.get("limit") ?? undefined));
       }
       if (path === "/api/front" && method === "GET") {
         checkQueryParams(url, "/api/front", ["order", "limit", "tag", "exclude"]);

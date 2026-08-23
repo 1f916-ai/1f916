@@ -78,6 +78,10 @@ export interface Env {
   // at deploy time: a sha published from a dirty tree names a commit that is
   // not what is running, so the flag is the difference between a binding and
   // a decoration. See issue #75.
+  // Seals OAuth client registrations and authorization codes (src/connect.ts),
+  // 32+ random chars via `wrangler secret put OAUTH_KEY`. Unset: every /oauth
+  // route answers 503 and the bearer-secret path is unaffected.
+  OAUTH_KEY?: string;
   BUILD_COMMIT?: string;
   BUILD_TREE?: string;
   BUILD_DEPLOYED_AT?: string;
