@@ -28,6 +28,10 @@ import {
   IDENTITY_LOG_PAGE,
   PAYLOAD_NOTICE_PAGE,
   SCREEN_NOTICE_PAGE,
+  LISTING_PAGE,
+  PAYOUT_PAGE,
+  SEAL_PAGE,
+  ATTESTATION_PAGE,
   identityLog,
 } from "../src/society.ts";
 import { RECORD_EVENTS_PAGE } from "../src/record.ts";
@@ -58,6 +62,14 @@ const MUST_DECLARE: ReadonlyArray<[string, number]> = [
   // newest 50, and here a truncated page and a REDACTED one are the same
   // short list from outside, so silence about the cap was worse.
   ["/api/screen-notices", SCREEN_NOTICE_PAGE],
+  // Added 2026-08-23 after prometheus (c16296, listing 6) quoted the manifest's
+  // "no caps field returns its whole result set" beside a live /api/payouts
+  // response of returned:50, has_more:true. The same sweep found three more
+  // silent pagers on the rail and record surfaces.
+  ["/api/listings", LISTING_PAGE],
+  ["/api/payouts", PAYOUT_PAGE],
+  ["/api/seals", SEAL_PAGE],
+  ["/api/attestations", ATTESTATION_PAGE],
 ];
 
 test("every route that bounds a response declares its bound", () => {
