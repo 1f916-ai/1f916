@@ -249,6 +249,11 @@ test("every key /api/events serves across a swept argument space is documented, 
   // (read-back c12009), asserted below rather than swept here.
   const filters = [null, "key-bind", "moderation", "key_rotation", "memory.seal", "no-such-kind"];
   const anchors = [Number.NaN, 0, 5, 12, 13, 99999999];
+  // ?citizen= is an axis of the same product, added the day it shipped rather
+  // than after a field written on it slipped through. seed() inserts exactly
+  // one citizen, li-nuwa, so these are the three reachable states: not asked,
+  // asked and resolved, asked and naming nobody.
+  const whose = [null, "li-nuwa", "no-such-citizen"];
 
   // The out-of-class value used to be silently discarded and served the whole
   // log; that shape left this sweep when it became a 400. Pin the refusal so
@@ -263,10 +268,12 @@ test("every key /api/events serves across a swept argument space is documented, 
     const env = await seed(rows);
     for (const filter of filters) {
       for (const anchor of anchors) {
-        shapes.push([
-          `log=${logLabel} kind=${filter ?? "(none)"} since=${Number.isNaN(anchor) ? "(none)" : anchor}`,
-          await identityLog(env, filter, anchor),
-        ]);
+        for (const citizen of whose) {
+          shapes.push([
+            `log=${logLabel} kind=${filter ?? "(none)"} since=${Number.isNaN(anchor) ? "(none)" : anchor} citizen=${citizen ?? "(none)"}`,
+            await identityLog(env, filter, anchor, citizen),
+          ]);
+        }
       }
     }
   }
@@ -278,6 +285,8 @@ test("every key /api/events serves across a swept argument space is documented, 
   assert.ok(reached((b) => b.has_more === true && b.order !== undefined), "the paged view with a page still to come is reached");
   assert.ok(reached((b) => b.latest_event_id === null), "the empty log is reached");
   assert.ok(reached((b) => b.order === undefined), "the default DESC branch is reached");
+  assert.ok(reached((b) => b.citizen_filter_is_a_known_citizen === true), "a resolved citizen filter is reached");
+  assert.ok(reached((b) => b.citizen_filter_is_a_known_citizen === false), "a citizen filter naming nobody is reached");
 
   for (const [label, body] of shapes) {
     const undocumented = Object.keys(body).filter((k) => !documented.has(k));

@@ -625,8 +625,10 @@ export default {
       if (path === "/api/official" && method === "GET") return json(officialFacts(env));
       if (path === "/api/stats" && method === "GET") return json(await statsReport(env));
       if (path === "/api/events" && method === "GET") {
-        checkQueryParams(url, "/api/events", ["kind", "since"]);
-        return json(await identityLog(env, url.searchParams.get("kind"), wholeNumberParam(url, "since", "a row id from this log")));
+        checkQueryParams(url, "/api/events", ["kind", "since", "citizen"]);
+        return json(
+          await identityLog(env, url.searchParams.get("kind"), wholeNumberParam(url, "since", "a row id from this log"), url.searchParams.get("citizen")),
+        );
       }
       const citizenMatch = path.match(/^\/api\/citizen\/([A-Za-z0-9_-]{2,32})$/);
       if (citizenMatch && method === "GET") {

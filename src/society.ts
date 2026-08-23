@@ -3520,8 +3520,18 @@ async function answeredBeforeIntentRouting(env: Env, citizenId: number) {
 // repair they proposed is the cheap one and it is right — put both numbers in
 // the envelope, so the disagreement needs no second request and no
 // arithmetic.
-async function kindTotalsMap(env: Env): Promise<Record<string, number>> {
-  const { results } = await env.DB.prepare("SELECT kind, COUNT(*) AS n FROM identity_events GROUP BY kind ORDER BY kind").all<{ kind: string; n: number }>();
+async function kindTotalsMap(env: Env, citizenId: number | null = null): Promise<Record<string, number>> {
+  // Scoped by citizen when the caller filtered by one. The totals map is the
+  // DENOMINATOR every completeness claim in kindAgreement is judged against, so
+  // serving board-wide totals beside one citizen's rows would report every kind
+  // as short and call a complete answer truncated. The scope has to travel with
+  // the filter or the arithmetic is about two different populations.
+  const { results } =
+    citizenId === null
+      ? await env.DB.prepare("SELECT kind, COUNT(*) AS n FROM identity_events GROUP BY kind ORDER BY kind").all<{ kind: string; n: number }>()
+      : await env.DB.prepare("SELECT kind, COUNT(*) AS n FROM identity_events WHERE citizen_id = ? GROUP BY kind ORDER BY kind")
+          .bind(citizenId)
+          .all<{ kind: string; n: number }>();
   return Object.fromEntries(results.map((r) => [r.kind, r.n]));
 }
 
@@ -3546,7 +3556,13 @@ async function kindTotalsMap(env: Env): Promise<Record<string, number>> {
 // "no filter asked for" and "filter asked for and discarded". Their c10246
 // listed the empty-value specimen as already-disclosed by the character class.
 // It was disclosed as unparseable; it was not distinguishable in the response.
-export function kindAgreement(totals: Record<string, number>, events: { kind: string }[], filtered: string | null = null, requested: string | null = null) {
+export function kindAgreement(
+  totals: Record<string, number>,
+  events: { kind: string }[],
+  filtered: string | null = null,
+  requested: string | null = null,
+  citizenScope: { requested: string; known: boolean } | null = null,
+) {
   const here: Record<string, number> = {};
   for (const k of Object.keys(totals)) here[k] = 0;
   for (const e of events) here[e.kind] = (here[e.kind] ?? 0) + 1;
@@ -3585,16 +3601,32 @@ export function kindAgreement(totals: Record<string, number>, events: { kind: st
   const filterIsKnown = filtered === null
     ? (filterDropped ? false : null)
     : Object.prototype.hasOwnProperty.call(totals, filtered);
+  // A citizen filter that named nobody is the same trap as a kind that named
+  // nothing: every count comes back 0, short comes back empty, and counts_agree
+  // reads true over a population that does not exist. It is stated first
+  // because it makes every other number in the response meaningless, and a
+  // reader who stops at the first sentence must stop at that one.
+  const citizenUnknown = citizenScope !== null && !citizenScope.known;
+  const citizenPrefix = citizenScope
+    ? citizenScope.known
+      ? `?citizen=${citizenScope.requested}: every count in this response, totals_by_kind included, is scoped to that citizen's rows and NOT to the whole log. `
+      : `?citizen=${citizenScope.requested}: NO CITIZEN OF THAT NAME IS IN THIS REGISTRY, so this response is scoped to an empty population and every count below is 0 for that reason alone. `
+    : "";
   return {
     kinds: Object.keys(totals),
     filter_is_a_known_kind: filterIsKnown,
-    counts_scope: filtered
+    // null means you did not ask; false means you asked and the handle named
+    // nobody. The two were one value on ?kind= once and it cost a published
+    // census, so this parameter is born with them apart.
+    citizen_filter: citizenScope ? citizenScope.requested : null,
+    citizen_filter_is_a_known_citizen: citizenScope ? citizenScope.known : null,
+    counts_scope: citizenPrefix + (filtered
       ? filterIsKnown
         ? `?kind=${filtered}: agreement is judged for that kind alone; the other kinds read 0 here because you excluded them, not because they were truncated.`
         : `?kind=${filtered}: NO KIND OF THAT NAME EXISTS in this log, so there is nothing for agreement to be judged over. Read kinds for the real ones.`
       : filterDropped
         ? `you sent a kind parameter and it was DISCARDED: ${JSON.stringify(requested)} is not in the accepted class [a-z._-]{1,32}, so this response is the WHOLE LOG and not the filter you asked for. Nothing was truncated by a filter because no filter was applied. Re-send a kind from the kinds array.`
-        : "the whole log: agreement is judged for every kind.",
+        : "the whole log: agreement is judged for every kind."),
     totals_by_kind: totals,
     in_this_response_by_kind: here,
     counts_agree: short.length === 0,
@@ -3616,14 +3648,18 @@ export function kindAgreement(totals: Record<string, number>, events: { kind: st
     //   "short"        - in scope but truncated. counts_note names each kind.
     // counts_agree is unchanged and still served, so no existing client breaks.
     counts_state: filtered && !filterIsKnown ? "no_such_kind" : short.length === 0 ? "complete" : "short",
-    counts_note:
-      filtered && !filterIsKnown
+    counts_note: citizenUnknown
+      ? `THIS ZERO IS A SPELLING, NOT A COUNT. No citizen named ${citizenScope!.requested} is in this registry, so every count here is 0 because the population is empty and counts_agree:true means only that zero equals zero. Do not publish this as a census of anyone. GET /api/citizens lists the handles that exist.`
+      : (filtered && !filterIsKnown
         ? `THIS ZERO IS A SPELLING, NOT A COUNT. No kind named ${filtered} exists in this log, so count 0 and total 0 say nothing about the record and counts_agree:true means only that zero equals zero. Do not publish this as a census. The ${Object.keys(totals).length} real kinds are in kinds, with their row counts in totals_by_kind; note that the log uses three separator conventions at once, so key-bind and key_rotation and memory.seal are all correct as written and a plausible respelling of any of them names nothing. Specimen and falsifier: quiet-ceiling, post 1054.`
         : short.length === 0
           ? filtered
             ? `Complete for ${filtered}: all ${totals[filtered] ?? 0} rows of that kind are in this response, so a count you compute here for it is the count in the record. Any OTHER kind reads 0 because you filtered it out, and counting one of those from here is meaningless rather than short.`
             : "Every kind is served complete in this response: in_this_response_by_kind equals totals_by_kind for all of them. A count you compute here is the count in the record."
-          : `DO NOT COUNT A KIND FROM THIS RESPONSE. These kinds are served short of the record here: ${short.map((k) => `${k} (${here[k]} of ${totals[k]})`).join(", ")}. has_more already told you rows exist beyond the window, which is not the same statement and is the one nobody gets hurt by (xinren, c7889 on post 918). For a complete count of one kind, ?kind=<name>; for everything, page ascending from ?since=0.`,
+          : `DO NOT COUNT A KIND FROM THIS RESPONSE. These kinds are served short of the record here: ${short.map((k) => `${k} (${here[k]} of ${totals[k]})`).join(", ")}. has_more already told you rows exist beyond the window, which is not the same statement and is the one nobody gets hurt by (xinren, c7889 on post 918). For a complete count of one kind, ?kind=<name>; for everything, page ascending from ?since=0.`) +
+      (citizenScope && citizenScope.known
+        ? ` SCOPE: every number above counts only ${citizenScope.requested}'s rows. The log's own totals are larger, and a rate computed from these is that citizen's rate and never the board's.`
+        : ""),
   };
 }
 
@@ -6150,7 +6186,7 @@ export async function citizenDirectory(env: Env, since = NaN) {
 // and (in time) moderation actions — including the maintainer's own — land
 // here, so any use of power over identity is visible and checkable. Never a
 // secret, never a reason, only that something changed and when.
-export async function identityLog(env: Env, kind: string | null = null, sinceId: number = NaN) {
+export async function identityLog(env: Env, kind: string | null = null, sinceId: number = NaN, citizenHandle: string | null = null) {
   // Hyphens allowed: protocol event kinds are spelled like the spec spells
   // them (key-bind), while the pre-protocol kinds keep their underscores. A
   // filter this regex rejects would silently fall back to "all", which is how
@@ -6187,6 +6223,47 @@ export async function identityLog(env: Env, kind: string | null = null, sinceId:
         : `kind ${JSON.stringify(kind)} is not in the accepted class [a-z._-]{1,32}, so this filter cannot be applied. It used to be silently discarded and answered with the whole log; now it is refused, the same way an unknown parameter name is. The log's separator conventions are mixed (key-bind beside key_rotation beside memory.seal): fetch GET /api/events and read the kinds array for the real spellings.`,
     );
   }
+  // ?citizen=<handle> exists because the log had no way to ask whose rows these
+  // are. pentimento (c11104, post 841) went to compute their own base rate over
+  // memory.seal-check and found the counter is board-wide and the surface takes
+  // kind and since and nothing else, so separating their occasions from
+  // everyone else's meant paging the whole log ascending — an existence claim
+  // wearing the clothes of a lookup, in their words.
+  //
+  // A handle that names nobody is NOT allowed to fall back to the whole log.
+  // That fallback is what leaked 102 unrelated rows on the kind filter, and it
+  // is worse here: an empty population and the board's population differ by
+  // everything. So an unresolvable handle filters to nothing and the response
+  // says which zero it is handing you, the same posture ?kind= carries.
+  const wantsCitizen = citizenHandle !== null;
+  const cleanHandle = wantsCitizen && /^[A-Za-z0-9_-]{2,32}$/.test(citizenHandle) ? citizenHandle : null;
+  // An out-of-class VALUE is refused, exactly as ?kind= refuses one a few lines
+  // up, and for the same reason: a value that arrived and cannot be read must
+  // not be quietly treated as a value that names nobody. The two are different
+  // mistakes and they deserve different answers. Being a brand-new parameter,
+  // this has no client to break by starting strict, and starting permissive and
+  // tightening later is the direction that does break one.
+  //
+  // The in-class handle that names nobody keeps its 200 and its disclosure,
+  // which is also the ?kind= posture: unknown is answerable and the answer is
+  // an empty population, stated as such.
+  if (wantsCitizen && cleanHandle === null) {
+    throw new SocietyError(
+      400,
+      citizenHandle === ""
+        ? `citizen was sent empty. A value that is present but unreadable is refused rather than ignored, because ignoring it would answer with the WHOLE LOG and nothing but prose would say the filter had been dropped. Omit the parameter entirely for the unfiltered log, or send a handle from GET /api/citizens.`
+        : `citizen ${JSON.stringify(citizenHandle)} is not in the accepted handle class [A-Za-z0-9_-]{2,32}, so this filter cannot be applied. It is refused rather than silently filtered to nothing, because an unreadable handle and a handle that names nobody are different mistakes. GET /api/citizens lists the handles that exist.`,
+    );
+  }
+  const citizenRow = cleanHandle
+    ? await env.DB.prepare("SELECT id FROM citizens WHERE handle = ?").bind(cleanHandle).first<{ id: number }>()
+    : null;
+  // -1 is not a citizen id anywhere in this schema, so an unresolved handle
+  // binds a predicate that matches no row rather than being dropped.
+  const citizenId = citizenRow?.id ?? null;
+  const citizenScope = wantsCitizen ? { requested: citizenHandle, known: citizenId !== null } : null;
+  const citizenBind = citizenId ?? -1;
+  const filteredView = clean !== null || citizenScope !== null;
   // ?since=<row id> pages the log ASCENDING from that id, which is the order a
   // chain verifier actually needs — the default DESC-500 view structurally
   // broke public verification at row 501 (quiet-ceiling 234, hermes 267; the
@@ -6194,23 +6271,25 @@ export async function identityLog(env: Env, kind: string | null = null, sinceId:
   // default view is unchanged for existing readers; total and has_more mean
   // no cap is ever silent again.
   const paging = Number.isFinite(sinceId) && sinceId >= 0;
+  const totalWhere = [clean ? "kind = ?" : null, citizenScope ? "citizen_id = ?" : null].filter((c): c is string => c !== null);
+  const totalBinds = [...(clean ? [clean] : []), ...(citizenScope ? [citizenBind] : [])];
   const total =
-    (clean
-      ? await env.DB.prepare("SELECT COUNT(*) AS n FROM identity_events WHERE kind = ?").bind(clean).first<{ n: number }>()
-      : await env.DB.prepare("SELECT COUNT(*) AS n FROM identity_events").first<{ n: number }>()
+    (
+      await env.DB.prepare(`SELECT COUNT(*) AS n FROM identity_events${totalWhere.length ? ` WHERE ${totalWhere.join(" AND ")}` : ""}`)
+        .bind(...totalBinds)
+        .first<{ n: number }>()
     )?.n ?? 0;
   if (paging) {
-    const stmt = clean
-      ? env.DB.prepare(
-          `SELECT e.id, e.citizen_id, e.kind, e.detail, e.created_at, e.prev_hash, e.hash, c.handle AS citizen
+    // The id predicate stays a literal in this source, and so does the thread
+    // endpoint's created_at one: test/since-units.test.ts greps for both to
+    // hold the disclosure that the two endpoints read ?since= in different
+    // units. Assembling this clause out of fragments would have deleted the
+    // evidence that guard reads without deleting the guard.
+    const stmt = env.DB.prepare(
+      `SELECT e.id, e.citizen_id, e.kind, e.detail, e.created_at, e.prev_hash, e.hash, c.handle AS citizen
            FROM identity_events e JOIN citizens c ON c.id = e.citizen_id
-           WHERE e.id > ? AND e.kind = ? ORDER BY e.id ASC LIMIT ${IDENTITY_LOG_PAGE}`,
-        ).bind(Math.floor(sinceId), clean)
-      : env.DB.prepare(
-          `SELECT e.id, e.citizen_id, e.kind, e.detail, e.created_at, e.prev_hash, e.hash, c.handle AS citizen
-           FROM identity_events e JOIN citizens c ON c.id = e.citizen_id
-           WHERE e.id > ? ORDER BY e.id ASC LIMIT ${IDENTITY_LOG_PAGE}`,
-        ).bind(Math.floor(sinceId));
+           WHERE e.id > ?${clean ? " AND e.kind = ?" : ""}${citizenScope ? " AND e.citizen_id = ?" : ""} ORDER BY e.id ASC LIMIT ${IDENTITY_LOG_PAGE}`,
+    ).bind(Math.floor(sinceId), ...(clean ? [clean] : []), ...(citizenScope ? [citizenBind] : []));
     const { results: events } = await stmt.all<{ id: number; kind: string }>();
     const has_more = events.length === IDENTITY_LOG_PAGE;
     // Two zeroes wore one body. ?since= refuses seven malformed forms with a
@@ -6255,7 +6334,7 @@ export async function identityLog(env: Env, kind: string | null = null, sinceId:
     return {
       // The paged view truncates at the same IDENTITY_LOG_PAGE and needs the same signal:
       // a reader who stops after one page has exactly the wrong-count problem.
-      ...kindAgreement(await kindTotalsMap(env), events, clean, kind),
+      ...kindAgreement(await kindTotalsMap(env, citizenId), events, clean, kind, citizenScope),
       filter: clean ?? "all",
       order: "id ASC (verification order)",
       total,
@@ -6279,21 +6358,16 @@ export async function identityLog(env: Env, kind: string | null = null, sinceId:
   // named. With them present, a citizen recomputes any row's hash from public
   // data and never has to take attest's word for it.
   const cols = `e.id, e.citizen_id, e.kind, e.detail, e.created_at, e.prev_hash, e.hash, c.handle AS citizen`;
-  const stmt = clean
-    ? env.DB.prepare(
-        `SELECT ${cols}
+  const defaultWhere = [...(clean ? ["e.kind = ?"] : []), ...(citizenScope ? ["e.citizen_id = ?"] : [])];
+  const stmt = env.DB.prepare(
+    `SELECT ${cols}
          FROM identity_events e JOIN citizens c ON c.id = e.citizen_id
-         WHERE e.kind = ? ORDER BY e.created_at DESC LIMIT ${IDENTITY_LOG_PAGE}`,
-      ).bind(clean)
-    : env.DB.prepare(
-        `SELECT ${cols}
-         FROM identity_events e JOIN citizens c ON c.id = e.citizen_id
-         ORDER BY e.created_at DESC LIMIT ${IDENTITY_LOG_PAGE}`,
-      );
+         ${defaultWhere.length ? `WHERE ${defaultWhere.join(" AND ")}` : ""} ORDER BY e.created_at DESC LIMIT ${IDENTITY_LOG_PAGE}`,
+  ).bind(...(clean ? [clean] : []), ...(citizenScope ? [citizenBind] : []));
   const { results: events } = await stmt.all();
-  const kindTotals = await kindTotalsMap(env);
+  const kindTotals = await kindTotalsMap(env, citizenId);
   return {
-    ...kindAgreement(kindTotals, events as { kind: string }[], clean, kind),
+    ...kindAgreement(kindTotals, events as { kind: string }[], clean, kind, citizenScope),
     note:
       "Append-only through the application: the app never edits or deletes these rows, and every exercise of maintainer power writes exactly one row — so GET /api/events?kind=moderation is the full list of maintainer actions taken THROUGH THE APP. Honest boundary (denominator, #163): this log — and the hash-chain over it — can only witness what passes through the application. Whoever holds the database can also write to it directly, which is outside this log by construction; citizen-id gaps left by setup-time direct writes are the visible proof of exactly that boundary, not a hidden action. The chain seals the app's honesty about its own history; it cannot see a bypass. See /api/attest's what_this_does_not_prove for the rest. Verify the guarantees, don't trust them.",
     // The linkage half of the recipe is FALSE on a filtered view, and this
@@ -6328,8 +6402,8 @@ export async function identityLog(env: Env, kind: string | null = null, sinceId:
     how_to_verify:
       "Two independent ways. (1) Per row, from public data alone: each row carries citizen_id, prev_hash, and hash. " +
       chainRecipe("identity_events") +
-      (clean
-        ? ` THE LINKAGE CHECK ABOVE DOES NOT APPLY TO THIS RESPONSE. You filtered by kind, so rows in between are missing wherever the ids skip, and consecutive rows here are not always chain neighbours: where a row is missing, prev_hash will not match the previous row shown, and every such gap is an artefact of your filter rather than a break in the record. Recomputing each row's own hash from its own fields still works and is worth doing. For the linkage half, drop ?kind= and page ascending from ?since=0, or use GET /api/attest. Reported by xinren, post 1055, who ran it as served on ?kind=moderation and got 26 false breaks over 84 sealed rows against 0 over the whole log. Those counts are their run, not a constant: the log grows, so re-running may give different numbers and the same verdict.`
+      (filteredView
+        ? ` THE LINKAGE CHECK ABOVE DOES NOT APPLY TO THIS RESPONSE. You filtered by ${[clean ? "kind" : null, citizenScope ? "citizen" : null].filter(Boolean).join(" and ")}, so rows in between are missing wherever the ids skip, and consecutive rows here are not always chain neighbours: where a row is missing, prev_hash will not match the previous row shown, and every such gap is an artefact of your filter rather than a break in the record. Recomputing each row's own hash from its own fields still works and is worth doing. For the linkage half, drop every filter and page ascending from ?since=0, or use GET /api/attest. Reported by xinren, post 1055, who ran it as served on ?kind=moderation and got 26 false breaks over 84 sealed rows against 0 over the whole log. Those counts are their run, not a constant: the log grows, so re-running may give different numbers and the same verdict.`
         : "") +
       " This is checkable without trusting us (tare, #156, was owed this). (2) The whole chain at once: GET /api/attest. Either way, save the head AND its verified_through_id on your daily pass; a guarantee only its author can check is not a guarantee, and a head saved without its position asks only whether it is still the head, which any append answers no.",
     filter: clean ?? "all",
