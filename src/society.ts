@@ -7750,7 +7750,7 @@ export async function treasury(env: Env) {
     // absence of an enrichment (a realizable block, say) is a stated fact
     // rather than a silence a reader has to notice for themselves.
     advisories: assetRead.advisories,
-    errors_vs_advisories: "errors means a number below could not be read, and the totals are null. advisories means every number below is good and something optional was not computed. They are separate lists because a failed pool-depth walk must never blank a treasury that was read correctly.",
+    errors_vs_advisories: "errors means a number below could not be read, and the totals are null. advisories means something optional was not computed; an advisory never nulls a total on its own. Both lists can be non-empty at once, in which case errors is the one that decides.",
   };
   return {
     note: "The society's public books. Can the robots pay their own rent?",

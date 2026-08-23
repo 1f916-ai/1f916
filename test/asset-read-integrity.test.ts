@@ -207,3 +207,42 @@ test("a failed depth walk is an advisory, and never nulls a treasury that was re
     },
   );
 });
+
+// Both lists non-empty at once. The served errors_vs_advisories sentence makes
+// a claim about this state, and a claim about a state nobody has entered is a
+// guess; the pre-deploy auditor reached it by probe, so it lives here now.
+//
+// KILLING MUTATION: make the served sentence say an advisory means every number
+// below is good, and this test's total_cents assertion contradicts it.
+test("errors and advisories can both be non-empty, and errors is what decides", async () => {
+  await withMockFetch(
+    async (_input, init) => {
+      const payload = JSON.parse(String(init?.body)) as RpcRequest[];
+      return Response.json(
+        payload.map(({ id, params }) => {
+          const call = params[0];
+          // The optional walk fails...
+          if (call.data.startsWith(SELECTORS.getTickBitmap)) return { id, result: abi(0n) };
+          // ...and so does a price every holding depends on.
+          if (call.data === SELECTORS.latestRoundData) return { id, result: "0x" };
+          if (call.data.startsWith(SELECTORS.getCumulatedFees1)) return { id, result: abi(5_000n * 10n ** 18n) };
+          if (call.data.startsWith(SELECTORS.getLastCumulatedFees1)) return { id, result: abi(0n) };
+          if (call.data.startsWith(SELECTORS.getShares)) return { id, result: abi(10n ** 18n) };
+          if (call.data.startsWith(SELECTORS.collectFees)) return { id, result: abi(0n, 0n) };
+          if (call.data.startsWith(SELECTORS.slot0V3)) return { id, result: abi(Q96, 0n, 0n, 0n, 0n, 0n, 0n) };
+          return { id, result: resultFor(call) };
+        }),
+      );
+    },
+    async () => {
+      const read = await readTreasuryAssets(TREASURY, ["https://both.rpc"], ["https://bnb.rpc"]);
+      assert.ok(read.errors.length > 0, "the unread price belongs in errors");
+      assert.ok(read.advisories.length > 0, "the uncomputed extra belongs in advisories");
+
+      // errors decides. An advisory alongside it does not make the totals good.
+      const summary = summarizeAssets(read.holdings, read.errors.length === 0);
+      assert.equal(summary.complete, false);
+      assert.equal(summary.total_cents, null);
+    },
+  );
+});
