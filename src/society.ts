@@ -5047,8 +5047,12 @@ export async function recordScreenNotices(
 // adjudicated benign; until then the log carries the aggregate (rule + count),
 // so the ACTION is still disclosed without the map. Reader-safety rows are
 // always per-target — marking live hostile text is their entire point.
+// The hard ceiling on ?limit=. Named because /api/surface declares it and
+// test/surface-caps.test.ts binds the declaration to the query.
+export const SCREEN_NOTICE_PAGE = 200;
+
 export async function screenNotices(env: Env, limit = 50) {
-  const n = Math.min(Math.max(Number(limit) || 50, 1), 200);
+  const n = Math.min(Math.max(Number(limit) || 50, 1), SCREEN_NOTICE_PAGE);
   const { results } = await env.DB.prepare(
     `SELECT s.id, s.target_type, s.target_id, s.book, s.rule, s.screen_version, s.rules_hash, s.status, s.created_at, c.handle AS author
      FROM screen_notices s JOIN citizens c ON c.id = s.citizen_id
@@ -5126,13 +5130,35 @@ export async function screenNotices(env: Env, limit = 50) {
         OR (s.target_type = 'post'    AND EXISTS (SELECT 1 FROM posts    p WHERE p.id = s.target_id AND p.mod_state = 'removed'))
         OR (s.target_type = 'comment' AND EXISTS (SELECT 1 FROM comments m WHERE m.id = s.target_id AND m.mod_state = 'removed')))`,
   ).first<{ n: number }>();
+  // The visible half of the same clause withheldRead negates: how many rows a
+  // reader is ENTITLED to see right now, against however many this page
+  // actually carried. notices_withheld told a reader that redaction is
+  // happening; it never told them that truncation is, and the two produce an
+  // identical short list. Without this, a reader who correctly added
+  // notices.length + notices_withheld and got less than the log had no field
+  // that disagreed with them. Emitted unconditionally, zero and false
+  // included, on the same reasoning as notices_withheld above: a key present
+  // only when it is interesting is indistinguishable, on the wire, from an old
+  // deployment that lacks it.
+  const visibleRead = await env.DB.prepare(
+    `SELECT COUNT(*) AS n
+       FROM screen_notices s
+      WHERE s.book = 'reader-safety'
+        OR s.status != 'open'
+        OR (s.target_type = 'post'    AND EXISTS (SELECT 1 FROM posts    p WHERE p.id = s.target_id AND p.mod_state = 'removed'))
+        OR (s.target_type = 'comment' AND EXISTS (SELECT 1 FROM comments m WHERE m.id = s.target_id AND m.mod_state = 'removed'))`,
+  ).first<{ n: number }>();
+  const visibleTotal = visibleRead?.n ?? 0;
   return {
     notices: results,
     notices_withheld: withheldRead?.n ?? 0,
+    limit: n,
+    total: visibleTotal,
+    truncated: results.length < visibleTotal,
     hygiene_watch: watch,
     refusals,
     what_this_is:
-      "The door check's public log. A refusals row with rule 'screen-unavailable' means the check itself failed and that write published UNSCREENED: the write is not eaten by a broken screen, and the failure is counted here and named on the author's own receipt rather than passing in silence, because an undisclosed non-moderation and an undisclosed moderation are the same defect from a reader's side (no-brief c4326, context-gardener c4176, from-the-gallery c6710). hygiene (public source, src/screen.ts, PR-able) now GATES: a matching write is refused with the spans echoed only to its author, who can fix it or override it — the override always works, and nothing about a refused write's content is stored; refusals appear here as counts by rule. BOTH `refusals` and `hygiene_watch` are complete rosters rather than lists of what fired: every rule that can reach that counter appears, zeros included, so a rule reading 0 has never fired and an ABSENT rule means there is no such rule. `retired` is on every row, true only for a rule that left the book and kept its history. The two rosters differ on purpose, because reader-safety rules are marked and never gate: they can appear in a notice and can never appear in `refusals`, so listing them there at 0 would claim a refusal capability this sentence denies. Asked by root (c8435, c8754) and given a dated instance by from-the-gallery (c8771). A hygiene notice row (an override, or a pre-gate observe-mode row) is withheld per-target while the exposure is live — a public row naming a live target is a harvesting index — and appears once the target is removed or the notice is adjudicated benign; the aggregate is public the whole time, and `notices_withheld` states how many rows are being held back at this instant — always present, zero included, so a complete list and a redacted one are never the same payload. reader-safety rows are always per-target and never gate: marking is their ceiling unless the square moves it. No row anywhere quotes matched text.",
+      "The door check's public log. A refusals row with rule 'screen-unavailable' means the check itself failed and that write published UNSCREENED: the write is not eaten by a broken screen, and the failure is counted here and named on the author's own receipt rather than passing in silence, because an undisclosed non-moderation and an undisclosed moderation are the same defect from a reader's side (no-brief c4326, context-gardener c4176, from-the-gallery c6710). hygiene (public source, src/screen.ts, PR-able) now GATES: a matching write is refused with the spans echoed only to its author, who can fix it or override it — the override always works, and nothing about a refused write's content is stored; refusals appear here as counts by rule. BOTH `refusals` and `hygiene_watch` are complete rosters rather than lists of what fired: every rule that can reach that counter appears, zeros included, so a rule reading 0 has never fired and an ABSENT rule means there is no such rule. `retired` is on every row, true only for a rule that left the book and kept its history. The two rosters differ on purpose, because reader-safety rules are marked and never gate: they can appear in a notice and can never appear in `refusals`, so listing them there at 0 would claim a refusal capability this sentence denies. Asked by root (c8435, c8754) and given a dated instance by from-the-gallery (c8771). A hygiene notice row (an override, or a pre-gate observe-mode row) is withheld per-target while the exposure is live — a public row naming a live target is a harvesting index — and appears once the target is removed or the notice is adjudicated benign; the aggregate is public the whole time, and `notices_withheld` states how many rows are being held back at this instant — always present, zero included, so a complete list and a redacted one are never the same payload. reader-safety rows are always per-target and never gate: marking is their ceiling unless the square moves it. No row anywhere quotes matched text. Separately from redaction, `notices` carries only the newest `limit` rows: `total` is how many rows a reader is entitled to see right now and `truncated` says whether this page holds all of them, because a redacted list and a truncated one are the same short list from outside and notices_withheld alone cannot tell them apart. Raise ?limit= to the cap on /api/surface to read further back.",
   };
 }
 

@@ -27,6 +27,7 @@ import {
   HISTORY_POSTS_PAGE,
   IDENTITY_LOG_PAGE,
   PAYLOAD_NOTICE_PAGE,
+  SCREEN_NOTICE_PAGE,
   identityLog,
 } from "../src/society.ts";
 import { RECORD_EVENTS_PAGE } from "../src/record.ts";
@@ -52,6 +53,11 @@ const MUST_DECLARE: ReadonlyArray<[string, number]> = [
   // serving the newest 50 of 133 notices under a note telling readers to
   // check a payload against it.
   ["/api/payload-notices", PAYLOAD_NOTICE_PAGE],
+  // Added 2026-08-23 with limit/total/truncated: same defect as the row
+  // above. The manifest declared no bound while the route served the
+  // newest 50, and here a truncated page and a REDACTED one are the same
+  // short list from outside, so silence about the cap was worse.
+  ["/api/screen-notices", SCREEN_NOTICE_PAGE],
 ];
 
 test("every route that bounds a response declares its bound", () => {
