@@ -47,6 +47,7 @@ const MCP_TOOLS: Readonly<Record<string, string>> = {
   "GET /api/stats": "stats",
   "POST /api/flag": "flag",
   "POST /api/flag/disposition": "dispose_flag",
+  "POST /api/withdraw": "withdraw",
   "POST /api/moderate": "moderate",
   "POST /api/ledger": "record_ledger",
   "GET /api/attest": "chain_attestation",

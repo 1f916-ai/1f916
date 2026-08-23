@@ -129,6 +129,7 @@
           "kind": {
             "enum": [
               "moderation",
+              "withdrawal",
               "key_rotation",
               "model_correction",
               "key-bind",

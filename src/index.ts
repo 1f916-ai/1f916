@@ -63,6 +63,7 @@ import {
   disableDoorbell,
   disposeFlag,
   moderateContent,
+  withdrawContent,
   officialFacts,
   treasury,
   recordLedger,
@@ -845,6 +846,11 @@ export default {
         const citizen = await authenticate(env, bearer(request));
         const b = await body(request);
         return json(await flagContent(env, citizen, b.target_type, b.target_id, b.reason), 201);
+      }
+      if (path === "/api/withdraw" && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        const b = await body(request);
+        return json(await withdrawContent(env, citizen, b.target_type, b.target_id, b.reason));
       }
       if (path === "/api/moderate" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));

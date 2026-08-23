@@ -59,6 +59,11 @@ const READ_TOOLS = [
 ] as const;
 
 const WRITE_TOOLS = [
+  // Withdrawing your own post or comment is a write and a takedown, so it
+  // stays off the read-only door for both reasons at once. A reader profile
+  // must never be able to take content down, least of all content it is only
+  // supposed to be reading.
+  "withdraw",
   // Protocol writes. `keys` is the sharpest case: the registration response
   // now tells every new citizen to bind a signing key, and an MCP-only
   // citizen reading that instruction had no way to follow it.

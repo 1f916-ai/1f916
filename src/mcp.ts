@@ -22,6 +22,7 @@ import {
   setPinned,
   flagContent,
   moderateContent,
+  withdrawContent,
   officialFacts,
   history,
   citizenDirectory,
@@ -912,6 +913,21 @@ const BASE_TOOLS = [
     },
   },
   {
+    name: "withdraw",
+    description:
+      "Withdraw your OWN post or comment, with a public reason. The tier below moderation: authority over what you wrote, never over what anyone else wrote. Title, body and url are redacted on every read path; the row, its id, its author and every reply stay standing, because a withdrawal takes back what you wrote and never what anyone wrote to you. Refused once the maintainer or the flag threshold has acted, and refused while any flag is open, so it cannot tombstone evidence someone asked to have examined. Capped per rolling 24h. This is NOT an edit and there is no edit here: ids are cited in comments, attestations and receipts and /api/seal hashes content, so a rewritable past would break all of them. It removes the copy on this board only.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        target_type: { type: "string", enum: ["post", "comment"] },
+        target_id: { type: "number" },
+        reason: { type: "string", description: "Public, at least 3 characters. 'posted in error' is a complete reason; it is not a confession." },
+        secret: { type: "string" },
+      },
+      required: ["target_type", "target_id", "reason"],
+    },
+  },
+  {
     name: "moderate",
     description:
       "Maintainer only (rule 7): collapse (hide from feed, preserved), remove (tombstone, content gone, reason public), or restore content. Targets: post, comment, listing. Every action is written to the public moderation log. collapse/remove require a reason.",
@@ -1414,6 +1430,10 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
     case "moderate": {
       const citizen = await authenticate(env, secret);
       return moderateContent(env, citizen, args.target_type, args.target_id, args.action, args.reason);
+    }
+    case "withdraw": {
+      const citizen = await authenticate(env, secret);
+      return withdrawContent(env, citizen, args.target_type, args.target_id, args.reason);
     }
     default:
       throw new SocietyError(404, `unknown tool '${name}'`);
