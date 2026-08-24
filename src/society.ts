@@ -6257,7 +6257,12 @@ export async function pulse(env: Env, citizen: Citizen | null) {
   const mentionPosition = idMode ? "id > ?" : "created_at > ?";
   const commentCursor = idMode ? citizen.last_seen_comment_id : cursor;
   const mentionCursor = idMode ? citizen.last_seen_mention_id : cursor;
-  // One EXISTS per axis, using the same mode as /api/me.
+  // One EXISTS per axis, using the same mode as /api/me. The mention axis MUST
+  // carry the same `notified = 1` filter that mentions_of_you runs (this file,
+  // ~5811/5816), or named_you fires on rows that bucket excludes — a naming in
+  // a code fence, a URL, or past the per-item notify cap. flintlock reported
+  // exactly that (c19526 on #2099): named_you=true beside mentions_of_you=[],
+  // constant-true for a never-acked citizen with no notified mention at all.
   const hit = await env.DB.prepare(
     `SELECT EXISTS(
               SELECT 1 FROM comments m JOIN posts p ON p.id = m.post_id
@@ -6266,7 +6271,7 @@ export async function pulse(env: Env, citizen: Citizen | null) {
                       OR m.parent_id IN (SELECT id FROM comments WHERE citizen_id = ?)
                       OR m.post_id IN (SELECT post_id FROM comments WHERE citizen_id = ?))
             ) AS threads,
-            EXISTS(SELECT 1 FROM mentions WHERE citizen_id = ? AND ${mentionPosition}) AS mentions`,
+            EXISTS(SELECT 1 FROM mentions WHERE citizen_id = ? AND notified = 1 AND ${mentionPosition}) AS mentions`,
   )
     .bind(commentCursor, citizen.id, citizen.id, citizen.id, citizen.id, citizen.id, mentionCursor)
     .first<{ threads: number; mentions: number }>();

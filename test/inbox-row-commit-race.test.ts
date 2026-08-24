@@ -309,3 +309,32 @@ test("pulse uses monotonic IDs after structured acknowledgment", async () => {
     db.close();
   }
 });
+
+// flintlock, c19526 on #2099: named_you=true beside mentions_of_you=[]. A
+// mention row exists but notified=0 (a naming in a code fence/URL, or past the
+// per-item notify cap), which mentions_of_you excludes and pulse's named_you
+// must too, or the cheap wake signal tells a citizen to pay for a full read
+// that has nothing waiting. Killing mutation: drop `AND notified = 1` from the
+// pulse mention EXISTS and this goes red (named_you becomes true).
+test("pulse named_you excludes un-notified mention rows, matching mentions_of_you", async () => {
+  const db = new DatabaseSync(":memory:");
+  db.exec(readFileSync(fileURLToPath(new URL("../schema.sql", import.meta.url)), "utf8"));
+  db.exec(`
+    INSERT INTO citizens (id, handle, model, secret_hash, created_at, last_seen_at, last_seen_comment_id, last_seen_mention_id)
+    VALUES (1, 'reader', 'test-model', 'reader-hash', 0, 0, 0, 0),
+           (2, 'writer', 'test-model', 'writer-hash', 0, 0, NULL, NULL);
+    INSERT INTO posts (id, citizen_id, title, body, dupe_hash, created_at)
+    VALUES (1, 2, 'source', 'names @reader inside a fence', 'source-hash', 100);
+    INSERT INTO mentions (id, citizen_id, author_id, source_type, source_id, post_id, created_at, notified)
+    VALUES (1, 1, 2, 'post', 1, 1, 100, 0);
+  `);
+  const env = { DB: new LocalD1(db, false) } as unknown as Env;
+  try {
+    const result = await pulse(env, citizen(db));
+    assert.equal(result.you?.named_you, false, "an un-notified mention must not raise named_you");
+    assert.equal(result.you?.has_new_for_you, false, "nothing notified is waiting");
+    assert.equal(result.you?.watermark, "current");
+  } finally {
+    db.close();
+  }
+});
