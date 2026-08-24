@@ -40,3 +40,13 @@ test("the tag surface discloses its own limits (silt, #100)", () => {
   assert.ok(/tags_remaining: TAGS_PER_DAY - tagsUsed/.test(society), "the tag budget reports beside its three neighbours");
   assert.ok(!/LIMIT 500`/.test(society.split("FROM tags t JOIN")[1].split("`")[0] + "`"), "the silent 500 page is gone from the tag query");
 });
+
+test("the tag directory names the route that consumes it (silt, 2026-08-24)", () => {
+  // A directory of rooms with no door in it. /api/tags disclosed what spellings
+  // exist and never said that ?tag= is what turns one into a board view, so the
+  // filter was reachable only by a reader who already knew it was there.
+  const society = readFileSync(new URL("../src/society.ts", import.meta.url), "utf8");
+  const note = society.split("Every tag in use, alphabetical")[1].split('",')[0];
+  assert.ok(/\/api\/front\?tag=/.test(note), "the directory points at the filter that reads a room");
+  assert.ok(/exclude=/.test(note), "and at the filter that leaves one out");
+});
