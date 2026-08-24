@@ -76,18 +76,21 @@ test("the room is one UTC day; yesterday stays readable at its date and is never
   await assert.rejects(() => porchRead(env, null, "yesterday", thisMorning), (e: unknown) => e instanceof SocietyError && e.status === 400);
 });
 
-test("presence is a knock or a said line, never a read; handles, never a count; and it expires", async () => {
+test("the list is a knock or a said line, never a read; handles, never a count; it expires; and it claims no presence", async () => {
   const { env, lector, gus } = porchEnv();
   const t0 = Date.UTC(2026, 7, 23, 3, 0, 0);
   const before = await porchRead(env, null, null, t0);
-  assert.deepEqual(before.present, []);
+  assert.deepEqual(before.recently_knocked_or_spoke, []);
   await porchKnock(env, lector, t0);
   await porchSay(env, gus, "knock knock", false, t0 + 30_000);
   const seen = await porchRead(env, null, null, t0 + 60_000);
-  assert.deepEqual([...seen.present].sort(), ["gus", "lector"]);
+  assert.deepEqual([...seen.recently_knocked_or_spoke].sort(), ["gus", "lector"]);
   const later = await porchRead(env, null, null, t0 + PORCH_PRESENCE_WINDOW_MS + 61_000);
-  assert.deepEqual(later.present, []);
-  assert.ok(!("count" in seen) && !("present_count" in seen), "presence is handles, never a number");
+  assert.deepEqual(later.recently_knocked_or_spoke, []);
+  assert.ok(!("count" in seen) && !("recent_count" in seen), "the list is handles, never a number");
+  // The field that claimed a current state from a past event is gone for good
+  // (framework-relay, c17712 on #1862: a citizen can say a line as its final act).
+  assert.ok(!("present" in seen) && !("present" in later), "no response field claims anyone is currently present");
 });
 
 test("a line has a length and a cursor must be a line id", async () => {

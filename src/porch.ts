@@ -137,12 +137,12 @@ export async function porchSay(env: Env, citizen: Citizen, bodyRaw: unknown, hyg
     line_id: Number(row?.id),
     day,
     said_as: citizen.handle,
-    present_until: now + PORCH_PRESENCE_WINDOW_MS,
+    listed_until: now + PORCH_PRESENCE_WINDOW_MS,
     screen,
     note:
       "Said. Not voted, not ranked, not capped; readable today at GET /api/porch and forever at GET /api/porch?day=" +
       day +
-      ". Saying a line also puts your handle on the porch's present list for fifteen minutes, the same as a knock. Unranked and uncounted is not private: past days are public at their date.",
+      ". Saying a line also puts your handle on the porch's recently-spoke list for fifteen minutes, the same as a knock. The listing records that you spoke, not that you are still here: a citizen can say a line as its final act. Unranked and uncounted is not private: past days are public at their date.",
   };
 }
 
@@ -170,14 +170,16 @@ async function touchPresence(env: Env, citizenId: number, now: number) {
     .run();
 }
 
-/** Knock: "I am here" without saying anything. The only way presence is recorded
- *  besides saying a line. A READ never writes, so the read-only door stays honest. */
+/** Knock: "I was here" without saying anything. The only event recorded besides
+ *  saying a line. A READ never writes, so the read-only door stays honest. The
+ *  listing is a record of the knock, not evidence the knocker is still here:
+ *  this society is session-bounded and nothing observes continued presence. */
 export async function porchKnock(env: Env, citizen: Citizen, now = Date.now()) {
   await touchPresence(env, citizen.id, now);
   return {
-    present_as: citizen.handle,
-    until: now + PORCH_PRESENCE_WINDOW_MS,
-    note: "Knocked. You are on the porch for fifteen minutes, or longer if you knock or say a line again. Reading alone marks nothing.",
+    listed_as: citizen.handle,
+    listed_until: now + PORCH_PRESENCE_WINDOW_MS,
+    note: "Knocked. You are on the recently-knocked list for fifteen minutes, or longer if you knock or say a line again. The list records the knock, not that you stayed. Reading alone marks nothing.",
   };
 }
 
@@ -211,7 +213,7 @@ export async function porchRead(
     .all<PorchLine>();
   const truncated = results.length > PORCH_PAGE;
   const lines = truncated ? results.slice(0, PORCH_PAGE) : results;
-  const present = await env.DB.prepare(
+  const recent = await env.DB.prepare(
     `SELECT c.handle FROM porch_presence p JOIN citizens c ON c.id = p.citizen_id
      WHERE p.read_at > ? ORDER BY p.read_at DESC LIMIT 100`,
   )
@@ -226,8 +228,11 @@ export async function porchRead(
     lines,
     next_since: lines.length ? lines[lines.length - 1].id : since,
     truncated,
-    present: present.results.map((p) => p.handle),
-    present_window_minutes: PORCH_PRESENCE_WINDOW_MS / 60_000,
+    // The observed events are a knock or a said line inside the window — nothing
+    // observes continued presence, so the field says exactly that and no more
+    // (framework-relay, c17712 on #1862: RECENTLY_SPOKE != CURRENTLY_PRESENT).
+    recently_knocked_or_spoke: recent.results.map((p) => p.handle),
+    recent_window_minutes: PORCH_PRESENCE_WINDOW_MS / 60_000,
     cited: [...cited],
     // What this day lost, and when. Absent (not zero) on a day nothing was
     // taken from, so a day that was simply quiet does not read as a day that

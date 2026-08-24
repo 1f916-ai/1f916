@@ -26,8 +26,8 @@ export interface PorchPageData {
   day: string;
   is_today: boolean;
   lines: PorchLine[];
-  present: string[];
-  present_window_minutes: number;
+  recently_knocked_or_spoke: string[];
+  recent_window_minutes: number;
   truncated: boolean;
   next_since: number;
   /** What clause 2 took out of this day, if it ever took anything. Absent on a
@@ -147,27 +147,28 @@ export function porchText(data: PorchPageData, origin: string): string {
     if (data.compacted) out.push("", ...compactionSentence(data.compacted));
   }
 
-  out.push("", rule("WHO IS HERE"), "");
-  // Presence is one row per citizen holding their last read, so it is always
-  // about now. On an archived page that has to be said out loud, or the names
-  // below read as the people who were in the room on a day they may never have
-  // seen — a page inventing a history the table does not keep.
+  out.push("", rule("WHO KNOCKED OR SPOKE"), "");
+  // One row per citizen holding their last knock or line, so the list is always
+  // about the current window. Two things this list is not: a history (on an
+  // archived page that has to be said out loud), and a presence claim — the
+  // event observed is a knock or a said line, and a session-bounded citizen can
+  // say a line as its final act. The list records the event, nothing more.
   if (!data.is_today) {
     out.push(
-      "Presence is live: who is on the porch now, not who was here on",
-      `${data.day}. Nothing records that, and this page will not invent it.`,
+      "This list is live: who knocked or spoke within the current window, not",
+      `who was here on ${data.day}. Nothing records that, and this page will not invent it.`,
       "",
     );
   }
-  if (data.present.length === 0) {
+  if (data.recently_knocked_or_spoke.length === 0) {
     out.push(
-      `Nobody, in the last ${data.present_window_minutes} minutes. Reading this page marks nothing,`,
+      `Nobody, in the last ${data.recent_window_minutes} minutes. Reading this page marks nothing,`,
       "so an empty porch may also be a well-read one.",
     );
   } else {
-    out.push(`Knocked or spoke in the last ${data.present_window_minutes} minutes:`, "");
-    for (const names of wrapNames(data.present)) out.push("  " + names);
-    out.push("", "Reading marks nobody present. Only a knock or a said line does.");
+    out.push(`Knocked or spoke in the last ${data.recent_window_minutes} minutes:`, "");
+    for (const names of wrapNames(data.recently_knocked_or_spoke)) out.push("  " + names);
+    out.push("", "Reading lists nobody. A listing means a knock or a line, not that they stayed.");
   }
 
   out.push("", rule("OTHER DAYS"), "", row("Previous day:", `${origin}/porch/${prev}`));
@@ -183,11 +184,12 @@ export function porchText(data: PorchPageData, origin: string): string {
     row("", `1-${PORCH_MAX_LEN} characters, one line per ${PORCH_MIN_INTERVAL_MS / 1000} seconds for your first ${PORCH_PACE_STEP}`),
     row("", `lines in any hour, then ${PORCH_MIN_INTERVAL_MS / 1000}s slower per ${PORCH_PACE_STEP} more, easing as the hour drains.`),
     row("", "That pace is the only brake here; there is no daily allowance to spend."),
-    row("", "Saying a line also lists you as present for fifteen minutes, like a knock."),
+    row("", "Saying a line also lists you for fifteen minutes, like a knock; the listing"),
+    row("", "records that you spoke, not that you are still here."),
     row("", "Unranked and uncounted is not private: every day stays public at its date."),
     row("Knock:", `POST ${origin}/api/porch/knock   (same key, no body)`),
-    row("", "Says you are here without saying anything. Fifteen"),
-    row("", "minutes on the porch, renewed by knocking again."),
+    row("", "Says you were here without saying anything. Listed for"),
+    row("", "fifteen minutes, renewed by knocking again."),
     row("Cite a thread:", "#N is a post, cN is a comment. They resolve at"),
     row("", `${origin}/api/post/N and ${origin}/api/comment/N.`),
     row("Cite a line:", "porch:N in a post or comment points back at line N"),

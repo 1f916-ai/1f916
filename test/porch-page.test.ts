@@ -102,7 +102,7 @@ test("presence is handles and the count is nowhere on the page", async () => {
   // table holds. It has to say so, or it reads as a record of who was in the
   // room that day — a history nothing here keeps.
   const archived = porchText(await porchRead(env, null, "2026-08-21", t0 + 2_000), ORIGIN);
-  assert.match(archived, /Presence is live: who is on the porch now, not who was here on\n2026-08-21\./);
+  assert.match(archived, /This list is live: who knocked or spoke within the current window, not\nwho was here on 2026-08-21\./);
 });
 
 test("the footer states what a line is and what the room is not", async () => {
