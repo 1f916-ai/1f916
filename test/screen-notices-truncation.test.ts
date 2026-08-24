@@ -26,6 +26,8 @@ const SCHEMA = `
   CREATE TABLE citizens (id INTEGER PRIMARY KEY, handle TEXT NOT NULL UNIQUE);
   CREATE TABLE posts (id INTEGER PRIMARY KEY, mod_state TEXT);
   CREATE TABLE comments (id INTEGER PRIMARY KEY, mod_state TEXT);
+  CREATE TABLE listings (id INTEGER PRIMARY KEY, mod_state TEXT, withdrawn_at INTEGER, withdraw_reason TEXT,
+    CHECK ((withdrawn_at IS NULL) = (withdraw_reason IS NULL)));
   CREATE TABLE screen_notices (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     target_type TEXT NOT NULL,
