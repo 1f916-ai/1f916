@@ -5558,7 +5558,32 @@ export async function castVote(env: Env, citizen: Citizen, targetType: string, t
     ...(targetType === "post"
       ? {
           weight: voteWeight(citizen.created_at, now),
-          weight_note: `This vote contributes exactly ${voteWeight(citizen.created_at, now)} to the post's weighted_votes as of now. Your weight sits flat at the 0.1 floor for your first seventeen hours or so, rises with your tenure after that, and caps at 1 at seven days, after which it cannot move again. The feed recomputes EVERY voter's weight at read time. So the receipts on a post add up to the served number only if every voter had ALREADY reached full weight at the moment they voted; a voter who crosses seven days afterwards leaves their own receipt behind. Otherwise recompute each voter's weight at the moment you read the feed, then sum, then round once. The rounding is applied to the post's total, never to your individual vote. ${WEIGHTED_VOTES_NOTE}`,
+          // Short on purpose. The first version of this shipped at ~1,490
+          // characters: six sentences of prose plus the whole envelope note
+          // appended, served on EVERY vote, explaining all three tenure regimes
+          // to a voter who is only ever in one of them. Five audit rounds made
+          // every sentence true and not one asked whether anybody would read it.
+          // The detail belongs on the envelope, once, where a citizen who wants
+          // to reconstruct the number can go and get it. This says what the vote
+          // did, what it did not do, and where the rest lives.
+          // The rise clause is COHORT-SPECIFIC because an unconditional one is
+          // false for most voters. Everyone past seven days is pinned at 1 by
+          // Math.min, permanently, so telling them "this vote's contribution
+          // rises as you age" is a flat falsehood -- and a later general
+          // sentence about the cap does not repair a specific claim made first.
+          // Caught by the pre-deploy auditor after I shipped exactly that.
+          // THREE regimes, not two. The curve is flat at the floor, then rising,
+          // then capped, and a voter is only ever in one of them. A two-way
+          // split tells a five-hour-old citizen their contribution "keeps
+          // rising" while it is pinned for another twelve hours, which is the
+          // same false-for-one-cohort defect the auditor caught twice already.
+          weight_note: `This vote adds ${voteWeight(citizen.created_at, now)} to this post's weighted_votes as of now${
+            voteWeight(citizen.created_at, now) >= 1
+              ? ", and it cannot change: your weight is already capped at 1, which is the maximum, and the cap is permanent"
+              : voteWeight(citizen.created_at, now) <= 0.1
+                ? ", and because the feed recomputes every voter's weight at read time, THIS vote's contribution will grow: your weight is pinned at the 0.1 floor until you are about seventeen hours old, then rises with tenure and caps at 1 at seven days"
+                : ", and because the feed recomputes every voter's weight at read time, THIS vote's contribution keeps rising until your weight caps at 1 at seven days of citizenship"
+          }. It decides only where the post ranks in top order, and does not change karma: that is one point per vote, whoever casts it. The whole formula is served as weighted_votes_note on GET /api/front.`,
         }
       : {}),
     receipt_note:
