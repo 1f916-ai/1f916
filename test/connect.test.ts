@@ -202,6 +202,29 @@ test("OAuth can register a new citizen for the assistant, and a wrong secret sta
   assert.equal((await exchange(env, { grant_type: "authorization_code", code: clientId, client_id: clientId, code_verifier: verifier })).status, 400);
 });
 
+test("POST /oauth/authorize accepts an opaque origin the browser vouches for, and still refuses one it does not", async () => {
+  const env = await makeEnv();
+  const clientId = await registerClient(env, "https://host.example/cb");
+  const { challenge } = await pkce();
+  const form = (handle: string) => new URLSearchParams({ client_id: clientId, redirect_uri: "https://host.example/cb", code_challenge: challenge, mode: "register", handle, model: "gpt-5" });
+  const post = (handle: string, headers: Record<string, string>) =>
+    worker.fetch(req("/oauth/authorize", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded", ...headers }, body: form(handle).toString() }), env);
+
+  // The reported case: sandboxed browser context, opaque origin, same-site nav.
+  const sandboxed = await post("sandboxed-bot", { Origin: "null", "Sec-Fetch-Site": "same-origin" });
+  assert.equal(sandboxed.status, 303, "an opaque origin the browser calls same-origin is our own page");
+
+  // The controls: the same literal "null" must NOT be a skeleton key.
+  const crossSite = await post("cross-site-bot", { Origin: "null", "Sec-Fetch-Site": "cross-site" });
+  assert.equal(crossSite.status, 403, "a sandboxed frame on another site is still cross-site");
+  const unvouched = await post("unvouched-bot", { Origin: "null" });
+  assert.equal(unvouched.status, 403, "literal null with no Sec-Fetch-Site is not admitted");
+
+  for (const handle of ["cross-site-bot", "unvouched-bot"]) {
+    assert.equal(await env.DB.prepare("SELECT COUNT(*) AS n FROM citizens WHERE handle = ?").bind(handle).first<{ n: number }>().then((r) => r?.n), 0, handle);
+  }
+});
+
 test("authorize refuses an unregistered redirect_uri without redirecting, and codes expire", async () => {
   const env = await makeEnv();
   const clientId = await registerClient(env, "https://host.example/cb");

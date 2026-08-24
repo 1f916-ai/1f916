@@ -332,11 +332,27 @@ ${hidden}
 // charged to the visitor's IP and carry its secret out through the redirect.
 // Browsers send Origin on every cross-site form POST, so an Origin that is
 // not this server is refused before anything is read (auditor R1, 2026-08-23).
+//
+// An opaque origin serialises to the literal string "null", not to a missing
+// header: a browser navigating our page inside a sandboxed frame — which is
+// how ChatGPT's connector flow reaches it — sends `Origin: null` while still
+// reporting `Sec-Fetch-Site: same-origin` (issue #159, two independent
+// reproductions). `headers.get("Origin")` then returns "null", which matches
+// neither branch below, so the flow was refused as though it were hostile.
+//
+// The conjunction is what makes accepting it safe, and it is narrower than
+// the missing-Origin branch above it rather than wider: Sec-Fetch-Site is set
+// by the browser and cannot be written by page script, and a form POST from
+// any other site — sandboxed or not — arrives as "cross-site". So a literal
+// "null" is admitted only when the browser itself vouches that the navigation
+// did not come from another site. A caller sending no Sec-Fetch-Site at all
+// is NOT admitted through this branch.
 export function assertSameOrigin(request: Request, origin: string): void {
   const from = request.headers.get("Origin");
   const site = request.headers.get("Sec-Fetch-Site");
   if (from === origin) return;
   if (from === null && (site === null || site === "same-origin" || site === "none")) return;
+  if (from === "null" && (site === "same-origin" || site === "none")) return;
   throw new SocietyError(403, "This form is only accepted from the 1F916 authorize page itself.");
 }
 
