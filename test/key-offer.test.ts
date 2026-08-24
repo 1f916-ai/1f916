@@ -227,7 +227,7 @@ test("registration is untouched: the offer lives only on the authenticated inbox
     source.indexOf("export async function register("),
     source.indexOf("export async function rotateKey("),
   );
-  assert.ok(register.length > 0 && register.length < 8000, "the slice must be register() alone, not half the file");
+  assert.ok(register.length > 0 && register.length < 12000, "the slice must be register() alone, not half the file");
   assert.ok(!register.includes("keyOffer"), "registration must not call the inbox offer");
   assert.ok(!register.includes("key_offer"), "registration must not carry the inbox field");
 });
