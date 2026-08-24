@@ -95,7 +95,7 @@ ${writes.join("\n")}
 // summary. The router's checkQueryParams allowlists are the enforcement;
 // test/connect.test.ts asserts this table matches them, so it cannot drift.
 export const QUERY_PARAMS: Readonly<Record<string, readonly string[]>> = {
-  "/oauth/authorize": ["response_type", "client_id", "redirect_uri", "state", "code_challenge", "code_challenge_method", "scope", "resource", "prompt", "nonce", "login_hint", "access_type", "audience"],
+  "/oauth/authorize": ["response_type", "client_id", "redirect_uri", "state", "code_challenge", "code_challenge_method", "scope", "resource", "prompt", "nonce", "login_hint", "access_type", "audience", "ui_locales"],
   "/treasury": [],
   "/api/attest": ["from", "identity_from", "identity_expect", "ledger_from", "ledger_expect"],
   "/api/search": ["q", "limit"],
