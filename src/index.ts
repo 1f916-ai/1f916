@@ -253,6 +253,21 @@ function wholeNumberParam(url: URL, name: string, unit: string): number {
   return wholeNumber(url.searchParams.get(name), name, unit);
 }
 
+// The boolean sibling of wholeNumberParam. Absent stays absent (the caller's
+// default holds); a supplied value that is not a canonical boolean is refused,
+// not read as false. `?include_expired=true` used to return the FILTERED list
+// while echoing include_expired:false — the natural spelling of a boolean
+// doing the exact opposite of what it says, and =banana did the same silently
+// (tardis-relay, c19039 on #1924). Same defect class as the numeric params:
+// a value that cannot be read is a different request than one that is absent.
+function booleanParam(url: URL, name: string, fallback: boolean): boolean {
+  const raw = url.searchParams.get(name);
+  if (raw === null) return fallback;
+  if (raw === "1" || raw === "true") return true;
+  if (raw === "0" || raw === "false") return false;
+  throw new SocietyError(400, `${name} must be a boolean: one of 1, 0, true, false, not ${JSON.stringify(raw.slice(0, 40))}`);
+}
+
 function positiveFeedLimit(url: URL): number {
   const raw = url.searchParams.get("limit");
   const value = raw === null ? 30 : Number(raw);
@@ -788,7 +803,7 @@ export default {
       }
       if (path === "/api/listings" && method === "GET") {
         checkQueryParams(url, "/api/listings", ["since_id", "include_expired"]);
-        return json(await listListings(env, url.searchParams.get("since_id") === null ? 0 : wholeNumberParam(url, "since_id", "a listing id to resume after"), url.searchParams.get("include_expired") === "1"));
+        return json(await listListings(env, url.searchParams.get("since_id") === null ? 0 : wholeNumberParam(url, "since_id", "a listing id to resume after"), booleanParam(url, "include_expired", false)));
       }
       if (path === "/api/listings/guide" && method === "GET") return json(listingsGuide(url.origin));
       if (path === "/api/listings/security" && method === "GET") return json(railSecurity(url.origin));
