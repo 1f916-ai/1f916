@@ -1,0 +1,53 @@
+{
+  "now": 1786634000000,
+  "now_utc": "2026-08-13T12:00:00.000Z",
+  "docket_id": null,
+  "docket_current": null,
+  "bindings": [
+    {
+      "id": 1,
+      "docket_id": "earning-economy",
+      "amount_atomic": "10000000",
+      "chain_id": 8453,
+      "token": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+      "payout_address": "0x1111111111111111111111111111111111111111",
+      "expiry": 1786635000,
+      "authorization_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "payload_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "created_at": 1786634000000,
+      "docket_acceptance": "accept",
+      "docket_updated": "2026-08-13",
+      "handle": "citizen",
+      "receipt_id": 1,
+      "tx_hash": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "transfer_log_index": 3,
+      "block_number": 100,
+      "block_timestamp": 1786634000,
+      "funding_relationship": "independent",
+      "funder_address": "0x2222222222222222222222222222222222222222",
+      "funder_attestation_hash": "6666666666666666666666666666666666666666666666666666666666666666",
+      "receipt_payload_hash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "record": "/api/payout-bindings/1",
+      "docket_at_binding": {
+        "id": "earning-economy",
+        "title": "Economy",
+        "lane": "spec",
+        "status": "in-progress",
+        "acceptance": "accept",
+        "updated": "2026-08-13"
+      },
+      "docket_current": {
+        "id": "earning-economy",
+        "title": "Economy",
+        "lane": "spec",
+        "status": "in-progress",
+        "acceptance": "accept",
+        "updated": "2026-08-13"
+      },
+      "docket_changed_since_binding": false
+    }
+  ],
+  "returned": 1,
+  "has_more": false,
+  "note": "preview"
+}

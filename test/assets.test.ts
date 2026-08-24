@@ -39,6 +39,8 @@ import {
   SIGNATURES,
   type Holding,
   type Tier,
+  CHAINS,
+  type ChainName,
 } from "../src/assets.ts";
 import { selector } from "./keccak256.ts";
 
@@ -142,7 +144,15 @@ test("the share is applied, not assumed to be all of it", () => {
 
 // ---------- summary ----------
 
-const holding = (tier: Tier, location: "wallet" | "claimable", cents: number | null, notional = false): Holding => ({
+const holding = (
+  tier: Tier,
+  location: "wallet" | "claimable",
+  cents: number | null,
+  notional = false,
+  chain: ChainName = "base",
+): Holding => ({
+  chain,
+  chain_id: CHAINS[chain].id,
   asset: "X",
   address: "0x",
   tier,
@@ -205,6 +215,35 @@ test("no holdings is complete and zero, not incomplete", () => {
   assert.equal(s.complete, true);
   assert.equal(s.total_cents, 0);
   assert.deepEqual(s.by_tier.map((tier) => tier.cents), [0, 0, 0]);
+});
+
+// The empty array is the shape of TWO different facts: a portfolio with nothing
+// in it, and a read that came back with nothing. The test above pins the first.
+// This one pins the second, because for a week they were the same answer and
+// the second one published a confident $0.00 over a real balance.
+//
+// KILLING MUTATION: drop `readOk &&` from summarizeAssets and this goes red on
+// the first assertion, because holdings.every is vacuously true on [].
+test("a failed read is incomplete and nulls the totals, even with no holdings", () => {
+  const s = summarizeAssets([], false);
+  assert.equal(s.complete, false);
+  assert.equal(s.total_cents, null);
+  assert.equal(s.conservative_total_cents, null);
+  assert.deepEqual(s.by_tier.map((tier) => tier.cents), [null, null, null]);
+  assert.equal(s.by_location.wallet_cents, null);
+  assert.equal(s.by_location.claimable_cents, null);
+});
+
+// A failed read does not become complete by having priced holdings in it: a
+// partial read is still a read that did not finish, and summing what arrived
+// is exactly the under-reporting this file exists to refuse.
+//
+// KILLING MUTATION: same one. Without `readOk &&` this reports complete:true
+// and a total that omits whatever the failed leg would have added.
+test("a partial read does not pass as complete just because what arrived was priced", () => {
+  const s = summarizeAssets([holding(1, "wallet", 193_936)], false);
+  assert.equal(s.complete, false);
+  assert.equal(s.total_cents, null);
 });
 
 // ---------- the allowlist ----------
@@ -270,4 +309,31 @@ test("the claimable formula is the one the published verify string describes", (
 test("tier 3 is documented as notional, not as a price you could get", () => {
   assert.match(TIERS[3].note, /NOTIONAL/);
   assert.match(TIERS[1].note, /face value|peg/i);
+});
+
+
+// A treasury address exists on every EVM chain at once. Until 2026-08-21 this
+// rollup could only answer for Base, and $1,056 of NVDAB on BNB Chain was
+// invisible on a page calling itself the society's public books. by_chain is
+// derived from the holdings PRESENT, never from the CHAINS table, so a chain
+// the read could not reach is absent rather than reported at zero.
+test("by_chain splits the portfolio by ledger, and never invents a chain at zero", () => {
+  const s = summarizeAssets([
+    holding(1, "wallet", 218_873),
+    holding(2, "wallet", 1_452_763),
+    holding(2, "wallet", 105_684, false, "bnb"),
+  ]);
+  assert.deepEqual(
+    s.by_chain.map((c) => [c.chain, c.chain_id, c.cents]),
+    [
+      ["base", 8453, 1_671_636],
+      ["bnb", 56, 105_684],
+    ],
+  );
+  const baseOnly = summarizeAssets([holding(1, "wallet", 218_873)]);
+  assert.deepEqual(
+    baseOnly.by_chain.map((c) => c.chain),
+    ["base"],
+    "a chain with no holdings read must be ABSENT, not present at zero: zero is a claim",
+  );
 });

@@ -70,7 +70,7 @@ test("rows preserve claim PRs separately from explicit mainline delivery receipt
   }
 });
 
-test("the nine current delivery receipts pin GitHub merges apart from manual main landings", () => {
+test("the eleven current delivery receipts pin GitHub merges apart from manual main landings", () => {
   const delivered = provenance(ORIGIN).rows.filter((r) => r.delivery_pr !== null);
   assert.deepEqual(
     delivered
@@ -78,6 +78,11 @@ test("the nine current delivery receipts pin GitHub merges apart from manual mai
       .sort(([a], [b]) => String(a).localeCompare(String(b))),
     [
       ["byline-markup", 54, "9e44854cf04cf4cac034e125f54dad288f0e4c52", "rebased"],
+      // Added 2026-08-21. Two patches from four citizens collided on this row
+      // because the first claim was not transcribed into the docket's claim
+      // field, so the row read as unclaimed. Shipped the claimant's.
+      ["changes-walk-cost-invisible", 132, "bf5456d7129083e5da9395b04780924432f9cfa8", "github-merge"],
+      ["inbox-id-space-collision", 124, "f82fa4ca74fe0ae0c613cbb00df20b2dba67fbe7", "rebased"],
       ["interval-honesty", 55, "3d6071ae06981a6895d8db898f8e9bc2aa113abd", "rebased"],
       ["merge-provenance", 81, "31d4d2addc2608985de911f5cae9e5dce943658e", "github-merge"],
       ["pins-carry-no-reason", 111, "245c214cf70e7a3cf97585f27aea4fadd59d1ee7", "github-merge"],
@@ -92,10 +97,16 @@ test("the nine current delivery receipts pin GitHub merges apart from manual mai
     .filter((r) => r.delivery_method === method)
     .map((r) => r.delivery_pr)
     .sort((a, b) => a! - b!);
-  assert.deepEqual(byMethod("github-merge"), [59, 69, 81, 111]);
-  assert.deepEqual(byMethod("rebased"), [54, 55, 58, 68, 110]);
+  assert.deepEqual(byMethod("github-merge"), [59, 69, 81, 111, 132]);
+  assert.deepEqual(byMethod("rebased"), [54, 55, 58, 68, 110, 124]);
   for (const r of delivered) {
-    assert.match(r.delivery_commit!, /^[0-9a-f]{40}$/, `${r.id} must name the full mainline commit`);
+    // SHAPE ONLY, and the message used to say "must name the full mainline
+    // commit", which this assertion cannot check. That gap let a receipt ship
+    // naming a sha that existed only on a local branch for a still-open PR.
+    // The ancestry check lives in deploy.sh, which has the full history; CI
+    // checks out shallow and cannot do it. Do not widen this message again
+    // without widening the check.
+    assert.match(r.delivery_commit!, /^[0-9a-f]{40}$/, `${r.id} delivery_commit is not 40 hex chars (shape only; ancestry is checked at deploy time)`);
     assert.equal(r.joined, true, `${r.id} has delivery evidence but no public ask/claim join`);
   }
 });

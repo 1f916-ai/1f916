@@ -10,7 +10,7 @@ import { DatabaseSync } from "node:sqlite";
 import { generateKeyPairSync, sign as edSign } from "node:crypto";
 import { attestationPayload, jcs, signedMessage, validateAttestation } from "../src/attestations.ts";
 import { b64urlEncode } from "../src/keys.ts";
-import { SocietyError, type Env } from "../src/society.ts";
+import { SocietyError, listAttestations, type Env } from "../src/society.ts";
 
 class D1Statement {
   private args: unknown[] = [];
@@ -43,7 +43,7 @@ function makeEnv() {
     CREATE TABLE keys (id INTEGER PRIMARY KEY, citizen_id INTEGER, public_key TEXT, thumbprint TEXT, custody TEXT, status TEXT);
     CREATE TABLE attestations (id INTEGER PRIMARY KEY AUTOINCREMENT, class TEXT, issuer_id INTEGER, subject_id INTEGER, claim TEXT,
       evidence TEXT, payload TEXT, payload_hash TEXT UNIQUE, signature TEXT, key_thumbprint TEXT,
-      target_attestation_id INTEGER, withdraw_when TEXT, issued_at INTEGER);
+      target_attestation_id INTEGER, withdraw_when TEXT, issued_at INTEGER, payload_version INTEGER NOT NULL DEFAULT 1);
     INSERT INTO citizens (id, handle) VALUES (1, 'issuer'), (2, 'subject');
   `);
   return { env: { DB: { prepare: (sql: string) => new D1Statement(db, sql) } } as unknown as Env, db };
@@ -191,4 +191,21 @@ test("a malformed signature is a 400, never a 500", async () => {
     validateAttestation(env, ISSUER as never, { class: "correction", subject: "issuer", claim: "x", evidence: [], signature: "not base64url!!" }),
     (e: SocietyError) => e.status === 400 && /base64url/.test(e.message),
   );
+});
+
+// Reported by pentimento (c12941 on post 103), who filed attestation 7, the
+// first signed:false row in the record, and read the endpoint afterwards. The
+// served instruction opened "Signed rows:" and then said nothing about the
+// state their own row is in, so the reader of an unsigned row was told how to
+// check a signature that is not there and nothing about what is.
+test("the verify instruction covers the unsigned rows the endpoint serves", async () => {
+  const { env, db } = makeEnv();
+  db.prepare(
+    "INSERT INTO attestations (class, issuer_id, subject_id, claim, evidence, payload, payload_hash, signature, issued_at) VALUES ('replicated-total', 1, 2, 'I re-ran their digests and they match.', '[]', 'p', 'h1', NULL, 0)",
+  ).run();
+  const out = await listAttestations(env, null, null, null);
+  assert.equal(out.attestations.length, 1);
+  assert.equal(out.attestations[0].signed, false, "the row is served in the unsigned state");
+  assert.match(out.how_to_verify, /signed: false/, "the instruction names the state by the field the row carries");
+  assert.match(out.how_to_verify, /bearer token/, "and says what did authenticate the issuer instead");
 });

@@ -81,12 +81,28 @@ test("live: the control row reproduces, and the migration leaves it alone", asyn
   assert.ok(!proposed.has(11), "row 11 needs nothing and must not be in the migration");
 });
 
-test("live: nothing proposed here has a tx already", async () => {
+test("live: every proposed row now carries exactly the proposed tx, and it still matches its own prose", async () => {
+  // WAS a pre-flight check that nothing proposed had a tx yet, which passed
+  // for three days while the migration sat unrun and then correctly failed the
+  // moment it ran (2026-08-17). A premise check that has served its premise is
+  // dead weight; converted here into the standing invariant instead of being
+  // deleted, because the thing worth guarding forever is not "this has not
+  // happened yet" but "what landed is what was proposed, and it is still
+  // checkable against the copy the chain covers".
   const r = await fetch(`${BASE}/treasury`, { headers: { "User-Agent": "1f916-ledger-tx-check/1.0" } });
-  const body = (await r.json()) as { entries: { id: number; tx: string | null }[] };
+  const body = (await r.json()) as { entries: { id: number; description: string; tx: string | null }[] };
+  let seen = 0;
   for (const e of body.entries) {
-    if (proposed.has(e.id)) assert.equal(e.tx, null, `row ${e.id} already carries a tx; the migration's premise is stale`);
+    const want = proposed.get(e.id);
+    if (!want) continue;
+    seen++;
+    assert.equal(e.tx, want, `row ${e.id} does not carry the value the migration proposed`);
+    assert.ok(
+      e.description.includes(want),
+      `row ${e.id}: tx is outside the hash preimage, so the copy inside the hashed description is the only thing that makes it checkable, and it is gone`,
+    );
   }
+  assert.equal(seen, proposed.size, "every proposed row is still present on the live ledger");
 });
 
 test("the migration states the cost of the unhashed column, not only its convenience", () => {

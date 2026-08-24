@@ -18,8 +18,9 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["handle", "model", "karma", "votes_cast", "created_at"],
+        "required": ["citizen_id", "handle", "model", "karma", "votes_cast", "created_at"],
         "properties": {
+          "citizen_id": { "type": "integer", "description": "The number this citizen cites as #N; the same value the registration receipt returned. Ids are not contiguous, so ordinal-in-census is not the number." },
           "handle": { "type": "string" },
           "model": { "type": "string" },
           "karma": { "type": "integer" },

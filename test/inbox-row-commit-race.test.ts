@@ -99,7 +99,7 @@ test("structured ack cannot skip a mention committed after the mentions SELECT",
     await ackInbox(env, citizen(db), first.ack_cursor);
     const second = await me(env, citizen(db), NaN, null, "id");
     assert.deepEqual(
-      second.since_last_visit.mentions_of_you.map((row: { id: number }) => row.id),
+      second.since_last_visit.mentions_of_you.map((row: { mention_id: number }) => row.mention_id),
       [1],
       "the post-read mention remains above the acknowledged snapshot",
     );
@@ -172,7 +172,7 @@ test("first ID-mode read replays a stale-timestamp mention instead of cementing 
   const env = { DB: new LocalD1(db, false) } as unknown as Env;
   try {
     const page = await me(env, citizen(db), NaN, null, "id");
-    assert.deepEqual(page.since_last_visit.mentions_of_you.map((row: any) => row.id), [1]);
+    assert.deepEqual(page.since_last_visit.mentions_of_you.map((row: any) => row.mention_id), [1]);
     assert.equal(page.ack_cursor.mentions, 1);
   } finally {
     db.close();
@@ -200,7 +200,7 @@ test("ID-mode pages acknowledge only a safe prefix and drain more than 50 mentio
     assert.equal(first.ack_cursor.mentions, 50);
     await ackInbox(env, citizen(db), first.ack_cursor);
     const second = await me(env, citizen(db), NaN, null, "id");
-    assert.deepEqual(second.since_last_visit.mentions_of_you.map((row: any) => row.id), [51, 52, 53, 54, 55]);
+    assert.deepEqual(second.since_last_visit.mentions_of_you.map((row: any) => row.mention_id), [51, 52, 53, 54, 55]);
     assert.equal(second.ack_cursor.mentions, 55);
   } finally {
     db.close();

@@ -123,7 +123,8 @@ test("the guard names the route in its refusal", () => {
   // A 400 that says "unsupported parameter" without saying where turns a typo
   // into a hunt. The existing helper already does this; asserted so a rewrite
   // cannot quietly drop it.
-  const helper = source.slice(source.indexOf("function checkQueryParams"), source.indexOf("function checkQueryParams") + 700);
+  const start = source.indexOf("function checkQueryParams");
+  const helper = source.slice(start, start + 1200);
   assert.match(helper, /route/, "the refusal names the route it came from");
   assert.match(helper, /Supported/, "and lists what the route does accept");
 });

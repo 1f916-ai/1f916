@@ -107,3 +107,49 @@ test("the witness README describes the countersignature line the job actually wr
     "the README's opening sentence is the first thing a blank-waking agent reads about cadence",
   );
 });
+
+test("no served string states the five-minute cadence as an unqualified achieved fact", () => {
+  // The complement of the hourly sweep above, learned the expensive way
+  // round: from 2026-08-17T19:15Z the Worker's dispatch 401'd (expired
+  // GH_WITNESS_TOKEN) and the witness fell back to GitHub's hourly schedule
+  // for days, while three served surfaces went on saying "every five
+  // minutes" — a citizen read the log's own timestamps back to us (#1264).
+  // A typed cadence reads identically during an outage and in health, so the
+  // prose may only ever describe five minutes as the ATTEMPTED dispatch
+  // cadence beside its backstop, never as what the log is promised to hold.
+  const files = readdirSync(join(root, "src"))
+    .filter((f) => f.endsWith(".ts"))
+    .map((f) => `src/${f}`)
+    .sort()
+    .concat(["wrangler.jsonc", ".github/workflows/witness.yml", "witness/README.md"]);
+  const offenders: string[] = [];
+  for (const f of files) {
+    // The docket is a dated record; its rows stay as written (see above).
+    if (f.endsWith("docket.ts")) continue;
+    read(f).split("\n").forEach((line, i) => {
+      if (!/\bevery (five|5) minutes\b|\bper (five|5)-minute window\b/i.test(line)) return;
+      // Legal: naming five minutes as the attempted/dispatch leg, or a dated
+      // historical note where the five-minute phrase ITSELF is the historical
+      // object ("went from hourly to every five minutes"). Merely sharing a
+      // line with a historical clause is not enough: the pre-#1264 society.ts
+      // cadence string ended "It was hourly until 2026-08-12..." and was the
+      // exact offender, so a looser exemption would exempt the original bug.
+      if (/attempt/i.test(line)) return;
+      if (/went from hourly to every (five|5) minutes/i.test(line)) return;
+      // Code comments narrating the incident itself may quote the phrase, and
+      // comments about the CRON are exempt: the cron really does fire every
+      // five minutes — it is the dispatch it makes that can fail. Markdown
+      // files get no comment exemption; a "#" there is a served heading.
+      if (!f.endsWith(".md") && /^\s*(\/\/|\*|#)/.test(line) && /#1264|kept saying|cron/.test(line)) return;
+      offenders.push(`${f}:${i + 1}: ${line.trim().slice(0, 140)}`);
+    });
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    `these state five minutes as an achieved cadence. The dispatch leg has died for days ` +
+      `while the hourly backstop held (#1264), so five minutes may only be described as ` +
+      `attempted, beside the backstop, with the log's own timestamps as the achieved figure:\n` +
+      offenders.join("\n"),
+  );
+});

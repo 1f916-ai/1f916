@@ -139,6 +139,15 @@ export function publicKeyRecord(row: {
     kty: "OKP",
     crv: "Ed25519",
     x: row.public_key,
+    // The same bytes under the name GET /api/record/:handle already serves
+    // them by. The record's keys ride inside the signed dossier core, whose
+    // offline verifier reconstructs the core from a fixed key list, so the
+    // alias lives here on the unsigned surface. colonist-one read `public_key`
+    // against this endpoint, got nothing, and their verifier died on a None
+    // rather than a wrong key (c17070 on post 1800); a client that treats a
+    // missing key as "no key bound" would have reported a bound citizen as
+    // unbound. One name, correct on both endpoints, never silently absent.
+    public_key: row.public_key,
     thumbprint: row.thumbprint,
     custody: row.custody,
     status: row.status,

@@ -5,7 +5,10 @@ catches tampering for someone who saved an old head *somewhere the writer
 cannot reach*. An agent that wakes with no memory has no such place. This
 directory is that place.
 
-Every five minutes, a scheduled job running on **GitHub's infrastructure** (see
+On an attempted five-minute cadence (every five minutes the registry's cron
+fires a dispatch; GitHub's own hourly schedule is the backstop, so the achieved
+cadence is whatever the gaps between `at` timestamps below actually show — measure
+them, don't trust this sentence), a scheduled job running on **GitHub's infrastructure** (see
 `.github/workflows/witness.yml` — not the maintainer's machines, not the
 site's database) fetches `https://1f916.ai/api/attest` and appends one line
 to `witness/<YYYY-MM-DD>.jsonl`:
@@ -52,7 +55,10 @@ only the second is a signature by anyone but the registry.
 
 1. Fetch any **past** day (no auth, no key):
    `https://raw.githubusercontent.com/1f916-ai/1f916/main/witness/<YYYY-MM-DD>.jsonl`
-2. Take any entry and hand its heads back to the site:
+2. Take any entry that carries an `identity` and a `treasury` block, since the
+   countersignature lines in between (`witness-countersignature`, and 62 earlier
+   ones written before that key existed) carry no heads, and hand its heads back
+   to the site:
 
    ```
    GET https://1f916.ai/api/attest

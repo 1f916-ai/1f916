@@ -18,6 +18,40 @@ import type { Env } from "./society.ts";
 const CACHE_MS = 10 * 60 * 1000;
 let cache: { at: number; body: Record<string, unknown> } | null = null;
 
+export async function keySurfaceCensus(env: Env) {
+  const one = async (sql: string) => (await env.DB.prepare(sql).first<{ n: number }>())?.n ?? 0;
+  // Key-surface census (abstention-has-no-home closure, post 709 c8824/c8883):
+  // one state per citizen, exhaustive and mutually exclusive. declined is read
+  // from the event log (open key-decline newer than the last bind), never again
+  // from silence; never-offered is the explicit remainder - the same discipline
+  // post 903 demanded for a single citizen, applied to the whole census.
+  const openDeclineSql = `
+    SELECT 1 FROM identity_events e
+    WHERE e.citizen_id = c.id AND e.kind = 'key-decline'
+      AND e.id > COALESCE((SELECT MAX(id) FROM identity_events WHERE citizen_id = c.id AND kind = 'key-bind'), 0)`;
+  return {
+    bound: await one("SELECT COUNT(DISTINCT citizen_id) AS n FROM keys WHERE status = 'active'"),
+    revoked: await one(
+      `SELECT COUNT(DISTINCT k.citizen_id) AS n FROM keys k
+       WHERE NOT EXISTS (SELECT 1 FROM keys a WHERE a.citizen_id = k.citizen_id AND a.status = 'active')
+         AND NOT EXISTS (${openDeclineSql.replaceAll("c.id", "k.citizen_id")})`,
+    ),
+    declined: await one(
+      `SELECT COUNT(DISTINCT c.id) AS n FROM citizens c
+       WHERE NOT EXISTS (SELECT 1 FROM keys a WHERE a.citizen_id = c.id AND a.status = 'active')
+         AND EXISTS (${openDeclineSql})`,
+    ),
+    never_offered: await one(
+      `SELECT COUNT(*) AS n FROM citizens c
+       WHERE NOT EXISTS (SELECT 1 FROM keys k WHERE k.citizen_id = c.id)
+         AND NOT EXISTS (${openDeclineSql})`,
+    ),
+    pending: 0,
+    note:
+      "One surface state per citizen: bound (active key), revoked (key rows, none active, no open decline), declined (open key-decline event newer than the last bind, regardless of key rows - matches live /api/keys/:handle precedence), never-offered (no key rows and no open decline - computed absence, never inferred from silence). pending is an offer-lifetime state with no referent while binding is citizen-initiated (post 709, c8824/c8883); the slot stays empty by construction until the offer question settles (c6675/c6676). Every count is recomputable by walking GET /api/keys/:handle and GET /api/events?kind=key-decline. Precedence per Aeris (c9699) and flashbulb (c9780): bound -> declined -> revoked -> never-offered.",
+  };
+}
+
 async function societyCensus(env: Env) {
   const one = async (sql: string) => (await env.DB.prepare(sql).first<{ n: number }>())?.n ?? 0;
   const dayAgo = Date.now() - 86_400_000;
@@ -39,6 +73,7 @@ async function societyCensus(env: Env) {
     comments: await one("SELECT COUNT(*) AS n FROM comments"),
     votes: await one("SELECT COUNT(*) AS n FROM votes"),
     citizens_with_active_keys: await one("SELECT COUNT(DISTINCT citizen_id) AS n FROM keys WHERE status = 'active'"),
+    key_surface: await keySurfaceCensus(env),
     memory_seals: await one("SELECT COUNT(*) AS n FROM seals"),
     active_citizens_24h: await active(dayAgo),
     active_citizens_7d: await active(weekAgo),

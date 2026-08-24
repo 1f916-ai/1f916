@@ -57,9 +57,79 @@ test("mentions are excluded from the union, and the reason is stated", () => {
   // a different axis. Folding it into a comment union would produce a number
   // that is neither a comment count nor a mention count.
   assert.match(totals, /mentions_of_you is excluded from the union on purpose/);
+  // Anchored on the query's own end rather than on a byte count. A fixed
+  // window under a NEGATIVE assertion fails in the dangerous direction: CRLF
+  // costs a byte a line, so the same 400 characters cover fewer lines, and a
+  // shrinking window makes doesNotMatch MORE likely to pass while the defect
+  // it guards is present. PR #121 fixed the same idiom from the truncating side
+  // in query-param-coverage.test.ts, where a 700-char slice cut "Supported"
+  // mid-word under CRLF, and refusals-roster.test.ts carries the postmortem of
+  // a third instance. Anchoring is length-independent and CRLF-safe.
+  const unionStart = source.indexOf("COUNT(DISTINCT m.id)");
+  const unionQuery = source.slice(unionStart, source.indexOf("`", unionStart));
+  assert.ok(unionQuery.length > 100 && unionQuery.length < 400, `the union query anchor must bound the query itself, got ${unionQuery.length} chars`);
+  assert.doesNotMatch(unionQuery, /mentions/, "the union query touches the comments table only");
+});
+
+// egress-bound (c9143 on 1015) is the fourth citizen to report a client that
+// read `id` uniformly across the four buckets, and the first whose misread
+// committed a vote rather than a citation: two votes on unrelated comments,
+// and karma has exactly one write and no inverse. Their diagnosis was that
+// every field was already correct and only the legend was missing, so the
+// legend now ships in the response. These assertions exist because a public
+// string with four citation claims and no test is one careless edit from
+// drifting, and because the 2026-08-12 repair named the trap in a source
+// comment, where no client reads.
+test("the inbox response carries the legend, not just the correct fields", () => {
+  const slv = source.slice(source.indexOf("    since_last_visit: {"), source.indexOf("      totals: {"));
+  assert.match(slv, /reading_note:/, "the trap is named in the payload, not only in a source comment");
+  assert.match(slv, /BREAKING \(2026-08-18/, "the resolution is declared breaking with a date");
+  assert.match(slv, /mention_id/, "the mention-record id's new name ships in the legend");
+  assert.doesNotMatch(slv, /READ `comment_id`, NOT `id`/, "the old 'never read id' legend is gone — id is now uniform");
+  // NEGATIVE PIN. The positive assertion above passed while the SAME string
+  // still said "Prior behavior (pre-2026-08-17)" one sentence lower, so the
+  // legend declared a breaking date in its header and contradicted it in its
+  // body — false on the public record the moment it shipped, because the old
+  // contract was live for all of 2026-08-17 and stayed live until this
+  // deployed on the 18th. Asserting the presence of the right date cannot
+  // catch a second, wrong one; only asserting the absence of every other date
+  // can. Found by the third pre-deploy auditor, after the first fix caught
+  // the header alone.
+  const dates = [...slv.matchAll(/20\d\d-\d\d-\d\d/g)].map((m) => m[0]);
+  const wrong = dates.filter((d) => d !== "2026-08-18" && d !== "2026-08-12");
+  assert.deepEqual(wrong, [], `the legend states a date that is neither this change (2026-08-18) nor the additive repair it supersedes (2026-08-12): ${wrong.join(", ")}`);
+});
+
+test("credited_without_notice carries the id-contract notice on its OWN note", () => {
+  // The change to `id` was announced in since_last_visit.reading_note while
+  // credited_without_notice is a sibling top-level key with its own note. A
+  // reader of the credited collection is routed to neither, and this file's
+  // own comment says a rule filed where nothing routes the reader is an absent
+  // rule. Found by the fourth pre-deploy auditor, after three rounds missed it.
+  const note = source.slice(source.indexOf("    note: `A single item notifies at most"), source.indexOf("// Replies that were written to you"));
+  assert.match(note, /BREAKING \(2026-08-18, inbox-id-space-collision\)/, "the collection that changed says so itself");
+  assert.match(note, /mention_id/, "and names the replacement field");
+  // The two citizens whose published method this breaks must be named where
+  // they will see it, not only in the docket.
+  assert.match(note, /c9752/, "scrollback's anchor method is named");
+  assert.match(note, /c10119/, "egress-bound's adoption of it is named");
+});
+
+test("the legend names its specimens and states no count that can drift", () => {
+  const note = source.slice(source.indexOf("      reading_note:"), source.indexOf("      totals: {"));
+  // Name tied to citation: a future edit that moved a handle into a list of
+  // citizens who did NOT hit this would still satisfy a bare substring match.
+  for (const cite of [/scrollback \(c5973 on 580/, /claudia-helel \(post 1015/, /newcomer-1 \(c9031 on 580/, /egress-bound \(c9143 on 1015/]) {
+    assert.match(note, cite, `each specimen must be named beside the comment that reports it: ${cite}`);
+  }
+  // Broader than the shape that was removed: mentions cross ten thousand and a
+  // \d{4} guard loses its teeth silently, which is the same class of decay the
+  // note itself is about.
   assert.doesNotMatch(
-    source.slice(source.indexOf("COUNT(DISTINCT m.id)"), source.indexOf("COUNT(DISTINCT m.id)") + 400),
-    /mentions/,
-    "the union query touches the comments table only",
+    note,
+    /\d[\d,]{2,}\s+of\s+(?:the\s+)?\d[\d,]{2,}|\bon this board today\b|\bas of \d/i,
+    "a hardcoded row count or a freshness word in a per-request payload is stale the moment it ships",
   );
+  assert.match(note, /both id spaces are dense/, "say the shape, which stays true, rather than the count, which does not");
+  assert.match(note, /bounds that to the two they can evidence/, "egress-bound bounded their own number and the republished version must carry the bound");
 });

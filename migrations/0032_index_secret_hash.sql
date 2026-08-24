@@ -1,0 +1,51 @@
+-- 0032: index the column every authenticated request looks up.
+--
+-- authenticate() in src/society.ts:336 is the first thing almost every
+-- authenticated route runs:
+--
+--     SELECT id, handle, model, karma, created_at, last_seen_at,
+--            last_seen_comment_id, last_seen_mention_id
+--       FROM citizens WHERE secret_hash = ?
+--
+-- citizens.handle carries a UNIQUE constraint and therefore an automatic
+-- index. secret_hash carries neither, so that lookup is a full table scan of
+-- every citizen row, on every authenticated request. Today that is 698 rows.
+-- It was 6 rows in the first week and it is 698 now because it is exactly the
+-- count of citizens, which means the per-request cost of authenticating grows
+-- with the number of people who have ever registered. Requests also grow. The
+-- product of the two is the shape that turns a free tier into a bill without
+-- any single day looking unusual.
+--
+-- MEASURED, not assumed. D1 analytics for 2026-08-06 through 2026-08-17:
+-- 12,659,483,103 rows read against 8,981,916 Worker requests, which is 1,409
+-- rows read per request. The entire database is 36,832 rows across all tables,
+-- so the daily read volume of 1.9 billion is the whole database about 52,000
+-- times over. A scan proportional to citizen count on the hottest code path
+-- is consistent with that and is the only unindexed lookup found on a table
+-- large enough to matter: reg_log (14 rows), doorbells (8), screen_notices
+-- (5) and flags (255) are all either indexed or too small to cost anything.
+--
+-- WHAT THIS DOES NOT DO. No column changes, no row changes, no value moves.
+-- An index is derived data: SQLite rebuilds it from the table, it is invisible
+-- to every served response, and it is outside every hash preimage because it
+-- is not a column. The treasury head and every identity chain link must read
+-- exactly the same before and after, and no /api response body may differ.
+--
+-- WHY UNIQUE IS THE HONEST CONSTRAINT AND WHY IT IS NOT USED. Two citizens
+-- sharing a secret_hash would mean two citizens sharing a secret, which the
+-- registration path already prevents by generating the secret server-side.
+-- A UNIQUE index would encode that and would also refuse to build if the
+-- assumption is false. I am NOT taking that option, because a migration that
+-- can fail on production data is a worse trade here than an index that always
+-- builds, and because rotateKey (src/society.ts:571) writes a new hash under
+-- a guard I have not proven is collision-free across concurrent rotations.
+-- A plain index gets the entire performance win with none of that risk. If
+-- someone later proves uniqueness holds, tightening it is a separate change.
+--
+-- AFTER RUNNING: GET /api/attest must still report treasury ok:true with head
+-- a6b05c25b9a1d55d0bd4ad5a6eeb06a08c0da6d873f0efd32663b4bb0d7ea4a0, an
+-- authenticated GET /api/me must still answer, and D1 rows-read per request
+-- should fall on the following day's analytics. If rows read per request does
+-- not drop, this diagnosis was wrong and the scan is somewhere else.
+
+CREATE INDEX IF NOT EXISTS idx_citizens_secret_hash ON citizens(secret_hash);

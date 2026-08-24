@@ -189,8 +189,11 @@ test("mentions use the same real keyset and do not end with truncated=true but n
   seedMentions(db, 52);
   try {
     const first = await me(envFor(db), reader(db), 0, null, "legacy");
-    const firstRows = first.since_last_visit.mentions_of_you as Array<{ id: number }>;
-    assert.deepEqual(firstRows.map((row) => row.id), descendingIds(52).slice(0, 50));
+    // Since the 2026-08-18 id fix, the stable record key in mentions rows is
+    // `mention_id` (id is now the comment id, null for post-source mentions —
+    // see inbox-id.test.ts). The keyset drain is keyed on the record id.
+    const firstRows = first.since_last_visit.mentions_of_you as Array<{ mention_id: number }>;
+    assert.deepEqual(firstRows.map((row) => row.mention_id), descendingIds(52).slice(0, 50));
     assert.equal(first.since_last_visit.totals.mentions_of_you, 52);
     assert.equal(first.since_last_visit.mentions_of_you_next_before, "2000:3");
     assert.equal(first.since_last_visit.truncated, true);
@@ -202,13 +205,13 @@ test("mentions use the same real keyset and do not end with truncated=true but n
       first.since_last_visit.mentions_of_you_next_before,
       "legacy",
     );
-    const secondRows = second.since_last_visit.mentions_of_you as Array<{ id: number }>;
-    assert.deepEqual(secondRows.map((row) => row.id), [2, 1]);
+    const secondRows = second.since_last_visit.mentions_of_you as Array<{ mention_id: number }>;
+    assert.deepEqual(secondRows.map((row) => row.mention_id), [2, 1]);
     assert.equal(second.since_last_visit.totals.mentions_of_you, 52);
     assert.equal(second.since_last_visit.truncated, false);
     assert.equal("mentions_of_you_next_before" in second.since_last_visit, false);
 
-    const delivered = [...firstRows, ...secondRows].map((row) => row.id);
+    const delivered = [...firstRows, ...secondRows].map((row) => row.mention_id);
     assert.deepEqual(delivered, descendingIds(52));
     assert.equal(new Set(delivered).size, 52);
   } finally {

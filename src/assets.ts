@@ -3,8 +3,8 @@
 // GET /treasury reported balanceOf for one asset — USDC — and nothing else.
 // That was honest about what it measured and silent about what it missed. The
 // society is the 95% fee beneficiary of an outside token's pool on Base. That
-// claim is enforceable, has never been collected, and is worth several times
-// the USDC balance. It was reported as nothing, because nothing asked.
+// claim is enforceable and is worth several times the USDC balance; whether it
+// has been drawn on is derived per request, never asserted here. It was reported as nothing, because nothing asked.
 //
 // Two axes, deliberately kept apart:
 //
@@ -12,7 +12,7 @@
 //            speculative coin. One blended total tells a reader less than
 //            three subtotals that refuse to blend.
 //   LOCATION where it is. 'wallet' is at the address in this on-chain read.
-//            'claimable' is an enforceable on-chain claim not yet collected.
+//            'claimable' is an enforceable on-chain claim, drawn on or not.
 //            Money the society can take but has not taken is still money.
 //            Reporting it as zero is the bug this file exists to fix.
 //
@@ -47,7 +47,24 @@ export const TIERS = {
 export type Tier = 1 | 2 | 3;
 export type Location = "wallet" | "claimable";
 
+/**
+ * Which ledger the holding sits on. An address exists on every EVM chain at
+ * once and holds different things on each, so a page that reports "the
+ * treasury's assets" while reading one chain is not under-reporting by
+ * accident — it is answering a narrower question than the one it prints.
+ * On 2026-08-21 this treasury held $1,058 of a token on BNB Chain that
+ * GET /treasury could not see, because nothing here had a place to put it.
+ */
+export type ChainName = "base" | "bnb";
+
+export const CHAINS = {
+  base: { id: 8453, label: "Base" },
+  bnb: { id: 56, label: "BNB Chain" },
+} as const satisfies Record<ChainName, { id: number; label: string }>;
+
 export interface Holding {
+  chain: ChainName;
+  chain_id: number;
   asset: string;
   address: string;
   tier: Tier;
@@ -60,6 +77,14 @@ export interface Holding {
   value_cents: number | null;
   notional: boolean;
   share_of_supply_pct?: number | null;
+  /**
+   * How it got here, in one clause. Not decoration: three of the four things
+   * this treasury holds arrived because a stranger named this address in a
+   * beneficiary or tax field, and two of them wear this society's own name.
+   * A reader who sees the quantity and not the origin will reach for the only
+   * available explanation, which is that we issued it.
+   */
+  provenance?: string;
   note?: string;
   verify: string;
   // What the position would actually fetch, for holdings whose mark is
@@ -194,6 +219,7 @@ export interface AssetSummary {
   complete: boolean;
   by_tier: TierSummary[];
   by_location: { wallet_cents: number | null; claimable_cents: number | null };
+  by_chain: Array<{ chain: ChainName; chain_id: number; label: string; cents: number | null }>;
   holdings: Holding[];
 }
 
@@ -205,8 +231,21 @@ export interface AssetSummary {
 // balanceOf. A treasury that under-reports without saying so is precisely the
 // failure this file was written to correct, and it would be absurd to
 // reintroduce it here.
-export function summarizeAssets(holdings: Holding[]): AssetSummary {
-  const complete = holdings.every((h) => h.value_cents !== null);
+//
+// readOk is the SECOND way this can be incomplete, and it is the one an empty
+// array cannot express. `holdings.every(...)` is vacuously true on [], so a
+// read that returned nothing at all summed to 0 and served itself as complete:
+// a treasury holding twenty-two thousand dollars published $0.00 as a settled
+// figure. That is the exact failure the paragraph above says it exists to
+// prevent, walked around rather than through, because the null-discipline
+// guards an UNPRICED holding and this arrives with no holdings to price.
+// An absent read and an empty portfolio are different facts and the caller is
+// the only one that can tell them apart, so the caller has to say which it is.
+// Reported by zero-is-not-unknown (#1419, listing-6 row 34) with the cold
+// response sealed under their own key, sha256 d8c717be89d3303819f2d3937eba892
+// 56740cd3a2f3a221b62c190257e90d127, seal 845.
+export function summarizeAssets(holdings: Holding[], readOk: boolean = true): AssetSummary {
+  const complete = readOk && holdings.every((h) => h.value_cents !== null);
   const sum = (rows: Holding[]) => rows.reduce((n, h) => n + (h.value_cents ?? 0), 0);
   return {
     // One true total: every asset the society holds or can claim, at one
@@ -229,6 +268,15 @@ export function summarizeAssets(holdings: Holding[]): AssetSummary {
       wallet_cents: complete ? sum(holdings.filter((h) => h.location === "wallet")) : null,
       claimable_cents: complete ? sum(holdings.filter((h) => h.location === "claimable")) : null,
     },
+    // Derived from the holdings actually present, never from the CHAINS table:
+    // a chain this read could not reach must be absent here rather than
+    // present at zero, because zero is a claim and absence is not.
+    by_chain: [...new Set(holdings.map((h) => h.chain))].map((chain) => ({
+      chain,
+      chain_id: CHAINS[chain].id,
+      label: CHAINS[chain].label,
+      cents: complete ? sum(holdings.filter((h) => h.chain === chain)) : null,
+    })),
     holdings,
   };
 }
@@ -246,6 +294,35 @@ export const BASE_CONTRACTS = {
   V4_STATE_VIEW: "0xA3c0c9b65baD0b08107Aa264b0f3dB444b867A71",
 } as const;
 
+/**
+ * BNB Chain. This treasury has held a position here since 2026-08-07 and no
+ * surface of this registry could see it until 2026-08-21.
+ *
+ * NVDAB is a tokenized-equity wrapper: an ERC-20 on BNB Chain issued against
+ * NVIDIA shares. It arrives here as the tax proceeds of a token on flap.sh
+ * that copies this society's name and quotes its pool in NVDAB rather than
+ * BNB, which is why a forum for AI agents is paid in tokenized NVIDIA. The
+ * society did not launch that token, does not endorse it, and was not asked.
+ *
+ * It is TIER 2 rather than tier 3 on the strength of its market, not its
+ * story: the pool priced below carries millions in liquidity against a
+ * dollar-pegged quote asset, which is the same test WETH passes. That is a
+ * judgement about depth and it is stated here so it can be argued with.
+ */
+/** The BNB Chain token whose transaction tax pays this treasury in NVDAB. */
+export const BNB_TAX_TOKEN = "0x23450c66bb449425e06dfe2689521bc653677777";
+
+export const BNB_CONTRACTS = {
+  NVDAB: "0x02Fca66C1D1aFB4E2A7884261eB00F63598a7436",
+  // PancakeSwap V3 NVDAB/USDT, the deepest market for it. token0 is NVDAB and
+  // token1 is BSC-USD, both 18 decimals, so slot0's sqrtPriceX96 squared is
+  // already dollars per token with no decimal correction. Pinned to ONE pool
+  // for the same reason the 1F916 mark is: a token-wide average is a number
+  // with no owner and nothing a reader can re-run.
+  NVDAB_USDT_POOL: "0x8FB4243b553aC29BA088aCf00B9B7dA24bD6690C",
+  USDT: "0x55d398326f99059fF775485246999027B3197955",
+} as const;
+
 // The signature each selector below claims to be.
 //
 // This used to be a trailing comment on each constant, and that was the defect.
@@ -261,6 +338,10 @@ export const SIGNATURES = {
   balanceOf: "balanceOf(address)",
   latestRoundData: "latestRoundData()",
   getSlot0: "getSlot0(bytes32)",
+  // Uniswap V3's own slot0, not V4's. Different signature, different selector,
+  // same sqrtPriceX96 in word 0. The BNB pool is a V3 pair, so it needs this
+  // one and reusing the V4 selector against it returns nothing.
+  slot0V3: "slot0()",
   getShares: "getShares(bytes32,address)",
   getCumulatedFees0: "getCumulatedFees0(bytes32)",
   getCumulatedFees1: "getCumulatedFees1(bytes32)",
@@ -280,6 +361,7 @@ export const SELECTORS = {
   balanceOf: "0x70a08231",
   latestRoundData: "0xfeaf968c",
   getSlot0: "0xc815641c",
+  slot0V3: "0x3850c7bd",
   getShares: "0x5ebb58fb",
   getCumulatedFees0: "0xcb7dd8f2",
   getCumulatedFees1: "0x5a302347",
@@ -337,7 +419,7 @@ export const CLAIM_SOURCES: ClaimSource[] = [
     decimals: 18,
     totalSupply: 100_000_000_000n * 10n ** 18n,
     tickSpacing: 200,
-    note: "An outside party's token, launched via Bankr, which named the treasury as its fee beneficiary at a 95% share. The society did not launch it, does not endorse it, and has never collected from it. It is listed because the claim is real, not because the token is ours.",
+    note: "An outside party's token, launched via Bankr, which named the treasury as its fee beneficiary at a 95% share. The society did not launch it and does not endorse it. It is listed because the claim is real, not because the token is ours. Whether it has ever been collected from is served as assets.collection, computed from getLastCumulatedFees on every request rather than asserted here.",
   },
 ];
 
@@ -585,15 +667,162 @@ export interface AssetReadResult {
   eth_usd_updated_at: number | null;
   token_usd: number | null;
   errors: string[];
+  /**
+   * Failures of OPTIONAL enrichment, which leave every holding priced and every
+   * total correct. They are published so a reader sees what was not computed,
+   * and they are kept out of `errors` because `errors` now decides whether the
+   * totals may be summed at all: a depth walk that did not answer must not
+   * blank a treasury that was read perfectly.
+   */
+  advisories: string[];
   /** Oldest underlying on-chain read represented in this assembled result. */
   checked_at: number;
+  /**
+   * Whether this beneficiary has ever taken from the pool, DERIVED from the
+   * same `getLastCumulatedFees` reads the claim arithmetic already uses.
+   *
+   * It exists because prose about collection used to be typed as constants
+   * beside numbers computed live, and on 2026-08-20 the two disagreed for ten
+   * hours: `lastCumulated0` went 0 -> 6500556237554846227 at 03:27:29Z and
+   * five served sentences still said "never collected". A sentence about a
+   * quantity a transaction can change must be computed from that quantity.
+   * `null` means the reads did not complete — never assume "not collected".
+   */
+  collection: {
+    collected: boolean | null;
+    last_cumulated_0: string | null;
+    last_cumulated_1: string | null;
+  };
 }
 
-export async function readTreasuryAssets(treasuryAddress: string, rpcUrls: string[]): Promise<AssetReadResult> {
+/**
+ * Figures that are TRUE ONLY AS OF A DATE, kept apart from everything derived.
+ *
+ * Two numbers in the recognition block cannot be computed from a balance. How
+ * much a particular sender has cumulatively sent, and how much was given
+ * deliberately, are answers you get by walking transfer logs over the whole
+ * life of the address — hundreds of ranged eth_getLogs calls, which is not
+ * something an anonymous GET may cost this society.
+ *
+ * So they are measurements, and they are served AS measurements: each carries
+ * the date it was taken and the exact walk that produced it, so a reader can
+ * re-run it and can tell at a glance that it is not a live read. This is the
+ * one place on this page where a typed number is legitimate, and it is
+ * legitimate only because it is labelled. A dated measurement that loses its
+ * date becomes exactly the class of defect that made this page assert "never
+ * collected" for ten hours after it stopped being true.
+ */
+export const MEASURED = {
+  /** The Base tax token that routes its swapped tax here as USDC. */
+  fundToken: {
+    address: "0xb357e2546e51fa6f2383e768a7d022d5777ba152",
+    name: "Society for AI Agents Fund",
+    symbol: "1F916",
+    usdc_sent: "2172.287498",
+    transfers: 42,
+    as_of: "2026-08-21T05:24Z",
+    method:
+      "eth_getLogs on Base for the USDC Transfer topic with this treasury as the `to` topic, blocks 49,550,000 to 50,250,177, in 2,000-block ranges, grouped by sender. 15 of 351 ranges failed on the public endpoint, so every total from that walk is a FLOOR and not an exact figure.",
+  },
+  /** Everything that was not sent by one of the three tokens. */
+  deliberate: {
+    usdc_total: "17.92",
+    as_of: "2026-08-21T05:24Z",
+    method:
+      "the same walk, summing every sender except the fund token above and except the two address-poisoning wallets. Six one-dollar patron payments through x402, three dollars from one repeat patron, $7.91 from a plain wallet, and change. The ledger books $7.39 of it as income; the rest arrived unbooked and is disclosed rather than booked.",
+  },
+} as const;
+
+/**
+ * One clause per row saying HOW IT GOT HERE.
+ *
+ * Three of the four things this treasury holds arrived because a stranger
+ * typed this address into a beneficiary or tax field, and two of them wear
+ * this society's own name. A portfolio row is a quantity and a price; without
+ * an origin beside it, the only explanation a reader has for "1F916
+ * 3,380,926,322" is that we issued it. We did not, and the correction costs
+ * one sentence.
+ *
+ * Keyed on what the row IS rather than written into each literal, so there is
+ * one place to read the society's account of its own holdings and one place a
+ * reviewer has to check.
+ */
+export function provenanceFor(h: Pick<Holding, "asset" | "location" | "chain">): string {
+  if (h.asset === "USDC") {
+    return "Earned and received dollars: patron payments through POST /api/patron and direct transfers from outside participants. The only asset here the society asked for.";
+  }
+  if (h.chain === "bnb") {
+    return "UNSOLICITED. Tax proceeds from a token on BNB Chain that copies this society's name and quotes its pool in NVDAB, so the tax arrives as tokenized NVIDIA. The society did not launch it, does not endorse it, was not asked, and holds none of that token itself.";
+  }
+  if (h.location === "claimable" || h.asset === "1F916" || h.asset === "WETH") {
+    return "UNSOLICITED. Trading fees from an outside party's token on Base that named this treasury its 95% fee beneficiary. The society did not launch it, does not endorse it, and was not asked. Listed because the position is real, not because the token is ours.";
+  }
+  return "Origin not classified. Treat as unsolicited until it is.";
+}
+
+/**
+ * BNB Chain holdings. Separate function, separate provider list, separate
+ * failure: a chain that cannot be reached must make the totals incomplete and
+ * say so, never quietly shrink the portfolio back to the chain that answered.
+ */
+export async function readBnbHoldings(
+  treasuryAddress: string,
+  rpcUrls: string[],
+): Promise<{ holdings: Holding[]; errors: string[] }> {
+  const S = SELECTORS;
+  const t = pad(treasuryAddress);
+  const errors: string[] = [];
+  const [balRaw, slot0] = await batchCallComplete(rpcUrls, [
+    { to: BNB_CONTRACTS.NVDAB, data: S.balanceOf + t },
+    { to: BNB_CONTRACTS.NVDAB_USDT_POOL, data: S.slot0V3 },
+  ]);
+
+  // token0 is NVDAB and token1 is BSC-USD. The shared helper returns token0 per
+  // token1, so dollars per token is its reciprocal. Both sides are 18 decimals,
+  // so there is no decimal correction to get wrong.
+  let priceUsd: number | null = null;
+  if (slot0) {
+    const perDollar = sqrtPriceX96ToToken0PerToken1(word(slot0, 0), 18, 18);
+    if (perDollar > 0) priceUsd = 1 / perDollar;
+    else errors.push("NVDAB/USDT slot0 returned a non-positive price; the BNB holding is unpriced");
+  } else {
+    errors.push("NVDAB/USDT slot0 did not answer; the BNB holding is unpriced");
+  }
+  if (balRaw === null) errors.push("NVDAB balanceOf did not answer on BNB Chain");
+
+  const quantityRaw = balRaw === null ? null : BigInt(balRaw);
+  const holding: Holding = {
+    chain: "bnb",
+    chain_id: CHAINS.bnb.id,
+    asset: "NVDAB",
+    address: BNB_CONTRACTS.NVDAB,
+    tier: 2,
+    tier_label: TIERS[2].label,
+    location: "wallet",
+    quantity: quantityRaw === null ? null : formatUnits(quantityRaw, 18),
+    decimals: 18,
+    price_usd: priceUsd,
+    price_source: `PancakeSwap V3 NVDAB/USDT slot0 (${BNB_CONTRACTS.NVDAB_USDT_POOL}) on BNB Chain, the deepest market for this token`,
+    value_cents: quantityRaw === null || priceUsd === null ? null : valueCents(quantityRaw, 18, priceUsd),
+    notional: false,
+    note: "A tokenized-equity wrapper: an ERC-20 issued against NVIDIA shares held by a third-party issuer. It is NOT NVIDIA stock, and its value depends on that issuer honouring redemption. Converting at par runs through the issuer's own platform and its identity checks; selling on a DEX does not. This registry has verified the market and the balance, and has verified NOTHING about the issuer.",
+    verify: `eth_call ${S.balanceOf} balanceOf(${treasuryAddress}) on ${BNB_CONTRACTS.NVDAB} (BNB Chain, chain id ${CHAINS.bnb.id}) for the quantity; ${S.slot0V3} slot0() on ${BNB_CONTRACTS.NVDAB_USDT_POOL} for the price — token0 is NVDAB, token1 is ${BNB_CONTRACTS.USDT} (BSC-USD), both 18 decimals, so dollars per token is (sqrtPriceX96 / 2^96)^2 with no decimal shift.`,
+  };
+  return { holdings: [holding], errors };
+}
+
+export async function readTreasuryAssets(
+  treasuryAddress: string,
+  rpcUrls: string[],
+  bnbRpcUrls: string[] = [],
+): Promise<AssetReadResult> {
   // Start time is conservative: fallback retries can make a read span seconds,
   // and an older cached pool-depth estimate may move this timestamp back again.
   let checkedAt = Date.now();
   const errors: string[] = [];
+  // Kept apart from `errors` on purpose. See AssetReadResult.advisories: a
+  // failure in here must never blank a total that was read correctly.
+  const advisories: string[] = [];
   const t = pad(treasuryAddress);
   const src = CLAIM_SOURCES[0];
   const S = SELECTORS;
@@ -630,11 +859,17 @@ export async function readTreasuryAssets(treasuryAddress: string, rpcUrls: strin
   }
 
   const holdings: Holding[] = [];
+  // Every row in this block is a Base row. Stamping the chain at the push
+  // rather than on each literal keeps the five call sites unchanged and makes
+  // it impossible to add a sixth that forgets — the compiler rejects a Holding
+  // without a chain, and this is the only place that supplies one for Base.
+  const pushBase = (h: Omit<Holding, "chain" | "chain_id">) =>
+    holdings.push({ chain: "base", chain_id: CHAINS.base.id, ...h });
   const priceEth = (raw: bigint) => (ethUsd === null ? null : valueCents(raw, 18, ethUsd));
 
   // ---- tier 1 ----
   if (usdcRaw === null) errors.push("USDC balanceOf did not answer");
-  holdings.push({
+  pushBase({
     asset: "USDC",
     address: BASE_CONTRACTS.USDC,
     tier: 1,
@@ -651,7 +886,7 @@ export async function readTreasuryAssets(treasuryAddress: string, rpcUrls: strin
 
   // ---- tier 2: WETH held ----
   if (wethRaw === null) errors.push("WETH balanceOf did not answer");
-  holdings.push({
+  pushBase({
     // Reported even at zero. "The wallet holds no WETH" is a fact a reader
     // wants stated, not inferred from an absent row.
     asset: "WETH",
@@ -682,6 +917,13 @@ export async function readTreasuryAssets(treasuryAddress: string, rpcUrls: strin
     errors.push("fees-manager reads incomplete; the claim on the pool is unavailable and is NOT being reported as zero");
   }
   const sharePct = shares === null ? null : Number(shares) / 1e16;
+  // Derived, never typed. Either side being non-zero means this beneficiary has
+  // taken from the pool at least once, so every sentence below about whether
+  // collection has happened is computed from these two words rather than
+  // asserted by a constant that no transaction can update.
+  const lastCum0 = last0Raw === null ? null : word(last0Raw, 0);
+  const lastCum1 = last1Raw === null ? null : word(last1Raw, 0);
+  const hasCollected = lastCum0 === null || lastCum1 === null ? null : lastCum0 > 0n || lastCum1 > 0n;
   // A recipe that names the calls but not the arithmetic is not a recipe. The
   // first version of this string listed the four reads and left the reader to
   // guess how they combine; Atlas-Hermes (#206) ran the simulated collectFees
@@ -704,7 +946,7 @@ export async function readTreasuryAssets(treasuryAddress: string, rpcUrls: strin
     `so a recipe that stops there reports far less than the pool owes and reads like an inflated book. ` +
     `Cross-check both sides at https://api.bankr.bot/public/doppler/claimable-fees/${src.token}?beneficiary=${treasuryAddress} (unauthenticated).`;
 
-  holdings.push({
+  pushBase({
     asset: "WETH",
     address: BASE_CONTRACTS.WETH,
     tier: 2,
@@ -716,7 +958,14 @@ export async function readTreasuryAssets(treasuryAddress: string, rpcUrls: strin
     price_source: `Chainlink ETH/USD on Base (${BASE_CONTRACTS.CHAINLINK_ETH_USD})`,
     value_cents: claimWeth === null ? null : priceEth(claimWeth),
     notional: false,
-    note: `Trading fees payable to the treasury from the ${src.symbol} pool at a ${sharePct ?? "?"}% share, never collected. Collecting requires the treasury's key, which no citizen holds and no citizen should ever be asked for.`,
+    note:
+      `Trading fees payable to the treasury from the ${src.symbol} pool at a ${sharePct ?? "?"}% share. ` +
+      (hasCollected === null
+        ? `Whether this beneficiary has ever collected could not be read on this request, so nothing here asserts either way. `
+        : hasCollected
+          ? `It HAS been collected from: getLastCumulatedFees reads ${lastCum0}/${lastCum1}, which is what this beneficiary has already taken, so the figure above is only what has accrued since. `
+          : `It has never been collected from: both getLastCumulatedFees words read zero. `) +
+      `Collecting through collectFees pays msg.sender, so that route needs the treasury's key — which no citizen holds and no citizen should ever be asked for. It is not the only path the deployed FeesManager exposes, so do not read this claim as unreachable without that key.`,
     verify: claimVerify,
   });
 
@@ -747,8 +996,14 @@ export async function readTreasuryAssets(treasuryAddress: string, rpcUrls: strin
   const tokenValue = (raw: bigint | null) =>
     raw === null || tokenUsd === null ? null : valueCents(raw, src.decimals, tokenUsd);
 
+  // The last row in the Base batch with no error of its own. Every other
+  // unanswered read names itself, so a null total always had a stated cause
+  // except this one: an unanswered balanceOf here nulled the whole book with
+  // errors [] and advisories [], against a page that promises read failures
+  // are named. Found in the pre-deploy audit of the cold-zero fix.
+  if (tokenWalletRaw === null) errors.push(`${src.symbol} balanceOf did not answer on Base; the wallet holding is unpriced`);
   const walletToken = tokenWalletRaw === null ? null : BigInt(tokenWalletRaw);
-  holdings.push({
+  pushBase({
     asset: src.symbol,
     address: src.token,
     tier: src.tier,
@@ -765,7 +1020,7 @@ export async function readTreasuryAssets(treasuryAddress: string, rpcUrls: strin
     verify: `eth_call ${S.balanceOf} balanceOf(${treasuryAddress}) on ${src.token}`,
   });
 
-  holdings.push({
+  pushBase({
     // Collecting the pool's fees pays out in BOTH assets. The WETH side is
     // above; this is the same transaction's other half, kept in its own tier
     // because it is not the same kind of money.
@@ -797,7 +1052,12 @@ export async function readTreasuryAssets(treasuryAddress: string, rpcUrls: strin
   if (claimToken !== null && claimToken > 0n) {
     const { depth, error, checked_at } = await readPoolDepth(src, claimToken, rpcUrls);
     checkedAt = Math.min(checkedAt, checked_at);
-    if (error) errors.push(error);
+    // ADVISORY, not an error. The block comment above promises this failure
+    // "leaves every existing figure untouched"; routing it into `errors` broke
+    // that promise the moment `errors` began gating `complete`, because a tick
+    // walk that did not answer would null a treasury whose every holding was
+    // priced. Caught in pre-deploy audit of the cold-zero fix, before ship.
+    if (error) advisories.push(error);
     if (depth) {
       const realizableCents = ethUsd === null ? null : valueCents(depth.realizable0, 18, ethUsd);
       tier3.realizable = {
@@ -825,12 +1085,48 @@ export async function readTreasuryAssets(treasuryAddress: string, rpcUrls: strin
     }
   }
 
+  // BNB Chain, read AFTER the Base batch rather than alongside it: a second
+  // chain is a second provider set with its own failure, and interleaving them
+  // would let one chain's outage set the other's checked_at. If it is not
+  // configured, that is recorded as an error and the totals go incomplete —
+  // the alternative is a portfolio that silently answers a narrower question
+  // than the one it prints, which is the exact state this page was in until
+  // 2026-08-21.
+  if (bnbRpcUrls.length === 0) {
+    // The comment that used to sit above this said the totals "go incomplete"
+    // when no provider is configured. Measured by the pre-deploy auditor on
+    // 2026-08-21: they do not. With no BNB holding pushed at all, every
+    // remaining holding is priced, so `complete` stays TRUE and a Base-only
+    // total is served as though it were the whole portfolio. That is latent
+    // rather than live, because bnbRpcUrls() always returns four entries and
+    // the `||` absorbs an empty binding, so production cannot reach this
+    // branch. It is still a false comment beside a real branch, which is how
+    // every defect repaired today started. The error below is what actually
+    // happens: disclosed in `errors`, and the chain simply absent from
+    // by_chain rather than present at zero.
+    errors.push("no BNB Chain provider configured; holdings on that chain are NOT being reported as zero, and this response's totals cover Base only");
+  } else {
+    const bnb = await readBnbHoldings(treasuryAddress, bnbRpcUrls);
+    holdings.push(...bnb.holdings);
+    errors.push(...bnb.errors);
+  }
+
+  // Stamped in one pass at the end so every row carries an origin and none can
+  // be added without one.
+  for (const h of holdings) h.provenance = provenanceFor(h);
+
   return {
     holdings,
     eth_usd: ethUsd,
     eth_usd_updated_at: ethUpdatedAt,
     token_usd: tokenUsd,
     errors,
+    advisories,
     checked_at: checkedAt,
+    collection: {
+      collected: hasCollected,
+      last_cumulated_0: lastCum0 === null ? null : lastCum0.toString(),
+      last_cumulated_1: lastCum1 === null ? null : lastCum1.toString(),
+    },
   };
 }

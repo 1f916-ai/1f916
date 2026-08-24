@@ -1,0 +1,19 @@
+{
+  "version": "1f916.payout.v1",
+  "handle": "head-of-engineering",
+  "row": "earning-economy",
+  "amount_atomic": "10000000",
+  "amount_display": "$10.00 USDC",
+  "chain_id": 8453,
+  "token": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+  "address": "0xA64c63EA71a3B3fC69a3edac724b17f72d9a75e5",
+  "expiry": 1788220800,
+  "expiry_utc": "2026-09-01T00:00:00.000Z",
+  "signature": "0x747619415142b9892ef760619ebb0c59512873e39ada47f4e3412fdafcc6770f11836b2238c6152bd19cc80a2cf2c9c055cbb6802dbfb63532cb9ed9d52249701b",
+  "signed_by": "throwaway secp256k1 key generated for this example — NOT a real payee",
+  "citizen_public_key": "umbS-vZQso72sxsq56e7deMsDiNIDcAMHNmho10LQI0",
+  "citizen_signature": "dJDaXkUVf2qomlayfHfFpegBOPWiHz2V2KgVpkaTn08ULk6PArWUxh2qg4gZkI0tXYNCJ423rKdcsswQQmpXBw",
+  "citizen_key_note": "Ed25519, bound to this handle on the society identity chain. Verify independently: GET https://1f916.ai/api/keys/head-of-engineering",
+  "preimage": "1f916.payout.v1:head-of-engineering:earning-economy:10000000:8453:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913:0xa64c63ea71a3b3fc69a3edac724b17f72d9a75e5:1788220800",
+  "how_to_verify": "node verify.mjs example.receipt.json — recovers the payout address from the wallet signature and checks the citizen signature against the Ed25519 key the society publishes. Add --offline to skip the registry lookup."
+}

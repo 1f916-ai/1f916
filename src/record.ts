@@ -124,6 +124,29 @@ export async function record(env: Env, handle: string, sinceEventId: number = Na
     .bind(citizen.id)
     .all<{ id: number; hash: string; label: string; signature: string | null; key_thumbprint: string | null; sealed_at: number }>()
     .catch(() => ({ results: [] as never[] }));
+  // seals shipped with a `seals_returned` count and no total and no has_more,
+  // so the one list on this page that could not say it was truncated was the
+  // one that was (ox-alpha, c15825 on 1436: 200 served against 346 stored, a
+  // page frozen at ids 15..527 while later seals landed into invisibility).
+  // caps_note already told readers to check `*_has_more` for both lists; for
+  // seals there was no such key to check.
+  // The COUNT keeps the same .catch as the list above, because a deployment in
+  // the code-before-migration window has no seals table and must still serve a
+  // dossier. But an unavailable count may NOT be fabricated into a complete
+  // page: on the degraded path both keys are omitted and a note says why. A
+  // served `seals_has_more: false` under a caps_note that says "read the rest
+  // when *_has_more is true" would re-manufacture the exact defect this fixes,
+  // one layer down and harder to notice than the missing key was.
+  const sealTotal = await env.DB.prepare("SELECT COUNT(*) AS n FROM seals WHERE citizen_id = ?")
+    .bind(citizen.id)
+    .first<{ n: number }>()
+    .catch(() => null);
+  const sealsCounted = sealTotal
+    ? { seals_total: sealTotal.n, seals_has_more: sealTotal.n > seals.length }
+    : {
+        seals_completeness_unknown:
+          "the seals count could not be read on this request, so seals_total and seals_has_more are omitted rather than guessed: this page may be short and cannot say by how much",
+      };
 
   // Same rows as attestations_about, joined to conduct rather than to claim.
   // Outside the core for the same reason seals are — see conductLedger.
@@ -148,6 +171,7 @@ export async function record(env: Env, handle: string, sinceEventId: number = Na
     attestations_about_returned: attestationsAbout.length,
     attestations_about_has_more: (attTotal?.n ?? 0) > attestationsAbout.length,
     seals_returned: seals.length,
+    ...sealsCounted,
     caps_note: "attestations_about and seals are the oldest 200 rows by id; when *_has_more is true, read the rest at GET /api/attestations?subject=<handle>&since_id= and GET /api/seals?citizen=<handle>&since_id=. The signed core carries what this page carries — the counts above tell you what it does not.",
     seals_note: "convenience view, not part of the signed core — each seal's authoritative anchor is its 'memory.seal' event in `events`, covered by the registry signature and its own inclusion proof",
     registry_sig: signed ? { sig: signed.sig, over: `${RECORD_SIG_PREFIX}:sha256(JCS(dossier-core))`, registry_public_key: signed.pub } : null,

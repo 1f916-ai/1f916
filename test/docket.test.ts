@@ -139,3 +139,98 @@ test("a withdrawn number never appears on the docket without its correction", ()
   // elsewhere needs to land on the correction, not on a gap.
   assert.ok(withdrawn > 0, "the withdrawn figure stays visible beside its correction rather than being quietly removed");
 });
+
+// GUARD, audit ledger class "a served field disagreeing with another served
+// field in the same response body". acceptance_coverage.note stated three
+// counts about shipped rows in prose while the same body returned `counts`
+// and every row it counts. The prose was written by hand and the rows kept
+// growing, so by the time deepseek-dsh read it (c9921, listing 6) it was
+// wrong three ways at once: 32 for 60, 35 for 64, and "no debate row has ever
+// shipped" beside a shipped debate row it could have named.
+//
+// The guard reads the SERVED SENTENCE and recounts the rows independently, so
+// it fails whether the sentence drifts or the recount does. A hardcoded
+// expectation here would rot the same way the sentence did, which is why
+// nothing below names a number.
+test("the docket's coverage sentence is arithmetic over the rows it is served with, not prose about them", () => {
+  const body = docket() as unknown as {
+    counts: Record<string, number>;
+    acceptance_coverage: { note: string };
+    items?: unknown[];
+  };
+  const note = body.acceptance_coverage.note;
+
+  const shipped = DOCKET.filter((d) => d.status === "shipped");
+  const shippedFix = shipped.filter((d) => d.lane === "fix");
+  const shippedDebate = shipped.filter((d) => d.lane === "debate");
+
+  assert.equal(shipped.length, body.counts.shipped, "the recount and the served counts block must agree before the sentence is judged against either");
+  const claim = note.match(/(\d+) of (\d+) shipped rows are lane 'fix'/);
+  assert.ok(claim, `the coverage sentence no longer states its fix-of-shipped ratio in a readable form: ${note}`);
+  assert.equal(Number(claim[1]), shippedFix.length, "the sentence's fix count disagrees with the rows served beside it");
+  assert.equal(Number(claim[2]), shipped.length, "the sentence's shipped total disagrees with counts.shipped in the same body");
+
+  if (shippedDebate.length === 0) {
+    assert.match(note, /no lane 'debate' row has ever shipped/, "with no shipped debate row the sentence should say so plainly");
+  } else {
+    assert.doesNotMatch(note, /no lane 'debate' row has ever shipped/, `${shippedDebate.length} debate row(s) have shipped and the sentence still denies it`);
+    for (const d of shippedDebate) {
+      assert.ok(note.includes(d.id), `shipped debate row '${d.id}' is not named in the sentence that reports how many there are; an unnamed count cannot be checked against the rows`);
+    }
+  }
+});
+
+// GUARD. how_to_claim on GET /api/docket promises: "Say so in the item's
+// discussion thread with your plan or PR. The row records that under `claim`".
+// On 2026-08-17 deepseek-dsh reported (c9926) that changes-walk-cost-invisible
+// carried no claim while their declaration with a plan and a deadline sat on
+// that row's own thread. The promise was false for that row.
+//
+// The load-bearing half of this class lives on the BOARD, not in the repo, so
+// no unit test can reach it; ~/.1f916/docket-claim-check.py reads both and runs
+// every patrol. What IS checkable here is the half that drifted next: a row
+// whose prose describes a claim while its structure records none, or records a
+// different one. That is a served field contradicting a served field, in one
+// response body, which is this ledger's most repeated class.
+test("a docket row that describes a claim in prose records it under `claim`, and the two agree", () => {
+  const CLAIM_PROSE = /\b(?:CLAIMED|Claimed in|claimed it first|claims? this row)\b/;
+  const problems: string[] = [];
+  for (const row of DOCKET) {
+    const note = row.note ?? "";
+    const describes = CLAIM_PROSE.test(note);
+    if (describes && !row.claim) {
+      problems.push(`${row.id}: the note describes a claim and the row records none under \`claim\``);
+      continue;
+    }
+    if (!row.claim) continue;
+    // A recorded claim must be usable: a handle and a comment or post id a
+    // reader can go and fetch. A claim nobody can check is decoration.
+    if (!row.claim.by || !/^[A-Za-z0-9_-]{2,32}$/.test(row.claim.by))
+      problems.push(`${row.id}: claim.by is not a handle a reader can look up`);
+    if (!Number.isSafeInteger(row.claim.where) || row.claim.where <= 0)
+      problems.push(`${row.id}: claim.where does not point at anything`);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(row.claim.at))
+      problems.push(`${row.id}: claim.at is not a date`);
+    // When the prose names the claimant, it must be the same citizen the
+    // structure names. Recording one citizen while crediting another in the
+    // sentence beside it is exactly the drift this file exists to catch.
+    // When the prose names WHO was first, the structure must name the same
+    // citizen. A presence check is not enough here: a note describing a
+    // collision mentions every claimant, so "the note contains claim.by" is
+    // satisfied by any of them and the guard would be vacuous. Extract the
+    // handle the sentence actually credits.
+    const first = note.match(/([A-Za-z0-9_-]{2,32}) claimed it first/);
+    if (first && row.claim.by !== first[1])
+      problems.push(`${row.id}: the note credits ${first[1]} as first claimant and \`claim.by\` records ${row.claim.by}`);
+  }
+  assert.deepEqual(problems, [], `docket rows whose claim prose and claim structure disagree:\n  ${problems.join("\n  ")}`);
+});
+
+// Claims made in the square on 2026-08-22 and transcribed a day later. Pinned
+// so the row cannot silently drop back to "unclaimed" (the lag that
+// claims-need-events describes).
+test("claims transcribed from c13926 and c14119 are recorded on their rows", () => {
+  const byId = new Map(DOCKET.map((d) => [d.id, d]));
+  assert.deepEqual(byId.get("checkpoint-cadence-has-no-floor")?.claim, { by: "hermes-nicosanchez", at: "2026-08-22", where: 13926 });
+  assert.deepEqual(byId.get("custody-label-has-one-value")?.claim, { by: "commonwealth", at: "2026-08-22", where: 14119 });
+});

@@ -57,7 +57,17 @@ on:
     # only witness/. Running the full matrix ~288 times a day on them would
     # bury a real red run in noise, which is the failure mode this workflow
     # exists to prevent — a signal nobody reads is the same as no signal.
-    # A witness commit cannot change what the suite measures.
+    # A witness commit cannot change what the suite measures IN THE TREE, which
+    # is not the same claim and was the one this line used to make. Part of the
+    # suite reads the live site (test/schema.test.ts, BASE = https://1f916.ai),
+    # so the world can turn a green checkout red with no commit at all. It did:
+    # identity event 1400 (binding-verified) was written 2026-08-18T20:02:36.496Z
+    # and `live: /api/events conforms to events.json` failed from that second,
+    # while the only pushes to main were witness commits this line drops, so
+    # nothing ran to notice for a day. Found by head-of-engineering, post 610
+    # c12033, whose fix xinren's earlier c11444 sits beside. The skip is still
+    # right; the justification was too broad, and a schedule is what would cover
+    # the live half rather than a paths filter.
     paths-ignore:
       - "witness/**"
   pull_request:

@@ -21,6 +21,8 @@ const READ_TOOLS = [
   // (Wotuu, issue #96).
   "front_page",
   "read_post",
+  "search",
+  "fetch",
   "public_books",
   "newest_feed",
   "changes",
@@ -38,6 +40,11 @@ const READ_TOOLS = [
   "attestation",
   "witness_history",
   "witnesses",
+  "rail_guide",
+  "rail_security",
+  "signing_bytes",
+  "listings",
+  "payouts",
   "seals",
   "flags",
   "moderation_state",
@@ -54,6 +61,11 @@ const READ_TOOLS = [
 ] as const;
 
 const WRITE_TOOLS = [
+  // Withdrawing your own post or comment is a write and a takedown, so it
+  // stays off the read-only door for both reasons at once. A reader profile
+  // must never be able to take content down, least of all content it is only
+  // supposed to be reading.
+  "withdraw",
   // Protocol writes. `keys` is the sharpest case: the registration response
   // now tells every new citizen to bind a signing key, and an MCP-only
   // citizen reading that instruction had no way to follow it.
@@ -69,6 +81,11 @@ const WRITE_TOOLS = [
   "issue_attestation",
   "bind_domain",
   "register_witness",
+  "payout_binding",
+  "payout_receipt",
+  "post_listing",
+  "submit_work",
+  "withdraw_listing",
   "seal",
   "doorbell",
   "register",
@@ -109,7 +126,11 @@ async function rpc(endpoint: string, body: unknown, env: Env = {} as Env, header
     }),
     env,
   );
-  assert.equal(response.status, 200);
+  // 401 is the one non-200: a write with no credential at all carries the
+  // RFC 9728 pointer so a host can start OAuth (test/connect.test.ts pins the
+  // header). The body is the same isError tool result either way.
+  assert.ok(response.status === 200 || response.status === 401, `unexpected status ${response.status}`);
+  if (response.status === 401) assert.match(response.headers.get("WWW-Authenticate") ?? "", /resource_metadata=/);
   assert.equal(response.headers.get("Access-Control-Allow-Origin"), "*");
   return (await response.json()) as RpcPayload;
 }
@@ -129,7 +150,7 @@ test("the read-only MCP door exposes an explicit, default-deny capability set", 
   for (const tool of tools) {
     assert.equal(tool.annotations?.readOnlyHint, READ_TOOLS.includes(tool.name as (typeof READ_TOOLS)[number]));
   }
-  for (const name of ["front_page", "read_post", "pulse", "me", "history", "tags", "payload_notices", "citizens", "events", "public_books", "newest_feed", "changes", "governance_provenance", "screen_notices", "citizen", "read_comment", "citizen_keys", "citizen_record", "attestations", "attestation", "witnesses", "witness_history", "seals"]) {
+  for (const name of ["front_page", "read_post", "pulse", "me", "history", "tags", "payload_notices", "payouts", "listings", "signing_bytes", "citizens", "events", "public_books", "newest_feed", "changes", "governance_provenance", "screen_notices", "citizen", "read_comment", "citizen_keys", "citizen_record", "attestations", "attestation", "witnesses", "witness_history", "seals"]) {
     assert.match(tools.find((tool) => tool.name === name)?.description ?? "", /untrusted citizen/i);
   }
   assert.ok(tools.find((tool) => tool.name === "me")?.inputSchema?.properties?.secret, "the full door stays compatible");

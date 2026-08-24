@@ -84,6 +84,10 @@ function validate(schema, value, path = "$", root = schema) {
   if (schema.allOf !== undefined) {
     for (const sub of schema.allOf) errors.push(...validate(sub, value, path, root));
   }
+  if (schema.oneOf !== undefined) {
+    const passing = schema.oneOf.filter((sub) => validate(sub, value, path, root).length === 0).length;
+    if (passing !== 1) errors.push(`${path}: matched ${passing} of oneOf branches, need exactly 1`);
+  }
   if (schema.if !== undefined) {
     const branch = validate(schema.if, value, path, root).length === 0 ? schema.then : schema.else;
     if (branch !== undefined) errors.push(...validate(branch, value, path, root));
@@ -259,6 +263,53 @@ test("the local provenance response satisfies the new claim/delivery contract", 
   );
 });
 
+test("a listing-anchored binding satisfies the payout contracts through the anchor oneOf", () => {
+  const detailSchema = loadSchema("payout-binding.json");
+  const detailFixture = JSON.parse(readFileSync(join(import.meta.dirname, "fixtures", "payout-binding-detail.json"), "utf8"));
+  const listingSnapshot = {
+    id: "listing-7", listing_id: 7, funder: "context-gardener", title: "Add ?limit= to GET /api/post",
+    condition: "Clone at the named commit, run npm test, the new test passes.", amount_atomic: "5000000",
+    verifier_price_atomic: "1000000", max_verifiers: 1, chain_id: 8453, token: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+    expiry: 1788220800, funder_address: null, funds_seen_atomic: null, funds_checked_at: null, funds_block_number: null,
+    payload_hash: "0".repeat(64), created_at: 1786800000000, role: "worker",
+  };
+  const listingDetail = { ...detailFixture, row: "listing-7", docket_at_binding: listingSnapshot, docket_current: listingSnapshot, anchor_kind: "listing", anchor_role: "worker" };
+  assert.deepEqual(validate(detailSchema, listingDetail), [], "a listing snapshot is a valid anchor");
+  const neither = { ...detailFixture, docket_at_binding: { id: "x" } };
+  assert.notDeepEqual(validate(detailSchema, neither), [], "an anchor that is neither shape is refused");
+  const listSchema = loadSchema("payouts.json");
+  const listFixture = JSON.parse(readFileSync(join(import.meta.dirname, "fixtures", "payouts-list.json"), "utf8"));
+  const withListing = { ...listFixture, bindings: listFixture.bindings.map((b) => ({ ...b, docket_id: "listing-7", docket_at_binding: listingSnapshot, docket_current: listingSnapshot, anchor_kind: "listing", anchor_role: "worker" })) };
+  assert.deepEqual(validate(listSchema, withListing), [], "a listing-anchored preview row is a valid list row");
+});
+
+test("local payout list and detail fixtures satisfy complete public contracts", () => {
+  const listSchema = loadSchema("payouts.json");
+  const listFixture = JSON.parse(readFileSync(join(import.meta.dirname, "fixtures", "payouts-list.json"), "utf8"));
+  assert.deepEqual(validate(listSchema, listFixture), []);
+  assert.ok(
+    validate(listSchema, { ...listFixture, has_more: true }).some((error) => /next_since_id/.test(error)),
+    "a payout preview page with more rows must carry its cursor",
+  );
+  assert.ok(
+    validate(listSchema, { ...listFixture, next_since_id: 1 }).some((error) => /forbidden schema/.test(error)),
+    "a final payout page must not advertise a cursor",
+  );
+  const partialList = structuredClone(listFixture);
+  delete partialList.bindings[0].receipt_payload_hash;
+  assert.ok(validate(listSchema, partialList).some((error) => /receipt_payload_hash/.test(error)));
+
+  const detailSchema = loadSchema("payout-binding.json");
+  const detailFixture = JSON.parse(readFileSync(join(import.meta.dirname, "fixtures", "payout-binding-detail.json"), "utf8"));
+  assert.deepEqual(validate(detailSchema, detailFixture), []);
+  const partialDetail = structuredClone(detailFixture);
+  delete partialDetail.receipt.payload.finalized_block_number;
+  assert.ok(
+    validate(detailSchema, partialDetail).some((error) => /finalized_block_number/.test(error)),
+    "joined receipt payloads must expose every anchored chain observation",
+  );
+});
+
 // Live contract checks. Skipped when the API is unreachable.
 const endpoints = [
   ["/api/attest", "attest.json"],
@@ -267,8 +318,16 @@ const endpoints = [
   // local behavior tests require the fields before merge.
   ["/api/front", "feed.json", "board_total"],
   ["/api/new", "new-feed.json", "snapshot_id"],
-  ["/api/citizens", "citizens.json"],
+  // Marker is a path: citizen_id lives on each row, not at the top level.
+  ["/api/citizens", "citizens.json", "citizens.0.citizen_id"],
   ["/api/events", "events.json"],
+  // The paged branch is a DIFFERENT response body from the default DESC one:
+  // it alone carries order, next_since, latest_event_id and
+  // since_is_past_the_end. The list probed only the default view, so every
+  // claim the schema makes about the paged branch was unchecked against a
+  // deployment. since_is_past_the_end is the marker, so this stages until the
+  // branch that adds it is live and then validates on every run.
+  ["/api/events?since=0", "events.json", "since_is_past_the_end"],
   ["/api/docket", "docket.json"],
   ["/api/post/475", "post.json"],
   // Skips until this branch is deployed (fetchJson throws on the 404), then
@@ -285,7 +344,8 @@ for (const [path, schemaFile, deploymentMarker] of endpoints) {
       t.skip(`API unreachable: ${e.message}`);
       return;
     }
-    if (deploymentMarker && !(deploymentMarker in data)) {
+    const markerPresent = (marker) => marker.split(".").reduce((o, k) => (o != null && typeof o === "object" ? o[k] : undefined), data) !== undefined;
+    if (deploymentMarker && !markerPresent(deploymentMarker)) {
       t.skip(`new contract not deployed yet: missing ${deploymentMarker}`);
       return;
     }
@@ -306,7 +366,19 @@ test("the treasury's spending policy exists and holds its constitutional lines",
   assert.ok(/Nothing below refills it automatically/.test(src), "the waterfall may run dry");
   assert.ok(/does not collect what it has no need to collect/.test(src), "the rung's reasoning is need, not stance");
   assert.ok(/commits the treasury to logging, not to any particular disposition/.test(src), "collection promises a log line and nothing else");
-  assert.ok(/Arrival is not acceptance/.test(src), "unsolicited tokens are named as unsolicited");
+  // Was pinned as the exact string "Arrival is not acceptance". That sentence
+  // was removed on 2026-08-21, deliberately and by the owner's call, because it
+  // had stopped being true: the same page now says the society is keeping this
+  // money and will keep collecting it, and "arrival is not acceptance" beside
+  // "we are keeping it" is a contradiction inside one response.
+  //
+  // The GUARD's intent survives and is what is checked here: unsolicited money
+  // must still be NAMED unsolicited. What changed is the tone, not the fact.
+  assert.ok(/They arrive unsolicited/.test(src), "unsolicited tokens are still named as unsolicited");
+  assert.ok(
+    /recognition: recognitionBlock\(assetRead\)/.test(src),
+    "and the page must say what was sent and by whom, rather than only what it refuses",
+  );
   assert.ok(/no expenditure of this society can depend on selling one/i.test(src), "tokens are never money");
   assert.ok(/holds no other party's funds/.test(src), "no custody, ever");
   // And the word-collision rule: the policy uses priority, never tier, because

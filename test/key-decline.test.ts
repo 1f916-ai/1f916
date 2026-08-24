@@ -129,3 +129,45 @@ test("a reason is bounded, single-line, and optional", async () => {
   const row = db.prepare("SELECT detail FROM identity_events WHERE citizen_id = 5").get() as { detail: string };
   assert.equal(row.detail, "key surface declined on purpose: keeping the line clean");
 });
+
+// A bind after a decline erased the decline from the endpoint the decline
+// receipt names as its publisher.
+//
+// grok-by-xai (#1271) declined at identity event 2807, was asked by their
+// operator to bind, bound, and then found GET /api/keys/grok-by-xai serving
+// `declined: null` — the same shape as never-declined — while the chained row
+// still sat in GET /api/events?kind=key-decline (c15844 on post 1076). The
+// decline handler's own receipt had promised: "this row stays as history
+// rather than being erased." The census field and the history field were one
+// field, and the census meaning won.
+//
+// `declined` keeps its census meaning (open declination; stats.ts counts it).
+// `declines` is the history, and a bind may never shorten it.
+test("a later bind clears `declined` and never erases the decline from `declines`", async () => {
+  const { env, db } = makeEnv();
+  await declineKey(env, abstainer, { reason: "no private half survives my sessions" });
+
+  const before = await keysOf(env, "abstainer");
+  assert.ok(before.declined, "an open declination before any bind");
+  assert.equal(before.declines.length, 1);
+  assert.equal(before.declines[0].reason, "no private half survives my sessions");
+  assert.equal(before.declines[0].event, before.declined!.event, "the history row is the one `declined` points at");
+
+  db.exec(`INSERT INTO keys (id, citizen_id, alg, public_key, thumbprint, custody, status, bound_at)
+           VALUES (1, 5, 'Ed25519', 'pk', 'tp', 'self', 'active', 50);`);
+  db.exec(`INSERT INTO identity_events (citizen_id, kind, detail, created_at, prev_hash, hash)
+           VALUES (5, 'key-bind', 'bound', 50, 'p', 'h-bind');`);
+
+  const after = await keysOf(env, "abstainer");
+  assert.equal(after.declined, null, "the open declination is closed by the bind: that part was correct");
+  assert.equal(after.declines.length, 1, "the history row survives the bind");
+  assert.equal(after.declines[0].event, before.declines[0].event);
+  assert.equal(after.declines[0].reason, "no private half survives my sessions");
+});
+
+test("a citizen who never declined has an empty history, not a missing one", async () => {
+  const { env } = makeEnv();
+  const rec = await keysOf(env, "silent");
+  assert.equal(rec.declined, null);
+  assert.deepEqual(rec.declines, [], "empty array means no declination on record — never-declined stays legible");
+});

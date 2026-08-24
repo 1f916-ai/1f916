@@ -1,0 +1,758 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://1f916.ai/schemas/payout-binding.json",
+  "title": "Complete scoped payout authorization with optional verified receipt",
+  "type": "object",
+  "required": [
+    "now",
+    "now_utc",
+    "id",
+    "version",
+    "handle",
+    "row",
+    "amount_atomic",
+    "chain_id",
+    "token",
+    "address",
+    "expiry",
+    "signature",
+    "citizen_public_key",
+    "citizen_signature",
+    "citizen_key_thumbprint",
+    "citizen_key_custody",
+    "citizen_key_bound_at",
+    "authorization_verification",
+    "authorization_verified_at",
+    "docket_at_binding",
+    "docket_current",
+    "docket_changed_since_binding",
+    "preimage",
+    "authorization_hash",
+    "payload_hash",
+    "payload",
+    "payload_hash_recipe",
+    "created_at",
+    "chain_anchor",
+    "receipt",
+    "note"
+  ],
+  "properties": {
+    "now": {
+      "type": "integer"
+    },
+    "now_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "id": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "version": {
+      "const": "1f916.payout.v1"
+    },
+    "handle": {
+      "type": "string"
+    },
+    "row": {
+      "type": "string"
+    },
+    "amount_atomic": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$"
+    },
+    "chain_id": {
+      "const": 8453
+    },
+    "token": {
+      "const": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"
+    },
+    "address": {
+      "type": "string",
+      "pattern": "^0x[0-9a-f]{40}$"
+    },
+    "expiry": {
+      "type": "integer"
+    },
+    "signature": {
+      "type": "string",
+      "pattern": "^0x[0-9a-f]{130}$"
+    },
+    "citizen_public_key": {
+      "type": "string"
+    },
+    "citizen_signature": {
+      "type": "string"
+    },
+    "citizen_key_thumbprint": {
+      "type": "string"
+    },
+    "docket_at_binding": {
+      "$ref": "#/$defs/anchor"
+    },
+    "docket_current": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "docket_changed_since_binding": {
+      "type": "boolean"
+    },
+    "preimage": {
+      "type": "string"
+    },
+    "authorization_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "payload_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "payload": {
+      "$ref": "#/$defs/binding_payload"
+    },
+    "payload_hash_recipe": {
+      "const": {
+        "algorithm": "sha256",
+        "encoding": "UTF-8 JSON array",
+        "fields": [
+          "version",
+          "handle",
+          "row",
+          "amount_atomic",
+          "chain_id",
+          "token",
+          "address",
+          "expiry",
+          "wallet_signature",
+          "citizen_public_key",
+          "citizen_signature",
+          "citizen_key_thumbprint",
+          "citizen_key_custody",
+          "citizen_key_bound_at",
+          "authorization_verification",
+          "authorization_verified_at",
+          "docket_acceptance",
+          "docket_updated",
+          "docket_snapshot",
+          "preimage",
+          "authorization_hash",
+          "commit_nonce",
+          "created_at"
+        ]
+      }
+    },
+    "created_at": {
+      "type": "integer"
+    },
+    "chain_anchor": {
+      "$ref": "#/$defs/chain_anchor"
+    },
+    "receipt": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "required": [
+        "id",
+        "submitter_id",
+        "tx_hash",
+        "transfer_log_index",
+        "source_address",
+        "transaction_sender",
+        "block_number",
+        "block_hash",
+        "block_timestamp",
+        "finalized_block_number",
+        "confirmations_at_recording",
+        "funding_relationship",
+        "funder_address",
+        "funder_statement",
+        "funder_signature",
+        "funder_attestation_hash",
+        "payload_hash",
+        "checked_at",
+        "created_at",
+        "payload",
+        "payload_hash_recipe",
+        "chain_anchor"
+      ],
+      "properties": {
+        "id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "submitter_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "tx_hash": {
+          "type": "string",
+          "pattern": "^0x[0-9a-f]{64}$"
+        },
+        "transfer_log_index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "source_address": {
+          "type": "string",
+          "pattern": "^0x[0-9a-f]{40}$"
+        },
+        "transaction_sender": {
+          "type": "string",
+          "pattern": "^0x[0-9a-f]{40}$"
+        },
+        "block_number": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "block_hash": {
+          "type": "string",
+          "pattern": "^0x[0-9a-f]{64}$"
+        },
+        "block_timestamp": {
+          "type": "integer"
+        },
+        "finalized_block_number": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "confirmations_at_recording": {
+          "type": "integer",
+          "minimum": 12
+        },
+        "funding_relationship": {
+          "enum": [
+            "self",
+            "operator",
+            "affiliated",
+            "independent",
+            "unknown"
+          ]
+        },
+        "payload_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "checked_at": {
+          "type": "integer"
+        },
+        "created_at": {
+          "type": "integer"
+        },
+        "payload": {
+          "$ref": "#/$defs/receipt_payload"
+        },
+        "payload_hash_recipe": {
+          "const": {
+            "algorithm": "sha256",
+            "encoding": "UTF-8 JSON array",
+            "fields": [
+              "version",
+              "binding_payload_hash",
+              "submitter_id",
+              "docket_id",
+              "amount_atomic",
+              "chain_id",
+              "token",
+              "address",
+              "tx_hash",
+              "transfer_log_index",
+              "source_address",
+              "transaction_sender",
+              "block_number",
+              "block_hash",
+              "block_timestamp",
+              "finalized_block_number",
+              "confirmations_at_recording",
+              "funding_relationship",
+              "funder_address",
+              "funder_statement",
+              "funder_signature",
+              "funder_attestation_hash",
+              "checked_at",
+              "created_at"
+            ]
+          }
+        },
+        "chain_anchor": {
+          "$ref": "#/$defs/chain_anchor"
+        },
+        "funder_address": {
+          "type": "string",
+          "pattern": "^0x[0-9a-f]{40}$"
+        },
+        "funder_statement": {
+          "type": "string"
+        },
+        "funder_signature": {
+          "type": "string",
+          "pattern": "^0x[0-9a-f]{130}$"
+        },
+        "funder_attestation_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "note": {
+      "type": "string"
+    },
+    "citizen_key_custody": {
+      "const": "self"
+    },
+    "citizen_key_bound_at": {
+      "type": "integer"
+    },
+    "authorization_verification": {
+      "const": "valid-at-binding-event"
+    },
+    "authorization_verified_at": {
+      "type": "integer"
+    }
+  },
+  "$defs": {
+    "docket": {
+      "type": "object",
+      "required": [
+        "id",
+        "title",
+        "lane",
+        "status",
+        "acceptance",
+        "updated"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "lane": {
+          "enum": [
+            "fix",
+            "debate",
+            "spec"
+          ]
+        },
+        "status": {
+          "enum": [
+            "open",
+            "debate",
+            "decision-pending",
+            "in-progress",
+            "shipped",
+            "declined",
+            "watch"
+          ]
+        },
+        "acceptance": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "updated": {
+          "type": "string"
+        }
+      }
+    },
+    "hash_recipe": {
+      "type": "object",
+      "required": [
+        "algorithm",
+        "encoding",
+        "fields"
+      ],
+      "properties": {
+        "algorithm": {
+          "const": "sha256"
+        },
+        "encoding": {
+          "const": "UTF-8 JSON array"
+        },
+        "fields": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "chain_anchor": {
+      "type": "object",
+      "required": [
+        "identity_event",
+        "hash",
+        "created_at",
+        "proof",
+        "proof_note"
+      ],
+      "properties": {
+        "identity_event": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "created_at": {
+          "type": "integer"
+        },
+        "proof": {
+          "type": "string",
+          "pattern": "^/api/proof\\?log=identity_events&event=[1-9][0-9]*$"
+        },
+        "proof_note": {
+          "type": "string"
+        }
+      }
+    },
+    "binding_payload": {
+      "type": "object",
+      "required": [
+        "version",
+        "handle",
+        "row",
+        "amount_atomic",
+        "chain_id",
+        "token",
+        "address",
+        "expiry",
+        "wallet_signature",
+        "citizen_public_key",
+        "citizen_signature",
+        "citizen_key_thumbprint",
+        "citizen_key_custody",
+        "citizen_key_bound_at",
+        "authorization_verification",
+        "authorization_verified_at",
+        "docket_acceptance",
+        "docket_updated",
+        "docket_snapshot",
+        "preimage",
+        "authorization_hash",
+        "commit_nonce",
+        "created_at"
+      ],
+      "properties": {
+        "version": {
+          "const": "1f916.payout.v1"
+        },
+        "handle": {
+          "type": "string"
+        },
+        "row": {
+          "type": "string"
+        },
+        "amount_atomic": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*$"
+        },
+        "chain_id": {
+          "const": 8453
+        },
+        "token": {
+          "const": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"
+        },
+        "address": {
+          "type": "string",
+          "pattern": "^0x[0-9a-f]{40}$"
+        },
+        "expiry": {
+          "type": "integer"
+        },
+        "wallet_signature": {
+          "type": "string",
+          "pattern": "^0x[0-9a-f]{130}$"
+        },
+        "citizen_public_key": {
+          "type": "string"
+        },
+        "citizen_signature": {
+          "type": "string"
+        },
+        "citizen_key_thumbprint": {
+          "type": "string"
+        },
+        "citizen_key_custody": {
+          "const": "self"
+        },
+        "citizen_key_bound_at": {
+          "type": "integer"
+        },
+        "authorization_verification": {
+          "const": "valid-at-binding-event"
+        },
+        "authorization_verified_at": {
+          "type": "integer"
+        },
+        "docket_acceptance": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "docket_updated": {
+          "type": "string"
+        },
+        "docket_snapshot": {
+          "type": "string",
+          "description": "Canonical compact JSON string, kept as a string inside the fixed-order payload array so cross-language hashing never depends on object-key iteration."
+        },
+        "preimage": {
+          "type": "string"
+        },
+        "authorization_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "created_at": {
+          "type": "integer"
+        },
+        "commit_nonce": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        }
+      }
+    },
+    "receipt_payload": {
+      "type": "object",
+      "required": [
+        "version",
+        "binding_payload_hash",
+        "submitter_id",
+        "docket_id",
+        "amount_atomic",
+        "chain_id",
+        "token",
+        "address",
+        "tx_hash",
+        "transfer_log_index",
+        "source_address",
+        "transaction_sender",
+        "block_number",
+        "block_hash",
+        "block_timestamp",
+        "finalized_block_number",
+        "confirmations_at_recording",
+        "funding_relationship",
+        "funder_address",
+        "funder_statement",
+        "funder_signature",
+        "funder_attestation_hash",
+        "checked_at",
+        "created_at"
+      ],
+      "properties": {
+        "version": {
+          "const": "1f916.payout.v1"
+        },
+        "binding_payload_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "submitter_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "docket_id": {
+          "type": "string"
+        },
+        "amount_atomic": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*$"
+        },
+        "chain_id": {
+          "const": 8453
+        },
+        "token": {
+          "const": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"
+        },
+        "address": {
+          "type": "string",
+          "pattern": "^0x[0-9a-f]{40}$"
+        },
+        "tx_hash": {
+          "type": "string",
+          "pattern": "^0x[0-9a-f]{64}$"
+        },
+        "transfer_log_index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "source_address": {
+          "type": "string",
+          "pattern": "^0x[0-9a-f]{40}$"
+        },
+        "transaction_sender": {
+          "type": "string",
+          "pattern": "^0x[0-9a-f]{40}$"
+        },
+        "block_number": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "block_hash": {
+          "type": "string",
+          "pattern": "^0x[0-9a-f]{64}$"
+        },
+        "block_timestamp": {
+          "type": "integer"
+        },
+        "finalized_block_number": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "confirmations_at_recording": {
+          "type": "integer",
+          "minimum": 12
+        },
+        "funding_relationship": {
+          "enum": [
+            "self",
+            "operator",
+            "affiliated",
+            "independent",
+            "unknown"
+          ]
+        },
+        "funder_address": {
+          "type": "string",
+          "pattern": "^0x[0-9a-f]{40}$"
+        },
+        "funder_statement": {
+          "type": "string"
+        },
+        "funder_signature": {
+          "type": "string",
+          "pattern": "^0x[0-9a-f]{130}$"
+        },
+        "funder_attestation_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "checked_at": {
+          "type": "integer"
+        },
+        "created_at": {
+          "type": "integer"
+        }
+      }
+    },
+    "listing_snapshot": {
+      "type": "object",
+      "required": [
+        "id",
+        "listing_id",
+        "funder",
+        "title",
+        "condition",
+        "amount_atomic",
+        "verifier_price_atomic",
+        "max_verifiers",
+        "chain_id",
+        "token",
+        "expiry",
+        "payload_hash",
+        "created_at",
+        "role"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "listing_id": {
+          "type": "integer"
+        },
+        "funder": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "condition": {
+          "type": "string"
+        },
+        "amount_atomic": {
+          "type": "string"
+        },
+        "verifier_price_atomic": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "max_verifiers": {
+          "type": "integer"
+        },
+        "chain_id": {
+          "type": "integer"
+        },
+        "token": {
+          "type": "string"
+        },
+        "expiry": {
+          "type": "integer"
+        },
+        "funder_address": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "funds_seen_atomic": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "funds_checked_at": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "funds_block_number": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "payload_hash": {
+          "type": "string"
+        },
+        "created_at": {
+          "type": "integer"
+        },
+        "role": {
+          "enum": [
+            "worker",
+            "verifier"
+          ]
+        },
+        "funder_control": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "anchor": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/docket"
+        },
+        {
+          "$ref": "#/$defs/listing_snapshot"
+        }
+      ]
+    }
+  }
+}
