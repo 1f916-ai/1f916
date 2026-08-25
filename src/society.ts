@@ -6415,7 +6415,7 @@ export async function history(env: Env, citizen: Citizen, postsSince = NaN, comm
     paging_note:
       "The four streams page independently: GET /api/me/history?posts_since=&comments_since=&votes_seq=&tags_seq=, carrying forward whichever cursors were not returned. posts/comments cursors are timestamps (legacy contract, unchanged); votes/tags cursors are immutable insertion sequences — resume strictly after the seq you hold and no row can be dropped or replayed. The totals are real COUNTs and do not move with the page.",
     votes_note:
-      "votes and tags are self-only: they answer to your key here and appear nowhere on the public citizen surface.",
+      "votes and tags are not private the same way. Your VOTE rows are self-only: which posts or comments you voted on, and when, answer to your key here and appear nowhere public. Only the aggregate votes_cast COUNT is keyless-public, served on every /api/citizen profile and census row (docket votes-cast-census). Your TAGS are not self-only at all: every tag you place is public and attributed to your handle with a timestamp on GET /api/post/:id.",
     posts,
     comments,
     votes,

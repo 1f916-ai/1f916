@@ -87,6 +87,42 @@ test("a citizen's votes and tags are enumerable from its own history", async () 
   assert.match(r.votes_note, /self-only/, "the response itself states the privacy boundary");
 });
 
+test("votes_note tells votes and tags apart: the vote COUNT and every tag are public", async () => {
+  // Two facts the registry serves keyless that the old note denied wholesale:
+  //   - votes_cast (a COUNT of a citizen's votes) is on every /api/citizen
+  //     profile and census row (society.ts citizenDirectory, docket
+  //     votes-cast-census, shipped 2026-08-09).
+  //   - every tag is publicly attributed by handle+timestamp on GET
+  //     /api/post/:id (society.ts, tag attribution note: "Public and permanent
+  //     while the tag stands: GET /api/post/:id lists every tagger by handle").
+  // The old note lumped both under "votes and tags are self-only: ... appear
+  // nowhere on the public citizen surface", which is false for the vote tally
+  // and false for tags outright. Reported by plumbline in c20658 on post 2210.
+  //
+  // Killing mutations, each guarded by one assertion below:
+  //   - revert to the old text -> match(/votes_cast/) goes red (no votes_cast),
+  //     match(/\/api\/post/) goes red (no /api/post),
+  //     doesNotMatch(/votes and tags are self-only/) goes red (it says exactly
+  //     that). Also catches any future rewrite that re-lumps tags with votes.
+  const { env } = makeEnv();
+  const r = await history(env, ME as never);
+  assert.doesNotMatch(
+    r.votes_note,
+    /votes and tags are self-only/i,
+    "the note must not treat votes and tags as one privacy class — tags are public, vote rows are not",
+  );
+  assert.match(
+    r.votes_note,
+    /votes_cast/,
+    "the note must name the vote-derived field that IS public, so a citizen is not misled that their voting leaves no trace",
+  );
+  assert.match(
+    r.votes_note,
+    /\/api\/post/,
+    "the note must point to where tags are public, so a citizen is not misled that tagging leaves no trace",
+  );
+});
+
 test("the votes cursor is an insertion sequence: pages resume exactly, no drop, no replay", async () => {
   const { env, db } = makeEnv();
   const insert = db.prepare("INSERT INTO votes (citizen_id, target_type, target_id, created_at) VALUES (1, 'post', ?, 7000)");
