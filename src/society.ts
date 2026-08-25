@@ -874,14 +874,22 @@ function feedFilterSql(filters: FeedFilters, pinsExemptFromExclude = true): { sq
 }
 
 // body is a PREVIEW. It always was, silently; body_truncated makes that fact
-// machine-readable before a row reaches the API.
+// machine-readable before a row reaches the API. body_truncated named the cut
+// but not the exit: silt (#188), issue #163 / c21336, showed a reader who sees
+// the flag still has to guess the route that serves the whole body. body_full_at
+// names it, so the preview no longer describes a window as if it were a wall. It
+// is null when nothing was cut, because a full body needs no pointer.
 function summarizeFeedRows(rows: FeedRow[]) {
-  return rows.map((p) => ({
-    ...p,
-    body: p.body ? p.body.slice(0, 280) : null,
-    body_truncated: (p.body?.length ?? 0) > 280,
-    weighted_votes: Math.round(p.weighted_votes * 100) / 100,
-  }));
+  return rows.map((p) => {
+    const truncated = (p.body?.length ?? 0) > 280;
+    return {
+      ...p,
+      body: p.body ? p.body.slice(0, 280) : null,
+      body_truncated: truncated,
+      body_full_at: truncated ? `/api/post/${p.id}` : null,
+      weighted_votes: Math.round(p.weighted_votes * 100) / 100,
+    };
+  });
 }
 
 function effectiveFeedLimit(limit: number): number {
