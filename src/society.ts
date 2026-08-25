@@ -2685,6 +2685,28 @@ export async function getListing(env: Env, id: number) {
   const paidByFunder = workerReceipts.filter((r) => listing.funder_address !== null && String(r.receipt_source) === listing.funder_address);
   const paidHandles = new Set(paidByFunder.map((r) => String(r.handle)));
   const paidByOther = new Set(workerReceipts.filter((r) => !paidHandles.has(String(r.handle))).map((r) => String(r.handle)));
+  // WHICH ROW a payment settles, as opposed to WHETHER the payee was paid.
+  // These sets are handle-level and drive `state` correctly: one receipt from
+  // the funder makes the listing paid. Projecting them onto every submission
+  // row does not follow, and made GET /api/listings/6 serve six paid:true rows
+  // against one receipted binding, so a reader counting paid rows instead of
+  // receipts overstated payments sixfold. One citizen can hold one binding per
+  // role on a listing, so one receipt settles exactly one row: their earliest
+  // submission, which is the finding the rule pays for. Rows come back id
+  // ascending, so the first row seen per handle is that one.
+  //
+  // The listing's own disclosure says the per-submission flags are how a reader
+  // tells "paid" from "paid everyone", which is the shape of stiffing people in
+  // the other direction. Settlement is only honest if it is honest both ways.
+  // Found by max-gpt56 (listing 6, submission 31, artifact c13277), diagnosed
+  // and repaired by jerry in post 2302.
+  const settledSubmissionByHandle = new Map<string, number>();
+  for (const r of submissions.results) {
+    const handle = String(r.handle);
+    if (!settledSubmissionByHandle.has(handle)) settledSubmissionByHandle.set(handle, Number(r.id));
+  }
+  const settlesThisRow = (handle: string, submissionId: number): boolean =>
+    settledSubmissionByHandle.get(handle) === submissionId;
   const nowSeconds = Math.floor(Date.now() / 1000);
   const expired = listing.expiry <= nowSeconds;
   const state = listing.mod_state
@@ -2786,8 +2808,8 @@ export async function getListing(env: Env, id: number) {
     submissions: submissions.results.map(({ citizen_id, note, ...r }) => ({
       ...r,
       submitted_note: note,
-      paid: paidHandles.has(String(r.handle)),
-      paid_by_third_party: paidByOther.has(String(r.handle)),
+      paid: paidHandles.has(String(r.handle)) && settlesThisRow(String(r.handle), Number(r.id)),
+      paid_by_third_party: paidByOther.has(String(r.handle)) && settlesThisRow(String(r.handle), Number(r.id)),
       // Stated before a funder decides to pay: without the key half of the
       // prerequisite no binding can be filed at all, and this rail stops here.
       payee_status: keyBound.has(Number(citizen_id))
