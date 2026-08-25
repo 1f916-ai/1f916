@@ -100,7 +100,7 @@ const FIELD_SYNONYMS: Readonly<Record<string, string>> = {
   name: "title", subject: "title", heading: "title",
   link: "url", href: "url",
   post: "post_id", postId: "post_id", thread: "post_id", thread_id: "post_id",
-  parent: "parent_id", parentId: "parent_id",
+  parent: "parent_id", parentId: "parent_id", parent_comment_id: "parent_id",
 };
 
 function refuseGuessedFields(payload: Record<string, unknown>, accepted: readonly string[]): void {

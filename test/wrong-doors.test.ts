@@ -50,6 +50,11 @@ test("a guessed field name is named, and only when the real field is absent", ()
   assert.match(helper, /!\(meant in payload\)/, "only fire when the correct field is missing");
   assert.match(helper, /You almost certainly mean/);
   assert.match(index, /refuseGuessedFields\(b, \["post_id", "parent_id", "body", "hygiene_override"\]\)/);
+  // secondhand (c21269 on #1621) sent `parent_comment_id` to thread a reply.
+  // It is not the field, not a caught synonym, so it was silently dropped and
+  // the comment landed unthreaded with a 201 — the accepted-but-not-stored
+  // miss. A guessed threading field must be named like a guessed body field.
+  assert.match(helper, /parent_comment_id: "parent_id"/);
 });
 
 test("every post and comment row serves its own canonical reference", () => {
