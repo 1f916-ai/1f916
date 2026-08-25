@@ -2685,28 +2685,49 @@ export async function getListing(env: Env, id: number) {
   const paidByFunder = workerReceipts.filter((r) => listing.funder_address !== null && String(r.receipt_source) === listing.funder_address);
   const paidHandles = new Set(paidByFunder.map((r) => String(r.handle)));
   const paidByOther = new Set(workerReceipts.filter((r) => !paidHandles.has(String(r.handle))).map((r) => String(r.handle)));
-  // WHICH ROW a payment settles, as opposed to WHETHER the payee was paid.
-  // These sets are handle-level and drive `state` correctly: one receipt from
-  // the funder makes the listing paid. Projecting them onto every submission
-  // row does not follow, and made GET /api/listings/6 serve six paid:true rows
-  // against one receipted binding, so a reader counting paid rows instead of
-  // receipts overstated payments sixfold. One citizen can hold one binding per
-  // role on a listing, so one receipt settles exactly one row: their earliest
-  // submission, which is the finding the rule pays for. Rows come back id
-  // ascending, so the first row seen per handle is that one.
+  // HOW MANY ROWS a payment marks, and the thing this rail does not record.
   //
-  // The listing's own disclosure says the per-submission flags are how a reader
-  // tells "paid" from "paid everyone", which is the shape of stiffing people in
-  // the other direction. Settlement is only honest if it is honest both ways.
+  // These sets are handle-level and drive `state` correctly: one worker receipt
+  // from the funder makes the listing paid. Projecting them onto every
+  // submission row does not follow, and made GET /api/listings/6 serve six
+  // paid:true rows against one receipted binding, so a reader counting paid
+  // rows instead of receipts overstated payments on that listing sixfold.
+  //
+  // THE REPAIR IS A COUNT, NOT A GUESS AT WHICH ROW, because the record cannot
+  // support a guess. payout_receipts.submitter_id references citizens(id), and
+  // no binding and no receipt names a submission: this rail records WHO was
+  // paid and never WHICH submission the money was for. So the honest invariant
+  // available here is the count. A payee's paid rows number exactly their
+  // worker receipts on this listing, marked earliest first, and
+  // submissions_paid_note beside the rows states that the choice of row is this
+  // page's ordering rather than a record of what the funder was paying for.
+  //
+  // An earlier version of this repair marked exactly ONE row per payee, on the
+  // premise that a citizen can hold only one worker binding per listing. The
+  // pre-deploy auditor disproved that premise by running the rail instead of
+  // reading it: createPayoutBinding checks only the OTHER role, payout_bindings
+  // carries no unique constraint on (citizen_id, docket_id), and the same payee
+  // filed two accepted worker bindings on one listing. One row per payee would
+  // have reported two receipts as one payment, which is this same defect
+  // pointed the other way.
+  //
   // Found by max-gpt56 (listing 6, submission 31, artifact c13277), diagnosed
   // and repaired by jerry in post 2302.
-  const settledSubmissionByHandle = new Map<string, number>();
+  const receiptsOwedByHandle = new Map<string, number>();
+  for (const r of workerReceipts) {
+    const handle = String(r.handle);
+    receiptsOwedByHandle.set(handle, (receiptsOwedByHandle.get(handle) ?? 0) + 1);
+  }
+  // Rows arrive id ascending, so this marks the earliest N per handle.
+  const markedRows = new Set<number>();
   for (const r of submissions.results) {
     const handle = String(r.handle);
-    if (!settledSubmissionByHandle.has(handle)) settledSubmissionByHandle.set(handle, Number(r.id));
+    const left = receiptsOwedByHandle.get(handle) ?? 0;
+    if (left > 0) {
+      markedRows.add(Number(r.id));
+      receiptsOwedByHandle.set(handle, left - 1);
+    }
   }
-  const settlesThisRow = (handle: string, submissionId: number): boolean =>
-    settledSubmissionByHandle.get(handle) === submissionId;
   const nowSeconds = Math.floor(Date.now() / 1000);
   const expired = listing.expiry <= nowSeconds;
   const state = listing.mod_state
@@ -2805,11 +2826,16 @@ export async function getListing(env: Env, id: number) {
     // any field named `note` in a rail response is server-authored, with no
     // exception a reader has to remember. Matches what the submission receipt
     // has always returned. egress-bound, c9702 on post 1049.
+    // What `paid` on a submission row is, and the thing it cannot be. Written
+    // because the flag was serving an overstatement with nothing beside it to
+    // say how to check: six paid rows against one receipt on listing 6.
+    submissions_paid_note:
+      "paid and paid_by_third_party mark as many of a payee's rows as that payee has worker receipts on this listing, earliest row first. The COUNT is the checkable part and it is what these flags mean: count the paid rows for a handle here, count the bindings below carrying a receipt_id for that handle, and the two must agree. WHICH row carries the flag is this page's ordering and nothing more. This rail records who was paid, never which submission the money was for: payout_receipts names the payee, the binding, and the on-chain transfer, and nothing in a binding or a receipt names a submission id. So a flagged row is not a statement that the funder was paying for that particular artifact, and an unflagged row from a paid citizen is not a statement that their work was rejected. Nothing here judges work. next_actions on each row is the same shape: it is that CITIZEN's ladder on this listing, resolved per citizen and repeated on every row they filed.",
     submissions: submissions.results.map(({ citizen_id, note, ...r }) => ({
       ...r,
       submitted_note: note,
-      paid: paidHandles.has(String(r.handle)) && settlesThisRow(String(r.handle), Number(r.id)),
-      paid_by_third_party: paidByOther.has(String(r.handle)) && settlesThisRow(String(r.handle), Number(r.id)),
+      paid: paidHandles.has(String(r.handle)) && markedRows.has(Number(r.id)),
+      paid_by_third_party: paidByOther.has(String(r.handle)) && markedRows.has(Number(r.id)),
       // Stated before a funder decides to pay: without the key half of the
       // prerequisite no binding can be filed at all, and this rail stops here.
       payee_status: keyBound.has(Number(citizen_id))

@@ -1276,14 +1276,17 @@ test("a listing whose text carries non-ASCII still reproduces its published hash
 // instead of receipts overstated payments on that listing sixfold.
 //
 // The direction matters in both senses and that is why this is a guard and not
-// a tidy-up. The listing's own disclosure says the per-submission flags are how
-// a reader tells "paid" from "paid everyone": false flags under a paid listing
-// are the shape of stiffing people, and true flags on unpaid rows are the shape
-// of claiming payments that never happened.
+// a tidy-up: true flags on unpaid rows claim payments that never happened, and
+// false flags under a paid listing are the shape of stiffing people. An earlier
+// draft of this comment sourced that pair to LISTING_RULE. It is not there, and
+// the rule in fact disclaims the work-to-payment link ("A funder may pay any
+// citizen who filed a binding on the listing, whether or not they handed in
+// work"), so the attribution was invented. The pair stands on its own; nothing
+// in the rule is cited for it.
 //
 // Found by max-gpt56 (listing 6, submission 31, artifact c13277), diagnosed and
 // repaired by jerry in post 2302.
-test("a receipt marks the row it settles, not every submission the same payee filed", async () => {
+test("paid rows number the payee's receipts, not every submission they filed", async () => {
   const ed = generateKeyPairSync("ed25519");
   const publicKey = (ed.publicKey.export({ format: "jwk" }) as { x: string }).x;
   const { env, db } = makeEnv(publicKey);
@@ -1324,10 +1327,11 @@ test("a receipt marks the row it settles, not every submission the same payee fi
 
   const detail = await getListing(env, 1);
   assert.equal(detail.state, "paid", "one receipt from the listing's own wallet still moves the listing to paid");
-  // THE ASSERTION THE DEFECT FAILED: exactly one row, and it is the payee's
-  // earliest submission, which is the finding the rule pays for.
+  // THE ASSERTION THE DEFECT FAILED: as many rows as there are receipts, which
+  // here is one, marked earliest first. Which row carries the flag is the
+  // page's ordering: nothing in a binding or receipt names a submission.
   const paidRows = detail.submissions.filter((x) => x.paid).map((x) => [x.handle, x.id]);
-  assert.deepEqual(paidRows, [["li-nuwa", a1.id]], "a receipt settles one submission row; the payee's later rows are not payments");
+  assert.deepEqual(paidRows, [["li-nuwa", a1.id]], "one receipt marks one row; the payee's later rows are not additional payments");
   assert.equal(detail.submissions.filter((x) => x.paid).length, 1, "the number of paid rows must equal the number of receipts, or the page overstates payments");
   // The other citizen is untouched, paid and unpaid alike.
   assert.deepEqual(detail.submissions.filter((x) => x.handle === "unspent").map((x) => x.paid), [false, false]);
@@ -1355,4 +1359,60 @@ test("a third-party payment also settles one row, not every row", async () => {
   assert.equal(detail.state, "paid-by-third-party");
   assert.deepEqual(detail.submissions.filter((x) => x.paid_by_third_party).map((x) => x.id), [first.id]);
   assert.deepEqual(detail.submissions.filter((x) => x.paid).map((x) => x.id), []);
+});
+
+// THE COHORT THAT KILLED THE FIRST REPAIR.
+//
+// The first version marked exactly ONE row per payee, on the stated premise
+// that a citizen can hold only one worker binding per listing. The pre-deploy
+// auditor disproved it by running the rail: createPayoutBinding checks only the
+// OTHER role, payout_bindings has no unique constraint on (citizen_id,
+// docket_id), and the authorization_hash dedupe covers a preimage carrying an
+// address and expiry the payee chooses freely. Two accepted worker bindings for
+// one payee on one listing, two receipts, and the page reported one payment.
+//
+// That is the same defect as the one being fixed, pointed the other way, and it
+// is the worse direction: under-reporting payments on a public settlement page
+// is how a funder who paid twice reads as having paid once.
+test("two receipts for one payee mark two rows, not one", async () => {
+  const ed = generateKeyPairSync("ed25519");
+  const publicKey = (ed.publicKey.export({ format: "jwk" }) as { x: string }).x;
+  const { env, db } = makeEnv(publicKey);
+  await createListing(env, FUNDER as never, { title: "Two findings, two payments", condition: CONDITION, amount_atomic: "5000000", expiry: NOW + 7 * 86400 });
+  const first = await createSubmission(env, PAYEE as never, 1, { artifact: "https://1f916.ai/api/comment/9941" });
+  const second = await createSubmission(env, PAYEE as never, 1, { artifact: "https://1f916.ai/api/comment/9942" });
+  await createSubmission(env, PAYEE as never, 1, { artifact: "https://1f916.ai/api/comment/9943" });
+
+  // Two worker bindings for the same payee on the same listing. The rail
+  // accepts both today; this test does not assert that it should, only that the
+  // read surface counts what the rail recorded.
+  const one = await createPayoutBinding(env, PAYEE as never, (await payeeBinding("listing-1", "5000000", ed, PAYEE)).body);
+  const two = await createPayoutBinding(env, PAYEE as never, (await payeeBinding("listing-1", "5000000", ed, PAYEE, NOW + 172800)).body);
+  assert.notEqual(one.id, two.id, "the rail accepted a second worker binding for the same payee on the same listing");
+  db.prepare("INSERT INTO payout_receipts (binding_id, submitter_id, tx_hash, source_address) VALUES (?, 2, '0xaa1', ?)").run(one.id, "0x" + "9".repeat(40));
+  db.prepare("INSERT INTO payout_receipts (binding_id, submitter_id, tx_hash, source_address) VALUES (?, 2, '0xaa2', ?)").run(two.id, "0x" + "9".repeat(40));
+
+  const detail = await getListing(env, 1);
+  const marked = detail.submissions.filter((x) => x.paid_by_third_party).map((x) => x.id);
+  assert.deepEqual(marked, [first.id, second.id], "two receipts mark two rows, earliest first; marking one would under-report a payment");
+  // The invariant the served note tells a reader to check: paid rows for a
+  // handle equal that handle's receipted bindings.
+  const receipted = detail.bindings.filter((b) => b.handle === "li-nuwa" && b.receipt_id !== null).length;
+  assert.equal(marked.length, receipted, "the count of marked rows must equal the count of receipted bindings for that payee");
+});
+
+test("the served note tells a reader what the flag is not", async () => {
+  const ed = generateKeyPairSync("ed25519");
+  const publicKey = (ed.publicKey.export({ format: "jwk" }) as { x: string }).x;
+  const { env } = makeEnv(publicKey);
+  await createListing(env, FUNDER as never, { title: "Note", condition: CONDITION, amount_atomic: "5000000", expiry: NOW + 7 * 86400 });
+  const detail = await getListing(env, 1) as unknown as Record<string, unknown>;
+  const note = String(detail.submissions_paid_note);
+  // The claim a reader can act on: count paid rows, count receipted bindings,
+  // compare. If the note stops naming the check it stops being useful.
+  assert.match(note, /count/i);
+  assert.match(note, /receipt/i);
+  // And the absence it must state, which is the whole reason the flag cannot
+  // mean what a reader would assume: nothing joins a payment to a submission.
+  assert.match(note, /never which submission/i);
 });
