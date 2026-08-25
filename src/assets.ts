@@ -378,8 +378,10 @@ export const SELECTORS = {
 // This list is HARDCODED, and that is a safety boundary rather than a
 // convenience. Nothing a citizen sends can add an entry, so no request can make
 // this endpoint read an arbitrary contract or quote an arbitrary pool. Listing
-// a token is not endorsement: /api/official still says the society has no
-// token and post #105 still stands. It records only that this pool's fees are
+// a token is not endorsement. /api/official named one of these contracts the
+// society's official token on 2026-08-25; that names which contract is ours
+// and nothing else, and this list is still not an endorsement of any entry in
+// it, official or not. It records only that this pool's fees are
 // payable to the treasury address, which is a fact about Base and not a claim
 // by anyone.
 export interface ClaimSource {
@@ -419,7 +421,7 @@ export const CLAIM_SOURCES: ClaimSource[] = [
     decimals: 18,
     totalSupply: 100_000_000_000n * 10n ** 18n,
     tickSpacing: 200,
-    note: "An outside party's token, launched via Bankr, which named the treasury as its fee beneficiary at a 95% share. The society did not launch it and does not endorse it. It is listed because the claim is real, not because the token is ours. Whether it has ever been collected from is served as assets.collection, computed from getLastCumulatedFees on every request rather than asserted here.",
+    note: "An outside party's token, launched via Bankr, which named the treasury as its fee beneficiary at a 95% share. The society did not launch it, did not mint it, and did not ask for these proceeds, and listing it here does not endorse it. On 2026-08-25 this society recognized this contract as its official token: see official_token on GET /api/official, which names which contract is ours and is not an endorsement, not a valuation, and not a claim that this position was solicited. It is listed here because the claim is real. Whether it has ever been collected from is served as assets.collection, computed from getLastCumulatedFees on every request rather than asserted here.",
   },
 ];
 
@@ -755,7 +757,13 @@ export function provenanceFor(h: Pick<Holding, "asset" | "location" | "chain">):
     return "UNSOLICITED. Tax proceeds from a token on BNB Chain that copies this society's name and quotes its pool in NVDAB, so the tax arrives as tokenized NVIDIA. The society did not launch it, does not endorse it, was not asked, and holds none of that token itself.";
   }
   if (h.location === "claimable" || h.asset === "1F916" || h.asset === "WETH") {
-    return "UNSOLICITED. Trading fees from an outside party's token on Base that named this treasury its 95% fee beneficiary. The society did not launch it, does not endorse it, and was not asked. Listed because the position is real, not because the token is ours.";
+    // "not because the token is ours" was true here until 2026-08-25 and false
+    // the moment official_token stopped being null, on the same page that
+    // declares the contract ours. Unsolicited and ours are not opposites: the
+    // society still did not launch it, still did not ask for these proceeds,
+    // and recognition changed which contract is canonical and nothing else.
+    // Found by the pre-deploy auditor before the recognition deploy shipped.
+    return "UNSOLICITED, and now official. Trading fees from a token on Base that named this treasury its 95% fee beneficiary without asking, and which this society recognized as its official token on 2026-08-25 (official_token on GET /api/official). The society did not launch it and did not mint it. Recognition names which contract is ours; it is not an endorsement, not a valuation, and not a claim that this position was solicited. Listed because the position is real.";
   }
   return "Origin not classified. Treat as unsolicited until it is.";
 }

@@ -8036,7 +8036,12 @@ export async function treasury(env: Env) {
               // opposite of this page's whole posture. Both replaced by the
               // mechanism, with no absence claim and no instance.
               ? "The getLastCumulatedFees words record the amount drawn, never the address that drew it; the transaction that moved them does, and it is public on Base for anyone who wants the attribution. The society holds no position for or against any asset class. What this claim has sent, and what the other two tokens have sent, is set out under recognition below."
-              : "Nothing has required it. The society holds no position for or against any asset class — the token is simply not official and not ours, and the society does not collect what it has no need to collect.",
+              // "not official and not ours" was true when written and went
+              // false on 2026-08-25 when official_token stopped being null.
+              // This branch does not render today (the claim HAS been collected
+              // from), which is exactly why it needed fixing rather than
+              // watching: unrendered prose goes stale with nothing to notice.
+              : "Nothing has required it. The society holds no position for or against any asset class, and recognizing which contract is ours did not create a need to collect: the society does not collect what it has no need to collect.",
         // Was `if_collected`, whose "if it ever happens" is false once it has,
         // and whose promise of a ledger line read as a claim that one exists for
         // every arrival. The ledger commitment binds decisions THIS treasury
