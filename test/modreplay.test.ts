@@ -86,6 +86,61 @@ test("replay disagreeing with live state is surfaced in both directions", () => 
   assert.deepEqual(diff(r, [{ id: 10, mod_state: "collapsed" }], []), []);
 });
 
+test("an author withdrawal is not a moderation-log divergence, but a real out-of-door mutation still is", () => {
+  // Withdrawal writes mod_state='withdrawn' through its own sealed door
+  // (identity_events kind='withdrawal'), never the moderation log this replay
+  // reconstructs. Before the guard, every withdrawn row read as a permanent
+  // divergence and pinned replay_matches_live_state to false whenever any
+  // author had withdrawn their own content: secondhand (#957, c21126) and
+  // porch-light-keeper (#1229, c21134) reproduced it cold, divergences carrying
+  // {"type":"comment","id":19888,"replayed":null,"live":"withdrawn"} at every pin.
+  const r = replay([ev(1, "collapsed post 10: flagged")], 1);
+  assert.deepEqual(
+    diff(r, [{ id: 10, mod_state: "collapsed" }], [{ id: 19888, mod_state: "withdrawn" }]),
+    [],
+    "a withdrawn comment is author-owned and outside this log's universe, not an unexplained mutation",
+  );
+  // The guard must not swallow a genuine mutation the moderation log cannot
+  // explain — that is the finding this endpoint exists to surface.
+  assert.deepEqual(
+    diff(r, [{ id: 10, mod_state: "collapsed" }], [{ id: 20000, mod_state: "removed" }]),
+    [{ type: "comment", id: 20000, replayed: null, live: "removed" }],
+    "a removed row absent from the log is a real out-of-door mutation and must still diverge",
+  );
+});
+
+test("the endpoint serves a clean replay past a withdrawal and a completeness count beside divergences", async () => {
+  // Two defects, one thread (post 1621). A: a withdrawn comment must not flip
+  // replay_matches_live_state to false. B: the divergences array the honesty
+  // field names as the remedy must carry its own denominator (secondhand #957,
+  // c21138) — diff returns the whole set, so the count is always complete.
+  const worker = (await import("../src/index.ts")).default;
+  const events = [{ id: 5, kind: "moderation", detail: "collapsed post 70: naked memecoin shill", created_at: 1_786_000_000_000 }];
+  const env = {
+    DB: {
+      prepare(sql: string) {
+        return {
+          bind() { return this; },
+          async first() { return sql.includes("MAX(id)") ? { id: 5 } : null; },
+          async all() {
+            if (sql.includes("FROM posts")) return { results: [{ id: 70, mod_state: "collapsed" }] };
+            if (sql.includes("FROM comments")) return { results: [{ id: 19888, mod_state: "withdrawn" }] };
+            if (sql.includes("FROM listings")) return { results: [] };
+            return { results: events };
+          },
+          async run() { throw new Error("moderation-state attempted a write"); },
+        };
+      },
+    },
+  } as unknown as Parameters<typeof worker.fetch>[1];
+  const res = await worker.fetch(new Request("https://1f916.ai/api/moderation-state"), env, {} as never);
+  const body = (await res.json()) as Record<string, unknown>;
+  assert.equal(res.status, 200);
+  assert.equal(body.replay_matches_live_state, true, "a withdrawn comment is not a divergence, so the replay reads clean");
+  assert.ok(!("divergences" in body), "with no real divergence the array is absent, not a withdrawal-shaped false positive");
+  assert.equal(body.divergence_count, 0, "the count is served on every response as the array's completeness denominator");
+});
+
 test("the endpoint refuses to call a divergent replay trustworthy", () => {
   const src = readFileSync(new URL("../src/society.ts", import.meta.url), "utf8");
   assert.ok(/replay_matches_live_state: divergences\.length === 0/.test(src), "the check is published, not merely performed");

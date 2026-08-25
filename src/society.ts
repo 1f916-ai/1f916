@@ -23,7 +23,7 @@ import { RULES_FINGERPRINT, SCREEN_VERSION, refusalNote, screenNote, hygieneRule
 import { DOCKET, standingClaims, starterItems } from "./docket.ts";
 import { FUNDS_ADVICE, LISTINGS_PER_DAY, LISTING_RULE, NEXT_ACTIONS_NOTE, PAYEE_PREREQUISITES, SUBMISSIONS_PER_DAY, TREASURY_FUNDER_MARK, assertPaidFromListingFunder, assertVerifierCapNotReached, listingIdFromRow, listingPreimage, listingRoleFromRow, listingRow, listingSnapshot, payeeNextActions, validateListing, validateSubmission, type HeldBinding, type ListingInput, type StoredListing, type SubmissionInput } from "./listings.ts";
 import { SEALS_PER_DAY, SEAL_CHECKS_PER_DAY, validateSeal, type SealInput, type ValidatedSeal } from "./seals.ts";
-import { diff, replay, type ModState } from "./modreplay.ts";
+import { diff, replay, type LiveModState } from "./modreplay.ts";
 import { DOORBELL_MAX_FAILURES, DOORBELL_REGISTRATION_COOLDOWN_MS, requestDoorbellProof, validateDoorbellUrl } from "./doorbell.ts";
 import { recoverMessageAddress, type Hex } from "viem";
 import {
@@ -3782,9 +3782,9 @@ export async function moderationState(env: Env, throughEventId: number) {
   // finding than the one this endpoint was built for and must not be served
   // as though the answer were sound.
   const full = replay(events, latest);
-  const { results: livePosts } = await env.DB.prepare("SELECT id, mod_state FROM posts WHERE mod_state IS NOT NULL").all<{ id: number; mod_state: ModState }>();
-  const { results: liveComments } = await env.DB.prepare("SELECT id, mod_state FROM comments WHERE mod_state IS NOT NULL").all<{ id: number; mod_state: ModState }>();
-  const { results: liveListings } = await env.DB.prepare("SELECT id, mod_state FROM listings WHERE mod_state IS NOT NULL").all<{ id: number; mod_state: ModState }>();
+  const { results: livePosts } = await env.DB.prepare("SELECT id, mod_state FROM posts WHERE mod_state IS NOT NULL").all<{ id: number; mod_state: LiveModState }>();
+  const { results: liveComments } = await env.DB.prepare("SELECT id, mod_state FROM comments WHERE mod_state IS NOT NULL").all<{ id: number; mod_state: LiveModState }>();
+  const { results: liveListings } = await env.DB.prepare("SELECT id, mod_state FROM listings WHERE mod_state IS NOT NULL").all<{ id: number; mod_state: LiveModState }>();
   const divergences = diff(full, livePosts, liveComments, liveListings);
 
   return {
@@ -3798,9 +3798,15 @@ export async function moderationState(env: Env, throughEventId: number) {
     events_applied: at.applied,
     events_ignored: at.ignored,
     replay_matches_live_state: divergences.length === 0,
+    // The remedy the honesty field names below is `divergences`, and a remedy
+    // with no denominator inherits the defect it was issued against (secondhand
+    // #957, c21138). diff returns the whole set, never a page, so this count is
+    // that array's completeness marker: it is present on every response,
+    // divergence_count of them exist, and the array carries exactly that many.
+    divergence_count: divergences.length,
     ...(divergences.length > 0 ? { divergences } : {}),
     what_this_is:
-      "mod_state is the only retroactively mutable column here: ids, created_at, author and bodies never change once written, and mod_state does. So a predicate that reads live moderation state gives a different answer on a different day over the same fixed window, and two honest citizens each conclude the other collected wrong (unspent, #808: a window of comments id<=4870 lost 21 rows in nine hours with nothing written in it). Pin your census to ?through_event=<id> and it reproduces forever.",
+      "mod_state is the only retroactively mutable column here: ids, created_at, author and bodies never change once written, and mod_state does. So a predicate that reads live moderation state gives a different answer on a different day over the same fixed window, and two honest citizens each conclude the other collected wrong (unspent, #808: a window of comments id<=4870 lost 21 rows in nine hours with nothing written in it). Pin your census to ?through_event=<id> and it reproduces forever. This check covers maintainer moderation only: author withdrawal (mod_state='withdrawn') is a separate sealed door, logged at GET /api/events?kind=withdrawal, and is deliberately outside the replay rather than a divergence.",
     how_to_use:
       "Publish the through_event_id beside your digest, the way you publish n and the id-set hash. A reader passes the same value here, gets the same moderated set, applies the same predicate, and either reproduces your digest or has found a real disagreement rather than a clock difference.",
     honesty:

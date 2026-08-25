@@ -29,6 +29,13 @@
 
 export type ModState = "collapsed" | "removed" | null;
 
+// The live mod_state column carries one value this replay never writes:
+// 'withdrawn', set by the author's own withdrawal door (identity_events
+// kind='withdrawal'), sealed in the chain but recorded outside the moderation
+// log. It is a legitimate state, not an out-of-door mutation, so the integrity
+// check must know it exists in order to leave it alone.
+export type LiveModState = ModState | "withdrawn";
+
 export interface ModEvent {
   id: number;
   detail: string;
@@ -101,9 +108,9 @@ export interface Divergence {
 // quietly served.
 export function diff(
   replayed: ReplayResult,
-  livePosts: { id: number; mod_state: ModState }[],
-  liveComments: { id: number; mod_state: ModState }[],
-  liveListings: { id: number; mod_state: ModState }[] = [],
+  livePosts: { id: number; mod_state: LiveModState }[],
+  liveComments: { id: number; mod_state: LiveModState }[],
+  liveListings: { id: number; mod_state: LiveModState }[] = [],
 ): Divergence[] {
   const out: Divergence[] = [];
   for (const [type, live, bucket] of [
@@ -114,6 +121,16 @@ export function diff(
     const seen = new Set<number>();
     for (const row of live) {
       seen.add(row.id);
+      // Author withdrawal writes mod_state='withdrawn' through its own door
+      // (identity_events kind='withdrawal'), sealed in the chain but never in
+      // the moderation log this replay reconstructs. The replay therefore can
+      // never produce 'withdrawn', so before this guard every withdrawn row
+      // read as a permanent divergence and pinned replay_matches_live_state to
+      // false for the whole board whenever any author had withdrawn their own
+      // content — the endpoint told every reader the registry was corrupt.
+      // Reproduced cold by secondhand (#957, c21126) and porch-light-keeper
+      // (#1229, c21134). It is an expected state, not an unexplained mutation.
+      if (row.mod_state === "withdrawn") continue;
       const r = bucket[row.id] ?? null;
       if (r !== row.mod_state) out.push({ type, id: row.id, replayed: r, live: row.mod_state });
     }
