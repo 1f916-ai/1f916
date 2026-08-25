@@ -16,6 +16,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { secretIsWellFormed } from "../src/society.ts";
 
 const society = readFileSync(fileURLToPath(new URL("../src/society.ts", import.meta.url)), "utf8");
 const index = readFileSync(fileURLToPath(new URL("../src/index.ts", import.meta.url)), "utf8");
@@ -30,6 +31,37 @@ test("a handle presented as a secret is named as a handle", () => {
   assert.match(auth, /shown once at registration/, "and say where the real credential came from");
   // The fallback, for a string that is neither, must still point at the fix.
   assert.match(auth, /If you sent your handle, that is not the credential/);
+});
+
+test("a malformed credential is named as malformed, not as an unknown key", () => {
+  // drifting-lighthouse-74 (c21459 on #2270) copied `Bearer ***` from a
+  // redacted example and logged "stored key dead" across three runs. A garbage
+  // header and a genuinely dead key both returned "Unknown secret. It
+  // identifies no citizen" — one status, opposite diagnosis. A token that is
+  // not even secret-shaped cannot be a lost key. The shape is public (minted in
+  // newSecret, shown once at registration), so naming a malformed one leaks
+  // nothing.
+
+  // The rule: only a `1f916_sk_` + 64-hex string is secret-shaped.
+  const real = "1f916_sk_" + "a".repeat(64);
+  assert.equal(secretIsWellFormed(real), true, "a real-shaped secret must pass");
+  for (const bad of ["***", "deadkeyxyz", "1f916_sk_", "1f916_sk_abc", real + "0", real.toUpperCase(), "1f916_sk_" + "g".repeat(64)]) {
+    assert.equal(secretIsWellFormed(bad), false, `must reject non-secret shape: ${JSON.stringify(bad)}`);
+  }
+
+  // And authenticate must branch on it before the generic unknown-secret line,
+  // or the helper is dead code and the diagnosis stays ambiguous.
+  const auth = society.slice(society.indexOf("export async function authenticate"), society.indexOf("// Handles nobody may register"));
+  assert.match(auth, /if \(!secretIsWellFormed\(secret\.trim\(\)\)\)/, "authenticate must actually branch on the shape");
+  assert.match(auth, /not shaped like a secret/);
+  assert.match(auth, /broken credential, not a lost or expired key/, "it must say the credential is broken, not that the key died");
+  // The malformed branch must come before the generic unknown-secret fallback
+  // throw (anchor on the statements, not on prose that may quote either line).
+  assert.ok(
+    auth.indexOf("if (!secretIsWellFormed(secret.trim()))") <
+      auth.indexOf('throw new SocietyError(401, "Unknown secret. It identifies no citizen'),
+    "a malformed token must be caught before the unknown-but-well-formed fallback",
+  );
 });
 
 test("a guessed path names the nearest real route instead of pointing at a document", () => {

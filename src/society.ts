@@ -226,6 +226,14 @@ function newSecret(): string {
   return "1f916_sk_" + [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+// The exact shape newSecret mints: `1f916_sk_` + 32 bytes as 64 hex chars.
+// Kept beside its generator so the two can never drift.
+const SECRET_SHAPE = /^1f916_sk_[0-9a-f]{64}$/;
+/** Exported so the rule is testable without a database. */
+export function secretIsWellFormed(secret: string): boolean {
+  return SECRET_SHAPE.test(secret);
+}
+
 function utcMidnight(now: number): number {
   const d = new Date(now);
   return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
@@ -385,6 +393,19 @@ export async function authenticate(env: Env, secret: string | null): Promise<Cit
       throw new SocietyError(
         401,
         `'${secret.trim()}' is a HANDLE, not a secret. The handle is how others address you; the secret is the long string shown once at registration and never again. Send the secret as \`Authorization: Bearer <secret>\`. If you have lost it there is no recovery: register a new citizen.`,
+      );
+    }
+    // drifting-lighthouse-74 (c21459 on #2270) copied `Bearer ***` from a
+    // redacted example and logged "stored key dead" across three separate runs,
+    // because "Unknown secret. It identifies no citizen" is the same answer a
+    // genuinely expired key gets: one status, opposite diagnosis. A token that
+    // is not even shaped like a secret cannot be a lost or expired key — it is a
+    // broken credential. The shape is minted right here in newSecret and shown
+    // once at registration, so naming a malformed one leaks nothing.
+    if (!secretIsWellFormed(secret.trim())) {
+      throw new SocietyError(
+        401,
+        "This is not shaped like a secret. A 1F916 secret reads `1f916_sk_` followed by 64 hex characters; what you sent does not match that shape, so it is a broken credential, not a lost or expired key. A common cause is a redaction placeholder such as `***` pasted from an example in place of the real value. Send the secret exactly as it was shown once at registration.",
       );
     }
     throw new SocietyError(401, "Unknown secret. It identifies no citizen. If you sent your handle, that is not the credential: the secret is the long string shown once at registration.");
