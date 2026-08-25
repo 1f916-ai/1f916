@@ -71,10 +71,20 @@ test("the claim source note agrees with the endpoint", () => {
   assert.match(claim.note, /official token/i, "the note must name the recognition it lives beside");
 });
 
-// The class-killer. Comments may DISCUSS a retired sentence (the fix commits
-// quote them, deliberately, so the next reader knows why the words changed);
-// only served strings are scanned. A line whose first non-space characters
-// begin a comment is skipped, which is the same rule a reader applies by eye.
+// The class-killer. Round 2 of the pre-deploy audit broke the first version of
+// this scan three ways, all against real served prose in src/doc.ts, and all
+// while the suite stayed green:
+//   1. a served line beginning with "*" was skipped as a comment, but "*" also
+//      begins a markdown bullet, and doc.ts's served text is full of them.
+//   2. per-line matching cannot see a claim that hard-wraps across two lines,
+//      and doc.ts hard-wraps everything, so that is the normal case there.
+//   3. a stale factual claim in a source COMMENT was not scanned at all.
+// So: comments are stripped as REGIONS rather than by leading character, the
+// remaining served text is joined and whitespace-normalized before matching,
+// and comments are scanned too under a narrower rule. A comment may quote a
+// retired sentence (the fix commits do, deliberately) only if it tags the quote
+// RETIRED:. An untagged stale claim in a comment is the src/assets.ts:381 defect
+// that shipped in the first round of this very change.
 const STALE = [
   /there is no official token/i,
   /there is still no official/i,
@@ -82,33 +92,86 @@ const STALE = [
   /official_token (?:is|has been) null/i,
   /not because the token is ours/i,
   /not official and not ours/i,
+  /\/api\/official still says/i,
 ];
 
-function servedLines(file: string): { n: number; text: string }[] {
-  return readFileSync(file, "utf8")
-    .split("\n")
-    .map((text, i) => ({ n: i + 1, text }))
-    .filter(({ text }) => {
-      const t = text.trimStart();
-      return t.length > 0 && !t.startsWith("//") && !t.startsWith("*") && !t.startsWith("/*");
-    });
+// Split a source file into the text a reader is served and the text only a
+// developer reads. Block comments are removed as regions; a line whose first
+// non-space characters are "//" is a comment line. Everything else is served
+// text, joined with spaces so a hard-wrapped sentence matches as one sentence.
+export function splitSource(src: string): { served: string; comments: string[] } {
+  const withoutBlocks = src.replace(/\/\*[\s\S]*?\*\//g, (m) => "\n".repeat(m.split("\n").length - 1));
+  const blockLines = new Set<number>();
+  {
+    let idx = 0;
+    for (const line of src.split("\n")) {
+      idx += 1;
+      void line;
+    }
+    void idx;
+  }
+  const comments: string[] = [];
+  const servedLines: string[] = [];
+  withoutBlocks.split("\n").forEach((text, i) => {
+    const t = text.trimStart();
+    if (t.startsWith("//")) comments.push(`${i + 1}:${t}`);
+    else if (t.length > 0) servedLines.push(t);
+  });
+  // Block-comment bodies are comment text too, and must be scanned under the
+  // RETIRED: rule rather than dropped on the floor.
+  for (const m of src.matchAll(/\/\*[\s\S]*?\*\//g)) comments.push(m[0]);
+  return { served: servedLines.join(" ").replace(/\s+/g, " "), comments };
 }
 
-test("no source file still asserts that this society has no official token", () => {
+function sourceFiles(): string[] {
   const dir = "src";
-  const files = readdirSync(dir).filter((f) => f.endsWith(".ts")).map((f) => join(dir, f));
+  return readdirSync(dir)
+    .filter((f) => f.endsWith(".ts"))
+    .map((f) => join(dir, f));
+}
+
+test("no served prose still asserts that this society has no official token", () => {
+  const files = sourceFiles();
   assert.ok(files.length > 5, "the scan must actually be reading the source tree");
   const hits: string[] = [];
   for (const file of files) {
-    for (const { n, text } of servedLines(file)) {
-      for (const pattern of STALE) {
-        if (pattern.test(text)) hits.push(`${file}:${n} ${text.trim().slice(0, 120)}`);
+    const { served } = splitSource(readFileSync(file, "utf8"));
+    for (const pattern of STALE) {
+      const m = served.match(pattern);
+      if (m) hits.push(`${file}: ...${served.slice(Math.max(0, m.index! - 60), m.index! + 80)}...`);
+    }
+  }
+  assert.deepEqual(hits, [], `served prose still says this society has no official token:\n${hits.join("\n")}`);
+});
+
+test("a stale claim hard-wrapped across two served lines is still caught", () => {
+  // The exact evasion the auditor demonstrated against src/doc.ts.
+  const { served } = splitSource('const doc = `\n  a sentence saying there is no official\n  token here\n`;');
+  assert.match(served, /there is no official token/i, "wrapped prose must normalize to one line before matching");
+});
+
+test("a served markdown bullet is not mistaken for a comment", () => {
+  // The other evasion: "*" begins a bullet in served text as often as it
+  // continues a block comment.
+  const { served } = splitSource('const doc = `\n* there is no official token\n`;');
+  assert.match(served, /there is no official token/i, "a bullet line is served text, not a comment");
+});
+
+test("comments may quote a retired claim only if they tag it RETIRED:", () => {
+  const files = sourceFiles();
+  const hits: string[] = [];
+  for (const file of files) {
+    const { comments } = splitSource(readFileSync(file, "utf8"));
+    for (const c of comments) {
+      const flat = c.replace(/\s+/g, " ");
+      if (STALE.some((p) => p.test(flat)) && !/RETIRED:/.test(flat)) {
+        hits.push(`${file} ${flat.slice(0, 140)}`);
       }
     }
   }
   assert.deepEqual(
     hits,
     [],
-    `served prose still says this society has no official token, which stopped being true on 2026-08-25:\n${hits.join("\n")}`,
+    `a source comment states, untagged, that this society has no official token. Tag the quote RETIRED: if it is history, or fix it if it is a live claim:\n${hits.join("\n")}`,
   );
 });

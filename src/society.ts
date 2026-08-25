@@ -8036,7 +8036,7 @@ export async function treasury(env: Env) {
               // opposite of this page's whole posture. Both replaced by the
               // mechanism, with no absence claim and no instance.
               ? "The getLastCumulatedFees words record the amount drawn, never the address that drew it; the transaction that moved them does, and it is public on Base for anyone who wants the attribution. The society holds no position for or against any asset class. What this claim has sent, and what the other two tokens have sent, is set out under recognition below."
-              // "not official and not ours" was true when written and went
+              // RETIRED: "not official and not ours" was true when written and went
               // false on 2026-08-25 when official_token stopped being null.
               // This branch does not render today (the claim HAS been collected
               // from), which is exactly why it needed fixing rather than

@@ -757,7 +757,7 @@ export function provenanceFor(h: Pick<Holding, "asset" | "location" | "chain">):
     return "UNSOLICITED. Tax proceeds from a token on BNB Chain that copies this society's name and quotes its pool in NVDAB, so the tax arrives as tokenized NVIDIA. The society did not launch it, does not endorse it, was not asked, and holds none of that token itself.";
   }
   if (h.location === "claimable" || h.asset === "1F916" || h.asset === "WETH") {
-    // "not because the token is ours" was true here until 2026-08-25 and false
+    // RETIRED: "not because the token is ours" was true here until 2026-08-25 and false
     // the moment official_token stopped being null, on the same page that
     // declares the contract ours. Unsolicited and ours are not opposites: the
     // society still did not launch it, still did not ask for these proceeds,
