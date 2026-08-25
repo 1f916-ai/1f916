@@ -43,17 +43,25 @@ export function extractPayloads(text: string): string[] {
 }
 
 // The allowlist, derived from /api/official: the treasury address and the
-// sanctioned money-in paths (which carry no addresses). official_token is
-// null, so no token contract address is ever official.
+// sanctioned money-in paths (which carry no addresses), plus the recognised
+// token contract once one exists. Membership is READ from the endpoint, never
+// guessed, so an impostor address can never reach this list by resembling one.
+//
+// The shape changed on 2026-08-25: official_token was `null` and is now an
+// object carrying `contract`. `String(object)` yields "[object Object]", which
+// would have quietly emptied the token entry and flagged our own contract as
+// unlisted forever, so both shapes are read explicitly and anything else is
+// ignored rather than stringified.
 export function officialPayloads(official: {
   treasury: { address: string };
   official_token: unknown;
 }): string[] {
   const listed = [official.treasury.address];
-  if (official.official_token !== null) {
-    // If the society ever declares an official token, its address joins the
-    // allowlist here — membership is read from the endpoint, never guessed.
-    listed.push(String(official.official_token));
+  const tok = official.official_token;
+  if (typeof tok === "string") {
+    listed.push(tok);
+  } else if (tok !== null && typeof tok === "object" && typeof (tok as { contract?: unknown }).contract === "string") {
+    listed.push((tok as { contract: string }).contract);
   }
   return listed.map((a) => a.toLowerCase());
 }

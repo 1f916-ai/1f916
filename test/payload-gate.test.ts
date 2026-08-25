@@ -51,16 +51,28 @@ test("extractPayloads ignores short base58-ish words and prose", () => {
 
 test("officialPayloads is exactly the /api/official allowlist", () => {
   assert.deepEqual(officialPayloads(official), [TREASURY.toLowerCase()]);
-  // A token that is never declared stays off the list — official_token is
-  // null for this society, so no token CA is ever allowed.
+  // A token that is never declared stays off the list. `official` in this file
+  // is the pre-recognition fixture and keeps null, so the null branch stays
+  // covered after 2026-08-25.
   assert.deepEqual(officialPayloads({ treasury: { address: TREASURY }, official_token: null }), [
     TREASURY.toLowerCase(),
   ]);
-  // If the society ever declares a token, it joins the list — membership is
-  // read from the endpoint, never guessed.
+  // A declared token joins the list — membership is read from the endpoint,
+  // never guessed. Both shapes are accepted: the bare string the field used to
+  // hold, and the object it holds since recognition.
   assert.deepEqual(
     officialPayloads({ treasury: { address: TREASURY }, official_token: "0xT0K3N00000000000000000000000000000000" }),
     [TREASURY.toLowerCase(), "0xt0k3n00000000000000000000000000000000"],
+  );
+  assert.deepEqual(
+    officialPayloads({ treasury: { address: TREASURY }, official_token: { contract: "0xT0K3N00000000000000000000000000000000" } }),
+    [TREASURY.toLowerCase(), "0xt0k3n00000000000000000000000000000000"],
+  );
+  // A shape carrying no usable contract adds nothing rather than stringifying
+  // itself onto the allowlist.
+  assert.deepEqual(
+    officialPayloads({ treasury: { address: TREASURY }, official_token: { symbol: "1F916" } }),
+    [TREASURY.toLowerCase()],
   );
 });
 
@@ -83,8 +95,23 @@ test("officialFacts(env) feeds the gate without hardcoding", () => {
   const env = { TREASURY_ADDRESS: TREASURY } as never;
   const facts = officialFacts(env);
   assert.equal(facts.treasury.address, TREASURY);
-  assert.equal(facts.official_token, null);
+  // Recognised 2026-08-25. The endpoint now emits an OBJECT here, and the gate
+  // must read `contract` out of it: `String(object)` yields "[object Object]",
+  // which would put a nonsense string on the allowlist and leave our own
+  // contract flagged as unlisted on every mention, forever.
+  assert.equal(typeof facts.official_token, "object");
+  assert.equal(facts.official_token.contract, "0x9e00fc92493451eba1c63dd3880d68b622037ba3");
+  assert.equal(facts.official_token.issued_by_this_society, false);
   assert.deepEqual(unlistedPayloads(TREASURY, facts), []);
+  // The killing mutation for the line above: revert officialPayloads to
+  // String(official.official_token) and this goes red, because the recognised
+  // contract stops folding into the allowlist.
+  assert.deepEqual(unlistedPayloads(`the token is ${facts.official_token.contract}`, facts), []);
+  // An impostor is still noticed, so recognition narrowed nothing else.
+  assert.deepEqual(
+    unlistedPayloads("0xb2000000000000000000009aad349bcb61652201", facts),
+    ["0xb2000000000000000000009aad349bcb61652201"],
+  );
 });
 
 // ---- write-path wiring (stub env, same shape as interval-honesty.test.ts) ----

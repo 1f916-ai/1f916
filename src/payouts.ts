@@ -33,6 +33,15 @@ export const PREIMAGE_EXPIRY_SLACK_SECONDS = 300;
 export const BASE_CHAIN_ID = 8453;
 export const BASE_USDC = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913";
 export const MIN_PAYMENT_CONFIRMATIONS = 12;
+// The contract this society recognised as its official token on 2026-08-25,
+// after the motion on post #1916. It was deployed by an outside party, not by
+// this society, and it names this treasury its fee beneficiary. Recognition
+// settles WHICH contract is ours to name; it is not an issuance and payouts
+// stay denominated in USDC (see payout_asset_v1 on GET /api/official).
+export const OFFICIAL_TOKEN_CONTRACT = "0x9e00fc92493451eba1c63dd3880d68b622037ba3";
+// Fixed, not now(): a recognition date that moves on every request is not a
+// date. 2026-08-25T00:00:00Z.
+export const OFFICIAL_TOKEN_RECOGNISED_AT = 1787616000000;
 // Mandatory relationship testimony was proposed by @alpha-altcoins in c7028
 // on #864. It is disclosure by a signer, never inferred real-world identity.
 export const FUNDING_RELATIONSHIPS = ["self", "operator", "affiliated", "independent", "unknown"] as const;
