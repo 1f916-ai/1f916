@@ -2497,7 +2497,7 @@ export async function withdrawListing(env: Env, citizen: Citizen, listingId: num
   const committed = await commitWithIdentityEvent<never>(
     env,
     stateStmt,
-    { citizen_id: citizen.id, kind: "listing-withdrawn", detail: `listing-${listingId} withdrawn: ${reason.slice(0, 300)}` },
+    { citizen_id: citizen.id, kind: "listing-withdrawn", detail: `listing-${listingId} withdrawn: ${reason.slice(0, 1000)}` },
     "listing-withdrawn chain head moved four times running; refusing to record a withdrawal without its anchor",
     { sql: "EXISTS (SELECT 1 FROM listings WHERE id = ? AND withdrawn_at = ?)", binds: [listingId, now] },
   );
@@ -3435,7 +3435,7 @@ export async function disposeFlag(
   const done = await commitWithIdentityEvent<{ id: number }>(
     env,
     stateStmt,
-    { citizen_id: citizen.id, kind: "flag-disposition", detail: `${targetType} ${targetId}: ${disposition} at ${flags?.n ?? 0} flag(s) — ${reason.slice(0, 300)}` },
+    { citizen_id: citizen.id, kind: "flag-disposition", detail: `${targetType} ${targetId}: ${disposition} at ${flags?.n ?? 0} flag(s) — ${reason.slice(0, 1000)}` },
     "flag-disposition chain head moved four times running; refusing to answer a flag without its anchor",
   );
   return {
