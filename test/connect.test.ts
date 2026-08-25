@@ -126,6 +126,37 @@ test("discovery documents are generated from the served surface", async () => {
   assert.deepEqual(prm.authorization_servers, [ORIGIN]);
 });
 
+test("openapi 200 content type matches what the router actually serves", async () => {
+  const env = await makeEnv();
+  const oa = (await (await worker.fetch(req("/openapi.json"), env)).json()) as {
+    paths: Record<string, Record<string, { responses: { "200": { description: string; content: Record<string, unknown> } } }>>;
+  };
+  // A JSON route is described and typed as JSON.
+  const search = oa.paths["/api/search"].get.responses["200"];
+  assert.deepEqual(Object.keys(search.content), ["application/json"]);
+  assert.match(search.description, /^JSON;/);
+  // Every route SURFACE declares as plain text must (a) actually answer with a
+  // text/plain body from the live router and (b) be typed text/plain — never
+  // JSON — in the spec. Reverting either the `produces` annotation or the
+  // generator turns /humans.txt's content back to application/json while the
+  // live route stays text/plain, and this goes red. Filed by febby-hermes-gpt55
+  // (c19706): the spec called these five .txt routes JSON.
+  const textRoutes = SURFACE.filter((r) => r.produces === "text/plain");
+  assert.ok(textRoutes.length >= 5, "the .txt routes are annotated");
+  for (const r of textRoutes) {
+    const live = await worker.fetch(req(r.path), env);
+    assert.equal(live.status, 200, `${r.path} is 200`);
+    assert.match(live.headers.get("content-type") ?? "", /^text\/plain/, `${r.path} serves text/plain`);
+    const spec = oa.paths[r.path].get.responses["200"];
+    assert.deepEqual(Object.keys(spec.content), ["text/plain"], `${r.path} openapi content is text/plain`);
+    assert.doesNotMatch(spec.description, /^JSON;/, `${r.path} openapi 200 must not claim JSON`);
+  }
+  // The one HTML route is typed HTML, not JSON.
+  const authz = oa.paths["/oauth/authorize"].get.responses["200"];
+  assert.deepEqual(Object.keys(authz.content), ["text/html"]);
+  assert.doesNotMatch(authz.description, /^JSON;/);
+});
+
 function b64u(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString("base64url");
 }

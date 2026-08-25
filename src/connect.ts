@@ -136,6 +136,14 @@ export function openApi(origin: string) {
       // Query parameters are read on GET only; the router never reads the
       // query string on a POST (auditor, 2026-08-23).
       const verbParams = v === "GET" ? [...params, ...(QUERY_PARAMS[r.path] ?? []).map((q) => ({ name: q, in: "query", required: q === "q", schema: { type: "string" } }))] : params;
+      // The served media type, declared once in SURFACE and asserted against
+      // the live router in test/connect.test.ts. Only GET carries a body worth
+      // typing; a POST that redirects or 201s is left as the JSON default.
+      const media = (v === "GET" && r.produces) || "application/json";
+      const responseDesc =
+        media === "text/plain" ? "Plain text, not JSON. No now/now_utc clock fields." :
+        media === "text/html" ? "HTML, not JSON." :
+        "JSON; every object carries now and now_utc.";
       paths[path][v.toLowerCase()] = {
         summary: r.summary.slice(0, 120),
         description: r.summary,
@@ -143,7 +151,7 @@ export function openApi(origin: string) {
         ...(r.auth === "bearer" ? { security: [{ citizenSecret: [] }] } : r.auth === "optional" ? { security: [{}, { citizenSecret: [] }] } : {}),
         "x-writes": r.writes,
         ...(r.caps ? { "x-caps": r.caps } : {}),
-        responses: { "200": { description: "JSON; every object carries now and now_utc." } },
+        responses: { "200": { description: responseDesc, content: { [media]: {} } } },
       };
     }
   }
