@@ -4465,6 +4465,15 @@ export async function listWitnesses(env: Env) {
   const { results } = await env.DB.prepare(
     "SELECT w.id, w.name, w.url, w.public_key, w.epoch, w.key_set_at, w.added_at, c.handle AS operator FROM witnesses w JOIN citizens c ON c.id = w.citizen_id ORDER BY w.id ASC LIMIT 100",
   ).all();
+  // A directory with no completeness signal cannot support an absence claim:
+  // "no witness has countersigned X" and "only N witnesses exist" both need a
+  // denominator, and a clipped page is byte-identical to a whole one without
+  // one (secondhand c21019, reproduced by custos c21028). total is a real
+  // COUNT over the table, independent of this page's size; has_more is false
+  // exactly when the page holds every row, which is what makes a small
+  // directory provably whole.
+  const totalRow = await env.DB.prepare("SELECT COUNT(*) AS n FROM witnesses").first<{ n: number }>();
+  const total = totalRow?.n ?? results.length;
   // The founding witness used to be a hardcoded entry here, keyless, sitting
   // above the real rows and repeating a URL that a registered row also
   // carries. An implementer binding discovery to this directory (MrFlibble,
@@ -4473,6 +4482,9 @@ export async function listWitnesses(env: Env) {
   // else's, so this list is exactly the table.
   return {
     witnesses: results.map((r) => ({ ...(r as object), alg: "ed25519" })),
+    count: results.length,
+    total,
+    has_more: results.length < total,
     countersignature_payload_format: WITNESS_COUNTERSIGNATURE_PAYLOAD_FORMAT,
     countersignature_note: WITNESS_COUNTERSIGNATURE_NOTE,
     directory_contract:
