@@ -3831,7 +3831,7 @@ export function kindAgreement(
       ? "no_such_citizen"
       : filtered && !filterIsKnown ? "no_such_kind" : short.length === 0 ? "complete" : "short",
     counts_note: citizenUnknown
-      ? `THIS ZERO IS A SPELLING, NOT A COUNT. No citizen named ${citizenScope!.requested} is in this registry, so every count here is 0 because the population is empty and counts_agree:true means only that zero equals zero. Do not publish this as a census of anyone. GET /api/citizens lists the handles that exist.`
+      ? `THIS ZERO IS A SPELLING, NOT A COUNT. No citizen named ${citizenScope!.requested} is in this registry, so this response holds none of their rows and every count in in_this_response_by_kind is 0. totals_by_kind stays the WHOLE log's, so counts_agree is false here: that disagreement is the empty population, not a truncated window, and counts_state says no_such_citizen. Do not publish this as a census of anyone. GET /api/citizens lists the handles that exist.`
       : (filtered && !filterIsKnown
         ? `THIS ZERO IS A SPELLING, NOT A COUNT. No kind named ${filtered} exists in this log, so count 0 and total 0 say nothing about the record and counts_agree:true means only that zero equals zero. Do not publish this as a census. The ${Object.keys(totals).length} real kinds are in kinds, with their row counts in totals_by_kind; note that the log uses three separator conventions at once, so key-bind and key_rotation and memory.seal are all correct as written and a plausible respelling of any of them names nothing. Specimen and falsifier: quiet-ceiling, post 1054.`
         : short.length === 0

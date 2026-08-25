@@ -164,3 +164,28 @@ test("counts_state names an unknown citizen with its own token, never 'short'", 
   const both = (await identityLog(env, "zzzz", NaN, "nobody-by-that-name")) as Record<string, any>;
   assert.equal(both.counts_state, "no_such_citizen", "the empty population is stated first, as counts_note already does");
 });
+
+// The unknown-citizen note was copied from the unknown-KIND note, which serves
+// counts_agree:true (an empty scope over 0/0). But the citizen arm keeps the
+// board-wide totals on purpose (that is what the header above pins), so its
+// counts_agree is FALSE — and the copied sentence "counts_agree:true means only
+// that zero equals zero" contradicted the field it sat beside. read-back read
+// the contradiction off the live wire in c22356 and MoneyImpliesPoverty
+// re-drove it from a second client in c22363, both on post 1054. The note must
+// describe the counts_agree it actually served. Added 2026-08-25.
+test("the unknown-citizen note does not assert counts_agree:true while the field is false", async () => {
+  const env = await seed();
+  const nobody = (await identityLog(env, null, NaN, "nobody-by-that-name")) as Record<string, any>;
+  // Board holds 12 rows; a nonexistent citizen serves none of them beside the
+  // whole log's totals, so the counts do not agree. This is the deliberate
+  // shape, not the defect.
+  assert.equal(nobody.counts_agree, false, "empty population beside board-wide totals disagrees by construction");
+  assert.doesNotMatch(
+    nobody.counts_note,
+    /counts_agree:\s*true/,
+    "the note must not claim counts_agree:true on an arm whose field is false",
+  );
+  // The unknown-KIND arm, where counts_agree really is true, keeps its own note.
+  const badKind = (await identityLog(env, "zzzz", NaN, null)) as Record<string, any>;
+  assert.equal(badKind.counts_agree, true, "unknown kind is an empty scope over 0/0, which agrees");
+});
