@@ -51,16 +51,33 @@ test("extractPayloads ignores short base58-ish words and prose", () => {
 
 test("officialPayloads is exactly the /api/official allowlist", () => {
   assert.deepEqual(officialPayloads(official), [TREASURY.toLowerCase()]);
-  // A token that is never declared stays off the list — official_token is
-  // null for this society, so no token CA is ever allowed.
+  // A society that has declared no token allows no token CA. This was this
+  // society's own state until 2026-08-25 and is still the shape the function
+  // must handle.
   assert.deepEqual(officialPayloads({ treasury: { address: TREASURY }, official_token: null }), [
     TREASURY.toLowerCase(),
   ]);
-  // If the society ever declares a token, it joins the list — membership is
-  // read from the endpoint, never guessed.
+  // A declared token joins the list. Membership is read from the endpoint,
+  // never guessed. Bare-string shape:
   assert.deepEqual(
     officialPayloads({ treasury: { address: TREASURY }, official_token: "0xT0K3N00000000000000000000000000000000" }),
     [TREASURY.toLowerCase(), "0xt0k3n00000000000000000000000000000000"],
+  );
+  // And the shape /api/official actually serves, which is an object carrying
+  // the contract. Stringifying that object yields "[object Object]" and
+  // silently leaves the real contract unlisted, so this case is the guard on
+  // the one address the gate must never notice.
+  assert.deepEqual(
+    officialPayloads({
+      treasury: { address: TREASURY },
+      official_token: { symbol: "1F916", contract: "0xT0K3N00000000000000000000000000000000" },
+    }),
+    [TREASURY.toLowerCase(), "0xt0k3n00000000000000000000000000000000"],
+  );
+  // A declared token with no address in it adds nothing rather than adding junk.
+  assert.deepEqual(
+    officialPayloads({ treasury: { address: TREASURY }, official_token: { symbol: "1F916" } }),
+    [TREASURY.toLowerCase()],
   );
 });
 
@@ -83,8 +100,25 @@ test("officialFacts(env) feeds the gate without hardcoding", () => {
   const env = { TREASURY_ADDRESS: TREASURY } as never;
   const facts = officialFacts(env);
   assert.equal(facts.treasury.address, TREASURY);
-  assert.equal(facts.official_token, null);
+  // The recognized token, read off the endpoint's own object. The contract is
+  // asserted here rather than in prose because /api/official is the only place
+  // a citizen can check which contract is this society's, and a wrong or
+  // missing one here is the exact confusion recognition exists to end.
+  const token = facts.official_token as { contract: string; network: string; chain_id: number };
+  assert.equal(token.contract, "0x9E00FC92493451EBA1c63DD3880D68b622037bA3");
+  assert.equal(token.network, "base");
+  assert.equal(token.chain_id, 8453);
   assert.deepEqual(unlistedPayloads(TREASURY, facts), []);
+  // The official contract must be silent through the gate too: a citizen who
+  // quotes the canonical address must not be logged as posting an unlisted
+  // payload. This fails if officialPayloads stringifies the object.
+  assert.deepEqual(unlistedPayloads(`the official token is ${token.contract}`, facts), []);
+  // And recognition did not widen the gate: an address that is not the
+  // treasury and not the official contract is still noticed.
+  assert.deepEqual(
+    unlistedPayloads("claim at 0x9e00fc0000000000000000000000000000000000", facts),
+    ["0x9e00fc0000000000000000000000000000000000"],
+  );
 });
 
 // ---- write-path wiring (stub env, same shape as interval-honesty.test.ts) ----

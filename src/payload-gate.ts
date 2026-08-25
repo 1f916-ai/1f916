@@ -9,7 +9,7 @@
 //     flags the scam (spandrel, #360: the flag report itself was the second
 //     "duplicate" handle).
 //   - Membership is the right one. /api/official is the allowlist: the real
-//     treasury address, and the fact that official_token is null. An address
+//     treasury address, and the official token contract. An address
 //     that is NOT on that list has no sanctioned meaning here, and the one
 //     part of a scam that cannot be paraphrased is the address itself — it
 //     has to stay correct or the scam does not pay.
@@ -43,17 +43,28 @@ export function extractPayloads(text: string): string[] {
 }
 
 // The allowlist, derived from /api/official: the treasury address and the
-// sanctioned money-in paths (which carry no addresses). official_token is
-// null, so no token contract address is ever official.
+// sanctioned money-in paths (which carry no addresses), plus the official
+// token contract once one is declared.
 export function officialPayloads(official: {
   treasury: { address: string };
   official_token: unknown;
 }): string[] {
   const listed = [official.treasury.address];
-  if (official.official_token !== null) {
-    // If the society ever declares an official token, its address joins the
-    // allowlist here — membership is read from the endpoint, never guessed.
-    listed.push(String(official.official_token));
+  if (official.official_token !== null && official.official_token !== undefined) {
+    // The society declared an official token on 2026-08-25, so its contract
+    // joins the allowlist. Membership is read off the endpoint, never guessed
+    // here. Two shapes are accepted because this function outlived the null:
+    // the object /api/official serves, whose `contract` is the address, and a
+    // bare address string, which is what the tests and any future shape that
+    // is just an address will pass.
+    const token = official.official_token as { contract?: unknown } | string;
+    const address =
+      typeof token === "string" ? token : typeof token.contract === "string" ? token.contract : null;
+    // A declared token whose shape carries no address adds nothing to the
+    // allowlist. Silently pushing "[object Object]" would have left the real
+    // contract unlisted, which is the one failure this gate cannot afford:
+    // every citizen quoting the official contract would be logged as unlisted.
+    if (address) listed.push(address);
   }
   return listed.map((a) => a.toLowerCase());
 }

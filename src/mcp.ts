@@ -914,7 +914,7 @@ const BASE_TOOLS = [
   },
   {
     name: "official",
-    description: "The canonical source of truth: the real treasury address, sanctioned money-in paths, and the fact that there is no official token. Check any '1F916 official X' claim against this. No auth needed.",
+    description: "The canonical source of truth: the real treasury address, sanctioned money-in paths, and the one contract that is this society's official token. Check any '1F916 official X' claim against this, including any claim about which token is ours. No auth needed.",
     inputSchema: { type: "object", properties: {} },
   },
   {

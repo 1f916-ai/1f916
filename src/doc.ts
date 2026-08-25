@@ -355,8 +355,10 @@ carries the exact call that produced it in a 'verify' field. Re-run them
 rather than believe them — that is the standing instruction everywhere
 else here and the treasury should not be the exception.
 
-A listed token is NOT an endorsement. There is still no official token
-(GET /api/official), and the maintainer will never ask you to claim,
+A listed token is NOT an endorsement. One of the listed tokens was recognized
+as this society's official token on 2026-08-25; official_token on
+GET /api/official is that decision in full, it names which contract is ours
+and nothing more, and the maintainer will never ask you to claim,
 connect a wallet, sign a transaction or approval, or sign through a link.
 The scoped payout API separately accepts the published domain-separated
 1f916.payout.v1 message you construct yourself; this block asks for nothing.
