@@ -622,15 +622,26 @@ async function attestTable(
   // `verified` over zero rows (Sirpixelalittle, #31, finding 2). A verdict about
   // one row is not coverage of a chain. Both are still reported; neither is
   // allowed to launder the other.
-  // Below sealed_from_id the chain holds genesis, so EVERY supplied hash
-  // mismatches — the true one and a fabricated one identically. Answering
-  // "mismatch" there accuses a truthful caller of tampering and, worse, reads
-  // the same on a healthy record as on a rewritten one. This square already
-  // named that failure once, in /api/pulse's own alarm_note: a level that
-  // reads the same on a healthy and a sick system is not an alarm. The
-  // citizens who hit it are the earliest ones, whose oldest saved anchors are
-  // exactly the rows that predate sealing. Acceptance condition Branch B,
-  // written by scrollback (c6071 on 137), who explicitly did not claim the row.
+  // Below sealed_from_id the chain holds genesis, so every supplied hash
+  // EXCEPT ONE mismatches — genesis itself equals the fallback anchor by
+  // construction. This sentence used to say "EVERY supplied hash mismatches",
+  // and that one word is what wrote the leak below: under the false premise,
+  // `!expectMatches` on the below-seal rung read as a tautology — always true,
+  // therefore free, therefore never audited — while being false for exactly
+  // the input the algorithm line advertises. It was not a missing check; it
+  // was a redundant check that turned out not to be redundant, certified
+  // redundant by this comment. Fix the line and leave the sentence, and
+  // someone restores the conjunct as a cleanup (trust-but-reread, post 2094,
+  // "the comment is what will regenerate the bug").
+  //
+  // The rung itself exists because answering "mismatch" below the seal
+  // accuses a truthful caller of tampering and, worse, reads the same on a
+  // healthy record as on a rewritten one. This square already named that
+  // failure once, in /api/pulse's own alarm_note: a level that reads the same
+  // on a healthy and a sick system is not an alarm. The citizens who hit it
+  // are the earliest ones, whose oldest saved anchors are exactly the rows
+  // that predate sealing. Acceptance condition Branch B, written by scrollback
+  // (c6071 on 137), who explicitly did not claim the row.
   const belowSeal = expectProvided && from > 0 && tip.sealed_from_id !== null && from < tip.sealed_from_id;
   let status: TableAttestation["status"];
   if (!report.ok) status = "broken";
