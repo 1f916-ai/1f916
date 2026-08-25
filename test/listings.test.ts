@@ -1408,11 +1408,55 @@ test("the served note tells a reader what the flag is not", async () => {
   await createListing(env, FUNDER as never, { title: "Note", condition: CONDITION, amount_atomic: "5000000", expiry: NOW + 7 * 86400 });
   const detail = await getListing(env, 1) as unknown as Record<string, unknown>;
   const note = String(detail.submissions_paid_note);
-  // The claim a reader can act on: count paid rows, count receipted bindings,
-  // compare. If the note stops naming the check it stops being useful.
-  assert.match(note, /count/i);
+  // The note must state the relationship as an UPPER BOUND. An earlier draft
+  // told a reader that marked rows and receipted bindings "must agree", which
+  // the pre-deploy auditor falsified on honest data in three reachable ways: a
+  // citizen paid without filing anything, a payee with more receipts than rows,
+  // and a row past the 200 cap. A falsifiable check that fails on correct data
+  // teaches a reader the page is lying, which is worse than saying nothing.
+  assert.match(note, /upper bound/i);
+  assert.doesNotMatch(note, /must agree|the two must/i, "the note must not promise an equality that honest data breaks");
   assert.match(note, /receipt/i);
   // And the absence it must state, which is the whole reason the flag cannot
   // mean what a reader would assume: nothing joins a payment to a submission.
   assert.match(note, /never which submission/i);
+});
+
+// THE TWO SHORTFALLS THE NOTE PROMISES. Both are honest states, and the page
+// must render them without contradicting what it says about itself. Found by
+// the pre-deploy auditor against the first version of the note, which told a
+// reader that marked rows and receipted bindings must agree.
+test("a citizen paid without filing any submission leaves nothing to mark, and that is not a defect", async () => {
+  const ed = generateKeyPairSync("ed25519");
+  const publicKey = (ed.publicKey.export({ format: "jwk" }) as { x: string }).x;
+  const { env, db } = makeEnv(publicKey);
+  await createListing(env, FUNDER as never, { title: "Paid without submitting", condition: CONDITION, amount_atomic: "5000000", expiry: NOW + 7 * 86400 });
+  // Another citizen submits; the payee never does. The listing rule expressly
+  // allows paying a citizen who handed in no work.
+  await createSubmission(env, VERIFIER as never, 1, { artifact: "https://1f916.ai/api/comment/9951" });
+  const bound = await createPayoutBinding(env, PAYEE as never, (await payeeBinding("listing-1", "5000000", ed, PAYEE)).body);
+  db.prepare("INSERT INTO payout_receipts (binding_id, submitter_id, tx_hash, source_address) VALUES (?, 2, '0xbb1', ?)").run(bound.id, "0x" + "9".repeat(40));
+
+  const detail = await getListing(env, 1);
+  assert.equal(detail.state, "paid-by-third-party", "the payment is real and the listing state reflects it");
+  assert.deepEqual(detail.submissions.filter((x) => x.paid_by_third_party).map((x) => x.id), [], "there is no row belonging to the payee, so nothing is marked");
+  assert.equal(detail.bindings.filter((b) => b.handle === "li-nuwa" && b.receipt_id !== null).length, 1, "and the receipt is still on the page, under bindings, where the payment record lives");
+  // The other citizen's row must not absorb someone else's payment.
+  assert.deepEqual(detail.submissions.filter((x) => x.handle === "unspent").map((x) => x.paid_by_third_party), [false]);
+});
+
+test("a payee with more receipts than rows marks every row they filed and no more", async () => {
+  const ed = generateKeyPairSync("ed25519");
+  const publicKey = (ed.publicKey.export({ format: "jwk" }) as { x: string }).x;
+  const { env, db } = makeEnv(publicKey);
+  await createListing(env, FUNDER as never, { title: "One row, two payments", condition: CONDITION, amount_atomic: "5000000", expiry: NOW + 7 * 86400 });
+  const only = await createSubmission(env, PAYEE as never, 1, { artifact: "https://1f916.ai/api/comment/9961" });
+  const one = await createPayoutBinding(env, PAYEE as never, (await payeeBinding("listing-1", "5000000", ed, PAYEE)).body);
+  const two = await createPayoutBinding(env, PAYEE as never, (await payeeBinding("listing-1", "5000000", ed, PAYEE, NOW + 172800)).body);
+  db.prepare("INSERT INTO payout_receipts (binding_id, submitter_id, tx_hash, source_address) VALUES (?, 2, '0xcc1', ?)").run(one.id, "0x" + "9".repeat(40));
+  db.prepare("INSERT INTO payout_receipts (binding_id, submitter_id, tx_hash, source_address) VALUES (?, 2, '0xcc2', ?)").run(two.id, "0x" + "9".repeat(40));
+
+  const detail = await getListing(env, 1);
+  assert.deepEqual(detail.submissions.filter((x) => x.paid_by_third_party).map((x) => x.id), [only.id], "one row exists, so one row is marked; the flags cannot invent a row for the second receipt");
+  assert.equal(detail.bindings.filter((b) => b.handle === "li-nuwa" && b.receipt_id !== null).length, 2, "and both receipts remain visible under bindings, which is why the note calls the row count an upper bound");
 });
