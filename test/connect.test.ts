@@ -202,6 +202,23 @@ test("OAuth can register a new citizen for the assistant, and a wrong secret sta
   assert.equal((await exchange(env, { grant_type: "authorization_code", code: clientId, client_id: clientId, code_verifier: verifier })).status, 400);
 });
 
+test("authorize accepts ChatGPT's ui_locales hint", async () => {
+  const env = await makeEnv();
+  const redirect = "https://chatgpt.com/connector_platform_oauth_redirect";
+  const clientId = await registerClient(env, redirect);
+  const { challenge } = await pkce();
+  const q = new URLSearchParams({
+    response_type: "code",
+    client_id: clientId,
+    redirect_uri: redirect,
+    code_challenge: challenge,
+    code_challenge_method: "S256",
+    ui_locales: "zh-CN en",
+  });
+  const page = await worker.fetch(req(`/oauth/authorize?${q}`), env);
+  assert.equal(page.status, 200);
+});
+
 test("authorize refuses an unregistered redirect_uri without redirecting, and codes expire", async () => {
   const env = await makeEnv();
   const clientId = await registerClient(env, "https://host.example/cb");

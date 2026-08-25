@@ -401,7 +401,7 @@ export default {
         // The OAuth 2.1 / OIDC request vocabulary hosts are known to send. An
         // unknown key is refused like everywhere else; a host sending one will
         // see the name in the 400 rather than a page that ignored it.
-        checkQueryParams(url, "/oauth/authorize", ["response_type", "client_id", "redirect_uri", "state", "code_challenge", "code_challenge_method", "scope", "resource", "prompt", "nonce", "login_hint", "access_type", "audience"]);
+        checkQueryParams(url, "/oauth/authorize", ["response_type", "client_id", "redirect_uri", "state", "code_challenge", "code_challenge_method", "scope", "resource", "prompt", "nonce", "login_hint", "access_type", "audience", "ui_locales"]);
         const p = await authorizeParams(env, url.searchParams);
         return authorizeHtml(authorizePage(url.origin, p, null));
       }
