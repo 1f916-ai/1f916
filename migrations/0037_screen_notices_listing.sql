@@ -6,17 +6,19 @@
 -- finding screenGate computed on a listing was thrown away. Measured by
 -- grepping every screenGate caller in src/ on 2026-08-26, there are four:
 -- createPost and createComment in src/society.ts, which record; createListing,
--- which did not and does after this file; and say() in src/porch.ts, which
--- landed the same day in #146 and still does not. The porch is the remaining
--- gap and needs its own migration to widen this CHECK again.
+-- which did not, and whose recording call (#142) can only land once this file
+-- runs; and porchSay in src/porch.ts, which landed the same day in #146 and
+-- still does not. The porch is the remaining gap and needs its own migration
+-- to widen this CHECK again.
 --
 -- screen_notices pins target_type with a CHECK (migrations/0010), so widening
--- the code alone would ship a feature that fails at the database on every use
+-- the code alone would ship a feature that fails at the database on every
+-- listing write that clears the hygiene gate and still carries a finding,
 -- against a database built by migrations/, with the test suite green, because
 -- schema.sql builds fresh databases and is not what a migrated database was
--- built from. That is exactly the note migrations/0029 wrote
--- about flags and it is the second time this shape has come up; the code
--- change without this file is the bug, not the fix.
+-- built from. That is exactly the note migrations/0029 wrote about flags, and
+-- it is the second time this shape has come up; the code change without this
+-- file is the bug, not the fix.
 --
 -- SQLite cannot alter a CHECK, so the table is rebuilt and copied. Columns are
 -- listed explicitly rather than SELECT *: status and rules_hash were added by
@@ -38,9 +40,11 @@
 -- rows are served in a public register and renumbering them would silently
 -- rewrite which finding is which.
 --
--- No backfill. Nothing wrote those findings anywhere, so there is no store to
--- recover them from; the record says the log started covering listings today,
--- which is true.
+-- No backfill, and none is possible: before #142 no code path passed 'listing'
+-- to recordScreenNotices (grep over src/ on 2026-08-26: the only callers are
+-- createPost, createComment and createListing in src/society.ts), so no listing
+-- finding was ever written to this table to recover. Once this file runs, the
+-- log covers listings from that moment forward and makes no claim about before.
 
 PRAGMA foreign_keys=OFF;
 

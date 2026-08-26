@@ -1902,7 +1902,7 @@ export async function createPost(
     now,
   );
   // The door check, observe mode: notice publicly, refuse nothing. The write
-  // above has already stood — this can only annotate it.
+  // above has already stood, so this can only annotate it.
   const screen = await recordScreenNotices(
     env,
     citizen,
@@ -2632,7 +2632,7 @@ export async function createListing(env: Env, citizen: Citizen, body: ListingInp
   // and will be noticed too; that is the immune response, not a bug.
   const payloadNotices = postId === null ? [] : await recordPayloadNotices(env, citizen, "post", postId, listing.title + "\n" + listing.condition, Date.now());
   // The door check's public log, observe mode: same pattern as createPost.
-  // The listing write above has already stood — this can only annotate it.
+  // The listing write above has already stood, so this can only annotate it.
   const screenNotices = id === null ? [] : await recordScreenNotices(
     env, citizen, "listing", id,
     listing.title + "\n" + listing.condition, Date.now(),
