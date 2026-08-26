@@ -327,8 +327,11 @@ const endpoints = [
   // tokens and both hidden_by_since counts null, and only the ID-mode probe
   // exercises the snap:/id: token grammar and the non-null snapshot counters.
   // Marker is page_saturated, which shipped with #132.
-  ["/api/changes?since=0", "changes.json", "page_saturated"],
-  ["/api/changes?since=0&posts_since=init&comments_since=init", "changes.json", "page_saturated"],
+  // Marker moved from page_saturated to rows_returned with #155: the marker
+  // has to name the NEWEST field the schema requires, or the probe passes on a
+  // deployment that predates the contract it is checking.
+  ["/api/changes?since=0", "changes.json", "rows_returned"],
+  ["/api/changes?since=0&posts_since=init&comments_since=init", "changes.json", "rows_returned"],
   // payouts.json has existed since the payment rail landed and no probe ever
   // read it against the deployment. A contract nothing checks is prose.
   ["/api/payouts", "payouts.json"],
@@ -338,7 +341,11 @@ const endpoints = [
   // claim the schema makes about the paged branch was unchecked against a
   // deployment. since_is_past_the_end is the marker, so this stages until the
   // branch that adds it is live and then validates on every run.
-  ["/api/events?since=0", "events.json", "since_is_past_the_end"],
+  // events-paged.json, not events.json: the ASC branch is a different body and
+  // events.json has to leave its four fields optional for the default DESC view,
+  // so this probe validated against a contract that would have accepted a
+  // response with all four missing. Found 2026-08-26 by the marker guard below.
+  ["/api/events?since=0", "events-paged.json", "since_is_past_the_end"],
   ["/api/docket", "docket.json"],
   ["/api/post/475", "post.json"],
   // Skips until this branch is deployed (fetchJson throws on the 404), then
@@ -366,6 +373,30 @@ for (const [path, schemaFile, deploymentMarker] of endpoints) {
   });
 }
 
+test("every deployment marker is a field its schema actually requires", () => {
+  // A marker is the switch that decides whether a live probe runs at all, so a
+  // marker naming a field the schema does not require is a probe that can stage
+  // itself off forever, or one that runs against a deployment older than the
+  // contract. Both read as green. This checks the half that is checkable: the
+  // marker is a required top-level property of the schema it gates.
+  //
+  // KILLING MUTATION: point any marker at a field not in the schema's
+  // `required` list -> red.
+  for (const [path, schemaFile, deploymentMarker] of endpoints) {
+    if (!deploymentMarker || deploymentMarker.includes(".")) continue;
+    const schema = loadSchema(schemaFile);
+    // Required, not merely declared. A marker the schema does not require is a
+    // switch that can turn a probe off against a contract nothing enforces,
+    // which is how /api/events?since=0 came to validate against a schema that
+    // would have accepted a response missing every field the probe was added
+    // for.
+    assert.ok(
+      Array.isArray(schema.required) && schema.required.includes(deploymentMarker),
+      `${path}: marker "${deploymentMarker}" is not a required property of ${schemaFile}`,
+    );
+  }
+});
+
 test("the changes schema rejects the contract breaks it exists to catch", () => {
   // A live probe that passes on its first run proves the schema is WELL-FORMED,
   // never that it is TIGHT. So every clause that carries weight is given a
@@ -379,6 +410,7 @@ test("the changes schema rejects the contract breaks it exists to catch", () => 
     has_more: false,
     window_age_ms: 5614622,
     page_saturated: { posts: false, comments: false },
+    rows_returned: { posts: 2, comments: 1 },
     window_note: "...",
     next_posts_since: "id:1374",
     next_comments_since: "snap:0:13259:12777",
@@ -424,6 +456,11 @@ test("the changes schema rejects the contract breaks it exists to catch", () => 
   // The disclosures from #132, whose types are what a caller branches on.
   rejects("page_saturated.posts served as a string", (d) => { d.page_saturated.posts = "false"; });
   rejects("page_saturated losing a stream", (d) => delete d.page_saturated.comments);
+  // rows_returned (#155): the page's own cardinality, which page_saturated
+  // cannot supply — "not at the ceiling" covers both 3 rows and 199.
+  rejects("rows_returned omitted", (d) => delete d.rows_returned);
+  rejects("rows_returned losing a stream", (d) => delete d.rows_returned.posts);
+  rejects("a negative row count", (d) => { d.rows_returned.comments = -1; });
   rejects("window_age_ms served as a string", (d) => { d.window_age_ms = "5614622"; });
   // Top-level fields whose ABSENCE is the break, not their value: a legacy-mode
   // response serves these as null and must not omit them, or "not in this mode"
