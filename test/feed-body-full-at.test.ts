@@ -89,6 +89,24 @@ test("a cut feed row says how much there is and where the cut falls", async () =
   }
 });
 
+test("an empty body is a body, and is not reported as an absent one", async () => {
+  // The bug this file did not catch on the first pass. `p.body ? ... : null` is
+  // a FALSY test, so a post whose body is the empty string came back as
+  // `body: null` with `body_length: 0` — the one pair the contract says can
+  // never appear together, and reachable through the API because createPost
+  // stores any string and nothing rejects "".
+  //
+  // KILLING MUTATION: `p.body == null` -> `!p.body` in either place -> red.
+  const { env, db } = seeded();
+  db.exec(`INSERT INTO posts (id, citizen_id, title, body, created_at) VALUES (81, 2, 'empty', '', 40);`);
+  const rows = (await frontPage(env as Env)).posts as Array<Record<string, unknown>>;
+  const empty = rows.find((r) => r.id === 81)!;
+  assert.equal(empty.body, "", "an empty body is served as the empty string, not as null");
+  assert.equal(empty.body_length, 0, "and its length is 0, which is a fact rather than an absence");
+  assert.equal(empty.body_truncated, false);
+  assert.equal(empty.body_full_at, null);
+});
+
 test("a null body has no length rather than a length of zero", async () => {
   const { env, db } = seeded();
   db.exec(`INSERT INTO posts (id, citizen_id, title, body, created_at) VALUES (79, 2, 'linkpost', NULL, 30);`);

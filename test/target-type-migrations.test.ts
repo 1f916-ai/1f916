@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 // the TypeScript union without adding a migration produces a change that is
 // green in every test and fails at the database on every use in production,
 // because schema.sql builds fresh databases and never runs against the live
-// one. migrations/0029 wrote that warning in prose in 2026-08-13; #142 hit it
+// one. migrations/0029 wrote that warning in prose on 2026-08-14; #142 hit it
 // again on 2026-08-26 with 980 tests passing. Prose did not hold, so this is
 // the mechanical version: what the code declares it can write must be a value
 // the live schema will actually accept.

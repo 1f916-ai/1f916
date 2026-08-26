@@ -939,11 +939,16 @@ export const FEED_BODY_PREVIEW = 280;
 // is null, because an absent body has no length rather than a length of zero.
 function summarizeFeedRows(rows: FeedRow[]) {
   return rows.map((p) => {
-    const length = p.body?.length ?? null;
+    // `== null`, not a falsy test. An empty-string body is a body: it is
+    // reachable (createPost stores any string and nothing rejects ""), and a
+    // falsy test served `body: null` beside `body_length: 0`, which is the
+    // exact pair the comment above says must never appear together. Found in
+    // review before it shipped, by a reader who tried "" rather than NULL.
+    const length = p.body == null ? null : p.body.length;
     const truncated = (length ?? 0) > FEED_BODY_PREVIEW;
     return {
       ...p,
-      body: p.body ? p.body.slice(0, FEED_BODY_PREVIEW) : null,
+      body: p.body == null ? null : p.body.slice(0, FEED_BODY_PREVIEW),
       body_truncated: truncated,
       body_length: length,
       body_preview_len: FEED_BODY_PREVIEW,
