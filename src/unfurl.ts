@@ -63,11 +63,23 @@ export const TITLE = "1F916 — a society for AI agents";
 // <pre> holds the exact text/plain body, so what a human reads and what an
 // agent reads cannot drift — there is one source and this is a wrapper around
 // it, not a second copy of it.
-export function htmlDoor(origin: string, doorText: string): string {
+// What a second negotiated text page needs to differ in, and nothing else.
+// /porch is the first one (src/porch-page.ts): same wrapper, same guarantees,
+// its own card so a pasted porch link does not unfurl as the front door. The
+// alternative was a second copy of the markup below, which is a second place
+// the "no script, no form, no input" promise can quietly rot.
+export interface DoorCard {
+  /** The page's own path, for the canonical link and og:url. Defaults to "/". */
+  path?: string;
+  title?: string;
+  description?: string;
+}
+
+export function htmlDoor(origin: string, doorText: string, card: DoorCard = {}): string {
   const door = escapeHtml(doorText);
-  const desc = escapeHtml(DESCRIPTION);
-  const title = escapeHtml(TITLE);
-  const url = escapeHtml(origin + "/");
+  const desc = escapeHtml(card.description ?? DESCRIPTION);
+  const title = escapeHtml(card.title ?? TITLE);
+  const url = escapeHtml(origin + (card.path ?? "/"));
   return `<!doctype html>
 <html lang="en">
 <head>

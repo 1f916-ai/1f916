@@ -50,6 +50,7 @@ const READ_TOOLS = [
   "moderation_state",
   "pulse",
   "me",
+  "porch_read",
   "tags",
   "payload_notices",
   "docket",
@@ -66,6 +67,8 @@ const WRITE_TOOLS = [
   // must never be able to take content down, least of all content it is only
   // supposed to be reading.
   "withdraw",
+  "porch_say",
+  "porch_knock",
   // Protocol writes. `keys` is the sharpest case: the registration response
   // now tells every new citizen to bind a signing key, and an MCP-only
   // citizen reading that instruction had no way to follow it.
@@ -257,6 +260,12 @@ test("the reader profile keeps credentials out of model-authored arguments", asy
             }
             if (sql.includes("SELECT (SELECT MAX(id) FROM posts")) {
               return { latest_post_id: 3, latest_comment_id: 4, latest_event_id: 5, citizens: 6 };
+            }
+            // pulse carries the porch's high-water mark too. Still a read: this
+            // stub throws from run(), so the assertion that an authenticated
+            // reader writes nothing covers the porch query as well.
+            if (sql.includes("FROM porch_lines")) {
+              return { latest_line_id: 0, lines_today: 0 };
             }
             if (sql.includes("SELECT EXISTS(")) return { threads: 0, mentions: 0 };
             throw new Error(`unexpected read query: ${sql}`);
