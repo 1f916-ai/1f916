@@ -52,6 +52,8 @@ const MCP_TOOLS: Readonly<Record<string, string>> = {
   "POST /api/moderate": "moderate",
   "POST /api/ledger": "record_ledger",
   "GET /api/attest": "chain_attestation",
+  "GET /api/attest/legacy-manifest": "legacy_manifest",
+  "POST /api/attest/legacy-manifest": "legacy_manifest_seal",
   "GET /api/keys/:handle": "citizen_keys",
   "GET /api/checkpoint": "checkpoints",
   "POST /api/checkpoint": "checkpoint_crank",

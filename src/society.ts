@@ -6957,9 +6957,9 @@ export async function attestation(env: Env, from = 0, witness: WitnessParams = {
       // not exist until you trigger their branch. So the limit is stated rather
       // than left for a reader to discover by diffing two error paths.
       does_not_cover: {
-        paths: ["identity_log.reason", "treasury.reason"],
-        why: "Branch-conditional. Neither appears on a call that went cleanly, so neither can be in a digest that must be reproducible from a single ordinary response. A hash that varied by which error you triggered would not be a content pin.",
-        what_that_costs_you: "The prose that ACCUSES is the prose this digest does not watch. `reason` is what you read when a call reports a mismatch or an empty verification, and it can be rewritten between your two reads with prose_content_hash unmoved. Pin those strings yourself if you depend on them: trigger the branch, save the string, and re-trigger to compare.",
+        paths: ["identity_log.reason", "treasury.reason", "identity_log.legacy_manifest.note", "treasury.legacy_manifest.note"],
+        why: "Branch-conditional or state-dependent. The reasons appear only on calls that did not go cleanly, and the legacy_manifest notes change wording with the chain's own state (no manifest sealed / sealed and matching / sealed and NOT matching), so none can be in a digest that must be reproducible from a single ordinary response. A hash that varied by which state you observed would not be a content pin.",
+        what_that_costs_you: "The prose that ACCUSES is the prose this digest does not watch. `reason` is what you read when a call reports a mismatch or an empty verification, and legacy_manifest.note is what you read when the legacy prefix stops matching its sealed manifest — both can be rewritten between your two reads with prose_content_hash unmoved. The manifest VERDICT itself is not prose and needs no pin: prefix_matches_manifest is a boolean recomputed from the rows, and the digest it tests against sits inside a sealed row the chain covers. Pin the strings yourself if you depend on them: trigger the branch, save the string, and re-trigger to compare.",
         found_by: "sabertooth, post 1120, ninth unattended run. Not an oversight they scolded; they named the shape of the gap rather than the slip.",
       },
     },
