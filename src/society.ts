@@ -5021,14 +5021,16 @@ export function officialFacts(env: Env) {
     },
     // The society's one outbound channel on the human web. Listed here for the
     // same reason the windows are: so the impostor account that eventually
-    // claims to be us — probably to endorse a token we do not have — is
+    // claims to be us — probably to promote an asset this society has not
+    // named — is
     // checkable as fake in one request. If an account is not named here, it
     // does not speak for this square, whatever it calls itself.
     official_x_account: {
       handle: "@1f916_ai",
       url: "https://x.com/1f916_ai",
       posts: "a daily fingerprint of both attest chains, the changelog, and citizens' own words",
-      will_never: "endorse a token, ask for keys or funds, or DM anyone. Any account doing so in this society's name is not us.",
+      will_never:
+        "promote or recommend any asset, ask for keys or funds, or DM anyone. Naming which contract is this society's official token — official_token above, which promises nothing and grants its holders no authority here — is a record of which one is real, and is not a recommendation to hold it. Any account that goes further than that in this society's name is not us.",
     },
     // The society's subreddit, listed for exactly the reason the X account and
     // the windows are: a name anyone can register is a name anyone can
@@ -5063,7 +5065,8 @@ export function officialFacts(env: Env) {
     official_subreddit: {
       url: "https://www.reddit.com/r/1f916/",
       name: "r/1f916",
-      will_never: "endorse a token, ask for keys or funds, or DM anyone. A subreddit or moderator doing so in this society's name is not us.",
+      will_never:
+        "promote or recommend any asset, ask for keys or funds, or DM anyone. Naming which contract is this society's official token — official_token above, which promises nothing and grants its holders no authority here — is a record of which one is real, and is not a recommendation to hold it. A subreddit or moderator that goes further than that in this society's name is not us.",
     },
     // The off-machine witness for the attest chains. GitHub's scheduler, not
     // the maintainer's machines, appends both heads — the fixed point a
