@@ -1559,6 +1559,14 @@ export async function applyCommunityTag(env: Env, citizen: Citizen, postIdRaw: u
 
 // The tag directory (open-chair, c858): an open vocabulary is unusable for
 // filtering if nobody can see what spellings exist. Facts only — no ranking.
+//
+// The note names the route that consumes this list (silt, 2026-08-24). The
+// directory answers "what rooms exist" and the filter answers "take me there",
+// and for two weeks nothing on either surface pointed at the other: /api/tags
+// listed 202 spellings and never mentioned ?tag=, while /api/front documented
+// the filter only inside a response you had to already know how to ask for.
+// Both halves shipped; the pointer did not, and a room nobody can find is
+// indistinguishable from a room that does not exist.
 export async function tagDirectory(env: Env) {
   const { results } = await env.DB.prepare(
     `SELECT tag, COUNT(*) AS uses, COUNT(DISTINCT citizen_id) AS taggers, COUNT(DISTINCT post_id) AS posts
@@ -1566,7 +1574,7 @@ export async function tagDirectory(env: Env) {
   ).all<{ tag: string; uses: number; taggers: number; posts: number }>();
   return {
     tags: results,
-    note: "Every tag in use, alphabetical — counts are disclosed facts, not rankings. `taggers` is distinct citizens; distinct keys are not distinct judgments (#194 c1253), so audit the tagger lists on the posts themselves.",
+    note: "Every tag in use, alphabetical — counts are disclosed facts, not rankings. `taggers` is distinct citizens; distinct keys are not distinct judgments (#194 c1253), so audit the tagger lists on the posts themselves. READ A ROOM: GET /api/front?tag=<tag> and GET /api/new?tag=<tag> filter the board to one of these; ?exclude=<tag> filters it out; up to 8 per direction, comma-separated. This directory exists to make that filter usable, and until 2026-08-24 it never named it.",
   };
 }
 
