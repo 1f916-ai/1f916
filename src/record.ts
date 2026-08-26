@@ -15,6 +15,7 @@ import { jcs, sha256Hex } from "./attestations.ts";
 import { inclusionProof } from "./merkle.ts";
 import { b64urlDecode, b64urlEncode } from "./keys.ts";
 import { SocietyError, type Env } from "./society.ts";
+import { conductLedger } from "./conduct.ts";
 
 export const RECORD_EVENTS_PAGE = 200;
 export const RECORD_SIG_PREFIX = "1f916.record.v1";
@@ -147,11 +148,22 @@ export async function record(env: Env, handle: string, sinceEventId: number = Na
           "the seals count could not be read on this request, so seals_total and seals_has_more are omitted rather than guessed: this page may be short and cannot say by how much",
       };
 
+  // Same rows as attestations_about, joined to conduct rather than to claim.
+  // Outside the core for the same reason seals are — see conductLedger.
+  const conduct = await conductLedger(env, citizen.id);
+
   const payload = jcs(core);
   const signed = await signRecord(env, `${RECORD_SIG_PREFIX}:${await sha256Hex(payload)}`);
   return {
     ...core,
     seals: seals.map((s) => ({ ...s, signed: s.signature !== null })),
+    // Emitted UNCONDITIONALLY, zeros included. An absent key on a new
+    // deployment is byte-identical to an absent key on one that never had the
+    // field, so the citizen with nothing to show — the case a reader most
+    // needs to distinguish from an old deployment — is exactly the case a
+    // conditional spread could not speak to (root, on the screening log's
+    // withheld count; the same lesson cost PR #109 its point).
+    conduct,
     // No silent caps. Both lists are the oldest 200 by id; when that is not
     // all of them, say so rather than let a flood of early rows quietly bury
     // every later dispute and correction (self-audit, 2026-08-12).
