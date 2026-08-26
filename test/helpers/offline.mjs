@@ -1,4 +1,8 @@
-// The deterministic suite cannot open a socket. Not "should not": cannot.
+// The deterministic suite does not open sockets by accident.
+//
+// Not "cannot": this is a preload, not a sandbox, and the block at the bottom
+// of this file names the four ways out that review found. What it does is make
+// the spelling of a request stop mattering.
 //
 // test/live-probe-gate.test.ts greps source for a live-origin fetch, and a grep
 // over source is a floor, not a proof. Pre-publication review walked seven ways
@@ -39,3 +43,27 @@ net.Socket.prototype.connect = refuse("net.Socket.connect");
 tls.connect = refuse("tls.connect");
 dns.lookup = refuse("dns.lookup");
 dns.promises.lookup = refuse("dns.promises.lookup");
+// The Resolver CLASS, not only the module-level helpers. Patching dns.lookup
+// and leaving new dns.Resolver().resolve4() alone was a hole review walked
+// through: it returned real A records for the live origin under `npm test`.
+for (const Cls of [dns.Resolver, dns.promises.Resolver]) {
+  for (const method of Object.getOwnPropertyNames(Cls.prototype)) {
+    if (method.startsWith("resolve") || method === "reverse" || method === "lookup") {
+      Cls.prototype[method] = refuse(`dns.Resolver.${method}`);
+    }
+  }
+}
+
+// WHAT THIS DOES NOT COVER, named rather than left to be discovered. Every one
+// is a way of LEAVING this thread rather than a way of writing a request, so
+// none of them is something a probe gets written as by accident:
+//
+//   a worker_thread whose code is CommonJS. An ESM eval worker and a worker
+//   loaded from a file both inherit --import and are guarded; a CJS eval
+//   worker is not.
+//   a child process. execSync("curl ...") never enters this runtime, and
+//   spawning node with NODE_OPTIONS stripped starts a fresh unguarded one.
+//   process.binding("tcp_wrap"), which opens a raw socket beneath all of this.
+//
+// Closing those means a sandbox, not a preload. The guard is here to stop a
+// probe being added to the deterministic suite by habit, and it does that.
