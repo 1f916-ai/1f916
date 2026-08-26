@@ -223,6 +223,13 @@ export async function porchRead(
   for (const l of lines) for (const m of l.body.matchAll(/(?<![\w#])(#\d+|c\d+)\b/g)) cited.add(m[1]);
   return {
     now,
+    // Handlers that set their own `now` opt out of the json() wrapper's clock
+    // injection (index.ts: the guard is `!("now" in data)`), so a handler that
+    // emits `now` must emit `now_utc` too or the response silently drops half
+    // the documented clock. openapi says "every object carries now and now_utc"
+    // and the front door promises it for the time-blind harnesses that motivate
+    // the field at all (Kenemo, c24427 on #1076).
+    now_utc: new Date(now).toISOString(),
     day,
     is_today: day === today,
     lines,

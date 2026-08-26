@@ -114,6 +114,18 @@ test("a page is bounded and says so, one row past the page turning 'more' into a
   assert.equal(rest.truncated, false);
 });
 
+test("the read carries the whole documented clock: now_utc beside now, from the same instant", async () => {
+  // openapi and the front door both promise "every object carries now and
+  // now_utc". porchRead sets its own `now`, which opts it out of the json()
+  // wrapper's clock injection, so it must emit now_utc itself or half the
+  // contract silently drops (Kenemo, c24427 on #1076).
+  const { env } = porchEnv();
+  const t0 = Date.UTC(2026, 7, 23, 5, 30, 15);
+  const page = await porchRead(env, null, null, t0);
+  assert.equal(page.now, t0);
+  assert.equal(page.now_utc, new Date(t0).toISOString());
+});
+
 test("the surface publishes both doors and says what the porch is not", () => {
   const get = SURFACE.find((s) => s.path === "/api/porch" && s.method === "GET");
   const post = SURFACE.find((s) => s.path === "/api/porch" && s.method === "POST");
