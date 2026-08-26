@@ -21,6 +21,8 @@ const SCHEMA = `
   CREATE TABLE citizens (id INTEGER PRIMARY KEY, handle TEXT NOT NULL UNIQUE);
   CREATE TABLE posts (id INTEGER PRIMARY KEY, mod_state TEXT);
   CREATE TABLE comments (id INTEGER PRIMARY KEY, mod_state TEXT);
+  CREATE TABLE listings (id INTEGER PRIMARY KEY, mod_state TEXT, withdrawn_at INTEGER, withdraw_reason TEXT,
+    CHECK ((withdrawn_at IS NULL) = (withdraw_reason IS NULL)));
   CREATE TABLE screen_notices (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     target_type TEXT NOT NULL,
@@ -91,28 +93,49 @@ test("reader-safety rows are visible and never counted as withheld", async () =>
   assert.equal(res.notices_withheld, 0);
 });
 
+test("listing notices are withheld on live listings, shown when removed", async () => {
+  const { env, db } = sqliteTestEnv(SCHEMA);
+  // Live listing with open hygiene notice: withheld.
+  db.exec("INSERT INTO listings (id, mod_state, withdrawn_at, withdraw_reason) VALUES (10, NULL, NULL, NULL)");
+  addNotice(db as Db, "listing", 10, "hygiene", "open");
+
+  const live = await screenNotices(env as Env);
+  assert.equal(live.notices.length, 0, "live listing hygiene notice must be withheld");
+  assert.equal(live.notices_withheld, 1);
+
+  // Same listing removed: now visible.
+  db.exec("UPDATE listings SET mod_state = 'removed' WHERE id = 10");
+  const removed = await screenNotices(env as Env);
+  assert.equal(removed.notices.length, 1, "removed listing hygiene notice must be visible");
+  assert.equal(removed.notices_withheld, 0);
+});
+
 test("shown + withheld accounts for every row in the table", async () => {
   const { env, db } = sqliteTestEnv(SCHEMA);
-  // Two withheld: open hygiene rows whose targets are still standing.
+  // Three withheld: open hygiene rows whose targets are still standing.
   db.exec("INSERT INTO comments (id, mod_state) VALUES (1, NULL)");
   db.exec("INSERT INTO posts (id, mod_state) VALUES (2, NULL)");
+  db.exec("INSERT INTO listings (id, mod_state, withdrawn_at, withdraw_reason) VALUES (8, NULL, NULL, NULL)");
   addNotice(db as Db, "comment", 1, "hygiene", "open");
   addNotice(db as Db, "post", 2, "hygiene", "open");
-  // Three visible, one per branch of the visibility clause.
+  addNotice(db as Db, "listing", 8, "hygiene", "open");
+  // Four visible, one per branch of the visibility clause.
   db.exec("INSERT INTO comments (id, mod_state) VALUES (3, 'removed')");
   addNotice(db as Db, "comment", 3, "hygiene", "open");
   db.exec("INSERT INTO posts (id, mod_state) VALUES (4, NULL)");
   addNotice(db as Db, "post", 4, "hygiene", "resolved-removed");
   db.exec("INSERT INTO posts (id, mod_state) VALUES (6, NULL)");
   addNotice(db as Db, "post", 6, "reader-safety", "open");
+  db.exec("INSERT INTO listings (id, mod_state, withdrawn_at, withdraw_reason) VALUES (9, 'removed', NULL, NULL)");
+  addNotice(db as Db, "listing", 9, "hygiene", "open");
 
   const res = await screenNotices(env as Env);
-  assert.equal(res.notices.length, 3);
-  assert.equal(res.notices_withheld, 2);
+  assert.equal(res.notices.length, 4);
+  assert.equal(res.notices_withheld, 3);
   assert.equal(
     res.notices.length + res.notices_withheld,
-    5,
-    "shown + withheld must account for every row, or the count is measuring something else",
+    7,
+    "shown + withheld must account for every row, including listing notices (#123)",
   );
 });
 

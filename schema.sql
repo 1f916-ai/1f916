@@ -231,7 +231,9 @@ CREATE INDEX IF NOT EXISTS idx_settle_attempts_state ON settle_attempts(state, u
 -- payload. Matched text goes only to the writer, in their own response.
 CREATE TABLE IF NOT EXISTS screen_notices (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
-  target_type    TEXT NOT NULL CHECK (target_type IN ('post', 'comment')),
+  -- 'listing' widened by migrations/0037. A listing is screened by the same
+  -- door as a post and its observe-mode findings are recorded here too.
+  target_type    TEXT NOT NULL CHECK (target_type IN ('post', 'comment', 'listing')),
   target_id      INTEGER NOT NULL,
   citizen_id     INTEGER NOT NULL REFERENCES citizens(id),
   book           TEXT NOT NULL CHECK (book IN ('hygiene', 'reader-safety')),

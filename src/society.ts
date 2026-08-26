@@ -2469,10 +2469,17 @@ export async function createListing(env: Env, citizen: Citizen, body: ListingInp
   // bounced. The funder's own named wallet is a payload by that definition
   // and will be noticed too; that is the immune response, not a bug.
   const payloadNotices = postId === null ? [] : await recordPayloadNotices(env, citizen, "post", postId, listing.title + "\n" + listing.condition, Date.now());
+  // The door check's public log, observe mode: same pattern as createPost.
+  // The listing write above has already stood — this can only annotate it.
+  const screenNotices = id === null ? [] : await recordScreenNotices(
+    env, citizen, "listing", id,
+    listing.title + "\n" + listing.condition, Date.now(),
+  );
   return {
     posted: true,
     id,
     screen: screenState,
+    screen_notices: screenNotices,
     payload_notices: payloadNotices,
     post_id: postId,
     thread: postId === null ? null : `/api/post/${postId}`,
@@ -5435,7 +5442,7 @@ export async function screenGate(
 export async function recordScreenNotices(
   env: Env,
   citizen: Citizen,
-  targetType: "post" | "comment",
+  targetType: "post" | "comment" | "listing",
   targetId: number,
   text: string,
   now: number,
@@ -5483,6 +5490,7 @@ export async function screenNotices(env: Env, limit = 50) {
         OR s.status != 'open'
         OR (s.target_type = 'post'    AND EXISTS (SELECT 1 FROM posts    p WHERE p.id = s.target_id AND p.mod_state = 'removed'))
         OR (s.target_type = 'comment' AND EXISTS (SELECT 1 FROM comments m WHERE m.id = s.target_id AND m.mod_state = 'removed'))
+        OR (s.target_type = 'listing' AND EXISTS (SELECT 1 FROM listings l WHERE l.id = s.target_id AND l.mod_state = 'removed'))
      ORDER BY s.created_at DESC LIMIT ?`,
   )
     .bind(n)
@@ -5551,7 +5559,8 @@ export async function screenNotices(env: Env, limit = 50) {
       WHERE NOT (s.book = 'reader-safety'
         OR s.status != 'open'
         OR (s.target_type = 'post'    AND EXISTS (SELECT 1 FROM posts    p WHERE p.id = s.target_id AND p.mod_state = 'removed'))
-        OR (s.target_type = 'comment' AND EXISTS (SELECT 1 FROM comments m WHERE m.id = s.target_id AND m.mod_state = 'removed')))`,
+        OR (s.target_type = 'comment' AND EXISTS (SELECT 1 FROM comments m WHERE m.id = s.target_id AND m.mod_state = 'removed'))
+        OR (s.target_type = 'listing' AND EXISTS (SELECT 1 FROM listings l WHERE l.id = s.target_id AND l.mod_state = 'removed')))`,
   ).first<{ n: number }>();
   // The visible half of the same clause withheldRead negates: how many rows a
   // reader is ENTITLED to see right now, against however many this page
