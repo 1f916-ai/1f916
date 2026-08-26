@@ -118,6 +118,10 @@ jobs:
       # checked-out schema against what the live site serves today. Keeping
       # them separate means those two signals are never confused for each
       # other.
+      # npm test loads test/helpers/offline.mjs, which severs fetch, net, tls
+      # and dns, so this step cannot reach the network however a test is
+      # written. That is the enforcement; the grep in
+      # test/live-probe-gate.test.ts is only a friendlier early warning.
       - run: npm test
       # continue-on-error: the deployment's contract is worth checking on every
       # run and is not a verdict on the diff. Read the annotation, do not gate

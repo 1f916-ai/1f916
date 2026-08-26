@@ -2,6 +2,17 @@ import { test } from "node:test";
 import { readdirSync, readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 
+// A FRIENDLY HINT, NOT THE ENFORCEMENT. The enforcement is
+// test/helpers/offline.mjs, which `npm test` loads via NODE_OPTIONS and which
+// severs fetch, net, tls and dns so the deterministic suite physically cannot
+// reach anything. This file stays because it fails earlier and says something
+// more useful than a socket error, and because it names the convention. But it
+// greps source, and a grep over source is a floor: pre-publication review walked
+// seven ways around it in one sitting, including appending a raw fetch to a file
+// that already names the helper and is therefore already considered gated. Do
+// not add anything here that the offline guard does not also catch, and do not
+// read a green run of this file as proof that the suite is offline.
+//
 // The split from #151 holds only while every live probe is behind the gate.
 // A new test that reads the deployment without importing the gate quietly puts
 // the network back into `npm test`, and nothing would notice until a pull

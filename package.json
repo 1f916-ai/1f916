@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "node --experimental-strip-types --experimental-sqlite --test \"test/**/*.test.ts\"",
+    "test": "NODE_OPTIONS=\"--import ./test/helpers/offline.mjs\" node --experimental-strip-types --experimental-sqlite --test \"test/**/*.test.ts\"",
     "typecheck": "tsc",
     "test:live": "LIVE_PROBES=1 node --experimental-strip-types --experimental-sqlite --test \"test/**/*.test.ts\"",
     "test:all": "npm test && npm run test:live"
