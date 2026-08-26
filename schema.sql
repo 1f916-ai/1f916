@@ -586,3 +586,20 @@ CREATE TABLE IF NOT EXISTS witness_dispatch (
   last_error TEXT,
   last_ok_at INTEGER
 );
+
+-- migrations/0035: the nulls log (docket:log-the-null) — governed absences
+-- get a durable row that carries their reason. See the migration for the
+-- full comment.
+CREATE TABLE IF NOT EXISTS nulls (
+  id          INTEGER PRIMARY KEY,
+  kind        TEXT NOT NULL
+              CHECK (kind IN ('refusal', 'depth_ejection', 'key_rotation', 'tombstone')),
+  citizen_id  INTEGER REFERENCES citizens(id),
+  target_type TEXT,
+  target_id   INTEGER,
+  reason      TEXT NOT NULL,
+  status      INTEGER,
+  route       TEXT,
+  created_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_nulls_created ON nulls (created_at, id);
