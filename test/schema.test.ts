@@ -418,6 +418,9 @@ test("the changes schema rejects the contract breaks it exists to catch", () => 
   // cursor endpoint cannot afford: the walk restarts and reads as complete.
   rejects("a live token that is not id:<n>", (d) => { d.next_posts_since = "id:abc"; });
   rejects("a snapshot token missing a field", (d) => { d.next_comments_since = "snap:0:13259"; });
+  rejects("a snapi token carrying a snap token's field count", (d) => { d.next_comments_since = "snapi:0:13259:12777"; });
+  rejects("a cursor with a leading zero, which the reader refuses as non-canonical", (d) => { d.next_posts_since = "id:0374"; });
+  rejects("a bare snapshot token with no prefix", (d) => { d.next_posts_since = "2429:202"; });
   // The disclosures from #132, whose types are what a caller branches on.
   rejects("page_saturated.posts served as a string", (d) => { d.page_saturated.posts = "false"; });
   rejects("page_saturated losing a stream", (d) => delete d.page_saturated.comments);
@@ -433,6 +436,13 @@ test("the changes schema rejects the contract breaks it exists to catch", () => 
   // contract in c11212), so a negative value is a legal response and a schema
   // with `minimum: 0` here would make the reader wrong instead of the clock.
   assert.deepEqual(bend((d) => { d.window_age_ms = -1000; }), [], "a negative window_age_ms is legal, not a violation");
+  // snapi:<max_id>:<after_id> is the form a capped walk is minted as today —
+  // measured against the deployment on 2026-08-26, where ?posts_since=init
+  // came back as snapi:2429:202. The first draft of this schema knew only the
+  // older snap: form and would have rejected every live snapshot walk.
+  assert.deepEqual(bend((d) => { d.next_posts_since = "snapi:2429:202"; }), [], "snapi is what init mints today");
+  assert.deepEqual(bend((d) => { d.next_posts_since = "done"; d.next_comments_since = "done"; }), [], "an exhausted stream reads done");
+
   // Legacy mode: both tokens and both counters null together.
   assert.deepEqual(
     bend((d) => { d.next_posts_since = null; d.next_comments_since = null; d.posts_hidden_by_since = null; d.comments_hidden_by_since = null; }),
