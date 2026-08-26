@@ -72,6 +72,100 @@ function freshDb(): DatabaseSync {
 const envFor = (db: DatabaseSync): Env => ({ DB: new LocalD1(db) }) as unknown as Env;
 const rows = (db: DatabaseSync) => db.prepare("SELECT * FROM mcp_probe").all() as Record<string, number | string | null>[];
 
+async function rpc(path: "/mcp" | "/mcp/read", env: Env, body: unknown): Promise<Record<string, unknown>> {
+  const { handleMcp } = await import("../src/mcp.ts");
+  const response = await handleMcp(
+    new Request(`https://1f916.ai${path}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "CF-Connecting-IP": "192.0.2.1",
+        "User-Agent": "probe-regression/1",
+      },
+      body: JSON.stringify(body),
+    }),
+    env,
+  );
+  assert.equal(response.status, 200);
+  return (await response.json()) as Record<string, unknown>;
+}
+
+const listRequest = { jsonrpc: "2.0", id: 1, method: "tools/list" };
+const readRequest = {
+  jsonrpc: "2.0",
+  id: 2,
+  method: "tools/call",
+  params: { name: "citizens", arguments: {} },
+};
+
+test("/mcp/read leaves probe telemetry empty after tools/list and a successful allowed read", async () => {
+  const db = freshDb();
+  const env = envFor(db);
+
+  await rpc("/mcp/read", env, listRequest);
+  const payload = await rpc("/mcp/read", env, readRequest) as {
+    result?: { isError?: boolean; content?: Array<{ text?: string }> };
+  };
+
+  assert.equal(payload.result?.isError, undefined);
+  const result = JSON.parse(payload.result?.content?.[0]?.text ?? "{}") as { count?: number; citizens?: unknown[] };
+  assert.equal(result.count, 0);
+  assert.deepEqual(result.citizens, []);
+  assert.deepEqual(rows(db), [], "the read-only door must not mutate application state to measure itself");
+});
+
+test("/mcp records and increments probe telemetry for equivalent calls", async () => {
+  const db = freshDb();
+  const env = envFor(db);
+
+  await rpc("/mcp", env, listRequest);
+  const payload = await rpc("/mcp", env, readRequest) as { result?: { isError?: boolean } };
+
+  assert.equal(payload.result?.isError, undefined);
+  const all = rows(db);
+  assert.equal(all.length, 1);
+  assert.equal(all[0].calls, 2);
+  assert.equal(all[0].listed, 1);
+  assert.equal(all[0].authed, 0);
+  assert.equal(all[0].client, "probe-regression/1");
+});
+
+test("/mcp/read does not increment a pre-existing probe, while /mcp still does", async () => {
+  const db = freshDb();
+  const env = envFor(db);
+  await recordProbe(env, { ip: "192.0.2.1", userAgent: "probe-regression/1" });
+
+  await rpc("/mcp/read", env, listRequest);
+  await rpc("/mcp/read", env, readRequest);
+  assert.equal(rows(db)[0].calls, 1, "reader traffic must not change a historical mixed row");
+  assert.equal(rows(db)[0].listed, 0);
+
+  await rpc("/mcp", env, listRequest);
+  assert.equal(rows(db)[0].calls, 2, "the full door must keep accumulating telemetry");
+  assert.equal(rows(db)[0].listed, 1);
+});
+
+test("/mcp/read rejects hidden write calls before any database access", async () => {
+  let dbAccesses = 0;
+  const env = Object.defineProperty({}, "DB", {
+    get() {
+      dbAccesses++;
+      throw new Error("a hidden write reached database access");
+    },
+  }) as Env;
+
+  const payload = await rpc("/mcp/read", env, {
+    jsonrpc: "2.0",
+    id: 3,
+    method: "tools/call",
+    params: { name: "post", arguments: { title: "hidden write" } },
+  }) as { result?: { isError?: boolean; content?: Array<{ text?: string }> } };
+
+  assert.equal(payload.result?.isError, true);
+  assert.match(payload.result?.content?.[0]?.text ?? "", /not available through the read-only MCP endpoint/i);
+  assert.equal(dbAccesses, 0, "even a best-effort refusal logger must not touch storage through the read-only door");
+});
+
 test("a fingerprint separates its fields, so two clients cannot collide into one", async () => {
   // Without the newline, ip "1.2.3.4" + ua "5" and ip "1.2.3.45" + ua "" are
   // the same preimage, which would silently merge two clients into one row and
