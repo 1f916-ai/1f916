@@ -15,8 +15,16 @@
 -- SQLite cannot alter a CHECK, so the table is rebuilt and copied. Columns are
 -- listed explicitly rather than SELECT *: status and rules_hash were added by
 -- ALTER in migrations/0011, so live databases carry them AFTER created_at
--- while schema.sql declares them before it, and a positional copy would write
--- 'open' into created_at on production and nowhere else.
+-- while schema.sql declares them before it. Measured on a database built from
+-- 0010 and 0011, a positional copy shifts three columns at once: the created_at
+-- timestamp lands in status, 'open' lands in rules_hash, and rules_hash lands
+-- in created_at, or NULL does and the copy fails NOT NULL. On production and
+-- nowhere else, because a fresh database from schema.sql already has the order
+-- the new table declares.
+--
+-- CORRECTED 2026-08-26: this comment first said 'open' would land in created_at.
+-- It would not; it is three columns off, not one. Caught in review of the
+-- issue comment quoting it.
 --
 -- id is carried across explicitly for the same reason 0029 carried it: these
 -- rows are served in a public register and renumbering them would silently
