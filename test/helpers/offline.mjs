@@ -46,6 +46,7 @@ const require_ = createRequire(import.meta.url);
 const net = require_("node:net");
 const tls = require_("node:tls");
 const dns = require_("node:dns");
+const dgram = require_("node:dgram");
 
 const refuse = (what) => () => {
   throw new Error(
@@ -88,6 +89,13 @@ for (const [label, mod] of [["dns", dns], ["dns.promises", dns.promises]]) {
   }
 }
 
+// UDP. A plain dgram.send was stopped only incidentally, because dgram resolves
+// its destination through the patched dns.lookup. Pass the documented `lookup`
+// option and it walks straight out: review sent a hand-built DNS query to
+// 8.8.8.8 that way and got a real answer back, in-thread, under `npm test`.
+// Patch the send itself.
+dgram.Socket.prototype.send = refuse("dgram.Socket.send");
+
 // WHAT THIS DOES NOT COVER, named rather than left to be discovered. Every one
 // is a way of LEAVING this thread rather than a way of writing a request, so
 // none of them is something a probe gets written as by accident:
@@ -95,12 +103,13 @@ for (const [label, mod] of [["dns", dns], ["dns.promises", dns.promises]]) {
 //   module.register(). Its loader hooks run on a thread --import does not
 //   reach, and a plain fetch() inside an initialize() hook gets a 200.
 //   module.registerHooks(), the in-thread form, is guarded.
-//   a worker_thread created from a CODE STRING, in either module or CommonJS
-//   form, and any worker handed an env option that drops NODE_OPTIONS. A
-//   worker loaded from a FILE, .mjs or .cjs, inherits the guard, and so does
-//   one with execArgv stripped. The line is file versus code string, not ESM
-//   versus CommonJS, which is what this comment claimed until it was measured
-//   on 22.23.2, 24.19.0 and 26.3.0.
+//   a worker_thread created from a CommonJS code string, and any worker handed
+//   an env option that drops NODE_OPTIONS. Measured on 22.23.0 and 26.3.0: an
+//   eval worker in MODULE form is guarded, a .mjs or .cjs worker FILE is
+//   guarded, and execArgv:[] stays guarded; it is the CommonJS eval form and
+//   env:{} that get out. This comment has now had that line wrong in both
+//   directions, which is the argument for measuring it rather than reasoning
+//   about it.
 //   a child process. execSync("curl ...") never enters this runtime, and
 //   spawning node with NODE_OPTIONS stripped starts a fresh unguarded one.
 //   process.binding("tcp_wrap"), which opens a raw socket beneath all of this.
