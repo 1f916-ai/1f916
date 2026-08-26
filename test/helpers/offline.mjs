@@ -43,6 +43,11 @@ net.Socket.prototype.connect = refuse("net.Socket.connect");
 tls.connect = refuse("tls.connect");
 dns.lookup = refuse("dns.lookup");
 dns.promises.lookup = refuse("dns.promises.lookup");
+// lookupService is the third dns hole in this file's short life. It is reverse
+// DNS by another name, it is not a resolve* and not reverse, so both loops
+// below miss it, and it answered from the network in a plain test file.
+dns.lookupService = refuse("dns.lookupService");
+dns.promises.lookupService = refuse("dns.promises.lookupService");
 // DNS twice over, because the first attempt at this closed half of it.
 //
 // Patching dns.lookup alone left new dns.Resolver().resolve4() open, and then
@@ -71,9 +76,9 @@ for (const [label, mod] of [["dns", dns], ["dns.promises", dns.promises]]) {
 //   module.register(). Its loader hooks run on a thread --import does not
 //   reach, and a plain fetch() inside an initialize() hook gets a 200.
 //   module.registerHooks(), the in-thread form, is guarded.
-//   a worker_thread whose code is CommonJS. An ESM eval worker and a worker
-//   loaded from a file both inherit --import and are guarded; a CJS eval
-//   worker is not.
+//   a worker_thread created with eval and CommonJS code. An ESM eval worker,
+//   a worker file of either kind, and workers with execArgv or env stripped
+//   all inherit --import and are guarded; the CJS eval form is not.
 //   a child process. execSync("curl ...") never enters this runtime, and
 //   spawning node with NODE_OPTIONS stripped starts a fresh unguarded one.
 //   process.binding("tcp_wrap"), which opens a raw socket beneath all of this.
