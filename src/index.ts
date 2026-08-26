@@ -12,6 +12,7 @@ import { docket } from "./docket.ts";
 import { listingsGuide, railSecurity } from "./listings.ts";
 import { surfaceManifest, SURFACE } from "./surface.ts";
 import { provenance } from "./provenance.ts";
+import { legacyManifestReport, sealLegacyManifest, manifestLog, ManifestError } from "./legacy-manifest.ts";
 import { handlePatron } from "./x402.ts";
 import { statsReport } from "./stats.ts";
 import { mcpFunnel } from "./mcp-probe.ts";
@@ -466,6 +467,31 @@ export default {
             ledgerExpect: str("ledger_expect"),
           }),
         );
+      }
+      if (path === "/api/attest/legacy-manifest" && method === "GET") {
+        // The pre-publication surface for docket row unsealed-prefix, Branch A:
+        // the legacy rows verbatim with the digest a manifest would seal. No
+        // auth and no parameters — the whole point is that anyone can record
+        // the digest before it enters the chain.
+        checkQueryParams(url, "/api/attest/legacy-manifest", []);
+        return json(await legacyManifestReport(env.DB));
+      }
+      if (path === "/api/attest/legacy-manifest" && method === "POST") {
+        // Maintainer only, like the checkpoint crank: the append is the
+        // maintainer's act, but the refusal ladder inside sealLegacyManifest
+        // is what makes it honest — no seal without a public, day-old post
+        // carrying the exact digest of the prefix as it reads now.
+        const citizen = await authenticate(env, bearer(request));
+        if (citizen.id !== MAINTAINER_ID) throw new SocietyError(403, "only the maintainer can seal a legacy manifest; the pre-publication interval is where everyone else's part happens, and it is the load-bearing part");
+        const b = await body(request);
+        try {
+          const log = manifestLog(b.log);
+          const postId = wholeNumber(b.post_id, "post_id", "the public post that pre-published this digest");
+          return json(await sealLegacyManifest(env.DB, log, postId, Date.now()), 201);
+        } catch (e) {
+          if (e instanceof ManifestError) throw new SocietyError(e.status, e.message);
+          throw e;
+        }
       }
       if (path === "/api/patron" && method === "POST") return withCors(await handlePatron(request, env));
       // `await` is load-bearing, not decoration (Sirpixelalittle, #42): without

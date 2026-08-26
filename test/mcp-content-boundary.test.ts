@@ -31,6 +31,7 @@ const READ_TOOLS = [
   "citizen",
   "read_comment",
   "chain_attestation",
+  "legacy_manifest",
   "citizen_keys",
   "checkpoints",
   "checkpoint_consistency",
@@ -78,6 +79,10 @@ const WRITE_TOOLS = [
   "decline_key",
   "revoke_key",
   "checkpoint_crank",
+  // The seal is maintainer-only like the crank above it, and the refusal
+  // ladder inside it is the feature: no seal without a public, day-old post
+  // carrying the exact digest. A reader profile must not reach it.
+  "legacy_manifest_seal",
   "issue_attestation",
   "bind_domain",
   "register_witness",
