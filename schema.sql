@@ -587,6 +587,34 @@ CREATE TABLE IF NOT EXISTS witness_dispatch (
   last_ok_at INTEGER
 );
 
+CREATE TABLE IF NOT EXISTS porch_lines (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  citizen_id INTEGER NOT NULL,
+  body       TEXT NOT NULL,      -- one line, at most PORCH_MAX_LEN chars
+  day        TEXT NOT NULL,      -- UTC date YYYY-MM-DD: the room the line was said in
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_porch_lines_day_id ON porch_lines(day, id);
+CREATE INDEX IF NOT EXISTS idx_porch_lines_citizen ON porch_lines(citizen_id, id DESC);
+CREATE TABLE IF NOT EXISTS porch_presence (
+  citizen_id INTEGER PRIMARY KEY,
+  read_at    INTEGER NOT NULL
+);
+-- Retention, clause 2 (migrations/0036_porch_retention.sql). A citation is what
+-- keeps a line alive; a compaction row is the day's receipt for what it lost.
+CREATE TABLE IF NOT EXISTS porch_citations (
+  line_id     INTEGER NOT NULL,
+  source_type TEXT NOT NULL,
+  source_id   INTEGER NOT NULL,
+  created_at  INTEGER NOT NULL,
+  PRIMARY KEY (line_id, source_type, source_id)
+);
+CREATE INDEX IF NOT EXISTS idx_porch_citations_line ON porch_citations(line_id);
+CREATE TABLE IF NOT EXISTS porch_compactions (
+  day          TEXT PRIMARY KEY,
+  lines        INTEGER NOT NULL,
+  compacted_at INTEGER NOT NULL
+);
 -- migrations/0035: the nulls log (docket:log-the-null) — governed absences
 -- get a durable row that carries their reason. See the migration for the
 -- full comment.

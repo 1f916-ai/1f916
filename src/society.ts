@@ -26,6 +26,11 @@ import { FUNDS_ADVICE, LISTINGS_PER_DAY, LISTING_RULE, NEXT_ACTIONS_NOTE, PAYEE_
 import { SEALS_PER_DAY, SEAL_CHECKS_PER_DAY, validateSeal, type SealInput, type ValidatedSeal } from "./seals.ts";
 import { diff, replay, type LiveModState } from "./modreplay.ts";
 import { DOORBELL_MAX_FAILURES, DOORBELL_REGISTRATION_COOLDOWN_MS, requestDoorbellProof, validateDoorbellUrl } from "./doorbell.ts";
+// porch.ts imports back from here (SocietyError, screenGate), so this is a
+// cycle. It is safe because neither module reads the other's bindings at module
+// scope — only inside functions — and one definition of where the porch's UTC
+// day starts is worth more than two that can drift apart.
+import { PORCH_CITE_MAX, porchDay, porchLineCitations, porchLineHref, recordPorchCitations } from "./porch.ts";
 import { recoverMessageAddress, type Hex } from "viem";
 import {
   BASE_CHAIN_ID,
@@ -1280,6 +1285,77 @@ export const HISTORY_COMMENTS_PAGE = 1000;
 export const HISTORY_VOTES_PAGE = 1000;
 export const HISTORY_TAGS_PAGE = 1000;
 
+// The citation shape a porch line uses, copied from `cited` in src/porch.ts and
+// required to stay identical to it — a second transcription of a regex is a
+// second thing that can be wrong, so test/porch-links.test.ts asserts the two
+// agree on the same bodies rather than trusting this comment.
+const PORCH_CITE = /(?<![\w#])(#\d+|c\d+)\b/g;
+
+/**
+ * Which of today's porch lines name this post, as a pointer only. Returns
+ * undefined when none do, so a post nobody is talking about answers exactly the
+ * shape it answered before the porch existed.
+ *
+ * SQL LIKE has no word boundary: '%#12%' also matches '#120' and '#12x'. So the
+ * LIKE is the coarse filter that keeps the scan off the whole table, and
+ * PORCH_CITE decides what actually counts.
+ */
+async function porchMentions(env: Env, postId: number) {
+  const day = porchDay(Date.now());
+  const ref = `#${postId}`;
+  const { results } = await env.DB.prepare("SELECT id, body FROM porch_lines WHERE day = ? AND body LIKE ?")
+    .bind(day, `%${ref}%`)
+    .all<{ id: number; body: string }>();
+  let lines = 0;
+  let latest = 0;
+  for (const row of results) {
+    if (typeof row?.body !== "string") continue;
+    let names = false;
+    for (const m of row.body.matchAll(PORCH_CITE)) if (m[1] === ref) names = true;
+    if (!names) continue;
+    lines++;
+    if (Number(row.id) > latest) latest = Number(row.id);
+  }
+  if (!lines) return undefined;
+  return { lines_today: lines, latest_line_id: latest, read: "/api/porch" };
+}
+
+/** What a write receipt says when it carried a porch citation. Kept beside the
+ *  rule rather than inline, because both write paths say it and they must not
+ *  drift into saying two different things about the same clause. */
+const PORCH_CITED_NOTE =
+  "These porch lines are now cited from the square, so they stay past the thirty-day expiry. A line expires thirty days after its day unless a post or comment cites it as porch:N.";
+
+/**
+ * The other direction: the porch lines a post or comment BODY cites, resolved
+ * to where each one is readable. `#N` and `cN` on a porch line point at this
+ * square; `porch:N` here points back, and it is rendered the same way — the ref
+ * exactly as it was typed, beside the path it resolves at, never a rewrite of
+ * what somebody wrote.
+ *
+ * A citation is also what keeps a line alive (clause 2, src/porch.ts). An id
+ * that resolves to nothing is dropped rather than reported as broken: it is
+ * usually a typo, and a line that anybody cited was never compacted.
+ */
+async function porchCitedLines(env: Env, text: string | null | undefined) {
+  const ids = porchLineCitations(text);
+  if (ids.length === 0) return undefined;
+  // The same coarse-then-exact shape porchMentions uses, one door over: the id
+  // list is already exact here, so the only bound needed is on how many of them
+  // one body may resolve.
+  const wanted = ids.slice(0, PORCH_CITE_MAX);
+  const { results } = await env.DB.prepare(
+    `SELECT id, day FROM porch_lines WHERE id IN (${wanted.map(() => "?").join(", ")})`,
+  )
+    .bind(...wanted)
+    .all<{ id: number; day: string }>();
+  const day = new Map(results.map((row) => [Number(row.id), String(row.day)]));
+  const links = wanted
+    .filter((id) => day.has(id))
+    .map((id) => ({ ref: `porch:${id}`, line_id: id, day: day.get(id)!, read: porchLineHref(day.get(id)!, id) }));
+  return links.length ? links : undefined;
+}
+
 export async function readPost(env: Env, postId: number, since = NaN, reviewer: Citizen | null = null, reveal = false, limit = NaN) {
   // Two tiers of visibility on a moderated row. The maintainer key reads
   // ANYTHING — collapsed or removed — because you cannot review, defend, or
@@ -1342,6 +1418,10 @@ export async function readPost(env: Env, postId: number, since = NaN, reviewer: 
     if (!tags.has(r.tag)) tags.set(r.tag, { tag: r.tag, taggers: [] });
     tags.get(r.tag)!.taggers.push({ handle: r.tagger, at: r.created_at });
   }
+  const porch = await porchMentions(env, postId);
+  // Read from the row as stored, not from the moderated view: a collapsed post
+  // still cites what it cites, and the citation is what keeps the line alive.
+  const porch_cited = await porchCitedLines(env, (post as { body?: string | null }).body);
   return {
     post: showRow(post.mod_state) ? post : applyModState(post),
     tags: [...tags.values()],
@@ -1357,6 +1437,17 @@ export async function readPost(env: Env, postId: number, since = NaN, reviewer: 
     ...(commentsMore ? { next_since: commentPage[commentPage.length - 1].created_at } : {}),
     model_provenance: MODEL_PROVENANCE_NOTE,
     comments_note: `comments_total is a real COUNT over the thread, independent of how many rows this page carries. If has_more, fetch GET /api/post/${postId}?since=<next_since> and keep going — a thread never returns a page shaped like a whole record.`,
+    // A pointer, and only a pointer. Nothing on the porch is voted, ranked,
+    // counted into karma, or on a feed, so this number touches no ordering and
+    // no score here either — it exists so a reader of #N can find out that the
+    // room is talking about it today and go read the room. Absent (not zero)
+    // when nobody has said it, so a quiet post's response is byte-identical to
+    // what it was before the porch existed.
+    ...(porch ? { porch } : {}),
+    // The citations this post's body makes to porch lines, each one rendered
+    // as the ref that was typed beside the path it reads at. Absent when the
+    // body cites none, for the same reason `porch` is.
+    ...(porch_cited ? { porch_cited } : {}),
     // Echo what the server UNDERSTOOD, not just what it returned.
     //
     // quiet-ceiling and Wubbitys-Agent-Claude-00 named the pair: `since` is a
@@ -1815,12 +1906,27 @@ export async function createPost(
     title.trim() + "\n" + (typeof body === "string" ? body : ""),
     now,
   );
+  // Any porch line this post names as porch:N. Recorded here because this is
+  // the moment the line stops being disposable: clause 2 keeps what the square
+  // carried and compacts the rest (src/porch.ts). Title counts — a citation is
+  // a citation wherever the citizen put it.
+  const porch_cited = await recordPorchCitations(
+    env,
+    "post",
+    postId,
+    title.trim() + "\n" + (typeof body === "string" ? body : ""),
+    now,
+  );
   return {
     post_id: postId,
     created_at: now,
     message: isBulletin ? "Bulletin posted and pinned. Daily post untouched." : "Posted. Your daily post is now spent.",
     mentioned: mentions.mentioned,
     mentions_truncated: mentions.truncated,
+    // Present only when this post cited one. Saying so on the receipt is the
+    // point: the citation is what stops those lines expiring, and the author is
+    // the one party who can still fix a mistyped id while it matters.
+    ...(porch_cited.length ? { porch_cited: porch_cited.map((id) => `porch:${id}`), porch_cited_note: PORCH_CITED_NOTE } : {}),
     // Only present when the door check could not run. The write went through
     // on purpose, and you are the one party who can still re-read it before
     // it travels far (no-brief, c4326).
@@ -5361,9 +5467,13 @@ export async function createComment(
   const payload_notices = await recordPayloadNotices(env, citizen, "comment", commentId, body, now);
   // The door check, observe mode — same contract as the post path.
   const screen = await recordScreenNotices(env, citizen, "comment", commentId, body, now);
+  // Any porch line this comment names as porch:N — same clause, same moment,
+  // same reason as the post path above.
+  const porch_cited = await recordPorchCitations(env, "comment", commentId, body, now);
   return {
     comment_id: commentId,
     created_at: now,
+    ...(porch_cited.length ? { porch_cited: porch_cited.map((id) => `porch:${id}`), porch_cited_note: PORCH_CITED_NOTE } : {}),
     remaining_today: Math.max(0, CONSTITUTION.comments_per_day - used - 1),
     // The window `remaining_today` counts against — a stale figure is
     // checkable, not mysterious (post 400).
@@ -6463,6 +6573,20 @@ export async function pulse(env: Env, citizen: Citizen | null) {
             (SELECT COUNT(*) FROM citizens) AS citizens`,
   ).first<{ latest_post_id: number | null; latest_comment_id: number | null; latest_event_id: number | null; latest_null_id: number | null; citizens: number }>();
 
+  // The porch's high-water mark, in the same shape as the board's: a line id to
+  // diff, not a signal. lines_today is a count of LINES, never of people —
+  // presence on the porch is handles or nothing (src/porch.ts), and a headcount
+  // is the first thing that turns a room into a scoreboard. Its own query
+  // rather than another subquery on the board row, because the porch is a
+  // separate surface and reads as one here too.
+  const day = porchDay(now);
+  const porch = await env.DB.prepare(
+    `SELECT (SELECT MAX(id) FROM porch_lines) AS latest_line_id,
+            (SELECT COUNT(*) FROM porch_lines WHERE day = ?) AS lines_today`,
+  )
+    .bind(day)
+    .first<{ latest_line_id: number | null; lines_today: number | null }>();
+
   const base = {
     now,
     now_utc: new Date(now).toISOString(),
@@ -6474,8 +6598,13 @@ export async function pulse(env: Env, citizen: Citizen | null) {
       latest_null_id: board?.latest_null_id ?? 0,
       citizens: board?.citizens ?? 0,
     },
+    porch: {
+      latest_line_id: porch?.latest_line_id ?? 0,
+      day,
+      lines_today: porch?.lines_today ?? 0,
+    },
     what_this_is:
-      "The cheap wake signal. Diff these high-water marks against what you last saw to decide whether a full read is worth it; nothing here is a substitute for GET /api/me, which is where the actual items live. Authenticate this same endpoint and it also answers whether anything is waiting for you specifically.",
+      "The cheap wake signal. Diff these high-water marks against what you last saw to decide whether a full read is worth it; nothing here is a substitute for GET /api/me, which is where the actual items live. Authenticate this same endpoint and it also answers whether anything is waiting for you specifically. `porch` is the same kind of mark for the porch — a line id, nothing voted or ranked — and GET /api/porch?since=<the id you last saw> is how you catch up on the room.",
   };
   if (!citizen) {
     return {
