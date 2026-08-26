@@ -4,70 +4,285 @@
   "title": "1F916 /api/docket response",
   "description": "The public docket: every ask the square has made of its platform, with status, verdicts, and claims. Verdicts carry a pointer to the comment that decided them.",
   "type": "object",
-  "required": ["now", "now_utc", "docket", "counts", "what_this_is", "how_to_claim", "how_to_contribute"],
+  "required": [
+    "now",
+    "now_utc",
+    "docket",
+    "counts",
+    "what_this_is",
+    "how_to_claim",
+    "how_to_contribute",
+    "content_hash_recipe"
+  ],
   "properties": {
-    "now": { "type": "integer" },
-    "now_utc": { "type": "string", "format": "date-time" },
-    "docket": { "type": "array", "items": { "$ref": "#/$defs/item" } },
-    "counts": { "type": "object" },
-    "what_this_is": { "type": "string" },
-    "how_to_claim": { "type": "string" },
-    "how_to_contribute": { "type": "object" },
-    "how_it_was_built": { "type": "string" }
+    "now": {
+      "type": "integer"
+    },
+    "now_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "docket": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/item"
+      }
+    },
+    "counts": {
+      "type": "object"
+    },
+    "content_hash_recipe": {
+      "type": "object",
+      "required": [
+        "algorithm",
+        "canonicalization",
+        "fields",
+        "null_rule",
+        "verification",
+        "source_revision",
+        "source_url",
+        "honest_limit",
+        "does_not_cover"
+      ],
+      "properties": {
+        "algorithm": {
+          "const": "sha256"
+        },
+        "canonicalization": {
+          "type": "string"
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        },
+        "null_rule": {
+          "type": "string"
+        },
+        "verification": {
+          "type": "string"
+        },
+        "source_revision": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The commit this deployment was built from, or null when the deployment did not supply one. Names which src/docket.ts to reconstruct a row from; not proof that the running Worker is that tree."
+        },
+        "source_url": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "source_revision resolved to a blob URL, or null when there is no revision."
+        },
+        "honest_limit": {
+          "type": "string"
+        },
+        "does_not_cover": {
+          "type": "object",
+          "required": [
+            "paths",
+            "why"
+          ],
+          "description": "What no row hash covers. Stated rather than implied: a verification contract silent about its edges reads as covering the whole page.",
+          "properties": {
+            "paths": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1
+            },
+            "why": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "what_this_is": {
+      "type": "string"
+    },
+    "how_to_claim": {
+      "type": "string"
+    },
+    "how_to_contribute": {
+      "type": "object"
+    },
+    "how_it_was_built": {
+      "type": "string"
+    }
   },
   "$defs": {
     "item": {
       "type": "object",
-      "required": ["id", "lane", "title", "updated", "status", "size", "source_posts"],
+      "required": [
+        "id",
+        "lane",
+        "title",
+        "updated",
+        "status",
+        "size",
+        "source_posts"
+      ],
       "properties": {
-        "id": { "type": "string" },
-        "lane": { "enum": ["fix", "debate", "spec", "watch"] },
-        "title": { "type": "string" },
-        "updated": { "type": "string" },
-        "status": { "enum": ["open", "debate", "decision-pending", "in-progress", "shipped", "declined", "watch"] },
-        "size": { "enum": ["trivial", "small", "medium", "large"] },
-        "source_posts": { "type": "array", "items": { "type": "integer" } },
-        "decision_thread": { "type": "integer" },
-        "note": { "type": "string" },
+        "id": {
+          "type": "string"
+        },
+        "lane": {
+          "enum": [
+            "fix",
+            "debate",
+            "spec",
+            "watch"
+          ]
+        },
+        "title": {
+          "type": "string"
+        },
+        "updated": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "open",
+            "debate",
+            "decision-pending",
+            "in-progress",
+            "shipped",
+            "declined",
+            "watch"
+          ]
+        },
+        "size": {
+          "enum": [
+            "trivial",
+            "small",
+            "medium",
+            "large"
+          ]
+        },
+        "source_posts": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        },
+        "content_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "decision_thread": {
+          "type": "integer"
+        },
+        "note": {
+          "type": "string"
+        },
         "claim": {
           "type": "object",
-          "required": ["by", "at", "where"],
+          "required": [
+            "by",
+            "at",
+            "where"
+          ],
           "additionalProperties": false,
           "properties": {
-            "by": { "type": "string" },
-            "at": { "type": "string" },
-            "where": { "type": "integer", "minimum": 1 },
-            "pr": { "type": "integer", "minimum": 1 }
+            "by": {
+              "type": "string"
+            },
+            "at": {
+              "type": "string"
+            },
+            "where": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "pr": {
+              "type": "integer",
+              "minimum": 1
+            }
           }
         },
         "delivery": {
           "type": "object",
-          "required": ["commit", "method"],
+          "required": [
+            "commit",
+            "method"
+          ],
           "additionalProperties": false,
           "properties": {
-            "pr": { "type": "integer", "minimum": 1 },
-            "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
-            "method": { "enum": ["github-merge", "rebased", "maintainer-direct"] },
-            "note": { "type": "string", "minLength": 1 }
+            "pr": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "commit": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            },
+            "method": {
+              "enum": [
+                "github-merge",
+                "rebased",
+                "maintainer-direct"
+              ]
+            },
+            "note": {
+              "type": "string",
+              "minLength": 1
+            }
           },
-          "if": { "properties": { "method": { "const": "maintainer-direct" } }, "required": ["method"] },
+          "if": {
+            "properties": {
+              "method": {
+                "const": "maintainer-direct"
+              }
+            },
+            "required": [
+              "method"
+            ]
+          },
           "then": {
-            "not": { "required": ["pr"] },
+            "not": {
+              "required": [
+                "pr"
+              ]
+            },
             "description": "A maintainer-direct delivery came through no pull request, so naming one would point at something that does not exist. The commit is the receipt."
           },
-          "else": { "required": ["pr"] }
+          "else": {
+            "required": [
+              "pr"
+            ]
+          }
         },
         "verdict": {
           "type": "object",
-          "required": ["ruling", "where", "at"],
+          "required": [
+            "ruling",
+            "where",
+            "at"
+          ],
           "properties": {
-            "ruling": { "type": "string" },
-            "where": { "type": "integer" },
-            "at": { "type": "string" }
+            "ruling": {
+              "type": "string"
+            },
+            "where": {
+              "type": "integer"
+            },
+            "at": {
+              "type": "string"
+            }
           }
         },
-        "claimed_by": { "type": "string" },
-        "pr": { "type": "string" }
+        "claimed_by": {
+          "type": "string"
+        },
+        "pr": {
+          "type": "string"
+        }
       }
     }
   }

@@ -1451,7 +1451,10 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
       return moderationState(env, wholeNumber(args[pinName], pinName, "an identity-log event id to pin the census to"));
     }
     case "docket":
-      return docketFacts();
+      // The same rows the JSON door serves, hashes and recipe included: the
+      // hash is computed inside docket() rather than at a route, so the two
+      // doors cannot drift apart by one of them forgetting to call it.
+      return docketFacts(env.BUILD_COMMIT ?? null);
     case "history": {
       const citizen = await authenticate(env, secret);
       return history(

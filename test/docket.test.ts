@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { DOCKET, docket, type DocketItem } from "../src/docket.ts";
+import { DOCKET, DOCKET_CONTENT_HASH_FIELDS, docket, docketRowContentHash, type DocketItem } from "../src/docket.ts";
 
 test("docket ids are unique slugs", () => {
   const ids = DOCKET.map((d) => d.id);
@@ -22,8 +22,8 @@ test("decision-pending rows name their decision thread", () => {
   }
 });
 
-test("counts sum to the docket length", () => {
-  const { counts } = docket();
+test("counts sum to the docket length", async () => {
+  const { counts } = await docket();
   assert.equal(Object.values(counts).reduce((a, b) => a + b, 0), DOCKET.length);
 });
 
@@ -87,14 +87,14 @@ test("acceptance, where present, is a checkable sentence and not a placeholder",
   }
 });
 
-test("every row exposes acceptance explicitly — a missing key is silence, not an absence", () => {
-  for (const row of docket().docket) {
+test("every row exposes acceptance explicitly — a missing key is silence, not an absence", async () => {
+  for (const row of (await docket()).docket) {
     assert.ok("acceptance" in row, `${row.id} omits acceptance instead of nulling it`);
   }
 });
 
-test("acceptance_coverage counts the live rows it claims to", () => {
-  const { docket: rows, acceptance_coverage: cov } = docket();
+test("acceptance_coverage counts the live rows it claims to", async () => {
+  const { docket: rows, acceptance_coverage: cov } = await docket();
   const live = rows.filter((d) => d.status !== "shipped" && d.status !== "declined");
   assert.equal(cov.live_rows, live.length);
   assert.equal(cov.with_acceptance + cov.without_acceptance, cov.live_rows);
@@ -103,8 +103,8 @@ test("acceptance_coverage counts the live rows it claims to", () => {
   assert.equal(laned, cov.live_rows, "by_lane drops rows");
 });
 
-test("became is published as a graph, so nobody builds a double-counting metric on it", () => {
-  const d = docket() as unknown as {
+test("became is published as a graph, so nobody builds a double-counting metric on it", async () => {
+  const d = await docket() as unknown as {
     decomposition: { child_links: number; distinct_children: number; children_with_multiple_parents: Record<string, string[]> };
   };
   const dec = d.decomposition;
@@ -116,7 +116,7 @@ test("became is published as a graph, so nobody builds a double-counting metric 
     assert.ok(parents.length > 1, `${child} is listed as shared but has one parent`);
   }
   // Every named child must resolve to a real row, or the graph points at nothing.
-  const ids = new Set((docket() as unknown as { docket: { id: string }[] }).docket.map((r) => r.id));
+  const ids = new Set(((await docket()) as unknown as { docket: { id: string }[] }).docket.map((r) => r.id));
   for (const child of Object.keys(dec.children_with_multiple_parents)) {
     assert.ok(ids.has(child), `became names a row that does not exist: ${child}`);
   }
@@ -152,8 +152,8 @@ test("a withdrawn number never appears on the docket without its correction", ()
 // it fails whether the sentence drifts or the recount does. A hardcoded
 // expectation here would rot the same way the sentence did, which is why
 // nothing below names a number.
-test("the docket's coverage sentence is arithmetic over the rows it is served with, not prose about them", () => {
-  const body = docket() as unknown as {
+test("the docket's coverage sentence is arithmetic over the rows it is served with, not prose about them", async () => {
+  const body = await docket() as unknown as {
     counts: Record<string, number>;
     acceptance_coverage: { note: string };
     items?: unknown[];
@@ -177,6 +177,28 @@ test("the docket's coverage sentence is arithmetic over the rows it is served wi
     for (const d of shippedDebate) {
       assert.ok(note.includes(d.id), `shipped debate row '${d.id}' is not named in the sentence that reports how many there are; an unnamed count cannot be checked against the rows`);
     }
+  }
+});
+
+test("every docket row carries a reproducible content hash that moves when quoted prose changes", async () => {
+  const first = await docket();
+  const second = await docket();
+  assert.deepEqual(
+    first.docket.map((row) => row.content_hash),
+    second.docket.map((row) => row.content_hash),
+    "the same source rows must reproduce the same hashes",
+  );
+  assert.deepEqual(first.content_hash_recipe.fields, DOCKET_CONTENT_HASH_FIELDS);
+  for (const row of first.docket) assert.match(row.content_hash, /^[0-9a-f]{64}$/, `${row.id} lacks a SHA-256 content hash`);
+
+  const target = DOCKET[0];
+  const original = target.note;
+  target.note = `${original ?? ""} changed`;
+  try {
+    const changed = await docket();
+    assert.notEqual(changed.docket[0].content_hash, first.docket[0].content_hash, "changing served prose must move the row hash");
+  } finally {
+    target.note = original;
   }
 });
 
@@ -233,4 +255,64 @@ test("claims transcribed from c13926 and c14119 are recorded on their rows", () 
   const byId = new Map(DOCKET.map((d) => [d.id, d]));
   assert.deepEqual(byId.get("checkpoint-cadence-has-no-floor")?.claim, { by: "hermes-nicosanchez", at: "2026-08-22", where: 13926 });
   assert.deepEqual(byId.get("custody-label-has-one-value")?.claim, { by: "commonwealth", at: "2026-08-22", where: 14119 });
+});
+
+// Why JCS and not JSON.stringify of a field array.
+//
+// Three implementations of this anchor were proposed (#150, #144, #131) and
+// they differ in exactly one load-bearing place: whether the preimage is
+// canonical for the NESTED objects a row carries. claim, delivery and verdict
+// are objects, so a preimage built as JSON.stringify(fields.map(...)) inherits
+// whatever key order those objects happen to have in the source. Two rows that
+// say the same thing then hash differently, and a citizen who reconstructs a
+// row honestly gets a mismatch and concludes the served row was altered — the
+// exact accusation this anchor exists to make impossible.
+//
+// KILLING MUTATION: replace jcs(content) with JSON.stringify(content) in
+// docket() -> this test goes red and no other does.
+test("the row preimage is canonical: reordering keys inside a nested field cannot move the hash", async () => {
+  // Through the exported builder docket() itself calls, not a re-implementation
+  // of it here — a test that rebuilds the preimage proves only that the test
+  // agrees with itself.
+  const hashOf = (row: Record<string, unknown>) => docketRowContentHash(row);
+  const base: Record<string, unknown> = {
+    id: "example", title: "t", status: "open", size: "S", lane: "l",
+    source_posts: [1], updated: "2026-08-26",
+    claim: { by: "a", at: "2026-08-01", where: 5 },
+    verdict: { ruling: "passed", where: 7, at: "2026-08-02" },
+  };
+  const reordered: Record<string, unknown> = {
+    ...base,
+    claim: { where: 5, at: "2026-08-01", by: "a" },
+    verdict: { at: "2026-08-02", ruling: "passed", where: 7 },
+  };
+  assert.equal(await hashOf(base), await hashOf(reordered), "same meaning, same hash");
+
+  // And the control: a real change to a nested value MUST move the hash, or
+  // the canonicalization has flattened away the thing it is anchoring.
+  const changed = { ...base, claim: { by: "b", at: "2026-08-01", where: 5 } };
+  assert.notEqual(await hashOf(base), await hashOf(changed), "a changed claimant is a changed row");
+});
+
+test("both doors serve the anchor, because both go through docket()", async () => {
+  // The hash is computed inside docket() rather than at a route, so a door
+  // cannot serve these rows without it. #144 applied the hash at each route
+  // instead, which is correct on the day it lands and is two call sites to
+  // keep in step forever. This checks the property that makes that impossible
+  // here: the MCP tool returns docket() itself.
+  const { readFileSync } = await import("node:fs");
+  const mcp = readFileSync(new URL("../src/mcp.ts", import.meta.url), "utf8");
+  const branch = mcp.split('case "docket":')[1].split("case ")[0];
+  assert.match(branch, /docketFacts\(/, "the MCP docket tool calls docket() rather than rebuilding the rows");
+
+  const index = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
+  assert.match(index, /"\/api\/docket".*await docket\(/s, "the JSON door calls the same function");
+
+  const body = await docket("deadbeef");
+  for (const row of body.docket) {
+    assert.match((row as { content_hash: string }).content_hash, /^[0-9a-f]{64}$/, `${(row as { id: string }).id} carries a hash`);
+  }
+  assert.equal(body.content_hash_recipe.source_revision, "deadbeef");
+  assert.equal(body.content_hash_recipe.source_url, "https://github.com/1f916-ai/1f916/blob/deadbeef/src/docket.ts");
+  assert.equal((await docket()).content_hash_recipe.source_revision, null, "no revision supplied is null, not omitted");
 });
