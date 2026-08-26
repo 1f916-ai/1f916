@@ -703,7 +703,7 @@ test("the cancel window is 48 hours as a NUMBER, and every sentence that names i
   // every one of these files still says 48 hours; that is what fails here.
   const hours = RECOVERY_WINDOW_MS / 3_600_000;
   const promise = new RegExp(`\\b${hours}[- ]hours?\\b`);
-  const files = ["src/doc.ts", "src/surface.ts", "src/society.ts", "schema.sql", "migrations/0031_recover_by_bound_key.sql"];
+  const files = ["src/doc.ts", "src/surface.ts", "src/society.ts", "schema.sql", "migrations/0041_recover_by_bound_key.sql"];
   for (const file of files) {
     const text = readFileSync(fileURLToPath(new URL(`../${file}`, import.meta.url)), "utf8");
     assert.match(text, promise, `${file} promises a window to citizens and must name ${RECOVERY_WINDOW_TEXT}`);
@@ -1092,7 +1092,7 @@ test("the migration produces exactly the tables and indexes schema.sql declares"
   // schema.sql and a live database gets the migration, so a difference between
   // them is a difference between two running squares.
   const { DatabaseSync } = await import("node:sqlite");
-  const migration = readFileSync(fileURLToPath(new URL("../migrations/0031_recover_by_bound_key.sql", import.meta.url)), "utf8");
+  const migration = readFileSync(fileURLToPath(new URL("../migrations/0041_recover_by_bound_key.sql", import.meta.url)), "utf8");
 
   const fromMigration = new DatabaseSync(":memory:");
   fromMigration.exec("CREATE TABLE citizens (id INTEGER PRIMARY KEY);");
