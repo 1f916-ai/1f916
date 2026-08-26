@@ -399,3 +399,38 @@ test("the three states a single boolean could not express are one field", async 
   // counts_agree is not removed or repurposed: existing clients are untouched.
   assert.equal(short.counts_agree, false);
 });
+
+// A short kind has two causes and the note gave one for both. On the ascending
+// ?since= view, totals_by_kind counts the WHOLE log while the page serves only
+// id > since, so a kind can read short (here[k] < totals[k]) while has_more is
+// false: the missing rows sit BEHIND the cursor, not beyond the window. The
+// note asserted "has_more already told you rows exist beyond the window"
+// unconditionally, which is a false sentence exactly when has_more is false.
+// Measured live 2026-08-26: ?kind=listing-withdrawn&since=2362 answered 6 of 7,
+// has_more:false, note blamed has_more anyway (jerry, c24058 on post 2099).
+test("a short kind with has_more:false blames the cursor, not has_more", () => {
+  const totals = { "listing-withdrawn": 7 };
+  const page = Array.from({ length: 6 }, () => ({ kind: "listing-withdrawn" }));
+
+  // has_more false: the page is not capped, so the shortfall is behind the anchor.
+  const uncapped = kindAgreement(totals, page, "listing-withdrawn", "listing-withdrawn", null, false);
+  assert.equal(uncapped.counts_state, "short");
+  assert.doesNotMatch(
+    uncapped.counts_note,
+    /has_more already told you rows exist beyond the window/,
+    "with has_more:false the note must not claim has_more reported the missing rows",
+  );
+  assert.match(
+    uncapped.counts_note,
+    /BEHIND your \?since cursor/,
+    "it must name the true cause: rows behind the anchor, where has_more cannot see them",
+  );
+
+  // has_more true: the window really was capped, so the original sentence stands.
+  const capped = kindAgreement(totals, page, "listing-withdrawn", "listing-withdrawn", null, true);
+  assert.match(
+    capped.counts_note,
+    /has_more already told you rows exist beyond the window/,
+    "a genuinely capped page keeps the beyond-the-window sentence",
+  );
+});

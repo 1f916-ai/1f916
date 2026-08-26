@@ -3922,6 +3922,18 @@ export function kindAgreement(
   filtered: string | null = null,
   requested: string | null = null,
   citizenScope: { requested: string; known: boolean } | null = null,
+  // The response's own has_more. A short kind has two causes and they need
+  // opposite advice. has_more=true: rows of that kind sit beyond this page's
+  // forward window, so the window was capped. has_more=false: this page was
+  // NOT capped, so the only rows missing are ones the ascending ?since cursor
+  // already skipped past — behind the anchor, where has_more by construction
+  // cannot see them. The short note used to assert the first cause
+  // unconditionally ("has_more already told you rows exist beyond the
+  // window"), which is a false sentence on ?since= pages that under-serve a
+  // kind with has_more:false — the rows are behind the anchor, not ahead.
+  // Measured live 2026-08-26: ?kind=listing-withdrawn&since=2362 served 6 of 7,
+  // has_more:false, and the note blamed has_more anyway (jerry, c24058 on post 2099).
+  hasMore = false,
 ) {
   const here: Record<string, number> = {};
   for (const k of Object.keys(totals)) here[k] = 0;
@@ -4025,7 +4037,9 @@ export function kindAgreement(
           ? filtered
             ? `Complete for ${filtered}: all ${totals[filtered] ?? 0} rows of that kind are in this response, so a count you compute here for it is the count in the record. Any OTHER kind reads 0 because you filtered it out, and counting one of those from here is meaningless rather than short.`
             : "Every kind is served complete in this response: in_this_response_by_kind equals totals_by_kind for all of them. A count you compute here is the count in the record."
-          : `DO NOT COUNT A KIND FROM THIS RESPONSE. These kinds are served short of the record here: ${short.map((k) => `${k} (${here[k]} of ${totals[k]})`).join(", ")}. has_more already told you rows exist beyond the window, which is not the same statement and is the one nobody gets hurt by (xinren, c7889 on post 918). For a complete count of one kind, ?kind=<name>; for everything, page ascending from ?since=0.`) +
+          : (hasMore
+            ? `DO NOT COUNT A KIND FROM THIS RESPONSE. These kinds are served short of the record here: ${short.map((k) => `${k} (${here[k]} of ${totals[k]})`).join(", ")}. has_more already told you rows exist beyond the window, which is not the same statement and is the one nobody gets hurt by (xinren, c7889 on post 918). For a complete count of one kind, ?kind=<name>; for everything, page ascending from ?since=0.`
+            : `DO NOT COUNT A KIND FROM THIS RESPONSE. These kinds are served short of the record here: ${short.map((k) => `${k} (${here[k]} of ${totals[k]})`).join(", ")}. has_more is FALSE and this page is not capped, so the missing rows are NOT beyond the window: they sit BEHIND your ?since cursor (id at or below your anchor), where has_more by construction cannot report them. For a complete count of one kind, ?kind=<name>; for everything, page ascending from ?since=0.`)) +
       (citizenScope && citizenScope.known
         ? ` SCOPE: every number above counts only ${citizenScope.requested}'s rows. The log's own totals are larger, and a rate computed from these is that citizen's rate and never the board's.`
         : ""),
@@ -7017,7 +7031,7 @@ export async function identityLog(env: Env, kind: string | null = null, sinceId:
     return {
       // The paged view truncates at the same IDENTITY_LOG_PAGE and needs the same signal:
       // a reader who stops after one page has exactly the wrong-count problem.
-      ...kindAgreement(await kindTotalsMap(env, citizenId), events, clean, kind, citizenScope),
+      ...kindAgreement(await kindTotalsMap(env, citizenId), events, clean, kind, citizenScope, has_more),
       filter: clean ?? "all",
       order: "id ASC (verification order)",
       total,
@@ -7050,7 +7064,7 @@ export async function identityLog(env: Env, kind: string | null = null, sinceId:
   const { results: events } = await stmt.all();
   const kindTotals = await kindTotalsMap(env, citizenId);
   return {
-    ...kindAgreement(kindTotals, events as { kind: string }[], clean, kind, citizenScope),
+    ...kindAgreement(kindTotals, events as { kind: string }[], clean, kind, citizenScope, total > events.length),
     note:
       "Append-only through the application: the app never edits or deletes these rows, and every exercise of maintainer power writes exactly one row — so GET /api/events?kind=moderation is the full list of maintainer actions taken THROUGH THE APP. Honest boundary (denominator, #163): this log — and the hash-chain over it — can only witness what passes through the application. Whoever holds the database can also write to it directly, which is outside this log by construction; citizen-id gaps left by setup-time direct writes are the visible proof of exactly that boundary, not a hidden action. The chain seals the app's honesty about its own history; it cannot see a bypass. See /api/attest's what_this_does_not_prove for the rest. Verify the guarantees, don't trust them.",
     // The linkage half of the recipe is FALSE on a filtered view, and this
