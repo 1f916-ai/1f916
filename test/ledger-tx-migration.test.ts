@@ -13,6 +13,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { LIVE_PROBES, LIVE_SKIP_REASON, liveFetch } from "./helpers/live.ts";
 import { readFileSync } from "node:fs";
 
 const BASE = "https://1f916.ai";
@@ -48,11 +49,15 @@ test("tx really is outside the hash preimage, read from the chain source", () =>
   assert.match(chain, /ledger: \["tx", "source"\]/, "and tx is declared unhashed");
 });
 
-test("live: every proposed hash is already present in that row's own description", async () => {
+test("live: every proposed hash is already present in that row's own description", async (t) => {
+  // #151: these three read the deployment, so they run only when the live
+  // probes are asked for. A throttled read waits once and then fails rather
+  // than skipping, because a probe that did not run is not a probe that passed.
+  if (!LIVE_PROBES) return t.skip(LIVE_SKIP_REASON);
   // The values are not looked up anywhere or reconstructed. They are copied
   // out of the same row's text, so this test is the whole provenance claim:
   // nothing new is being introduced to the books.
-  const r = await fetch(`${BASE}/treasury`, { headers: { "User-Agent": "1f916-ledger-tx-check/1.0" } });
+  const r = await liveFetch(`${BASE}/treasury`, { headers: { "User-Agent": "1f916-ledger-tx-check/1.0" } });
   assert.ok(r.ok, `/treasury -> ${r.status}`);
   const body = (await r.json()) as { entries: { id: number; description: string; tx: string | null }[] };
   const byId = new Map(body.entries.map((e) => [e.id, e]));
@@ -67,11 +72,15 @@ test("live: every proposed hash is already present in that row's own description
   }
 });
 
-test("live: the control row reproduces, and the migration leaves it alone", async () => {
+test("live: the control row reproduces, and the migration leaves it alone", async (t) => {
+  // #151: these three read the deployment, so they run only when the live
+  // probes are asked for. A throttled read waits once and then fails rather
+  // than skipping, because a probe that did not run is not a probe that passed.
+  if (!LIVE_PROBES) return t.skip(LIVE_SKIP_REASON);
   // Row 11 is the only legacy row whose tx column was already populated. If
   // the extraction rule is sound it must agree with that row exactly. This is
   // the difference between a rule that works and a rule nobody tested.
-  const r = await fetch(`${BASE}/treasury`, { headers: { "User-Agent": "1f916-ledger-tx-check/1.0" } });
+  const r = await liveFetch(`${BASE}/treasury`, { headers: { "User-Agent": "1f916-ledger-tx-check/1.0" } });
   const body = (await r.json()) as { entries: { id: number; description: string; tx: string | null }[] };
   const control = body.entries.find((e) => e.id === 11);
   assert.ok(control, "row 11 exists");
@@ -81,7 +90,11 @@ test("live: the control row reproduces, and the migration leaves it alone", asyn
   assert.ok(!proposed.has(11), "row 11 needs nothing and must not be in the migration");
 });
 
-test("live: every proposed row now carries exactly the proposed tx, and it still matches its own prose", async () => {
+test("live: every proposed row now carries exactly the proposed tx, and it still matches its own prose", async (t) => {
+  // #151: these three read the deployment, so they run only when the live
+  // probes are asked for. A throttled read waits once and then fails rather
+  // than skipping, because a probe that did not run is not a probe that passed.
+  if (!LIVE_PROBES) return t.skip(LIVE_SKIP_REASON);
   // WAS a pre-flight check that nothing proposed had a tx yet, which passed
   // for three days while the migration sat unrun and then correctly failed the
   // moment it ran (2026-08-17). A premise check that has served its premise is
@@ -89,7 +102,7 @@ test("live: every proposed row now carries exactly the proposed tx, and it still
   // deleted, because the thing worth guarding forever is not "this has not
   // happened yet" but "what landed is what was proposed, and it is still
   // checkable against the copy the chain covers".
-  const r = await fetch(`${BASE}/treasury`, { headers: { "User-Agent": "1f916-ledger-tx-check/1.0" } });
+  const r = await liveFetch(`${BASE}/treasury`, { headers: { "User-Agent": "1f916-ledger-tx-check/1.0" } });
   const body = (await r.json()) as { entries: { id: number; description: string; tx: string | null }[] };
   let seen = 0;
   for (const e of body.entries) {

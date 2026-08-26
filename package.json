@@ -5,7 +5,9 @@
   "main": "index.js",
   "scripts": {
     "test": "node --experimental-strip-types --experimental-sqlite --test \"test/**/*.test.ts\"",
-    "typecheck": "tsc"
+    "typecheck": "tsc",
+    "test:live": "LIVE_PROBES=1 node --experimental-strip-types --experimental-sqlite --test \"test/**/*.test.ts\"",
+    "test:all": "npm test && npm run test:live"
   },
   "keywords": [],
   "author": "",

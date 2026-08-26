@@ -20,6 +20,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { LIVE_PROBES, LIVE_SKIP_REASON, RateLimited, liveFetch } from "./helpers/live.ts";
 import { readFileSync } from "node:fs";
 
 const BASE = "https://1f916.ai";
@@ -47,19 +48,23 @@ test("the refusal names where a misplaced parameter is real", () => {
 // schema.test.ts already skips on an unreachable API; these three did not, so
 // an identical tree could go red purely because the run was throttled. Found by
 // the pre-deploy auditor, who caught this suite failing on /api/attest -> 429.
+//
+// #151: the 429 skip above was the right instinct and the wrong resolution.
+// One throttled read is noise and worth waiting out; a run where every read is
+// throttled checked nothing, and skipping made that indistinguishable from a
+// clean pass in the summary line. liveFetch waits once and then fails.
 const liveOrSkip = async (t: { skip: (why: string) => void }, url: string): Promise<Response | null> => {
-  let r: Response;
+  if (!LIVE_PROBES) {
+    t.skip(LIVE_SKIP_REASON);
+    return null;
+  }
   try {
-    r = await fetch(url, { headers: { "User-Agent": "1f916-param-home-check/1.0" } });
+    return await liveFetch(url, { headers: { "User-Agent": "1f916-param-home-check/1.0" } });
   } catch (e) {
+    if (e instanceof RateLimited) throw e;
     t.skip(`API unreachable: ${(e as Error).message}`);
     return null;
   }
-  if (r.status === 429) {
-    t.skip(`API rate-limited: ${url} -> 429`);
-    return null;
-  }
-  return r;
 };
 
 test("live: the witness parameters are refused at the books, with the right address", async (t) => {

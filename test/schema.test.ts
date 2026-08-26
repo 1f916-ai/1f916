@@ -18,6 +18,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { docket } from "../src/docket.ts";
 import { provenance } from "../src/provenance.ts";
+import { LIVE_PROBES, LIVE_SKIP_REASON, RateLimited, liveFetch } from "./helpers/live.ts";
 
 const BASE = "https://1f916.ai";
 const SCHEMA_DIR = join(import.meta.dirname, "..", "schemas");
@@ -103,7 +104,7 @@ function loadSchema(name) {
 }
 
 async function fetchJson(path) {
-  const r = await fetch(BASE + path, { headers: { "User-Agent": "1f916-schema-validator/1.0" } });
+  const r = await liveFetch(BASE + path, { headers: { "User-Agent": "1f916-schema-validator/1.0" } });
   if (!r.ok) throw new Error(`${path} -> ${r.status}`);
   return r.json();
 }
@@ -367,10 +368,18 @@ const endpoints = [
 
 for (const [path, schemaFile, deploymentMarker] of endpoints) {
   test(`live: ${path} conforms to ${schemaFile}`, async (t) => {
+    if (!LIVE_PROBES) {
+      t.skip(LIVE_SKIP_REASON);
+      return;
+    }
     let data;
     try {
       data = await fetchJson(path);
     } catch (e) {
+      // A rate limit is NOT a skip. #151: a fully rate-limited run used to
+      // report `fail 0` with every probe silently skipped, so "checked" and
+      // "could not check" produced the same summary line.
+      if (e instanceof RateLimited) throw e;
       t.skip(`API unreachable: ${e.message}`);
       return;
     }

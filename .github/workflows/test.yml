@@ -1,7 +1,9 @@
 # The 47 test suites had no caller.
 #
-# `npm test` runs the suite (371 assertions when this file was written, 587 on
-# 2026-08-15) and `npm run typecheck` puts tsc over the Worker. Until this file
+# `npm test` runs the deterministic suite (371 assertions when this file was
+# written, 587 on 2026-08-15, 1077 on 2026-08-26), `npm run test:live` runs the
+# probes against the deployed service as a separate non-gating step (#151), and
+# `npm run typecheck` puts tsc over the Worker. Until this file
 # existed neither ran on a push or on a pull request: the only workflow in this
 # repository was witness.yml, on a cron. Checked
 # 2026-08-12 against the GitHub API -- main carries no branch protection (404),
@@ -106,4 +108,18 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
+      # Two steps, not one (#151). `npm test` is deterministic and offline: it
+      # depends on this tree and nothing else, so a red here is always about
+      # the change. The live probes read the deployed service and can go red
+      # for reasons the pull request did not cause: a network blip took a
+      # documentation-only PR red on 2026-08-26, and a fork build runs a merge
+      # commit against a possibly stale base, so a probe can compare an old
+      # checked-out schema against what the live site serves today. Keeping
+      # them separate means those two signals are never confused for each
+      # other.
       - run: npm test
+      # continue-on-error: the deployment's contract is worth checking on every
+      # run and is not a verdict on the diff. Read the annotation, do not gate
+      # the merge on it.
+      - run: npm run test:live
+        continue-on-error: true
