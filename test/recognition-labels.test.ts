@@ -103,7 +103,11 @@ test("a measured figure is served as measured, and the endorsement boundary is s
       "string",
       "the page must state that listing what an asset sent is not a recommendation",
     );
-    assert.match(String(policy.recognition_is_not_endorsement), /no official 1F916 token/);
+    // Recognition of the official token happened on 2026-08-25 and this
+    // boundary had to survive it: the sentence that used to lean on "no
+    // official token" must still deny endorsement without that crutch.
+    assert.match(String(policy.recognition_is_not_endorsement), /never issued a token/);
+    assert.match(String(policy.recognition_is_not_endorsement), /not an endorsement/);
     assert.match(
       String((policy as { standing_rules: string }).standing_rules),
       /does not buy promotion or placement of any asset/,
@@ -192,7 +196,8 @@ test("on a healthy read, sent is wallet-only and a dust claimable never renders 
     //     contains the right phrase and then recommends the asset is worse than
     //     no disclaimer, and the phrase-match guard passed exactly that.
     const boundary = String(policy.recognition_is_not_endorsement);
-    assert.match(boundary, /no official 1F916 token/);
+    assert.match(boundary, /not an endorsement/);
+    assert.match(boundary, /never issued a token/);
     assert.doesNotMatch(
       boundary,
       /\brecommends?\b|\bencourages?\b|\bshould buy\b|\bworth buying\b/i,

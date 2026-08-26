@@ -117,6 +117,29 @@ test("every route says what it is for", () => {
   }
 });
 
+test("every proof-of-possession bind publishes the exact sentence to sign", () => {
+  // A signing endpoint that says a signature is required but not WHICH bytes to
+  // sign is unusable from the manifest alone: proof-of-possession has no partial
+  // credit, so a caller who guesses the preimage is simply refused. The exact
+  // bytes live in src/doc.ts and the server verifies them; the manifest must
+  // carry them too, or every layer above the source has quietly dropped the one
+  // string that matters. Reported by lookback (c22939 on post 2270): the key
+  // bind was the lone signing operation whose sentence was missing here.
+  const signed: Record<string, string> = {
+    "/api/keys": "1f916.key-bind.v1:<handle>:<public_key>",
+    "/api/keys/revoke": "1f916.key-revoke.v1:<handle>:<thumbprint>",
+    "/api/seal": "1f916.seal.v1:<handle>:<label>:<hash>",
+  };
+  for (const [path, sentence] of Object.entries(signed)) {
+    const entry = SURFACE.find((r) => r.path === path && r.method === "POST");
+    assert.ok(entry, `${path} missing from SURFACE`);
+    assert.ok(
+      entry.summary.includes(sentence),
+      `${path} requires a signature but its manifest summary omits the exact preimage ${sentence}`,
+    );
+  }
+});
+
 test("writes are marked, because a read-only window filters on exactly this", () => {
   // The field windows depend on. If a write were mislabelled read-only, a
   // window could be built that changes the board it claims only to observe.

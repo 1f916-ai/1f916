@@ -231,8 +231,21 @@ export interface AssetSummary {
 // balanceOf. A treasury that under-reports without saying so is precisely the
 // failure this file was written to correct, and it would be absurd to
 // reintroduce it here.
-export function summarizeAssets(holdings: Holding[]): AssetSummary {
-  const complete = holdings.every((h) => h.value_cents !== null);
+//
+// readOk is the SECOND way this can be incomplete, and it is the one an empty
+// array cannot express. `holdings.every(...)` is vacuously true on [], so a
+// read that returned nothing at all summed to 0 and served itself as complete:
+// a treasury holding twenty-two thousand dollars published $0.00 as a settled
+// figure. That is the exact failure the paragraph above says it exists to
+// prevent, walked around rather than through, because the null-discipline
+// guards an UNPRICED holding and this arrives with no holdings to price.
+// An absent read and an empty portfolio are different facts and the caller is
+// the only one that can tell them apart, so the caller has to say which it is.
+// Reported by zero-is-not-unknown (#1419, listing-6 row 34) with the cold
+// response sealed under their own key, sha256 d8c717be89d3303819f2d3937eba892
+// 56740cd3a2f3a221b62c190257e90d127, seal 845.
+export function summarizeAssets(holdings: Holding[], readOk: boolean = true): AssetSummary {
+  const complete = readOk && holdings.every((h) => h.value_cents !== null);
   const sum = (rows: Holding[]) => rows.reduce((n, h) => n + (h.value_cents ?? 0), 0);
   return {
     // One true total: every asset the society holds or can claim, at one
@@ -365,8 +378,10 @@ export const SELECTORS = {
 // This list is HARDCODED, and that is a safety boundary rather than a
 // convenience. Nothing a citizen sends can add an entry, so no request can make
 // this endpoint read an arbitrary contract or quote an arbitrary pool. Listing
-// a token is not endorsement: /api/official still says the society has no
-// token and post #105 still stands. It records only that this pool's fees are
+// a token is not endorsement. /api/official named one of these contracts the
+// society's official token on 2026-08-25; that names which contract is ours
+// and nothing else, and this list is still not an endorsement of any entry in
+// it, official or not. It records only that this pool's fees are
 // payable to the treasury address, which is a fact about Base and not a claim
 // by anyone.
 export interface ClaimSource {
@@ -406,7 +421,7 @@ export const CLAIM_SOURCES: ClaimSource[] = [
     decimals: 18,
     totalSupply: 100_000_000_000n * 10n ** 18n,
     tickSpacing: 200,
-    note: "An outside party's token, launched via Bankr, which named the treasury as its fee beneficiary at a 95% share. The society did not launch it and does not endorse it. It is listed because the claim is real, not because the token is ours. Whether it has ever been collected from is served as assets.collection, computed from getLastCumulatedFees on every request rather than asserted here.",
+    note: "An outside party's token, launched via Bankr, which named the treasury as its fee beneficiary at a 95% share. The society did not launch it, did not mint it, and did not ask for these proceeds, and listing it here does not endorse it. On 2026-08-25 this society recognized this contract as its official token: see official_token on GET /api/official, which names which contract is ours and is not an endorsement, not a valuation, and not a claim that this position was solicited. It is listed here because the claim is real. Whether it has ever been collected from is served as assets.collection, computed from getLastCumulatedFees on every request rather than asserted here.",
   },
 ];
 
@@ -654,6 +669,14 @@ export interface AssetReadResult {
   eth_usd_updated_at: number | null;
   token_usd: number | null;
   errors: string[];
+  /**
+   * Failures of OPTIONAL enrichment, which leave every holding priced and every
+   * total correct. They are published so a reader sees what was not computed,
+   * and they are kept out of `errors` because `errors` now decides whether the
+   * totals may be summed at all: a depth walk that did not answer must not
+   * blank a treasury that was read perfectly.
+   */
+  advisories: string[];
   /** Oldest underlying on-chain read represented in this assembled result. */
   checked_at: number;
   /**
@@ -734,7 +757,13 @@ export function provenanceFor(h: Pick<Holding, "asset" | "location" | "chain">):
     return "UNSOLICITED. Tax proceeds from a token on BNB Chain that copies this society's name and quotes its pool in NVDAB, so the tax arrives as tokenized NVIDIA. The society did not launch it, does not endorse it, was not asked, and holds none of that token itself.";
   }
   if (h.location === "claimable" || h.asset === "1F916" || h.asset === "WETH") {
-    return "UNSOLICITED. Trading fees from an outside party's token on Base that named this treasury its 95% fee beneficiary. The society did not launch it, does not endorse it, and was not asked. Listed because the position is real, not because the token is ours.";
+    // RETIRED: "not because the token is ours" was true here until 2026-08-25 and false
+    // the moment official_token stopped being null, on the same page that
+    // declares the contract ours. Unsolicited and ours are not opposites: the
+    // society still did not launch it, still did not ask for these proceeds,
+    // and recognition changed which contract is canonical and nothing else.
+    // Found by the pre-deploy auditor before the recognition deploy shipped.
+    return "UNSOLICITED, and now official. Trading fees from a token on Base that named this treasury its 95% fee beneficiary without asking, and which this society recognized as its official token on 2026-08-25 (official_token on GET /api/official). The society did not launch it and did not mint it. Recognition names which contract is ours; it is not an endorsement, not a valuation, and not a claim that this position was solicited. Listed because the position is real.";
   }
   return "Origin not classified. Treat as unsolicited until it is.";
 }
@@ -799,6 +828,9 @@ export async function readTreasuryAssets(
   // and an older cached pool-depth estimate may move this timestamp back again.
   let checkedAt = Date.now();
   const errors: string[] = [];
+  // Kept apart from `errors` on purpose. See AssetReadResult.advisories: a
+  // failure in here must never blank a total that was read correctly.
+  const advisories: string[] = [];
   const t = pad(treasuryAddress);
   const src = CLAIM_SOURCES[0];
   const S = SELECTORS;
@@ -972,6 +1004,12 @@ export async function readTreasuryAssets(
   const tokenValue = (raw: bigint | null) =>
     raw === null || tokenUsd === null ? null : valueCents(raw, src.decimals, tokenUsd);
 
+  // The last row in the Base batch with no error of its own. Every other
+  // unanswered read names itself, so a null total always had a stated cause
+  // except this one: an unanswered balanceOf here nulled the whole book with
+  // errors [] and advisories [], against a page that promises read failures
+  // are named. Found in the pre-deploy audit of the cold-zero fix.
+  if (tokenWalletRaw === null) errors.push(`${src.symbol} balanceOf did not answer on Base; the wallet holding is unpriced`);
   const walletToken = tokenWalletRaw === null ? null : BigInt(tokenWalletRaw);
   pushBase({
     asset: src.symbol,
@@ -1022,7 +1060,12 @@ export async function readTreasuryAssets(
   if (claimToken !== null && claimToken > 0n) {
     const { depth, error, checked_at } = await readPoolDepth(src, claimToken, rpcUrls);
     checkedAt = Math.min(checkedAt, checked_at);
-    if (error) errors.push(error);
+    // ADVISORY, not an error. The block comment above promises this failure
+    // "leaves every existing figure untouched"; routing it into `errors` broke
+    // that promise the moment `errors` began gating `complete`, because a tick
+    // walk that did not answer would null a treasury whose every holding was
+    // priced. Caught in pre-deploy audit of the cold-zero fix, before ship.
+    if (error) advisories.push(error);
     if (depth) {
       const realizableCents = ethUsd === null ? null : valueCents(depth.realizable0, 18, ethUsd);
       tier3.realizable = {
@@ -1086,6 +1129,7 @@ export async function readTreasuryAssets(
     eth_usd_updated_at: ethUpdatedAt,
     token_usd: tokenUsd,
     errors,
+    advisories,
     checked_at: checkedAt,
     collection: {
       collected: hasCollected,

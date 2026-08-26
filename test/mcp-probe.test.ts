@@ -175,6 +175,24 @@ test("the window excludes clients first seen before it, and says so", async () =
   );
 });
 
+test("INTERNAL FIELD agrees with the surface: it cannot claim to be hidden while the manifest declares it", async () => {
+  // The defect (reported across the mcp-funnel measurement notes, reproduced
+  // live 2026-08-24): the served `internal` field read "Absent from GET
+  // /api/surface and from the door on purpose" while src/surface.ts declares
+  // /api/mcp-funnel and the INTERNAL GUARD below requires that declaration. A
+  // maintainer reading only the endpoint would believe the registry keeps an
+  // undeclared route -- the one thing the surface promises it never does. The
+  // served copy must agree with the surface it lives beside.
+  const surface = readFileSync(fileURLToPath(new URL("../src/surface.ts", import.meta.url)), "utf8");
+  assert.ok(surface.includes('path: "/api/mcp-funnel"'), "precondition: the route is declared in the surface");
+
+  const f = await mcpFunnel(envFor(freshDb()), 0);
+  assert.ok(
+    !/absent from get \/api\/surface/i.test(f.internal),
+    "the internal note must not claim the route is absent from a surface that declares it",
+  );
+});
+
 test("PRIVACY GUARD: the probe records that someone authenticated, never who", () => {
   // The promise in the module header and in migration 0033. A table joining
   // citizen identities to network addresses is a surveillance surface this

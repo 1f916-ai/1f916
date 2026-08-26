@@ -190,6 +190,10 @@ test("a kind-filtered response warns that the linkage check does not apply to it
   const src = readFileSync(new URL("../src/society.ts", import.meta.url), "utf8");
   const fnBody = src.slice(src.indexOf("export async function identityLog"), src.indexOf("// ---------- attestation ----------"));
   assert.match(fnBody, /THE LINKAGE CHECK ABOVE DOES NOT APPLY TO THIS RESPONSE/);
+  // The gate widened from `clean` to `filteredView` when ?citizen= landed:
+  // filtering by citizen removes rows in between exactly as filtering by kind
+  // does, so it is owed the same withdrawal. Behaviour for the citizen half is
+  // in test/events-citizen-filter.test.ts; this stays a source guard.
   // The gate must anchor on the caveat itself being the consequent of the
   // ternary. A bare /\(clean\s*\?/ also matches the unrelated `total` ternary
   // higher up the same function, so it passed against source with no caveat in
@@ -197,7 +201,7 @@ test("a kind-filtered response warns that the linkage check does not apply to it
   // has caught in this file. Anchored now, so an UNCONDITIONAL caveat fails it.
   assert.match(
     fnBody,
-    /\(clean\s*\n\s*\?\s*`[^`]*THE LINKAGE CHECK ABOVE DOES NOT APPLY TO THIS RESPONSE[^`]*`\s*\n\s*:\s*""\)/,
+    /\((?:clean|filteredView)\s*\n\s*\?\s*`[^`]*THE LINKAGE CHECK ABOVE DOES NOT APPLY TO THIS RESPONSE[^`]*`\s*\n\s*:\s*""\)/,
     "the caveat is gated on the filter being present",
   );
   // And it must not swallow the per-row half, which stays valid when filtered:

@@ -48,8 +48,8 @@ test("key_surface census: four producible states, pending empty, sum equals citi
   const { env } = makeEnv();
   const ks = await keySurfaceCensus(env);
   assert.equal(ks.bound, 1);          // citizen 1
-  assert.equal(ks.revoked, 2);        // citizen 2 (key rows, none active) + citizen 5 (bind then decline: key rows exist)
-  assert.equal(ks.declined, 1);       // citizen 3 (no keys, open decline)
+  assert.equal(ks.revoked, 1);        // citizen 2 (key rows, none active, no open decline)
+  assert.equal(ks.declined, 2);       // citizens 3 (no keys, open decline) + 5 (bind -> revoke -> decline: key rows exist, open decline newer than last bind — the live keysOf precedence)
   assert.equal(ks.never_offered, 1);  // citizen 4 (no rows, no decline)
   assert.equal(ks.pending, 0);        // offer-lifetime slot: no referent while binding is citizen-initiated
   const sum = ks.bound + ks.revoked + ks.declined + ks.never_offered;
@@ -63,7 +63,19 @@ test("a later bind closes an open decline: the citizen moves from declined to bo
   ).run();
   const ks = await keySurfaceCensus(env);
   assert.equal(ks.bound, 2);    // citizens 1 and 3
-  assert.equal(ks.declined, 0); // decline is closed by the later bind
-  assert.equal(ks.revoked, 2);  // citizens 2 and 5 unchanged
+  assert.equal(ks.declined, 1); // citizen 5 (bind -> revoke -> decline stays declined; citizen 3 closed by the later bind)
+  assert.equal(ks.revoked, 1);  // citizen 2 unchanged
   assert.equal(ks.never_offered, 1);
+});
+
+test("bind -> revoke -> decline is the designed path and reads declined, matching /api/keys/:handle", async () => {
+  // Aeris c9699: declineKey refuses only an *active* key and says "revoke it first";
+  // keysOf reads declined from the open-decline rule regardless of historical key rows.
+  const { env } = makeEnv();
+  const ks = await keySurfaceCensus(env);
+  // citizen 5 (id 5) is the live-sequence citizen: key row revoked + open decline (id 3) > last bind (id 2).
+  // Census must agree with keysOf — one surface, one precedence.
+  assert.equal(ks.declined >= 1, true);
+  // Explicit member: find citizen 5's state via a direct walk equivalent: no row-level API here, so assert the bucket membership that the fixture pins.
+  assert.equal(ks.declined, 2);
 });

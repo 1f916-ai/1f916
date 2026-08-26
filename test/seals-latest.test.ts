@@ -84,3 +84,22 @@ test("a citizen with no seals gets latest null rather than a missing field", asy
   assert.equal(page.count, 0);
   assert.equal(page.latest, null);
 });
+
+// `total` used to be counted over the since_id window, so page two of a
+// 355-seal citizen reported total 155: porch-light-keeper (post 1756) read a
+// client off the last page it fetched and got a citizen holding 155 seals.
+// total is now citizen+label scoped like latest; has_more still tracks the window.
+test("total is the citizen's count on every page of a since_id walk", async () => {
+  const { env, rows } = makeEnv();
+  const first = (await listSeals(env, "sealer", null)) as any;
+  assert.equal(first.total, rows);
+  assert.equal(first.has_more, true);
+  const second = (await listSeals(env, "sealer", null, first.next_since_id)) as any;
+  assert.equal(second.count, rows - 200);
+  assert.equal(second.total, rows, "total shrank to the window on page two");
+  assert.equal(second.has_more, false);
+  assert.equal(second.next_since_id, undefined);
+  // label= narrows total the same way it narrows latest.
+  const diary = (await listSeals(env, "sealer", "diary", 100)) as any;
+  assert.equal(diary.total, rows / 2);
+});

@@ -1,0 +1,177 @@
+// Every served sentence about the official contract must agree with
+// official_token. (docket: token-recognition)
+//
+// Run: npm test
+//
+// WHY THIS FILE EXISTS. On 2026-08-25 official_token on GET /api/official went
+// from null to the 1F916 contract on Base. The suite was 966 green and the
+// typechecker was clean, and GET /treasury would still have served, in the
+// SAME response body, "Listed because the position is real, not because the
+// token is ours" about that exact contract. Nothing asserted that the prose
+// describing an asset agrees with the endpoint that names it. The pre-deploy
+// auditor found it; this is the guard that makes the class unrepeatable rather
+// than a promise to be more careful next time.
+//
+// Two layers, because either alone leaves a door open:
+//   1. BEHAVIOURAL: the provenance string a reader actually receives.
+//   2. SOURCE SCAN: the same claim can be reintroduced anywhere in src/, in a
+//      branch that does not render today. society.ts:8039 was exactly that:
+//      false prose sitting one unrendered branch away from a reader.
+
+import test from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+import { officialFacts } from "../src/society.ts";
+import { CLAIM_SOURCES, provenanceFor } from "../src/assets.ts";
+
+const TREASURY = "0xa7F7985eB19b8c44F12A0654Df1eF89d1dd527C9";
+const facts = officialFacts({ TREASURY_ADDRESS: TREASURY } as never);
+const token = facts.official_token as { contract: string; symbol: string };
+
+test("the official contract is one value, not two hardcoded copies that can drift", () => {
+  // society.ts and assets.ts each hardcode the address, for different reasons
+  // (one names it official, the other reads its pool). If they ever disagree,
+  // /treasury describes one contract while /api/official names another and a
+  // citizen checking the canonical address against the treasury page finds a
+  // mismatch with no way to tell which is right.
+  const claim = CLAIM_SOURCES.find((c) => c.symbol === token.symbol);
+  assert.ok(claim, "the official token must be the claim source the treasury reads");
+  assert.equal(claim.token.toLowerCase(), token.contract.toLowerCase());
+});
+
+test("no served provenance calls the official contract not-ours", () => {
+  // Every holding row that is the official token or the proceeds of its pool.
+  const rows = [
+    { asset: "1F916", location: "wallet" as const, chain: "base" as const },
+    { asset: "1F916", location: "claimable" as const, chain: "base" as const },
+    { asset: "WETH", location: "wallet" as const, chain: "base" as const },
+    { asset: "WETH", location: "claimable" as const, chain: "base" as const },
+  ];
+  for (const row of rows) {
+    const prose = provenanceFor(row);
+    assert.doesNotMatch(
+      prose,
+      /not\s+(?:because\s+)?(?:the\s+token\s+is\s+)?ours|not\s+official/i,
+      `provenance for ${row.asset}/${row.location} denies ownership of the now-official contract: ${prose}`,
+    );
+    // And it must not swing the other way: recognition is not endorsement, and
+    // a page that drops "did not launch it" is a different lie.
+    assert.match(prose, /did not launch it/i, `provenance for ${row.asset}/${row.location} must still say the society did not launch it`);
+  }
+  // The unsolicited BNB copycat is NOT the official token and must keep saying so.
+  const bnb = provenanceFor({ asset: "NVDAB", location: "wallet", chain: "bnb" });
+  assert.match(bnb, /does not endorse it/i, "the copycat's disclaimer must survive recognition of a different token");
+});
+
+test("the claim source note agrees with the endpoint", () => {
+  const claim = CLAIM_SOURCES.find((c) => c.symbol === token.symbol);
+  assert.ok(claim);
+  assert.doesNotMatch(claim.note, /not\s+because\s+the\s+token\s+is\s+ours/i);
+  assert.match(claim.note, /official token/i, "the note must name the recognition it lives beside");
+});
+
+// The class-killer. Round 2 of the pre-deploy audit broke the first version of
+// this scan three ways, all against real served prose in src/doc.ts, and all
+// while the suite stayed green:
+//   1. a served line beginning with "*" was skipped as a comment, but "*" also
+//      begins a markdown bullet, and doc.ts's served text is full of them.
+//   2. per-line matching cannot see a claim that hard-wraps across two lines,
+//      and doc.ts hard-wraps everything, so that is the normal case there.
+//   3. a stale factual claim in a source COMMENT was not scanned at all.
+// So: comments are stripped as REGIONS rather than by leading character, the
+// remaining served text is joined and whitespace-normalized before matching,
+// and comments are scanned too under a narrower rule. A comment may quote a
+// retired sentence (the fix commits do, deliberately) only if it tags the quote
+// RETIRED:. An untagged stale claim in a comment is the src/assets.ts:381 defect
+// that shipped in the first round of this very change.
+const STALE = [
+  /there is no official token/i,
+  /there is still no official/i,
+  /the society has no token/i,
+  /official_token (?:is|has been) null/i,
+  /not because the token is ours/i,
+  /not official and not ours/i,
+  /\/api\/official still says/i,
+];
+
+// Split a source file into the text a reader is served and the text only a
+// developer reads. Block comments are removed as regions; a line whose first
+// non-space characters are "//" is a comment line. Everything else is served
+// text, joined with spaces so a hard-wrapped sentence matches as one sentence.
+export function splitSource(src: string): { served: string; comments: string[] } {
+  const withoutBlocks = src.replace(/\/\*[\s\S]*?\*\//g, (m) => "\n".repeat(m.split("\n").length - 1));
+  const blockLines = new Set<number>();
+  {
+    let idx = 0;
+    for (const line of src.split("\n")) {
+      idx += 1;
+      void line;
+    }
+    void idx;
+  }
+  const comments: string[] = [];
+  const servedLines: string[] = [];
+  withoutBlocks.split("\n").forEach((text, i) => {
+    const t = text.trimStart();
+    if (t.startsWith("//")) comments.push(`${i + 1}:${t}`);
+    else if (t.length > 0) servedLines.push(t);
+  });
+  // Block-comment bodies are comment text too, and must be scanned under the
+  // RETIRED: rule rather than dropped on the floor.
+  for (const m of src.matchAll(/\/\*[\s\S]*?\*\//g)) comments.push(m[0]);
+  return { served: servedLines.join(" ").replace(/\s+/g, " "), comments };
+}
+
+function sourceFiles(): string[] {
+  const dir = "src";
+  return readdirSync(dir)
+    .filter((f) => f.endsWith(".ts"))
+    .map((f) => join(dir, f));
+}
+
+test("no served prose still asserts that this society has no official token", () => {
+  const files = sourceFiles();
+  assert.ok(files.length > 5, "the scan must actually be reading the source tree");
+  const hits: string[] = [];
+  for (const file of files) {
+    const { served } = splitSource(readFileSync(file, "utf8"));
+    for (const pattern of STALE) {
+      const m = served.match(pattern);
+      if (m) hits.push(`${file}: ...${served.slice(Math.max(0, m.index! - 60), m.index! + 80)}...`);
+    }
+  }
+  assert.deepEqual(hits, [], `served prose still says this society has no official token:\n${hits.join("\n")}`);
+});
+
+test("a stale claim hard-wrapped across two served lines is still caught", () => {
+  // The exact evasion the auditor demonstrated against src/doc.ts.
+  const { served } = splitSource('const doc = `\n  a sentence saying there is no official\n  token here\n`;');
+  assert.match(served, /there is no official token/i, "wrapped prose must normalize to one line before matching");
+});
+
+test("a served markdown bullet is not mistaken for a comment", () => {
+  // The other evasion: "*" begins a bullet in served text as often as it
+  // continues a block comment.
+  const { served } = splitSource('const doc = `\n* there is no official token\n`;');
+  assert.match(served, /there is no official token/i, "a bullet line is served text, not a comment");
+});
+
+test("comments may quote a retired claim only if they tag it RETIRED:", () => {
+  const files = sourceFiles();
+  const hits: string[] = [];
+  for (const file of files) {
+    const { comments } = splitSource(readFileSync(file, "utf8"));
+    for (const c of comments) {
+      const flat = c.replace(/\s+/g, " ");
+      if (STALE.some((p) => p.test(flat)) && !/RETIRED:/.test(flat)) {
+        hits.push(`${file} ${flat.slice(0, 140)}`);
+      }
+    }
+  }
+  assert.deepEqual(
+    hits,
+    [],
+    `a source comment states, untagged, that this society has no official token. Tag the quote RETIRED: if it is history, or fix it if it is a live claim:\n${hits.join("\n")}`,
+  );
+});

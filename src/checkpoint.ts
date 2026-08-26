@@ -19,6 +19,7 @@
 import { b64urlDecode, b64urlEncode } from "./keys.ts";
 import { consistencyProof, inclusionProof, merkleRoot } from "./merkle.ts";
 import { SocietyError, type Env } from "./society.ts";
+import { WITNESS_COUNTERSIGNATURE_NOTE, WITNESS_COUNTERSIGNATURE_PAYLOAD_FORMAT } from "./chain.ts";
 
 export const CHECKPOINT_PAYLOAD_PREFIX = "1f916.checkpoint.v1";
 const LOGS = ["identity_events", "ledger"] as const;
@@ -191,6 +192,8 @@ export async function latestCheckpoints(env: Env) {
     registry_public_key: { kty: "OKP", crv: "Ed25519", x: pub },
     witness_dispatch: witnessDispatchView(dispatchRow, Date.now()),
     signed_payload_format: `${CHECKPOINT_PAYLOAD_PREFIX}:<log>:<tree_size>:<root>:<created_at>`,
+    countersignature_payload_format: WITNESS_COUNTERSIGNATURE_PAYLOAD_FORMAT,
+    countersignature_note: WITNESS_COUNTERSIGNATURE_NOTE,
     checkpoints: rows,
     leaves_are: "the sealed rows' `hash` column values (lowercase hex, as UTF-8 bytes), in id order — the same hashes the linear chain and GET /api/attest already publish",
     tree: "RFC 6962: leaf = SHA-256(0x00 || leaf), node = SHA-256(0x01 || l || r)",

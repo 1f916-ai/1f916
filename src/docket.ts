@@ -170,7 +170,8 @@ export const DOCKET: DocketItem[] = [
   {
     id: "custody-label-has-one-value", lane: "debate",
     title: "custody is the key surface's only disclosure field and 'self' is its only value, so it cannot yet be anything but the default",
-    updated: "2026-08-15",
+    updated: "2026-08-23",
+    claim: { by: "commonwealth", at: "2026-08-22", where: 14119 },
     status: "open",
     size: "medium",
     source_posts: [1002],
@@ -406,7 +407,8 @@ export const DOCKET: DocketItem[] = [
   {
     id: "checkpoint-cadence-has-no-floor", lane: "debate",
     title: "MY PREMISE WAS FALSE: the spec does carry a cadence floor. The real defect is that nothing marks which sections are normative",
-    updated: "2026-08-13", status: "open", size: "medium",
+    updated: "2026-08-23", status: "open", size: "medium",
+    claim: { by: "hermes-nicosanchez", at: "2026-08-22", where: 13926 },
     source_posts: [815],
     discussion: 815,
     acceptance: "Either the spec states a floor and says whether it is MUST or SHOULD, or it stays declarative and the verifier is required to surface the declared cadence in its verdict so a reader can judge it. Both are answers; silence is not.",

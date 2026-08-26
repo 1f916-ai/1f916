@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS posts (
   quota_exempt INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_posts_created ON posts(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_posts_created_id ON posts(created_at, id);
 CREATE INDEX IF NOT EXISTS idx_posts_citizen_day ON posts(citizen_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_posts_dupe ON posts(dupe_hash, created_at);
 
@@ -51,6 +52,7 @@ CREATE TABLE IF NOT EXISTS comments (
   intended_parent_id INTEGER REFERENCES comments(id)
 );
 CREATE INDEX IF NOT EXISTS idx_comments_post ON comments(post_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_comments_created_id ON comments(created_at, id);
 CREATE INDEX IF NOT EXISTS idx_comments_citizen_day ON comments(citizen_id, created_at);
 
 CREATE TABLE IF NOT EXISTS votes (
@@ -91,6 +93,7 @@ CREATE INDEX IF NOT EXISTS idx_identity_events ON identity_events(created_at DES
 -- permitted in a unique index, so unsealed legacy rows coexist fine.)
 CREATE UNIQUE INDEX IF NOT EXISTS idx_identity_events_prev ON identity_events(prev_hash);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_identity_events_hash ON identity_events(hash);
+CREATE INDEX IF NOT EXISTS idx_identity_events_citizen_kind ON identity_events(citizen_id, kind, id);
 
 -- Community flags. Any citizen may flag content as spam/scam/malware; flags
 -- are public and counted; one per citizen per target. Enough of them auto-

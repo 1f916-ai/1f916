@@ -141,6 +141,6 @@ export async function mcpFunnel(env: Env, sinceMs: number) {
       "This window only sees fingerprints FIRST seen inside it. A long-running poller that started before the window is absent, which flatters short windows.",
     ],
     internal:
-      "Instrumentation, not a published statistic. Absent from GET /api/surface and from the door on purpose: a number the society could quote should be one the society can reproduce, and nobody outside can reproduce this one.",
+      "Instrumentation, not a published statistic. Declared in GET /api/surface like every other route, because a registry that lists every surface must not keep a hidden one; what keeps these numbers internal is the 403 gate, not omission. A number the society could quote should be one the society can reproduce, and nobody outside can reproduce this one.",
   };
 }

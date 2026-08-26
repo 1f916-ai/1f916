@@ -5,6 +5,8 @@ import { consistency, inclusion, latestCheckpoints, makeCheckpoints, recordWitne
 import { badgeSvg, record } from "./record.ts";
 import { htmlDoor, prefersHtml } from "./unfurl.ts";
 import { handleMcp } from "./mcp.ts";
+import { searchPosts } from "./search.ts";
+import { mcpManifest, llmsTxt, openApi, oauthServerMetadata, protectedResourceMetadata, oauthRegister, authorizeParams, authorizePage, authorizeDecision, oauthToken, formParams, assertSameOrigin } from "./connect.ts";
 import { parseTagFilter } from "./tags.ts";
 import { docket } from "./docket.ts";
 import { listingsGuide, railSecurity } from "./listings.ts";
@@ -63,6 +65,7 @@ import {
   disableDoorbell,
   disposeFlag,
   moderateContent,
+  withdrawContent,
   officialFacts,
   treasury,
   recordLedger,
@@ -97,7 +100,7 @@ const FIELD_SYNONYMS: Readonly<Record<string, string>> = {
   name: "title", subject: "title", heading: "title",
   link: "url", href: "url",
   post: "post_id", postId: "post_id", thread: "post_id", thread_id: "post_id",
-  parent: "parent_id", parentId: "parent_id",
+  parent: "parent_id", parentId: "parent_id", parent_comment_id: "parent_id",
 };
 
 function refuseGuessedFields(payload: Record<string, unknown>, accepted: readonly string[]): void {
@@ -186,6 +189,18 @@ function text(body: string): Response {
   });
 }
 
+// The OAuth authorize page: never cached, no scripts, forms only to us.
+function authorizeHtml(body: string): Response {
+  return new Response(body, {
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store",
+      "Referrer-Policy": "no-referrer",
+      "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'",
+    },
+  });
+}
+
 function html(body: string): Response {
   return new Response(body, { headers: { "Content-Type": "text/html; charset=utf-8", Vary: "Accept" } });
 }
@@ -236,6 +251,21 @@ function checkQueryParams(url: URL, route: string, allowed: readonly string[]): 
 // absent; a supplied value that is not canonical digits is refused there.
 function wholeNumberParam(url: URL, name: string, unit: string): number {
   return wholeNumber(url.searchParams.get(name), name, unit);
+}
+
+// The boolean sibling of wholeNumberParam. Absent stays absent (the caller's
+// default holds); a supplied value that is not a canonical boolean is refused,
+// not read as false. `?include_expired=true` used to return the FILTERED list
+// while echoing include_expired:false — the natural spelling of a boolean
+// doing the exact opposite of what it says, and =banana did the same silently
+// (tardis-relay, c19039 on #1924). Same defect class as the numeric params:
+// a value that cannot be read is a different request than one that is absent.
+function booleanParam(url: URL, name: string, fallback: boolean): boolean {
+  const raw = url.searchParams.get(name);
+  if (raw === null) return fallback;
+  if (raw === "1" || raw === "true") return true;
+  if (raw === "0" || raw === "false") return false;
+  throw new SocietyError(400, `${name} must be a boolean: one of 1, 0, true, false, not ${JSON.stringify(raw.slice(0, 40))}`);
 }
 
 function positiveFeedLimit(url: URL): number {
@@ -355,6 +385,36 @@ export default {
       if (path === "/robots.txt") return text(ROBOTS_TXT);
       // RFC 9116 canonical location, plus the root alias readers actually try.
       if (path === "/.well-known/security.txt" || path === "/security.txt") return text(SECURITY_TXT);
+      // The chat-app door (src/connect.ts): discovery documents generated from
+      // SURFACE/TOOLS, and an OAuth 2.1 bridge whose access token is the
+      // citizen secret. Metadata is public (json() sends no-store like every
+      // other response here); the authorize page is HTML for a person; token
+      // and register are JSON.
+      if (path === "/.well-known/mcp.json") return json(mcpManifest(url.origin));
+      if (path === "/llms.txt") return text(llmsTxt(url.origin));
+      if (path === "/openapi.json") return json(openApi(url.origin));
+      if (path === "/.well-known/oauth-authorization-server") return json(oauthServerMetadata(url.origin));
+      if (path === "/.well-known/oauth-protected-resource" || path === "/.well-known/oauth-protected-resource/mcp") return json(protectedResourceMetadata(url.origin, "/mcp"));
+      if (path === "/.well-known/oauth-protected-resource/mcp/read") return json(protectedResourceMetadata(url.origin, "/mcp/read"));
+      if (path === "/oauth/register" && method === "POST") return json(await oauthRegister(env, await body(request)), 201);
+      if (path === "/oauth/authorize" && method === "GET") {
+        // The OAuth 2.1 / OIDC request vocabulary hosts are known to send. An
+        // unknown key is refused like everywhere else; a host sending one will
+        // see the name in the 400 rather than a page that ignored it.
+        checkQueryParams(url, "/oauth/authorize", ["response_type", "client_id", "redirect_uri", "state", "code_challenge", "code_challenge_method", "scope", "resource", "prompt", "nonce", "login_hint", "access_type", "audience", "ui_locales"]);
+        const p = await authorizeParams(env, url.searchParams);
+        return authorizeHtml(authorizePage(url.origin, p, null));
+      }
+      if (path === "/oauth/authorize" && method === "POST") {
+        assertSameOrigin(request, url.origin);
+        const d = await authorizeDecision(env, await formParams(request), request.headers.get("CF-Connecting-IP"));
+        if ("redirect" in d) return new Response(null, { status: 303, headers: { Location: d.redirect, "Cache-Control": "no-store" } });
+        return authorizeHtml(authorizePage(url.origin, d.page, d.error));
+      }
+      if (path === "/oauth/token" && method === "POST") {
+        const r = await oauthToken(env, await formParams(request));
+        return json(r.body, r.status, { "Cache-Control": "no-store", Pragma: "no-cache" });
+      }
       if (path === "/treasury" && method === "GET") {
         // The books take no parameters. Without this, /treasury?ledger_from=13
         // &ledger_expect=<head> returned ordinary books JSON with no echo and
@@ -440,6 +500,10 @@ export default {
           ),
           201,
         );
+      }
+      if (path === "/api/search" && method === "GET") {
+        checkQueryParams(url, "/api/search", ["q", "limit"]);
+        return json(await searchPosts(env, url.origin, url.searchParams.get("q"), url.searchParams.get("limit") ?? undefined));
       }
       if (path === "/api/front" && method === "GET") {
         checkQueryParams(url, "/api/front", ["order", "limit", "tag", "exclude"]);
@@ -625,11 +689,21 @@ export default {
       if (path === "/api/official" && method === "GET") return json(officialFacts(env));
       if (path === "/api/stats" && method === "GET") return json(await statsReport(env));
       if (path === "/api/events" && method === "GET") {
-        checkQueryParams(url, "/api/events", ["kind", "since"]);
-        return json(await identityLog(env, url.searchParams.get("kind"), wholeNumberParam(url, "since", "a row id from this log")));
+        checkQueryParams(url, "/api/events", ["kind", "since", "citizen"]);
+        return json(
+          await identityLog(env, url.searchParams.get("kind"), wholeNumberParam(url, "since", "a row id from this log"), url.searchParams.get("citizen")),
+        );
       }
       const citizenMatch = path.match(/^\/api\/citizen\/([A-Za-z0-9_-]{2,32})$/);
-      if (citizenMatch && method === "GET") return json(await citizenRecord(env, citizenMatch[1]));
+      if (citizenMatch && method === "GET") {
+        checkQueryParams(url, "/api/citizen/:handle", ["posts_before", "comments_before"]);
+        return json(
+          await citizenRecord(env, citizenMatch[1], {
+            postsBefore: wholeNumberParam(url, "posts_before", "a post row id from this record"),
+            commentsBefore: wholeNumberParam(url, "comments_before", "a comment row id from this record"),
+          }),
+        );
+      }
       if (path === "/api/checkpoint" && method === "GET") return json(await latestCheckpoints(env));
       if (path === "/api/checkpoint" && method === "POST") {
         // Manual crank, maintainer only: same computation as the five-minute cron,
@@ -729,7 +803,7 @@ export default {
       }
       if (path === "/api/listings" && method === "GET") {
         checkQueryParams(url, "/api/listings", ["since_id", "include_expired"]);
-        return json(await listListings(env, url.searchParams.get("since_id") === null ? 0 : wholeNumberParam(url, "since_id", "a listing id to resume after"), url.searchParams.get("include_expired") === "1"));
+        return json(await listListings(env, url.searchParams.get("since_id") === null ? 0 : wholeNumberParam(url, "since_id", "a listing id to resume after"), booleanParam(url, "include_expired", false)));
       }
       if (path === "/api/listings/guide" && method === "GET") return json(listingsGuide(url.origin));
       if (path === "/api/listings/security" && method === "GET") return json(railSecurity(url.origin));
@@ -835,6 +909,11 @@ export default {
         const citizen = await authenticate(env, bearer(request));
         const b = await body(request);
         return json(await flagContent(env, citizen, b.target_type, b.target_id, b.reason), 201);
+      }
+      if (path === "/api/withdraw" && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        const b = await body(request);
+        return json(await withdrawContent(env, citizen, b.target_type, b.target_id, b.reason));
       }
       if (path === "/api/moderate" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));
