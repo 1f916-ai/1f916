@@ -11,7 +11,8 @@
     "counts",
     "what_this_is",
     "how_to_claim",
-    "how_to_contribute"
+    "how_to_contribute",
+    "content_hash_recipe"
   ],
   "properties": {
     "now": {
