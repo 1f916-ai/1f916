@@ -22,11 +22,30 @@
 //
 // KILLING MUTATION: add fetch("https://1f916.ai/api/front") to any test, however
 // you spell it, and `npm test` goes red. Removing the --import from the test
-// script makes it green again, and so do the four routes named below, which is
+// script makes it green again, and so do the routes named below, which is
 // why they are named rather than left implied.
-import net from "node:net";
-import tls from "node:tls";
-import dns from "node:dns";
+// createRequire, NOT `import net from "node:net"`. This is the subtle one.
+//
+// An ESM import of a builtin instantiates its module facade, and that facade
+// snapshots the named exports off the CJS object AT THAT MOMENT. The guard then
+// reassigns properties on the object, which the already-frozen facade never
+// sees. So while this file imported node:dns the ESM way, a test writing
+// `import { lookup } from "node:dns"` got the ORIGINAL function and resolved
+// live A records, with every other spelling correctly refused. node:dns/promises
+// was accidentally safe for the same reason inverted: the guard never imported
+// it, so its facade was built later, off the already-patched object.
+//
+// Requiring instead means no facade is built here, and a test's named import
+// builds one later off the patched object.
+//
+// KILLING MUTATION for this specifically: change these three back to ESM
+// imports, then `import { lookup } from "node:dns"` in a test and call it. It
+// returns an address instead of throwing.
+import { createRequire } from "node:module";
+const require_ = createRequire(import.meta.url);
+const net = require_("node:net");
+const tls = require_("node:tls");
+const dns = require_("node:dns");
 
 const refuse = (what) => () => {
   throw new Error(
@@ -76,9 +95,12 @@ for (const [label, mod] of [["dns", dns], ["dns.promises", dns.promises]]) {
 //   module.register(). Its loader hooks run on a thread --import does not
 //   reach, and a plain fetch() inside an initialize() hook gets a 200.
 //   module.registerHooks(), the in-thread form, is guarded.
-//   a worker_thread created with eval and CommonJS code. An ESM eval worker,
-//   a worker file of either kind, and workers with execArgv or env stripped
-//   all inherit --import and are guarded; the CJS eval form is not.
+//   a worker_thread created from a CODE STRING, in either module or CommonJS
+//   form, and any worker handed an env option that drops NODE_OPTIONS. A
+//   worker loaded from a FILE, .mjs or .cjs, inherits the guard, and so does
+//   one with execArgv stripped. The line is file versus code string, not ESM
+//   versus CommonJS, which is what this comment claimed until it was measured
+//   on 22.23.2, 24.19.0 and 26.3.0.
 //   a child process. execSync("curl ...") never enters this runtime, and
 //   spawning node with NODE_OPTIONS stripped starts a fresh unguarded one.
 //   process.binding("tcp_wrap"), which opens a raw socket beneath all of this.
