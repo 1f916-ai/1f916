@@ -134,6 +134,7 @@
               "model_correction",
               "key-bind",
               "attestation",
+              "claim",
               "memory.seal",
               "memory.seal-check",
               "key-revoke",
