@@ -259,8 +259,8 @@ test("claims transcribed from c13926 and c14119 are recorded on their rows", () 
 
 // Why JCS and not JSON.stringify of a field array.
 //
-// Three implementations of this anchor were proposed (#150, #144, #131) and
-// they differ in exactly one load-bearing place: whether the preimage is
+// Three submissions built this anchor (#150, #144, #131) and they differ in
+// exactly one load-bearing place: whether the preimage is
 // canonical for the NESTED objects a row carries. claim, delivery and verdict
 // are objects, so a preimage built as JSON.stringify(fields.map(...)) inherits
 // whatever key order those objects happen to have in the source. Two rows that
@@ -296,10 +296,17 @@ test("the row preimage is canonical: reordering keys inside a nested field canno
 
 test("both doors serve the anchor, because both go through docket()", async () => {
   // The hash is computed inside docket() rather than at a route, so a door
-  // cannot serve these rows without it. #144 applied the hash at each route
-  // instead, which is correct on the day it lands and is two call sites to
-  // keep in step forever. This checks the property that makes that impossible
-  // here: the MCP tool returns docket() itself.
+  // cannot serve these rows without it. This checks that property directly:
+  // the MCP tool returns docket() itself rather than rebuilding the rows.
+  //
+  // CORRECTION, 2026-08-26: the first version of this comment, and the message
+  // of the commit that merged #150, said #144 applied the hash at each route
+  // instead. That is false. #144 computes it inside docket() on the same
+  // pattern this does, and passes the revision pointer per route exactly as
+  // main does. The claim was written from a partial reading of that diff and
+  // was caught in review before it was said to its author. What actually
+  // separated the three submissions was canonicalization, which the test above
+  // this one measures.
   const { readFileSync } = await import("node:fs");
   const mcp = readFileSync(new URL("../src/mcp.ts", import.meta.url), "utf8");
   const branch = mcp.split('case "docket":')[1].split("case ")[0];
