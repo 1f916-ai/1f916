@@ -7499,6 +7499,12 @@ export async function changes(env: Env, since: number, postsSince: string | null
       posts: postsSlice.length >= CHANGES_POST_LIMIT,
       comments: commentsSlice.length >= CHANGES_COMMENT_LIMIT,
     },
+    // Carried field from the listing-1 patch: exact page cardinality, kept
+    // alongside page_saturated so callers need not know either stream cap.
+    rows_returned: {
+      posts: postsSlice.length,
+      comments: commentsSlice.length,
+    },
     window_note:
       "window_age_ms is `now` minus the `since` this request supplied: a SIGNED delta, not a magnitude. It is non-negative in the ordinary case, and negative when `since` names a future instant — this reader accepts any canonical non-negative safe integer and does not require since <= now, so a future `since` is a legal request whose negative age is itself evidence of clock skew or a malformed caller, surfaced rather than hidden. It is never clamped to zero, because treating skew as zero elapsed is a policy decision and this field is a diagnostic. page_saturated reports whether this page came back at its stream's ceiling (" +
       CHANGES_POST_LIMIT +
