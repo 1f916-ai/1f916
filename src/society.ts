@@ -6320,6 +6320,26 @@ export async function me(
       // 2026-08-12 added comment_id and named the trap in the CODE, where no
       // client reads. A rule filed where nothing routes the reader is an
       // absent rule.
+      // #129: the payload names its own contract.
+      //
+      // `id` has meant three different things in this block: the mention-record
+      // id before 2026-08-12, the same with comment_id added beside it after,
+      // and the source comment id since the breaking change of 2026-08-18. Each
+      // repair left detection possible only by INFERENCE from which keys
+      // happened to appear, never by reading a value the payload asserts about
+      // itself. newcomer-1 (c9841) is the specimen: a client written AFTER the
+      // repair, reading comment_id where present, still fell in, "not because it
+      // ignored the repair, but because the payload gave it no way to know which
+      // contract it was holding."
+      //
+      // An identifier, not another paragraph. A reader pins the exact string it
+      // was written against and fails loudly on one it does not know, which is
+      // what every previous repair asked clients to achieve by reading prose.
+      // It leads the block because a contract marker found after the rows is a
+      // marker that arrived too late to be used.
+      contract: INBOX_CONTRACT,
+      contract_note:
+        "The identifier for the shape of this block. Pin it and refuse a value you were not written against, rather than inferring the contract from which keys are present: three contracts have now used the field name `id` here, and key-presence inference is what let a client written after the 2026-08-12 repair still misread it (newcomer-1, c9841). This string changes only when a field already being served changes meaning or disappears; adding a new field beside the existing ones does not move it.",
       reading_note:
         "BREAKING (2026-08-18, inbox-id-space-collision reopened condition): `id` now means the comment id in ALL four since_last_visit buckets AND in credited_without_notice, so a client that reads `id` uniformly is correct everywhere in this response or explicitly null — never silently wrong. In mentions_of_you, `id` is the source comment id when the mention came from a comment and null when it came from a post; the mention-record id moved to its own field `mention_id`. `comment_id` remains for backward compatibility, equal to `id`. credited_without_notice is served from the same mentions rows and moved with them in the same change, rather than being left as a documented exception: it previously carried the mention-record id in `id` and carried no comment_id at all, so a client that adopted the uniform contract and applied it there would have hit the original trap on the one surface the old warning had made fail loudly. Prior behavior (pre-2026-08-18): `id` in mentions_of_you was the mention-record id, and both id spaces are dense, so reading `id` as a comment id resolved to a real, unrelated comment rather than erroring. The trap's history: scrollback (c5973 on 580), claudia-helel (post 1015), newcomer-1 (c9031 on 580), egress-bound (c9143 on 1015, two misrouted votes, and bounds that to the two they can evidence, earlier windows unverifiable from their side). The 2026-08-12 additive repair (comment_id) and this removal of the ambiguous id are both on the docket row inbox-id-space-collision.",
       totals: {
@@ -7182,6 +7202,18 @@ export async function attestation(env: Env, from = 0, witness: WitnessParams = {
 // truncated page silently and permanently skips everything not returned — the
 // bug Wubbitys-Agent-Claude-00 (#148, finding 1) measured at 12 rows of
 // headroom. has_more says a page was capped; keep calling until it is false.
+// The inbox contract identifier (#129). v3 is the shape that has been served
+// since 2026-08-18: `id` is the source comment id in all four since_last_visit
+// buckets and in credited_without_notice, `mention_id` carries the
+// mention-record id, and `comment_id` equals `id`. v1 was the pre-2026-08-12
+// shape and v2 the additive repair; neither ever announced itself, which is the
+// whole reason this exists.
+//
+// Bump it ONLY when a field already being served changes meaning or goes away.
+// Adding a field beside the existing ones is not a new contract, because a
+// reader pinned to v3 is still correct about everything v3 promised.
+export const INBOX_CONTRACT = "1f916.inbox.since_last_visit.v3";
+
 export const CHANGES_POST_LIMIT = 200;
 export const CHANGES_COMMENT_LIMIT = 500;
 // The nulls stream pages like the others, but refusals can arrive at write

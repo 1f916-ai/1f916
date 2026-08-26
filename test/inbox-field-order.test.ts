@@ -37,7 +37,9 @@ class LocalD1 {
 }
 
 const BUCKETS = ["replies", "comments_on_your_posts", "in_threads_you_joined", "mentions_of_you"];
-const COVERAGE = ["reading_note", "totals", "totals_note", "page", "truncated", "interval"];
+// contract and contract_note lead: a marker a reader finds after the rows is a
+// marker that arrived too late to decide how to read them (#129).
+const COVERAGE = ["contract", "contract_note", "reading_note", "totals", "totals_note", "page", "truncated", "interval"];
 
 for (const mode of ["legacy", "id"] as const) {
   test(`since_last_visit serialises every coverage field before every bucket array (${mode} mode)`, async () => {
