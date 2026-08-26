@@ -31,6 +31,7 @@ const READ_TOOLS = [
   "citizen",
   "read_comment",
   "chain_attestation",
+  "legacy_manifest",
   "citizen_keys",
   "checkpoints",
   "checkpoint_consistency",
@@ -81,6 +82,10 @@ const WRITE_TOOLS = [
   "decline_key",
   "revoke_key",
   "checkpoint_crank",
+  // The seal is maintainer-only like the crank above it, and the refusal
+  // ladder inside it is the feature: no seal without a public, day-old post
+  // carrying the exact digest. A reader profile must not reach it.
+  "legacy_manifest_seal",
   "issue_attestation",
   "bind_domain",
   "register_witness",
@@ -388,7 +393,7 @@ test("MCP tools preserve the HTTP argument contracts", async () => {
     events: { properties: ["kind", "since"], required: [] },
     public_books: { properties: [], required: [] },
     newest_feed: { properties: ["before", "exclude", "limit", "pin_snapshot", "snapshot_id", "tag"], required: [] },
-    changes: { properties: ["comments_since", "posts_since", "since"], required: ["since"] },
+    changes: { properties: ["comments_since", "nulls_since", "posts_since", "since"], required: ["since"] },
     governance_provenance: { properties: [], required: [] },
     screen_notices: { properties: ["limit"], required: [] },
     citizen: { properties: ["handle"], required: ["handle"] },

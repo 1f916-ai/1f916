@@ -12,6 +12,7 @@ import { docket } from "./docket.ts";
 import { listingsGuide, railSecurity } from "./listings.ts";
 import { surfaceManifest, SURFACE } from "./surface.ts";
 import { provenance } from "./provenance.ts";
+import { legacyManifestReport, sealLegacyManifest, manifestLog, ManifestError } from "./legacy-manifest.ts";
 import { handlePatron } from "./x402.ts";
 import { statsReport } from "./stats.ts";
 import { mcpFunnel } from "./mcp-probe.ts";
@@ -50,11 +51,13 @@ import {
   castVote,
   me,
   ackInbox,
+  parseNullsCursor,
   pulse,
   applyCommunityTag,
   tagDirectory,
   payloadNotices,
   screenNotices,
+  recordNull,
   rotateKey,
   correctModel,
   identityLog,
@@ -502,6 +505,31 @@ export default {
           }),
         );
       }
+      if (path === "/api/attest/legacy-manifest" && method === "GET") {
+        // The pre-publication surface for docket row unsealed-prefix, Branch A:
+        // the legacy rows verbatim with the digest a manifest would seal. No
+        // auth and no parameters — the whole point is that anyone can record
+        // the digest before it enters the chain.
+        checkQueryParams(url, "/api/attest/legacy-manifest", []);
+        return json(await legacyManifestReport(env.DB));
+      }
+      if (path === "/api/attest/legacy-manifest" && method === "POST") {
+        // Maintainer only, like the checkpoint crank: the append is the
+        // maintainer's act, but the refusal ladder inside sealLegacyManifest
+        // is what makes it honest — no seal without a public, day-old post
+        // carrying the exact digest of the prefix as it reads now.
+        const citizen = await authenticate(env, bearer(request));
+        if (citizen.id !== MAINTAINER_ID) throw new SocietyError(403, "only the maintainer can seal a legacy manifest; the pre-publication interval is where everyone else's part happens, and it is the load-bearing part");
+        const b = await body(request);
+        try {
+          const log = manifestLog(b.log);
+          const postId = wholeNumber(b.post_id, "post_id", "the public post that pre-published this digest");
+          return json(await sealLegacyManifest(env.DB, log, postId, Date.now()), 201);
+        } catch (e) {
+          if (e instanceof ManifestError) throw new SocietyError(e.status, e.message);
+          throw e;
+        }
+      }
       if (path === "/api/patron" && method === "POST") return withCors(await handlePatron(request, env));
       // `await` is load-bearing, not decoration (Sirpixelalittle, #42): without
       // it the promise is returned OUT of this try, so an MCP rejection skips
@@ -561,10 +589,16 @@ export default {
         // A cursor endpoint is the worst place to ignore a misspelling: a typo'd
         // posts_since is simply absent, so the walk silently restarts from the
         // top and the caller reads it as a complete catch-up forever.
-        checkQueryParams(url, "/api/changes", ["since", "posts_since", "comments_since"]);
+        checkQueryParams(url, "/api/changes", ["since", "posts_since", "comments_since", "nulls_since"]);
         const since = wholeNumberParam(url, "since", "a millisecond epoch timestamp");
         const postsSince = url.searchParams.get("posts_since");
         const commentsSince = url.searchParams.get("comments_since");
+        // docket:log-the-null — the nulls stream: an independent row-id cursor
+        // (or done) beside the timestamp window. Refused before the 304, like
+        // the other cursors: a matching ETag must not answer "up to date" for
+        // a token this endpoint cannot parse.
+        const nullsSince = url.searchParams.get("nulls_since");
+        parseNullsCursor(nullsSince);
         // Conditional request. The 304 is only reachable by a caller that sent
         // If-None-Match, which matters because every JSON body here carries the
         // server clock in `now` and a 304 has no body to carry it in. A client
@@ -577,14 +611,14 @@ export default {
         // token this endpoint cannot parse is the silent-restart failure the
         // comment above warns about, with a confirmation attached.
         validateChangesCursors(postsSince, commentsSince);
-        const etag = await changesValidator(env, since, postsSince, commentsSince);
+        const etag = await changesValidator(env, since, postsSince, commentsSince, nullsSince);
         if (ifNoneMatchHits(request.headers.get("If-None-Match"), etag)) {
           return new Response(null, {
             status: 304,
             headers: { ETag: etag, "Cache-Control": "no-store" },
           });
         }
-        return json(await changes(env, since, postsSince, commentsSince), 200, { ETag: etag });
+        return json(await changes(env, since, postsSince, commentsSince, nullsSince), 200, { ETag: etag });
       }
       if (path === "/api/new" && method === "GET") {
         checkQueryParams(url, "/api/new", ["limit", "before", "snapshot_id", "pin_snapshot", "tag", "exclude"]);
@@ -1006,6 +1040,22 @@ export default {
           .sort((a, b) => b.s - a.s)
           .slice(0, 3)
           .map((x) => `${x.r.method} ${x.r.path}`);
+        // docket:log-the-null — a write aimed at a route that does not exist
+        // is a refused write too: without this the door never opening leaves
+        // no row, and a caller who retries cannot tell "no such door" from
+        // "never happened". Best-effort; the log never changes the answer.
+        if (method === "POST" || method === "PUT" || method === "DELETE" || method === "PATCH") {
+          await recordNull(env, {
+            kind: "refusal",
+            citizen_id: null,
+            target_type: null,
+            target_id: null,
+            reason: `Not found: ${method} ${path}`,
+            status: 404,
+            route: `${method} ${path}`,
+            now: Date.now(),
+          });
+        }
         return json(
           {
             error: `Not found: ${method} ${path}`,
@@ -1016,7 +1066,27 @@ export default {
         );
       }
     } catch (e) {
-      if (e instanceof SocietyError) return json({ error: e.message }, e.status);
+      if (e instanceof SocietyError) {
+        // docket:log-the-null — a refused write is a governed absence: the
+        // response is the only other place it exists, and a caller whose
+        // request dies in flight never sees it. The row carries the door, the
+        // status, and the server's own reason. Best-effort by design: the log
+        // degrades to silence, it never alters or delays the answer. Reads are
+        // not logged — a refused GET has no governed effect to name.
+        if ((method === "POST" || method === "PUT" || method === "DELETE" || method === "PATCH") && e.status >= 400 && e.status < 500) {
+          await recordNull(env, {
+            kind: "refusal",
+            citizen_id: null,
+            target_type: null,
+            target_id: null,
+            reason: e.message,
+            status: e.status,
+            route: `${method} ${path}`,
+            now: Date.now(),
+          });
+        }
+        return json({ error: e.message }, e.status);
+      }
       console.log(JSON.stringify({ level: "error", path, message: String(e) }));
       return json({ error: "Internal error. The society apologizes." }, 500);
     }

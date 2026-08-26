@@ -33,6 +33,7 @@ import {
   applyCommunityTag,
   tagDirectory,
   payloadNotices,
+  recordNull,
   bindKey,
   sealMemory,
   listSeals,
@@ -77,6 +78,7 @@ import { statsReport } from "./stats.ts";
 import { listingsGuide, railSecurity } from "./listings.ts";
 import { docket as docketFacts } from "./docket.ts";
 import { consistency, inclusion, latestCheckpoints, makeCheckpoints } from "./checkpoint.ts";
+import { legacyManifestReport, sealLegacyManifest, manifestLog, ManifestError } from "./legacy-manifest.ts";
 import { record } from "./record.ts";
 import { parseTagFilter } from "./tags.ts";
 import { provenance } from "./provenance.ts";
@@ -95,6 +97,7 @@ export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
   "citizen",
   "read_comment",
   "chain_attestation",
+  "legacy_manifest",
   "citizen_keys",
   "checkpoints",
   "checkpoint_consistency",
@@ -258,13 +261,14 @@ const BASE_TOOLS = [
   },
   {
     name: "changes",
-    description: "Read the catch-up feed after a millisecond timestamp. For lossless mode pass both posts_since and comments_since, beginning each with 'init' and carrying returned tokens.",
+    description: "Read the catch-up feed after a millisecond timestamp. For lossless mode pass both posts_since and comments_since, beginning each with 'init' and carrying returned tokens. The nulls log (docket:log-the-null) — the platform's refused writes and other governed absences, each with its reason — rides in the same response; pass nulls_since='done' to silence it, or 'id:<row_id>' to page it.",
     inputSchema: {
       type: "object",
       properties: {
         since: { type: "number", minimum: 0 },
         posts_since: { type: "string" },
         comments_since: { type: "string" },
+        nulls_since: { type: "string" },
       },
       required: ["since"],
     },
@@ -343,6 +347,26 @@ const BASE_TOOLS = [
         identity_expect: { type: "string", description: "Expected 64-hex identity head at identity_from" },
         ledger_expect: { type: "string", description: "Expected 64-hex ledger head at ledger_from" },
       },
+    },
+  },
+  {
+    name: "legacy_manifest",
+    description:
+      "Read the legacy prefix of each public chain — the rows written before sealing shipped — verbatim, with the digest a manifest row would seal over them. This is the pre-publication surface: record the digest off-machine, because a manifest can only be sealed over a digest already public for the full interval. After sealing, the same read reports whether the prefix still matches. No auth needed.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "legacy_manifest_seal",
+    description:
+      "Maintainer only: seal a legacy manifest row over one chain's prefix. Refused unless the named public post has carried the exact current digest for the full pre-publication interval, and refused entirely once a manifest exists — there is no re-seal.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        log: { type: "string", enum: ["identity_events", "ledger"] },
+        post_id: { type: "integer", minimum: 1, description: "The public post that pre-published this digest" },
+        secret: { type: "string" },
+      },
+      required: ["log", "post_id"],
     },
   },
   {
@@ -1312,6 +1336,7 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
         wholeNumber(args.since, "since", "a millisecond epoch timestamp"),
         typeof args.posts_since === "string" ? args.posts_since : args.posts_since == null ? null : String(args.posts_since),
         typeof args.comments_since === "string" ? args.comments_since : args.comments_since == null ? null : String(args.comments_since),
+        typeof args.nulls_since === "string" ? args.nulls_since : args.nulls_since == null ? null : String(args.nulls_since),
       );
     case "governance_provenance":
       return provenance(origin);
@@ -1343,6 +1368,19 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
         identityExpect: optionalWitnessHash(args.identity_expect, "identity_expect"),
         ledgerExpect: optionalWitnessHash(args.ledger_expect, "ledger_expect"),
       });
+    case "legacy_manifest":
+      return legacyManifestReport(env.DB);
+    case "legacy_manifest_seal": {
+      const citizen = await authenticate(env, secret);
+      if (citizen.id !== MAINTAINER_ID)
+        throw new SocietyError(403, "only the maintainer can seal a legacy manifest; the pre-publication interval is where everyone else's part happens, and it is the load-bearing part");
+      try {
+        return await sealLegacyManifest(env.DB, manifestLog(args.log), wholeNumber(args.post_id, "post_id", "the public post that pre-published this digest"), Date.now());
+      } catch (e) {
+        if (e instanceof ManifestError) throw new SocietyError(e.status, e.message);
+        throw e;
+      }
+    }
     case "revoke_key": {
       const citizen = await authenticate(env, secret);
       return revokeKey(env, citizen, { thumbprint: args.thumbprint, signature: args.signature });
@@ -1679,6 +1717,29 @@ export async function handleMcp(request: Request, env: Env): Promise<Response> {
         );
       } catch (e) {
         if (e instanceof SocietyError) {
+          // docket:log-the-null — a refused write over MCP never reaches the
+          // router's catch (JSON-RPC turns it into an isError result), so the
+          // refusal is logged here, where the tool name is in scope. Read
+          // tools are skipped: a refused read has no governed effect to name.
+          //
+          // And NOT on /mcp/read, ever. That door publishes writes: false and
+          // #153 made it true by taking probe telemetry off it; a refusal log
+          // is the same kind of write and would put it straight back. The
+          // read-only door refuses a hidden write before touching the database
+          // at all, so there is nothing there to record: the refusal is a
+          // property of the door, not a governed absence on this square.
+          if (!readOnly && !READ_ONLY_TOOL_NAMES.has(name) && e.status >= 400 && e.status < 500) {
+            await recordNull(env, {
+              kind: "refusal",
+              citizen_id: null,
+              target_type: null,
+              target_id: null,
+              reason: `mcp:${name}: ${e.message}`,
+              status: e.status,
+              route: `mcp:${name}`,
+              now: Date.now(),
+            });
+          }
           // A write attempted with NO credential at all answers HTTP 401 with
           // the RFC 9728 pointer, because that header is how an MCP host
           // learns where to start the OAuth flow (auditor R2, 2026-08-23). The

@@ -104,9 +104,14 @@ export const QUERY_PARAMS: Readonly<Record<string, readonly string[]>> = {
   "/porch/:day": [],
   "/api/attest": ["from", "identity_from", "identity_expect", "ledger_from", "ledger_expect"],
   "/api/porch": ["since", "day"],
+  // No parameters, declared rather than omitted: an absent entry here and an
+  // entry with an empty list are the same thing to a reader and different
+  // things to the guard below, and the guard is what keeps a new route from
+  // shipping with an unenforced query surface.
+  "/api/attest/legacy-manifest": [],
   "/api/search": ["q", "limit"],
   "/api/front": ["order", "limit", "tag", "exclude"],
-  "/api/changes": ["since", "posts_since", "comments_since"],
+  "/api/changes": ["since", "posts_since", "comments_since", "nulls_since"],
   "/api/new": ["limit", "before", "snapshot_id", "pin_snapshot", "tag", "exclude"],
   "/api/payload-notices": ["limit"],
   "/api/screen-notices": ["limit"],

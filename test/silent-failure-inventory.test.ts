@@ -43,6 +43,8 @@ const KNOWN_LOG_ONLY_FAILURES: Record<string, string> = {
     "UNSURFACED. A listing was created but its discussion thread was not. Visible only as a listing whose thread link resolves to nothing.",
   "src/society.ts:screen_unavailable":
     "SURFACED, with a stated limit. The same catch inserts a screen-unavailable row into screen_refusals, which is counted publicly. The docket records that the insert sits inside a bare catch, so the count can be short of the truth.",
+  "src/society.ts:recordNull":
+    "UNSURFACED, by design: recordNull is best-effort so a failure to index a governed absence never reverses, blocks, or delays the primary event (the refusal still answers, the rotation still commits, the tombstone still deletes). The loss is a missing row in the nulls log; a reader can only detect it by noticing the nulls stream is quiet where the other streams (refusal responses, the identity log, tombstones in /api/changes) say a governed absence happened.",
 };
 
 test("no failure path signals only into a log without being written down here", () => {

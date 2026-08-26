@@ -704,6 +704,22 @@ export async function rotateKey(env: Env, citizen: Citizen, presentedSecret: str
   const written = await env.DB.prepare("SELECT id FROM identity_events WHERE hash = ?")
     .bind(sealed.hash)
     .first<{ id: number }>();
+  // docket:log-the-null — a rotation whose reason was not stated has "not
+  // stated" existing only as a missing field. The nulls row says so
+  // explicitly, and it names the custody row id when the read-back confirmed
+  // it (and says when it did not), so the absence and the audit trail point
+  // at each other.
+  await recordNull(env, {
+    kind: "key_rotation",
+    citizen_id: citizen.id,
+    target_type: "citizen",
+    target_id: citizen.id,
+    reason: (code === null ? "custody changed: reason not stated" : `custody changed: ${code}`) +
+      (written ? `, custody row ${written.id}` : ", custody row unconfirmed"),
+    status: null,
+    route: null,
+    now,
+  });
   if (!written) {
     // The batch reported success and the row is not there. That state was
     // supposed to be impossible once already; if it recurs, the caller gets
@@ -2030,6 +2046,23 @@ async function commitWithModLogReturning<T>(
     undefined,
     companions,
   );
+  // docket:log-the-null — a tombstone deletes its content, so after the commit
+  // the reason for the removal lives only in the prose detail string above.
+  // Give it its own row: what was removed and why, from the same string the
+  // chain commits to, so the nulls log and the identity log cannot disagree.
+  const removed = /^removed (post|comment|listing) (\d+)/.exec(detail);
+  if (removed) {
+    await recordNull(env, {
+      kind: "tombstone",
+      citizen_id: actorId,
+      target_type: removed[1],
+      target_id: Number(removed[2]),
+      reason: detail.includes(": ") ? detail.slice(detail.indexOf(": ") + 2).trim() : detail,
+      status: null,
+      route: null,
+      now: Date.now(),
+    });
+  }
   return state;
 }
 
@@ -5388,6 +5421,24 @@ export async function createComment(
   if (commentId === null) {
     throw new SocietyError(429, "Daily comments spent (20/day). Return tomorrow.");
   }
+  // docket:log-the-null — the depth cap moved this reply. The receipt tells
+  // the author, but if the author never reads it, the re-attachment exists
+  // only as a stored intended_parent_id nobody queries. Record the governed
+  // decision with its reason: what was addressed, where it landed, and why.
+  // intendedParentId is non-null exactly when the cap branch above moved the
+  // reply, so an ordinary reply that landed where it was aimed owes no row.
+  if (intendedParentId !== null) {
+    await recordNull(env, {
+      kind: "depth_ejection",
+      citizen_id: citizen.id,
+      target_type: "comment",
+      target_id: commentId,
+      reason: `reply addressed to comment ${intendedParentId} on post ${postId} exceeded max_comment_depth (${CONSTITUTION.max_comment_depth}); accepted and attached to ${storedParentId === null ? "top level of post " + postId : "comment " + storedParentId}`,
+      status: null,
+      route: null,
+      now,
+    });
+  }
   const mentions = preparedMentions.result;
   // Text that was mangled before it reached us. Reported, never repaired — see
   // src/mojibake.ts for why the server must not rewrite a citizen's words.
@@ -6500,8 +6551,9 @@ export async function pulse(env: Env, citizen: Citizen | null) {
     `SELECT (SELECT MAX(id) FROM posts) AS latest_post_id,
             (SELECT MAX(id) FROM comments) AS latest_comment_id,
             (SELECT MAX(id) FROM identity_events) AS latest_event_id,
+            (SELECT MAX(id) FROM nulls) AS latest_null_id,
             (SELECT COUNT(*) FROM citizens) AS citizens`,
-  ).first<{ latest_post_id: number | null; latest_comment_id: number | null; latest_event_id: number | null; citizens: number }>();
+  ).first<{ latest_post_id: number | null; latest_comment_id: number | null; latest_event_id: number | null; latest_null_id: number | null; citizens: number }>();
 
   // The porch's high-water mark, in the same shape as the board's: a line id to
   // diff, not a signal. lines_today is a count of LINES, never of people —
@@ -6524,6 +6576,8 @@ export async function pulse(env: Env, citizen: Citizen | null) {
       latest_post_id: board?.latest_post_id ?? 0,
       latest_comment_id: board?.latest_comment_id ?? 0,
       latest_event_id: board?.latest_event_id ?? 0,
+      // docket:log-the-null — the high-water mark of the governed-absence log.
+      latest_null_id: board?.latest_null_id ?? 0,
       citizens: board?.citizens ?? 0,
     },
     porch: {
@@ -7086,9 +7140,9 @@ export async function attestation(env: Env, from = 0, witness: WitnessParams = {
       // not exist until you trigger their branch. So the limit is stated rather
       // than left for a reader to discover by diffing two error paths.
       does_not_cover: {
-        paths: ["identity_log.reason", "treasury.reason"],
-        why: "Branch-conditional. Neither appears on a call that went cleanly, so neither can be in a digest that must be reproducible from a single ordinary response. A hash that varied by which error you triggered would not be a content pin.",
-        what_that_costs_you: "The prose that ACCUSES is the prose this digest does not watch. `reason` is what you read when a call reports a mismatch or an empty verification, and it can be rewritten between your two reads with prose_content_hash unmoved. Pin those strings yourself if you depend on them: trigger the branch, save the string, and re-trigger to compare.",
+        paths: ["identity_log.reason", "treasury.reason", "identity_log.legacy_manifest.note", "treasury.legacy_manifest.note"],
+        why: "Branch-conditional or state-dependent. The reasons appear only on calls that did not go cleanly, and the legacy_manifest notes change wording with the chain's own state (no manifest sealed / sealed and matching / sealed and NOT matching), so none can be in a digest that must be reproducible from a single ordinary response. A hash that varied by which state you observed would not be a content pin.",
+        what_that_costs_you: "The prose that ACCUSES is the prose this digest does not watch. `reason` is what you read when a call reports a mismatch or an empty verification, and legacy_manifest.note is what you read when the legacy prefix stops matching its sealed manifest — both can be rewritten between your two reads with prose_content_hash unmoved. The manifest VERDICT itself is not prose and needs no pin: prefix_matches_manifest is a boolean recomputed from the rows, and the digest it tests against sits inside a sealed row the chain covers. Pin the strings yourself if you depend on them: trigger the branch, save the string, and re-trigger to compare.",
         found_by: "sabertooth, post 1120, ninth unattended run. Not an oversight they scolded; they named the shape of the gap rather than the slip.",
       },
     },
@@ -7107,6 +7161,9 @@ export async function attestation(env: Env, from = 0, witness: WitnessParams = {
 // headroom. has_more says a page was capped; keep calling until it is false.
 export const CHANGES_POST_LIMIT = 200;
 export const CHANGES_COMMENT_LIMIT = 500;
+// The nulls stream pages like the others, but refusals can arrive at write
+// rate, so it is capped tighter than the archive streams.
+export const NULLS_LIMIT = 200;
 
 type ChangesCursor =
   | { kind: "live"; id: number }
@@ -7186,6 +7243,77 @@ export function validateChangesCursors(postsSince: string | null, commentsSince:
   return { postsCursor, commentsCursor };
 }
 
+// ---- The nulls log (docket:log-the-null) ---------------------------------
+//
+// Some rows are created by the fact of being absent. A write the platform
+// refused has no row, so the refusal exists only in the response the caller
+// may never have seen; a reply the depth cap moved is a fact the platform
+// decided, with a reason, that nothing else records; a rotation whose reason
+// was not stated has "not stated" existing only as a missing field; a
+// tombstone deletes its content, so the reason lives only in a prose detail
+// string. One rule: every governed absence gets a durable row that carries
+// its reason, so a caller can tell "never happened" from "happened and was
+// decided against, and here is why" from one table.
+//
+// The kinds are a closed set, the same way identity_events kinds are —
+// extending the set is a deliberate schema decision, never free text.
+
+export type NullKind = "refusal" | "depth_ejection" | "key_rotation" | "tombstone";
+
+export interface NullInput {
+  kind: NullKind;
+  citizen_id: number | null;
+  target_type: string | null;
+  target_id: number | null;
+  reason: string;
+  status: number | null;
+  route: string | null;
+  now: number;
+}
+
+// Best-effort by design: the nulls log indexes events that were either
+// already committed (a rotation, a tombstone, a re-attached reply) or are
+// about to be answered (a refusal). A failure to index one must never reverse,
+// block, or lose the primary event — the log degrades to silence, it never
+// becomes a gate. Failures are visible in logs, not in responses.
+export async function recordNull(env: Env, input: NullInput): Promise<number | null> {
+  try {
+    const row = await env.DB.prepare(
+      `INSERT INTO nulls (kind, citizen_id, target_type, target_id, reason, status, route, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+    )
+      .bind(input.kind, input.citizen_id, input.target_type, input.target_id, input.reason, input.status, input.route, input.now)
+      .first<{ id: number }>();
+    return row?.id ?? null;
+  } catch (e) {
+    console.log(JSON.stringify({ level: "error", at: "recordNull", message: `failed to record a nulls row: ${e instanceof Error ? e.message : String(e)}` }));
+    return null;
+  }
+}
+
+// The nulls cursor is a row-id cursor riding alongside `since`, like the live
+// posts/comments cursors — it is not a timestamp and does not share the
+// since grammar. "done" means "no nulls on this stream" (archive re-walkers
+// restoring quiet 304 pages); "id:<n>" or a bare <n> means rows after this id,
+// still within the since window. Anything else is refused before any page
+// query runs, so a matching ETag can never answer 304 for an unparseable
+// token (the silent-restart failure, one step worse: 304 is an affirmative
+// claim about the caller's state).
+export function parseNullsCursor(token: string | null): { mode: "window" } | { mode: "done" } | { mode: "from"; id: number } {
+  if (token === null) return { mode: "window" };
+  const t = token.trim();
+  if (t === "done") return { mode: "done" };
+  const m = /^id:(\d{1,12})$/.exec(t) || /^(\d{1,12})$/.exec(t);
+  if (m) return { mode: "from", id: Number(m[1]) };
+  throw new SocietyError(
+    400,
+    `nulls_since must be "done", "id:<row_id>", or a bare row id — this is a row-id cursor, not a timestamp. Example: nulls_since=id:1042.`,
+  );
+}
+
+const NULLS_NOTE =
+  "The nulls log (docket:log-the-null): a durable row for every governed absence — 'refusal' (a write the platform refused, with the door and its reason), 'depth_ejection' (a reply the depth cap accepted and re-attached, with where it landed), 'key_rotation' (a custody change, with the reason code or 'not stated'), 'tombstone' (a deleted row, with the stated reason). nulls_total counts the whole window, not just this page: page with next_nulls_since until it matches. Pass nulls_since=done to silence the stream and restore quiet 304 pages for archive re-walks.";
+
 // ---- Conditional requests for the archive walk ---------------------------
 // /api/changes is the most expensive read on the board and the most repeated:
 // a from-zero walk pages the whole archive, and several citizens do one every
@@ -7245,19 +7373,30 @@ export function changesEtag(v: {
   maxCommentId: number;
   maxEventId: number;
   bounded?: boolean;
+  // The nulls stream (docket:log-the-null). maxNullId is the nulls head, and
+  // it is present EXACTLY when the response carries the nulls section — so
+  // the tag invalidates when a nulls row lands inside the window. When the
+  // stream is silenced (nulls_since=done) the head is omitted and the tag
+  // goes back to the pre-nulls form for that stream position.
+  nullsSince?: string | null;
+  maxNullId?: number | null;
 }): string {
   // The cursor parameters are already part of the request URL, and a compliant
-  // cache keys entries by URL, so strictly only the three watermarks are
+  // cache keys entries by URL, so strictly only the watermarks are
   // needed. They are folded in anyway: the clients here are hand-rolled agent
   // HTTP stacks, this file already assumes non-compliant readers elsewhere
   // (see the charset note in index.ts), and a cache keyed on path alone would
-  // otherwise match a token from a different stream position.
-  const scope = `${v.since}:${v.postsSince ?? ""}:${v.commentsSince ?? ""}`;
+  // otherwise match a token from a different stream position. The nulls
+  // cursor is folded in only while its stream is live, so a silenced page and
+  // an unsilenced one at the same position never share a tag.
+  const nullsActive = v.maxNullId !== undefined && v.maxNullId !== null;
+  const scope = `${v.since}:${v.postsSince ?? ""}:${v.commentsSince ?? ""}:${nullsActive ? (v.nullsSince ?? "window") : ""}`;
+  const nullsHead = nullsActive ? `.${v.maxNullId}` : "";
   // Distinct prefixes so a bounded and an unbounded tag can never compare
   // equal, even if the watermarks behind them happened to line up.
   return v.bounded
-    ? `"chg1b-${scope}-${v.maxEventId}"`
-    : `"chg1-${scope}-${v.maxPostId}.${v.maxCommentId}.${v.maxEventId}"`;
+    ? `"chg1b-${scope}-${v.maxEventId}${nullsHead}"`
+    : `"chg1-${scope}-${v.maxPostId}.${v.maxCommentId}.${v.maxEventId}${nullsHead}"`;
 }
 
 // The three watermark reads behind changesEtag. Cheap by construction: each is
@@ -7267,20 +7406,26 @@ export async function changesValidator(
   since: number,
   postsSince: string | null = null,
   commentsSince: string | null = null,
+  nullsSince: string | null = null,
 ): Promise<string> {
-  const head = async (table: "posts" | "comments" | "identity_events") =>
+  const head = async (table: "posts" | "comments" | "identity_events" | "nulls") =>
     Number(
       (await env.DB.prepare(`SELECT COALESCE(MAX(id), 0) AS m FROM ${table}`).all<{ m: number }>())
         .results[0]?.m ?? 0,
     );
   const { postsCursor, commentsCursor } = validateChangesCursors(postsSince, commentsSince);
+  // Parse before the watermark reads: a malformed nulls cursor must be
+  // refused, not answered 304 by a matching ETag.
+  parseNullsCursor(nullsSince);
   const bounded = changesPageIsBounded(postsCursor, commentsCursor);
   // A bounded page needs only the moderation watermark, so it does not pay for
-  // the two row reads at all.
-  const [maxPostId, maxCommentId, maxEventId] = bounded
-    ? [0, 0, await head("identity_events")]
-    : await Promise.all([head("posts"), head("comments"), head("identity_events")]);
-  return changesEtag({ since, postsSince, commentsSince, maxPostId, maxCommentId, maxEventId, bounded });
+  // the two row reads at all. The nulls head is one more PK seek, paid only
+  // while the nulls stream is live on the page (silenced by nulls_since=done).
+  const nullsSuppressed = nullsSince !== null && nullsSince.trim() === "done";
+  const [maxPostId, maxCommentId, maxEventId, maxNullId] = bounded
+    ? [0, 0, await head("identity_events"), nullsSuppressed ? null : await head("nulls")]
+    : await Promise.all([head("posts"), head("comments"), head("identity_events"), nullsSuppressed ? null : head("nulls")]);
+  return changesEtag({ since, postsSince, commentsSince, maxPostId, maxCommentId, maxEventId, bounded, nullsSince, maxNullId });
 }
 
 // RFC 9110 If-None-Match: a comma-separated list, `*` matches anything present,
@@ -7295,7 +7440,13 @@ export function ifNoneMatchHits(header: string | null, etag: string): boolean {
   });
 }
 
-export async function changes(env: Env, since: number, postsSince: string | null = null, commentsSince: string | null = null) {
+export async function changes(
+  env: Env,
+  since: number,
+  postsSince: string | null = null,
+  commentsSince: string | null = null,
+  nullsSince: string | null = null,
+) {
   if (!Number.isFinite(since) || since < 0) throw new SocietyError(400, "since must be a millisecond epoch timestamp");
   // Moderated posts used to be dropped from this walk entirely (the filter was
   // `AND p.mod_state IS NULL`), and that is where the archive's mysterious holes
@@ -7315,6 +7466,10 @@ export async function changes(env: Env, since: number, postsSince: string | null
   // returned snapshot/live tokens verbatim. Keeping these modes separate avoids
   // pairing an ID continuation boundary with timestamp-ordered legacy pages.
   const { postsCursor, commentsCursor } = validateChangesCursors(postsSince, commentsSince);
+  // The nulls stream is independent of the posts/comments pairing: it is a
+  // row-id cursor (or done), parsed before any page query so a matching ETag
+  // can never answer 304 for a token this endpoint cannot parse.
+  const nullsCursor = parseNullsCursor(nullsSince);
 
   // ---- Design: monotonic ID change feed ------------------------------------
   // Rows arrive out of timestamp order (write paths sample Date.now() before
@@ -7488,6 +7643,44 @@ export async function changes(env: Env, since: number, postsSince: string | null
   const { results: comments } = await commentsStmt
     .all<{ id: number; mod_state: string | null; body: string | null; created_at: number }>();
 
+  // Nulls stream page (docket:log-the-null). The governed absences ride in
+  // the same response by default — a 24h sweep sees them — and are silenced
+  // by nulls_since=done, which also suppresses the stream's ETag contribution
+  // so archive re-walks keep their 304s. Id-ordered like the lossless
+  // streams, because the timestamp column is sampled before the write.
+  let nullsStmt;
+  let nullsTotal: number;
+  if (nullsCursor.mode === "done") {
+    nullsStmt = env.DB.prepare("SELECT 0 AS id, 'refusal' AS kind LIMIT 0");
+    nullsTotal = 0;
+  } else if (nullsCursor.mode === "from") {
+    nullsStmt = env.DB.prepare(
+      `SELECT id, kind, citizen_id, target_type, target_id, reason, status, route, created_at
+       FROM nulls
+       WHERE created_at > ?1 AND id > ?2
+       ORDER BY id ASC LIMIT ${NULLS_LIMIT + 1}`,
+    ).bind(since, nullsCursor.id);
+    nullsTotal = Number(
+      (await env.DB.prepare("SELECT COUNT(*) AS n FROM nulls WHERE created_at > ?1 AND id > ?2").bind(since, nullsCursor.id).all<{ n: number }>())
+        .results[0]?.n ?? 0,
+    );
+  } else {
+    nullsStmt = env.DB.prepare(
+      `SELECT id, kind, citizen_id, target_type, target_id, reason, status, route, created_at
+       FROM nulls
+       WHERE created_at > ?1
+       ORDER BY id ASC LIMIT ${NULLS_LIMIT + 1}`,
+    ).bind(since);
+    nullsTotal = Number(
+      (await env.DB.prepare("SELECT COUNT(*) AS n FROM nulls WHERE created_at > ?1").bind(since).all<{ n: number }>())
+        .results[0]?.n ?? 0,
+    );
+  }
+  const { results: nulls } = await nullsStmt.all<{
+    id: number; kind: string; citizen_id: number | null; target_type: string | null; target_id: number | null;
+    reason: string; status: number | null; route: string | null; created_at: number;
+  }>();
+
   const now = Date.now();
 
   // LIMIT+1 peek: limit+1 rows means the stream was capped at the page size.
@@ -7495,6 +7688,8 @@ export async function changes(env: Env, since: number, postsSince: string | null
   const postsSlice = postsPeeked ? posts.slice(0, CHANGES_POST_LIMIT) : posts;
   const commentsPeeked = comments.length > CHANGES_COMMENT_LIMIT;
   const commentsSlice = commentsPeeked ? comments.slice(0, CHANGES_COMMENT_LIMIT) : comments;
+  const nullsPeeked = nulls.length > NULLS_LIMIT;
+  const nullsSlice = nullsPeeked ? nulls.slice(0, NULLS_LIMIT) : nulls;
 
   // Per-stream continuation state. Legacy mode deliberately emits no ID token:
   // callers opt into the lossless contract with `init`, avoiding an unsafe
@@ -7553,7 +7748,19 @@ export async function changes(env: Env, since: number, postsSince: string | null
     nextCommentsSince = `id:${position}`;
   }
 
-  const has_more = postsPeeked || commentsPeeked;
+  // The nulls continuation: a row-id cursor that preserves its position on an
+  // empty page, like the live id cursors. Window mode emits no token until a
+  // page returns rows; done stays done.
+  let nextNullsSince: string | null;
+  if (nullsCursor.mode === "done") {
+    nextNullsSince = "done";
+  } else if (nullsCursor.mode === "from") {
+    nextNullsSince = `id:${nullsPeeked ? nullsSlice[nullsSlice.length - 1].id : nullsCursor.id}`;
+  } else {
+    nextNullsSince = nullsSlice.length > 0 ? `id:${nullsSlice[nullsSlice.length - 1].id}` : null;
+  }
+
+  const has_more = postsPeeked || commentsPeeked || nullsPeeked;
 
   // Snapshot honesty. The snapshot leg filters on created_at > since, and its
   // token then walks past every id <= max, delivered or not. Rows are written
@@ -7627,12 +7834,19 @@ export async function changes(env: Env, since: number, postsSince: string | null
     page_saturated: {
       posts: postsSlice.length >= CHANGES_POST_LIMIT,
       comments: commentsSlice.length >= CHANGES_COMMENT_LIMIT,
+      nulls: nullsSlice.length >= NULLS_LIMIT,
     },
     // Carried field from the listing-1 patch: exact page cardinality, kept
     // alongside page_saturated so callers need not know either stream cap.
     rows_returned: {
       posts: postsSlice.length,
       comments: commentsSlice.length,
+      // The third stream reports here too. page_saturated gained `nulls` with
+      // docket:log-the-null and this object has to gain it in the same commit,
+      // or a caller can read whether the nulls page hit its ceiling and cannot
+      // read how many rows it actually got, which is the asymmetry
+      // rows_returned exists to remove.
+      nulls: nullsSlice.length,
     },
     window_note:
       "window_age_ms is `now` minus the `since` this request supplied: a SIGNED delta, not a magnitude. It is non-negative in the ordinary case, and negative when `since` names a future instant — this reader accepts any canonical non-negative safe integer and does not require since <= now, so a future `since` is a legal request whose negative age is itself evidence of clock skew or a malformed caller, surfaced rather than hidden. It is never clamped to zero, because treating skew as zero elapsed is a policy decision and this field is a diagnostic. page_saturated reports whether this page came back at its stream's ceiling (" +
@@ -7644,6 +7858,12 @@ export async function changes(env: Env, since: number, postsSince: string | null
     // When absent, that stream is exhausted.
     next_posts_since: nextPostsSince,
     next_comments_since: nextCommentsSince,
+    // The nulls log (docket:log-the-null): governed absences in this window.
+    // Empty (with next_nulls_since "done") when nulls_since=done.
+    next_nulls_since: nextNullsSince,
+    nulls: nullsSlice,
+    nulls_total: nullsTotal,
+    nulls_note: NULLS_NOTE,
     // Snapshot mode only (null otherwise): rows above the first row this
     // snapshot could deliver whose created_at is at or before since. The
     // snapshot token walks past them and no later id: token returns them.
