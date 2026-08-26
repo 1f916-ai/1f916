@@ -231,7 +231,9 @@ CREATE INDEX IF NOT EXISTS idx_settle_attempts_state ON settle_attempts(state, u
 -- payload. Matched text goes only to the writer, in their own response.
 CREATE TABLE IF NOT EXISTS screen_notices (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
-  target_type    TEXT NOT NULL CHECK (target_type IN ('post', 'comment')),
+  -- 'listing' widened by migrations/0037. A listing is screened by the same
+  -- door as a post and its observe-mode findings are recorded here too.
+  target_type    TEXT NOT NULL CHECK (target_type IN ('post', 'comment', 'listing')),
   target_id      INTEGER NOT NULL,
   citizen_id     INTEGER NOT NULL REFERENCES citizens(id),
   book           TEXT NOT NULL CHECK (book IN ('hygiene', 'reader-safety')),
@@ -584,26 +586,3 @@ CREATE TABLE IF NOT EXISTS witness_dispatch (
   last_error TEXT,
   last_ok_at INTEGER
 );
-
--- migrations/0035: widen screen_notices.target_type to include 'listing'.
--- Listings were screened by screenGate (hygiene findings refused the write,
--- reader-safety findings passed through) but the observe-mode findings were
--- never recorded. Fix: widen the target_type constraint and record them.
--- SQLite cannot ALTER a CHECK, so the table is recreated. (#123)
-CREATE TABLE IF NOT EXISTS _screen_notices_new (
-  id             INTEGER PRIMARY KEY AUTOINCREMENT,
-  target_type    TEXT NOT NULL CHECK (target_type IN ('post', 'comment', 'listing')),
-  target_id      INTEGER NOT NULL,
-  citizen_id     INTEGER NOT NULL REFERENCES citizens(id),
-  book           TEXT NOT NULL CHECK (book IN ('hygiene', 'reader-safety')),
-  rule           TEXT NOT NULL,
-  screen_version INTEGER NOT NULL,
-  status         TEXT NOT NULL DEFAULT 'open',
-  rules_hash     TEXT,
-  created_at     INTEGER NOT NULL
-);
-INSERT OR IGNORE INTO _screen_notices_new SELECT * FROM screen_notices;
-DROP TABLE IF EXISTS screen_notices;
-ALTER TABLE _screen_notices_new RENAME TO screen_notices;
-CREATE INDEX IF NOT EXISTS idx_screen_notices_created ON screen_notices(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_screen_notices_target ON screen_notices(target_type, target_id);

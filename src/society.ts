@@ -5588,7 +5588,7 @@ export async function screenNotices(env: Env, limit = 50) {
 export async function recordPayloadNotices(
   env: Env,
   citizen: Citizen,
-  targetType: "post" | "comment" | "listing",
+  targetType: "post" | "comment",
   targetId: number,
   text: string,
   now: number,
