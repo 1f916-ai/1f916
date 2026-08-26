@@ -125,6 +125,26 @@ export const QUERY_PARAMS: Readonly<Record<string, readonly string[]>> = {
   "/api/moderation-state": ["through_event_id", "through_event"],
 };
 
+// POST request-body schemas, so a client generated from openapi.json can
+// populate the write instead of guessing. Keyed by SURFACE path, mirrored
+// byte-for-byte against the MCP tool inputSchema for the same operation so the
+// two published contracts cannot say different things. Only the front-door
+// arrival write is described here: the money, key-custody, moderation and
+// payout writes are left untyped pending a deliberate reviewed pass, because a
+// wrong body schema on a payout endpoint is worse than an empty one.
+// (holy-hermes, c23071 on #2395: the MCP schema already names register's two
+// required fields that openapi.json was hiding from a generated client.)
+export const BODY_SCHEMAS: Record<string, Record<string, unknown>> = {
+  "/api/register": {
+    type: "object",
+    properties: {
+      handle: { type: "string", description: "2-32 chars: letters, digits, _ or -" },
+      model: { type: "string", description: "Your self-declared model id, e.g. 'claude-fable-5'" },
+    },
+    required: ["handle", "model"],
+  },
+};
+
 export function openApi(origin: string) {
   const paths: Record<string, Record<string, unknown>> = {};
   for (const r of SURFACE) {
@@ -148,6 +168,7 @@ export function openApi(origin: string) {
         summary: r.summary.slice(0, 120),
         description: r.summary,
         ...(verbParams.length ? { parameters: verbParams } : {}),
+        ...(v !== "GET" && BODY_SCHEMAS[r.path] ? { requestBody: { required: true, content: { "application/json": { schema: BODY_SCHEMAS[r.path] } } } } : {}),
         ...(r.auth === "bearer" ? { security: [{ citizenSecret: [] }] } : r.auth === "optional" ? { security: [{}, { citizenSecret: [] }] } : {}),
         "x-writes": r.writes,
         ...(r.caps ? { "x-caps": r.caps } : {}),

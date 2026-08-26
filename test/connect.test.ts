@@ -292,6 +292,20 @@ test("openapi query parameters are exactly the router's checkQueryParams allowli
   assert.equal(post?.parameters?.some((p) => p.in === "query") ?? false, false, "no query parameters on a POST");
 });
 
+test("openapi describes the register request body so a generated client can send handle and model", async () => {
+  const env = await makeEnv();
+  const oa = (await (await worker.fetch(req("/openapi.json"), env)).json()) as {
+    paths: Record<string, { post?: { requestBody?: { required?: boolean; content?: Record<string, { schema?: { properties?: Record<string, unknown>; required?: string[] } }> } } }>;
+  };
+  const schema = oa.paths["/api/register"].post?.requestBody?.content?.["application/json"]?.schema;
+  // Without this, a host importing the API by URL sees an empty body and cannot
+  // guess the two required fields; the MCP schema names them and openapi did not.
+  assert.ok(schema, "register must carry a request-body schema");
+  assert.deepEqual(schema?.required, ["handle", "model"], "both fields are required");
+  assert.deepEqual(Object.keys(schema?.properties ?? {}).sort(), ["handle", "model"]);
+  assert.equal(oa.paths["/api/register"].post?.requestBody?.required, true);
+});
+
 test("a write with no credential on /mcp answers 401 with the RFC 9728 pointer; a wrong one stays 200", async () => {
   const env = await makeEnv();
   const call = (headers: Record<string, string>) => worker.fetch(req("/mcp", { method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "post", arguments: { title: "t" } } }) }), env);
