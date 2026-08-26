@@ -243,3 +243,84 @@ test("a valid reason is carried into the response", async () => {
   // Case-insensitive in, canonical out.
   assert.match(res.logged, /custody changed: compromise/);
 });
+
+// ---------- 4. every governed absence leaves a nulls row ----------
+
+test("a depth-ejection records a nulls row naming what was addressed and where it landed", async () => {
+  const { env, ran } = commentEnv({ parentDepth: 6, ancestor: { id: 500, depth: 5 } });
+  await createComment(env, citizen, 1, 777, "a deep answer");
+  const call = ran.find((c) => c.sql.includes("INSERT INTO nulls"));
+  assert.ok(call, "the re-attachment leaves a governed-absence row");
+  assert.equal(call.binds[0], "depth_ejection");
+  assert.equal(call.binds[1], 42, "attributed to the author");
+  assert.equal(call.binds[2], "comment");
+  assert.equal(call.binds[3], 999, "targeting the reply that landed");
+  assert.match(String(call.binds[4]), /comment 777/, "says what was addressed");
+  assert.match(String(call.binds[4]), /comment 500/, "says where it landed");
+  assert.match(String(call.binds[4]), /max_comment_depth/);
+});
+
+test("an ordinary reply that landed where it was aimed leaves no nulls row", async () => {
+  const { env, ran } = commentEnv({ parentDepth: 2 });
+  await createComment(env, citizen, 1, 777, "an ordinary reply");
+  assert.equal(ran.find((c) => c.sql.includes("INSERT INTO nulls")), undefined, "no row for the non-event");
+});
+
+test("a top-level comment leaves no nulls row", async () => {
+  const { env, ran } = commentEnv();
+  await createComment(env, citizen, 1, null, "top level");
+  assert.equal(ran.find((c) => c.sql.includes("INSERT INTO nulls")), undefined);
+});
+
+test("a key rotation records a nulls row that says why, or explicitly says it was not stated", async () => {
+  // A binds-capturing rotateEnv: the nulls row's reason is the whole point.
+  const ran: Call[] = [];
+  const db = {
+    prepare(sql: string) {
+      const call: Call = { sql, binds: [] };
+      const api = {
+        bind(...args: unknown[]) {
+          call.binds = args;
+          return api;
+        },
+        async first<T>() {
+          ran.push(call);
+          if (sql.includes("COUNT(*)")) return { n: 0 } as T;
+          if (sql.includes("secret_hash")) return { secret_hash: "x" } as T;
+          if (sql.includes("SELECT id FROM identity_events")) return { id: 42 } as T;
+          return null as T;
+        },
+        async run() { return { meta: { changes: 1 } }; },
+        async all<T>() { ran.push(call); return { results: [] as T[] }; },
+      };
+      return api;
+    },
+    async batch(stmts: unknown[]) {
+      return stmts.map(() => ({ meta: { changes: 1 }, results: [{ hash: "h" }] }));
+    },
+  };
+  const env = { DB: db } as unknown as Env;
+
+  await rotateKey(env, citizen, "secret", "compromise");
+  let call = ran.find((c) => c.sql.includes("INSERT INTO nulls"));
+  assert.ok(call, "the rotation leaves a row");
+  assert.equal(call.binds[0], "key_rotation");
+  assert.equal(call.binds[1], 42);
+  assert.match(String(call.binds[4]), /custody changed: compromise/, "carries the reason code");
+
+  ran.length = 0;
+  await rotateKey(env, citizen, "secret");
+  call = ran.find((c) => c.sql.includes("INSERT INTO nulls"));
+  assert.ok(call, "an unexplained rotation leaves a row too");
+  assert.match(String(call.binds[4]), /reason not stated/, "and it says so instead of saying nothing");
+});
+
+test("recordNull is best-effort: a dead database never undoes the primary event", async () => {
+  const { recordNull } = await import("../src/society.ts");
+  const throwing = { prepare() { throw new Error("database is on fire"); } };
+  const id = await recordNull(throwing as unknown as Env, {
+    kind: "refusal", citizen_id: 1, target_type: null, target_id: null,
+    reason: "the database is on fire", status: 500, route: "POST /api/test", now: 1,
+  });
+  assert.equal(id, null, "it reports the failure rather than raising");
+});

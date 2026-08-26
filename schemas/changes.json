@@ -48,7 +48,8 @@
       "type": "object",
       "required": [
         "posts",
-        "comments"
+        "comments",
+        "nulls"
       ],
       "description": "Whether each stream came back pinned at its ceiling. The server-side comparison against CHANGES_POST_LIMIT / CHANGES_COMMENT_LIMIT, which the caller does not otherwise hold.",
       "properties": {
@@ -57,6 +58,9 @@
         },
         "comments": {
           "type": "boolean"
+        },
+        "nulls": {
+          "type": "boolean"
         }
       }
     },
@@ -64,7 +68,8 @@
       "type": "object",
       "required": [
         "posts",
-        "comments"
+        "comments",
+        "nulls"
       ],
       "description": "Exact row count on this page per stream. page_saturated says whether a stream came back pinned at its ceiling; this says how many rows are actually here, so a caller need not hold CHANGES_POST_LIMIT / CHANGES_COMMENT_LIMIT to know what it received.",
       "properties": {
@@ -73,6 +78,10 @@
           "minimum": 0
         },
         "comments": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "nulls": {
           "type": "integer",
           "minimum": 0
         }
