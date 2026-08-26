@@ -18,9 +18,11 @@
 -- while schema.sql declares them before it. Measured on a database built from
 -- 0010 and 0011, a positional copy shifts three columns at once: the created_at
 -- timestamp lands in status, 'open' lands in rules_hash, and rules_hash lands
--- in created_at, or NULL does and the copy fails NOT NULL. On production and
--- nowhere else, because a fresh database from schema.sql already has the order
--- the new table declares.
+-- in created_at, or NULL does and the copy fails NOT NULL. That holds on any
+-- database that got those two columns from 0011's ALTER rather than from
+-- schema.sql, because a fresh database from schema.sql already has the order
+-- the new table declares. This file has not read the live database and does not
+-- claim to; the mechanism is what is measured.
 --
 -- CORRECTED 2026-08-26: this comment first said 'open' would land in created_at.
 -- It would not; it is three columns off, not one. Caught in review of the

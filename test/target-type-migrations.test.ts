@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 // one. migrations/0029 wrote that warning in prose on 2026-08-14; #142 hit it
 // again on 2026-08-26 with 980 tests passing. Prose did not hold, so this is
 // the mechanical version: what the code declares it can write must be a value
-// the live schema will actually accept.
+// the schema that migrations/ build will actually accept.
 //
 // KILLING MUTATION: delete migrations/0037_screen_notices_listing.sql, or drop
 // 'listing' from its CHECK, and this test goes red while the rest stay green.
@@ -22,9 +22,15 @@ const CHECKED = [
   { table: "payload_notices", fn: "recordPayloadNotices" },
 ];
 
-// The CHECK set for a table as a live database actually holds it: every
-// migration replayed in filename order, following the create-copy-rename
-// dance that SQLite forces on a CHECK change.
+// The CHECK set a database ends up with after applying migrations/ in order:
+// every file replayed in filename order, following the create-copy-rename dance
+// that SQLite forces on a CHECK change.
+//
+// This is a MODEL of a migrated database, not a reading of the live one. It
+// cannot be a reading of the live one from inside a test, and saying so matters:
+// the guard proves the code and the migrations agree, and a live database that
+// somehow diverged from its own migration history is a different problem this
+// cannot see.
 function checkSetsAfterMigrations(): Map<string, Set<string>> {
   const dir = new URL("migrations/", ROOT);
   const files = readdirSync(dir).filter((f) => f.endsWith(".sql")).sort();
@@ -77,13 +83,13 @@ function declaredUnion(fn: string): Set<string> {
 const migrated = checkSetsAfterMigrations();
 
 for (const { table, fn } of CHECKED) {
-  test(`${fn} cannot write a target_type the live ${table} would reject`, () => {
+  test(`${fn} cannot write a target_type the migrated ${table} would reject`, () => {
     const live = migrated.get(table);
     assert.ok(live, `migrations/ define a target_type CHECK for ${table}`);
     for (const v of declaredUnion(fn)) {
       assert.ok(
         live.has(v),
-        `${fn} accepts "${v}" but the live ${table} CHECK is (${[...live].join(", ")}) — ` +
+        `${fn} accepts "${v}" but the ${table} CHECK that migrations/ build is (${[...live].join(", ")}). ` +
           `widen it in a new migrations/ file, not only in schema.sql`,
       );
     }
