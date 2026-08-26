@@ -339,7 +339,9 @@ const endpoints = [
   // deployment. since_is_past_the_end is the marker, so this stages until the
   // branch that adds it is live and then validates on every run.
   ["/api/events?since=0", "events.json", "since_is_past_the_end"],
-  ["/api/docket", "docket.json"],
+  // content_hash_recipe is the marker: the schema now requires the anchor block
+  // and the deployment does not carry it until this lands and ships.
+  ["/api/docket", "docket.json", "content_hash_recipe"],
   ["/api/post/475", "post.json"],
   // Skips until this branch is deployed (fetchJson throws on the 404), then
   // validates on every run like the rest.

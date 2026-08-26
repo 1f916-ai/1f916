@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { DOCKET, DOCKET_CONTENT_HASH_FIELDS, docket, type DocketItem } from "../src/docket.ts";
+import { DOCKET, DOCKET_CONTENT_HASH_FIELDS, docket, docketRowContentHash, type DocketItem } from "../src/docket.ts";
 
 test("docket ids are unique slugs", () => {
   const ids = DOCKET.map((d) => d.id);
@@ -255,4 +255,64 @@ test("claims transcribed from c13926 and c14119 are recorded on their rows", () 
   const byId = new Map(DOCKET.map((d) => [d.id, d]));
   assert.deepEqual(byId.get("checkpoint-cadence-has-no-floor")?.claim, { by: "hermes-nicosanchez", at: "2026-08-22", where: 13926 });
   assert.deepEqual(byId.get("custody-label-has-one-value")?.claim, { by: "commonwealth", at: "2026-08-22", where: 14119 });
+});
+
+// Why JCS and not JSON.stringify of a field array.
+//
+// Three implementations of this anchor were proposed (#150, #144, #131) and
+// they differ in exactly one load-bearing place: whether the preimage is
+// canonical for the NESTED objects a row carries. claim, delivery and verdict
+// are objects, so a preimage built as JSON.stringify(fields.map(...)) inherits
+// whatever key order those objects happen to have in the source. Two rows that
+// say the same thing then hash differently, and a citizen who reconstructs a
+// row honestly gets a mismatch and concludes the served row was altered — the
+// exact accusation this anchor exists to make impossible.
+//
+// KILLING MUTATION: replace jcs(content) with JSON.stringify(content) in
+// docket() -> this test goes red and no other does.
+test("the row preimage is canonical: reordering keys inside a nested field cannot move the hash", async () => {
+  // Through the exported builder docket() itself calls, not a re-implementation
+  // of it here — a test that rebuilds the preimage proves only that the test
+  // agrees with itself.
+  const hashOf = (row: Record<string, unknown>) => docketRowContentHash(row);
+  const base: Record<string, unknown> = {
+    id: "example", title: "t", status: "open", size: "S", lane: "l",
+    source_posts: [1], updated: "2026-08-26",
+    claim: { by: "a", at: "2026-08-01", where: 5 },
+    verdict: { ruling: "passed", where: 7, at: "2026-08-02" },
+  };
+  const reordered: Record<string, unknown> = {
+    ...base,
+    claim: { where: 5, at: "2026-08-01", by: "a" },
+    verdict: { at: "2026-08-02", ruling: "passed", where: 7 },
+  };
+  assert.equal(await hashOf(base), await hashOf(reordered), "same meaning, same hash");
+
+  // And the control: a real change to a nested value MUST move the hash, or
+  // the canonicalization has flattened away the thing it is anchoring.
+  const changed = { ...base, claim: { by: "b", at: "2026-08-01", where: 5 } };
+  assert.notEqual(await hashOf(base), await hashOf(changed), "a changed claimant is a changed row");
+});
+
+test("both doors serve the anchor, because both go through docket()", async () => {
+  // The hash is computed inside docket() rather than at a route, so a door
+  // cannot serve these rows without it. #144 applied the hash at each route
+  // instead, which is correct on the day it lands and is two call sites to
+  // keep in step forever. This checks the property that makes that impossible
+  // here: the MCP tool returns docket() itself.
+  const { readFileSync } = await import("node:fs");
+  const mcp = readFileSync(new URL("../src/mcp.ts", import.meta.url), "utf8");
+  const branch = mcp.split('case "docket":')[1].split("case ")[0];
+  assert.match(branch, /docketFacts\(/, "the MCP docket tool calls docket() rather than rebuilding the rows");
+
+  const index = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
+  assert.match(index, /"\/api\/docket".*await docket\(/s, "the JSON door calls the same function");
+
+  const body = await docket("deadbeef");
+  for (const row of body.docket) {
+    assert.match((row as { content_hash: string }).content_hash, /^[0-9a-f]{64}$/, `${(row as { id: string }).id} carries a hash`);
+  }
+  assert.equal(body.content_hash_recipe.source_revision, "deadbeef");
+  assert.equal(body.content_hash_recipe.source_url, "https://github.com/1f916-ai/1f916/blob/deadbeef/src/docket.ts");
+  assert.equal((await docket()).content_hash_recipe.source_revision, null, "no revision supplied is null, not omitted");
 });

@@ -757,13 +757,28 @@ export function starterItems(limit = 3) {
     }));
 }
 
+// The one place a row preimage is built, exported so the contract can be
+// tested through the same code the endpoint runs. RFC 8785 JCS rather than
+// JSON.stringify: claim, delivery and verdict are OBJECTS, so a preimage that
+// stringifies them inherits their key order, and two rows that say the same
+// thing hash differently. A citizen reconstructing a row honestly would then
+// get a mismatch and conclude the served row had been altered, which is the
+// one accusation this anchor exists to make impossible.
+export function docketRowContentPreimage(row: Record<string, unknown>): string {
+  return jcs(Object.fromEntries(DOCKET_CONTENT_HASH_FIELDS.map((field) => [field, row[field] ?? null])));
+}
+
+export function docketRowContentHash(row: Record<string, unknown>): Promise<string> {
+  return sha256Hex(docketRowContentPreimage(row));
+}
+
 export const DOCKET_CONTENT_HASH_FIELDS = [
   "id", "title", "status", "size", "lane", "source_posts", "became",
   "decision_thread", "discussion", "claim", "delivery", "verdict",
   "updated", "acceptance", "note",
 ] as const satisfies readonly (keyof DocketItem)[];
 
-export async function docket() {
+export async function docket(sourceRevision: string | null = null) {
   const counts: Record<string, number> = {};
   for (const d of DOCKET) counts[d.status] = (counts[d.status] ?? 0) + 1;
 
@@ -771,16 +786,11 @@ export async function docket() {
   // silence. Every row carries `acceptance` explicitly, null when it has
   // none, so a reader can count the gap instead of inferring it from which
   // keys happen to be present.
-  const rows = await Promise.all(DOCKET.map(async (d) => {
-    const content = Object.fromEntries(
-      DOCKET_CONTENT_HASH_FIELDS.map((field) => [field, d[field] ?? null]),
-    );
-    return {
-      ...d,
-      acceptance: d.acceptance ?? null,
-      content_hash: await sha256Hex(jcs(content)),
-    };
-  }));
+  const rows = await Promise.all(DOCKET.map(async (d) => ({
+    ...d,
+    acceptance: d.acceptance ?? null,
+    content_hash: await docketRowContentHash(d as unknown as Record<string, unknown>),
+  })));
 
   const open = rows.filter((d) => d.status !== "shipped" && d.status !== "declined");
   // These three numbers used to be written into the sentence below by hand,
@@ -826,6 +836,25 @@ export async function docket() {
       null_rule: "A field absent from the source row is hashed as null, so absence cannot drift without moving the hash.",
       verification:
         "Build an object from these fields exactly as served, replace absent fields with null, serialize it with RFC 8785 JCS, and SHA-256 the UTF-8 bytes. Git history preserves past row values; a quoted sentence, row id, source commit, and this hash are sufficient for a stranger to re-check what that row said without trusting memory.",
+      // Which source to reconstruct from. Without it the recipe is a method
+      // with no target: a reader holding a hash from last week cannot know
+      // which src/docket.ts to rebuild the row out of (#144, #131 both said so).
+      source_revision: sourceRevision,
+      source_url: sourceRevision
+        ? `https://github.com/1f916-ai/1f916/blob/${sourceRevision}/src/docket.ts`
+        : null,
+      // The limit, stated rather than left to be discovered. A commit id names
+      // what this deployment was BUILT from; it is not proof that the running
+      // Worker is that tree (#131).
+      honest_limit:
+        "source_revision is the commit supplied to this deployment. It fixes which source to reconstruct from; it does not prove the running Worker matches it. GET /api/official carries the deployment's own tree state and the limit it states about itself.",
+      // What a row hash does NOT cover, named here rather than left implied.
+      // A verification contract that is silent about its edges invites a
+      // reader to assume it covers the whole page (#131).
+      does_not_cover: {
+        paths: ["what_this_is", "how_to_claim", "how_to_contribute", "how_it_was_built", "counts", "decomposition.note", "acceptance_coverage.note"],
+        why: "Each content_hash anchors one docket row and nothing else. The endpoint's explanatory prose and its derived counts are outside every row hash.",
+      },
     },
     counts,
     decomposition: {
