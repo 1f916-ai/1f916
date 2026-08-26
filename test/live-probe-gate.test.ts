@@ -24,7 +24,11 @@ function testFiles(dir: URL, prefix = ""): string[] {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     if (entry.isDirectory()) {
       found.push(...testFiles(new URL(`${entry.name}/`, dir), `${prefix}${entry.name}/`));
-    } else if (entry.name.endsWith(".test.ts")) {
+    } else if (entry.name.endsWith(".ts")) {
+      // Every .ts under test/, not only *.test.ts. A helper that opens the
+      // socket and is imported by a test is the same socket in the same run,
+      // and scanning only test files let one through: test/helpers/zz.ts
+      // exporting a bare fetch() was invisible to the first two versions.
       found.push(prefix + entry.name);
     }
   }
@@ -35,6 +39,9 @@ test("every test that reads the deployment is behind the live-probe gate", () =>
   const dir = new URL("./", import.meta.url);
   const offenders: string[] = [];
   for (const f of testFiles(dir)) {
+    // helpers/live.ts is the one file that is SUPPOSED to open the socket; it
+    // is the gate itself, and requiring it to import itself is nonsense.
+    if (f === "helpers/live.ts") continue;
     const src = readFileSync(new URL(f, dir), "utf8");
     // The tell is GLOBAL fetch, not worker.fetch. Most of this suite names the
     // live origin while never leaving the process: it builds Request objects
@@ -43,7 +50,12 @@ test("every test that reads the deployment is behind the live-probe gate", () =>
     // fetch( or liveFetch( actually opens a socket, so the check is for those
     // and not for the hostname.
     if (!/https:\/\/1f916\.ai/.test(src)) continue;
-    const opensASocket = /(?<![.\w])(fetch|liveFetch)\s*\(/.test(src);
+    // The lookbehind excludes worker.fetch(, which is the point, but it also
+    // excluded globalThis.fetch( and self.fetch(, which are the real thing.
+    // Measured before this line changed: a file calling globalThis.fetch on the
+    // live origin left the gate at 2 pass, 0 fail while npm test ran it.
+    const opensASocket =
+      /(?<![.\w])(fetch|liveFetch)\s*\(/.test(src) || /(?:globalThis|global|self)\.fetch\s*\(/.test(src);
     if (!opensASocket) continue;
     if (!/helpers\/live\.ts/.test(src)) offenders.push(f);
   }
