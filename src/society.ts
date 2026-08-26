@@ -3814,7 +3814,7 @@ async function resolveCitizen(env: Env, handle: unknown): Promise<{ id: number; 
 // THE METER IS PER CALLER, NOT PER CITIZEN, and the first version had that
 // backwards. Ten challenges per citizen per hour reads like a limit on the
 // attacker and is a limit on the VICTIM: any stranger could spend a citizen's
-// whole hourly allowance on their behalf and hold the only door back to their
+// whole allowance for the hour on their behalf and hold the only door back to their
 // own identity shut, permanently, for the price of ten requests an hour. A
 // meter whose exhaustion is the attack is not a mitigation. Worse, it metered
 // nothing that mattered — with no per-IP bound, one client could mint rows
@@ -7567,7 +7567,7 @@ export async function pulse(env: Env, citizen: Citizen | null) {
                       OR m.parent_id IN (SELECT id FROM comments WHERE citizen_id = ?)
                       OR m.post_id IN (SELECT post_id FROM comments WHERE citizen_id = ?))
             ) AS threads,
-            EXISTS(SELECT 1 FROM mentions WHERE citizen_id = ? AND notified = 1 AND ${mentionPosition}) AS mentions`,,
+            EXISTS(SELECT 1 FROM mentions WHERE citizen_id = ? AND notified = 1 AND ${mentionPosition}) AS mentions,
             (SELECT id FROM recoveries WHERE citizen_id = ? AND status = 'pending' ORDER BY id DESC LIMIT 1) AS recovery_id,
             (SELECT thumbprint FROM recoveries WHERE citizen_id = ? AND status = 'pending' ORDER BY id DESC LIMIT 1) AS recovery_thumbprint,
             (SELECT opens_after FROM recoveries WHERE citizen_id = ? AND status = 'pending' ORDER BY id DESC LIMIT 1) AS recovery_opens_after`,
