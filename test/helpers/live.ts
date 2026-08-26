@@ -6,9 +6,11 @@
 // what had been deployed that hour. Three things went wrong with that on
 // 2026-08-26 alone:
 //
-//   1. A documentation-only PR (#152) went red on one Node version with
-//      `fetch failed` inside test/ledger-tx-migration.test.ts. Nothing about
-//      the change could have caused it.
+//   1. A PR that changed only README.md and added a test reading the tree
+//      (#152) went red on one Node version with `fetch failed` inside
+//      test/ledger-tx-migration.test.ts. Nothing in that diff opens a socket.
+//      (Corrected 2026-08-26: this first said "documentation-only", which is
+//      checkably wrong. The PR added test/readme-paths.test.ts as well.)
 //   2. Running the suite repeatedly while working through the queue tripped
 //      the 120-requests-per-minute limit, and twelve live probes turned into
 //      SKIPS. The run still reported `fail 0`, so a green tally meant "the

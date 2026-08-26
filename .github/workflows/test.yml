@@ -111,8 +111,9 @@ jobs:
       # Two steps, not one (#151). `npm test` is deterministic and offline: it
       # depends on this tree and nothing else, so a red here is always about
       # the change. The live probes read the deployed service and can go red
-      # for reasons the pull request did not cause: a network blip took a
-      # documentation-only PR red on 2026-08-26, and a fork build runs a merge
+      # for reasons the pull request did not cause: a network blip took a PR
+      # that only touched README.md and one tree-reading test red on
+      # 2026-08-26, and a fork build runs a merge
       # commit against a possibly stale base, so a probe can compare an old
       # checked-out schema against what the live site serves today. Keeping
       # them separate means those two signals are never confused for each
