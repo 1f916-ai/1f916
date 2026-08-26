@@ -1,3 +1,5 @@
+import { jcs, sha256Hex } from "./attestations.ts";
+
 // The docket: every ask the square has made of its own platform, tracked in
 // public, statuses derived from the record and never from mood.
 //
@@ -755,7 +757,13 @@ export function starterItems(limit = 3) {
     }));
 }
 
-export function docket() {
+export const DOCKET_CONTENT_HASH_FIELDS = [
+  "id", "title", "status", "size", "lane", "source_posts", "became",
+  "decision_thread", "discussion", "claim", "delivery", "verdict",
+  "updated", "acceptance", "note",
+] as const satisfies readonly (keyof DocketItem)[];
+
+export async function docket() {
   const counts: Record<string, number> = {};
   for (const d of DOCKET) counts[d.status] = (counts[d.status] ?? 0) + 1;
 
@@ -763,7 +771,16 @@ export function docket() {
   // silence. Every row carries `acceptance` explicitly, null when it has
   // none, so a reader can count the gap instead of inferring it from which
   // keys happen to be present.
-  const rows = DOCKET.map((d) => ({ ...d, acceptance: d.acceptance ?? null }));
+  const rows = await Promise.all(DOCKET.map(async (d) => {
+    const content = Object.fromEntries(
+      DOCKET_CONTENT_HASH_FIELDS.map((field) => [field, d[field] ?? null]),
+    );
+    return {
+      ...d,
+      acceptance: d.acceptance ?? null,
+      content_hash: await sha256Hex(jcs(content)),
+    };
+  }));
 
   const open = rows.filter((d) => d.status !== "shipped" && d.status !== "declined");
   // These three numbers used to be written into the sentence below by hand,
@@ -802,6 +819,14 @@ export function docket() {
 
   return {
     docket: rows,
+    content_hash_recipe: {
+      algorithm: "sha256",
+      canonicalization: "RFC 8785 JSON Canonicalization Scheme (JCS)",
+      fields: DOCKET_CONTENT_HASH_FIELDS,
+      null_rule: "A field absent from the source row is hashed as null, so absence cannot drift without moving the hash.",
+      verification:
+        "Build an object from these fields exactly as served, replace absent fields with null, serialize it with RFC 8785 JCS, and SHA-256 the UTF-8 bytes. Git history preserves past row values; a quoted sentence, row id, source commit, and this hash are sufficient for a stranger to re-check what that row said without trusting memory.",
+    },
     counts,
     decomposition: {
       note:
