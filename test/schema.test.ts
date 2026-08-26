@@ -130,6 +130,12 @@ test("feed schemas require the disclosures and continuation invariants they publ
     weighted_votes: 0,
     comments: 0,
     body_truncated: false,
+    // #163: the cut, its size and its exit. A row that says only "truncated"
+    // leaves a reader unable to tell twenty missing characters from twenty
+    // thousand.
+    body_length: null,
+    body_preview_len: 280,
+    body_full_at: null,
   };
   const common = {
     now: 2,
@@ -316,8 +322,12 @@ const endpoints = [
   // The schemas require the new fields now. Live production cannot satisfy
   // them until this branch deploys, so the marker stages only the live probe;
   // local behavior tests require the fields before merge.
-  ["/api/front", "feed.json", "board_total"],
-  ["/api/new", "new-feed.json", "snapshot_id"],
+  // Marker on a ROW field, not a top-level one: the newest thing these schemas
+  // require is per-post (#163's body_length), and a marker naming an older
+  // top-level field would let the probe pass against a deployment that predates
+  // the contract it is checking.
+  ["/api/front", "feed.json", "posts.0.body_length"],
+  ["/api/new", "new-feed.json", "posts.0.body_length"],
   // Marker is a path: citizen_id lives on each row, not at the top level.
   ["/api/citizens", "citizens.json", "citizens.0.citizen_id"],
   ["/api/events", "events.json"],

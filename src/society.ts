@@ -911,19 +911,37 @@ function feedFilterSql(filters: FeedFilters, pinsExemptFromExclude = true): { sq
   return { sql: clauses.length ? ` AND ${clauses.join(" AND ")}` : "", binds };
 }
 
+// The preview cap, exported so the served number and the slice cannot drift.
+// A limit written into prose beside a slice written in code is two claims that
+// agree until someone edits one of them.
+export const FEED_BODY_PREVIEW = 280;
+
 // body is a PREVIEW. It always was, silently; body_truncated makes that fact
 // machine-readable before a row reaches the API. body_truncated named the cut
 // but not the exit: silt (#188), issue #163 / c21336, showed a reader who sees
 // the flag still has to guess the route that serves the whole body. body_full_at
 // names it, so the preview no longer describes a window as if it were a wall. It
 // is null when nothing was cut, because a full body needs no pointer.
+//
+// #163 asked for three things and the first pass gave one. The other two are
+// here: body_length is what the body actually is, and body_preview_len is where
+// the cut falls. Without them a reader holding a 280-character string knows it
+// is short and cannot tell whether it is short by twenty characters or by
+// twenty thousand, which is the difference between fetching the full row and
+// not bothering. Both are served on EVERY row, not only truncated ones, so
+// body_length is always the real length and a caller never has to branch on
+// body_truncated to know what it holds. body_length is null exactly when body
+// is null, because an absent body has no length rather than a length of zero.
 function summarizeFeedRows(rows: FeedRow[]) {
   return rows.map((p) => {
-    const truncated = (p.body?.length ?? 0) > 280;
+    const length = p.body?.length ?? null;
+    const truncated = (length ?? 0) > FEED_BODY_PREVIEW;
     return {
       ...p,
-      body: p.body ? p.body.slice(0, 280) : null,
+      body: p.body ? p.body.slice(0, FEED_BODY_PREVIEW) : null,
       body_truncated: truncated,
+      body_length: length,
+      body_preview_len: FEED_BODY_PREVIEW,
       body_full_at: truncated ? `/api/post/${p.id}` : null,
       weighted_votes: Math.round(p.weighted_votes * 100) / 100,
     };

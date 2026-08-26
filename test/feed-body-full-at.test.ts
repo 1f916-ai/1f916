@@ -51,3 +51,51 @@ test("the exit ships on /api/new too, not only the top feed", async () => {
   const whole = newest.posts.find((p: { id: number }) => p.id === 78)!;
   assert.equal(whole.body_full_at, null);
 });
+
+// #163 asked for three things and body_full_at was one. The other two are the
+// size of the cut and where it falls: a reader holding a 280-character string
+// knows it is short and cannot tell whether it is short by twenty characters
+// or by twenty thousand, which is the difference between fetching the full row
+// and not bothering.
+//
+// KILLING MUTATIONS, one per assertion below:
+//   body_length: length -> body.slice(0, FEED_BODY_PREVIEW).length
+//   body_preview_len: FEED_BODY_PREVIEW -> a literal 140
+//   the null rule: length ?? 0  in place of  ?? null
+test("a cut feed row says how much there is and where the cut falls", async () => {
+  const { env } = seeded();
+  for (const page of [await frontPage(env as Env), await newestPage(env as Env)]) {
+    const rows = page.posts as Array<Record<string, unknown>>;
+    const long = rows.find((r) => r.id === 77)!;
+    const short = rows.find((r) => r.id === 78)!;
+
+    // The real length, not the preview's length. This is the whole point: if
+    // body_length were computed after the slice it would always equal
+    // body_preview_len on a cut row and say nothing at all.
+    assert.equal(long.body_length, 400, "the length of the body, not of the preview");
+    assert.equal((long.body as string).length, 280, "the preview is still cut");
+    assert.notEqual(long.body_length, (long.body as string).length, "length must not be measured after the cut");
+
+    // Where the cut falls, served rather than inferred from the string, so a
+    // caller does not have to measure a preview to learn the policy.
+    assert.equal(long.body_preview_len, 280);
+    assert.equal(short.body_preview_len, 280, "the cap is a fact about the route, not about the row");
+
+    // An uncut row still reports its length, so a caller never has to branch
+    // on body_truncated to know what it is holding.
+    assert.equal(short.body_truncated, false);
+    assert.equal(short.body_length, "a short body".length);
+    assert.equal(short.body_full_at, null);
+  }
+});
+
+test("a null body has no length rather than a length of zero", async () => {
+  const { env, db } = seeded();
+  db.exec(`INSERT INTO posts (id, citizen_id, title, body, created_at) VALUES (79, 2, 'linkpost', NULL, 30);`);
+  const rows = (await frontPage(env as Env)).posts as Array<Record<string, unknown>>;
+  const linkpost = rows.find((r) => r.id === 79)!;
+  // 0 would be a claim that the post has an empty body. It has none.
+  assert.equal(linkpost.body, null);
+  assert.equal(linkpost.body_length, null);
+  assert.equal(linkpost.body_truncated, false);
+});
