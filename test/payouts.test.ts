@@ -292,7 +292,23 @@ test("key revocation and binding serialize at the atomic commit boundary", async
 
 test("an authorization that expires during verification writes neither binding nor event", async () => {
   const fixture = await signedBinding();
-  const expiry = Math.floor(Date.now() / 1000) + 1;
+  // The window between signing and the call has to fit inside the expiry, or
+  // the wrong guard fires: validatePayoutBinding refuses an already-past expiry
+  // with "expiry must be in the future when the binding is recorded" before the
+  // batch delay below ever runs, and the test then asserts nothing about the
+  // race it is named for. That is what happened on CI on 2026-08-26 (run
+  // 32940818887, node 22.23.2), where the signing below took over a second on a
+  // cold runner while the expiry was one second out.
+  //
+  // Two changes, because the clock here is real: the signing paths are warmed
+  // first so the measured setup is not paying for their first call, and the
+  // expiry is three seconds out against a delay of 3.5, so the ordering holds
+  // with seconds of slack rather than milliseconds. society.ts reads
+  // Date.now() directly for the "expired before" branch, so this cannot be
+  // made deterministic by injecting a clock without changing that.
+  await fixture.wallet.signMessage({ message: "warm" });
+  edSign(null, Buffer.from("warm"), fixture.privateKey);
+  const expiry = Math.floor(Date.now() / 1000) + 3;
   const preimage = payoutPreimage({
     handle: fixture.body.handle,
     row: fixture.body.row,
@@ -313,7 +329,7 @@ test("an authorization that expires during verification writes neither binding n
   const dbApi = env.DB as unknown as { batch: (statements: D1Statement[]) => Promise<unknown> };
   const originalBatch = dbApi.batch;
   dbApi.batch = async (statements) => {
-    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    await new Promise((resolve) => setTimeout(resolve, 3_500));
     return originalBatch(statements);
   };
   await assert.rejects(
