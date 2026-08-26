@@ -6,9 +6,9 @@ import assert from "node:assert/strict";
 //
 // screen_notices and payload_notices pin target_type with a CHECK. Widening
 // the TypeScript union without adding a migration produces a change that is
-// green in every test and fails at the database on every use in production,
-// because schema.sql builds fresh databases and never runs against the live
-// one. migrations/0029 wrote that warning in prose on 2026-08-14; #142 hit it
+// green in every test and fails at the database on every use against a database
+// built by migrations/, because schema.sql builds fresh databases and is not
+// what a migrated database was built from. migrations/0029 wrote that warning in prose on 2026-08-14; #142 hit it
 // again on 2026-08-26 with 980 tests passing. Prose did not hold, so this is
 // the mechanical version: what the code declares it can write must be a value
 // the schema that migrations/ build will actually accept.
@@ -84,19 +84,19 @@ const migrated = checkSetsAfterMigrations();
 
 for (const { table, fn } of CHECKED) {
   test(`${fn} cannot write a target_type the migrated ${table} would reject`, () => {
-    const live = migrated.get(table);
-    assert.ok(live, `migrations/ define a target_type CHECK for ${table}`);
+    const migratedSet = migrated.get(table);
+    assert.ok(migratedSet, `migrations/ define a target_type CHECK for ${table}`);
     for (const v of declaredUnion(fn)) {
       assert.ok(
-        live.has(v),
-        `${fn} accepts "${v}" but the ${table} CHECK that migrations/ build is (${[...live].join(", ")}). ` +
+        migratedSet.has(v),
+        `${fn} accepts "${v}" but the ${table} CHECK that migrations/ build is (${[...migratedSet].join(", ")}). ` +
           `widen it in a new migrations/ file, not only in schema.sql`,
       );
     }
   });
 
   test(`schema.sql and migrations/ agree on ${table}.target_type`, () => {
-    // A fresh database and a live one must not disagree about what is legal,
+    // A fresh database and a migrated one must not disagree about what is legal,
     // or a defect reproduces on exactly one of them.
     assert.deepEqual([...schemaCheckSet(table)].sort(), [...migrated.get(table)!].sort());
   });

@@ -14,7 +14,7 @@
 --
 -- SQLite cannot alter a CHECK, so the table is rebuilt and copied. Columns are
 -- listed explicitly rather than SELECT *: status and rules_hash were added by
--- ALTER in migrations/0011, so live databases carry them AFTER created_at
+-- ALTER in migrations/0011, so a database that applied 0011 carries them AFTER created_at
 -- while schema.sql declares them before it. Measured on a database built from
 -- 0010 and 0011, a positional copy shifts three columns at once: the created_at
 -- timestamp lands in status, 'open' lands in rules_hash, and rules_hash lands
