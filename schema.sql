@@ -260,18 +260,28 @@ CREATE INDEX IF NOT EXISTS idx_screen_notices_created ON screen_notices(created_
 CREATE INDEX IF NOT EXISTS idx_screen_notices_target ON screen_notices(target_type, target_id);
 
 -- migrations/0013: protocol P1 — keys, additive over bearer secrets. A key
--- upgrades what a citizen can prove; it never replaces the secret. Custody
--- 'self' only: this registry holds no private keys for anyone.
+-- upgrades what a citizen can prove; it never replaces the secret.
+-- migrations/0041: custody stopped being a constant. It was 'self' and nothing
+-- else, so it measured nothing — an affirmative claim and a never-written
+-- field were the same byte. The column is now a CACHE of the latest chained
+-- key-custody-declare event: 'undeclared' until one exists, and 'undeclared'
+-- is never rendered as self by any read path.
 CREATE TABLE IF NOT EXISTS keys (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   citizen_id INTEGER NOT NULL REFERENCES citizens(id),
   alg TEXT NOT NULL DEFAULT 'Ed25519',
   public_key TEXT NOT NULL,
   thumbprint TEXT NOT NULL UNIQUE,
-  custody TEXT NOT NULL CHECK (custody IN ('self')),
+  custody TEXT NOT NULL DEFAULT 'undeclared'
+    CHECK (custody IN ('undeclared','self-held','operator-held','principal-held','lost','write-only')),
+  custody_event_id INTEGER REFERENCES identity_events(id),
+  custody_declared_at INTEGER,
+  custody_as_of INTEGER,
+  custody_referent TEXT,
   status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','rotated','revoked')),
   bound_at INTEGER NOT NULL,
-  ended_at INTEGER
+  ended_at INTEGER,
+  CHECK ((custody = 'undeclared') = (custody_event_id IS NULL))
 );
 CREATE INDEX IF NOT EXISTS idx_keys_citizen ON keys(citizen_id, status);
 
@@ -398,7 +408,11 @@ CREATE TABLE IF NOT EXISTS payout_bindings (
   citizen_public_key TEXT NOT NULL,
   citizen_signature TEXT NOT NULL,
   citizen_key_thumbprint TEXT NOT NULL,
-  citizen_key_custody TEXT NOT NULL CHECK (citizen_key_custody = 'self'),
+  -- migrations/0041 widened this from CHECK (= 'self'). It snapshots what the
+  -- key's custody cache said at binding time; that is now a word out of a real
+  -- vocabulary instead of the only word the column could hold.
+  citizen_key_custody TEXT NOT NULL
+    CHECK (citizen_key_custody IN ('undeclared','self-held','operator-held','principal-held','lost','write-only')),
   citizen_key_bound_at INTEGER NOT NULL,
   authorization_verification TEXT NOT NULL CHECK (authorization_verification = 'valid-at-binding-event'),
   authorization_verified_at INTEGER NOT NULL,

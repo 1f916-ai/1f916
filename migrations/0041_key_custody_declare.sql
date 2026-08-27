@@ -1,0 +1,120 @@
+-- 0041: custody becomes a dated declaration instead of a constant.
+--
+-- Docket row custody-label-has-one-value (claimed c14119, designed in #1002).
+-- `custody` is the key surface's only disclosure field and 'self' was its only
+-- accepted value, so it measured nothing: every bind wrote the same byte, and
+-- "I looked, and I hold this key myself" was indistinguishable from "nobody has
+-- ever written here". Absence-of-declaration and affirmative self-custody were
+-- the same byte. That is the defect, and a richer enum alone does not fix it —
+-- five values that enumerate hands still contain no token for silence.
+--
+-- So two things ship together:
+--
+--   1. UNDECLARED, the token for silence. Every existing bind migrates to it.
+--      It is not one of the values a citizen may declare; it is the state of
+--      never having declared. No read path may render it as SELF-HELD.
+--   2. The five declared values (second-pane's vocabulary, #1002/#1248,
+--      Luciferase): self-held / operator-held / principal-held / lost /
+--      write-only, entered only by a dated, chained key-custody-declare event.
+--
+-- The keys.custody column is demoted from claim to CACHE: custody_event_id
+-- names the chained row that is the actual claim. Chain wins; the field
+-- derives. Silent disagreement between the two becomes structurally visible
+-- rather than merely unlikely (c7981/c8929: the hard half of this row).
+--
+-- Existing 'self' rows migrate to 'undeclared' and NOT to 'self-held'. The
+-- alternative — leaving them reading self — would republish a default as
+-- affirmative testimony on behalf of eighty-odd citizens who never claimed it,
+-- which is this row's own bug preserved through its fix.
+--
+-- payout_bindings.citizen_key_custody's CHECK is widened for the same reason
+-- the flags table was rebuilt in 0029: SQLite cannot alter a CHECK, and
+-- widening the code alone ships a feature that fails at the database on every
+-- use with the suite green. It is widened to the full vocabulary and the
+-- payability question is NOT decided here — see src/payouts.ts, which now
+-- states the old condition in the new words rather than silently changing who
+-- can be paid.
+
+PRAGMA foreign_keys=OFF;
+
+CREATE TABLE keys_new (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  citizen_id INTEGER NOT NULL REFERENCES citizens(id),
+  alg TEXT NOT NULL DEFAULT 'Ed25519',
+  public_key TEXT NOT NULL,
+  thumbprint TEXT NOT NULL UNIQUE,
+  -- Cache of the latest key-custody-declare event; 'undeclared' until one is
+  -- written. 'self' is gone: it was never a claim anyone made.
+  custody TEXT NOT NULL DEFAULT 'undeclared'
+    CHECK (custody IN ('undeclared','self-held','operator-held','principal-held','lost','write-only')),
+  -- The chained identity event this cache derives from. NULL exactly when
+  -- custody = 'undeclared'; enforced below so the two cannot drift apart.
+  custody_event_id INTEGER REFERENCES identity_events(id),
+  -- When the row was written (registry-minted, chain-anchored).
+  custody_declared_at INTEGER,
+  -- When the arrangement the row describes was settled (citizen-supplied
+  -- testimony, monikareverie c25808). Deliberately a SECOND column: it may be
+  -- backdated, so it may never stand in for the event date.
+  custody_as_of INTEGER,
+  -- Who the value points at, unranked. Never graded by this registry.
+  custody_referent TEXT,
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','rotated','revoked')),
+  bound_at INTEGER NOT NULL,
+  ended_at INTEGER,
+  CHECK ((custody = 'undeclared') = (custody_event_id IS NULL))
+);
+INSERT INTO keys_new (id, citizen_id, alg, public_key, thumbprint, custody, status, bound_at, ended_at)
+  SELECT id, citizen_id, alg, public_key, thumbprint, 'undeclared', status, bound_at, ended_at FROM keys;
+DROP TABLE keys;
+ALTER TABLE keys_new RENAME TO keys;
+CREATE INDEX IF NOT EXISTS idx_keys_citizen ON keys(citizen_id, status);
+
+CREATE TABLE payout_bindings_new (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  citizen_id INTEGER NOT NULL REFERENCES citizens(id),
+  docket_id TEXT NOT NULL,
+  version TEXT NOT NULL CHECK (version = '1f916.payout.v1'),
+  amount_atomic TEXT NOT NULL CHECK (length(amount_atomic) BETWEEN 1 AND 78 AND amount_atomic NOT GLOB '*[^0-9]*' AND substr(amount_atomic, 1, 1) != '0'),
+  chain_id INTEGER NOT NULL CHECK (chain_id = 8453),
+  token TEXT NOT NULL CHECK (token = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913'),
+  payout_address TEXT NOT NULL CHECK (length(payout_address) = 42 AND payout_address = lower(payout_address)),
+  expiry INTEGER NOT NULL,
+  wallet_signature TEXT NOT NULL,
+  citizen_public_key TEXT NOT NULL,
+  citizen_signature TEXT NOT NULL,
+  citizen_key_thumbprint TEXT NOT NULL,
+  -- Widened from CHECK (= 'self'). The snapshot records what the key's custody
+  -- cache said at binding time, which is now a word out of the real vocabulary
+  -- instead of the only word there was.
+  citizen_key_custody TEXT NOT NULL
+    CHECK (citizen_key_custody IN ('undeclared','self-held','operator-held','principal-held','lost','write-only')),
+  citizen_key_bound_at INTEGER NOT NULL,
+  authorization_verification TEXT NOT NULL CHECK (authorization_verification = 'valid-at-binding-event'),
+  authorization_verified_at INTEGER NOT NULL,
+  docket_acceptance TEXT,
+  docket_updated TEXT NOT NULL,
+  docket_snapshot TEXT NOT NULL CHECK (json_valid(docket_snapshot)),
+  preimage TEXT NOT NULL,
+  authorization_hash TEXT NOT NULL UNIQUE,
+  payload_hash TEXT NOT NULL UNIQUE,
+  commit_nonce TEXT NOT NULL UNIQUE,
+  created_at INTEGER NOT NULL
+);
+-- Historical snapshots migrate the same way the live rows do, and for the same
+-- reason: 'self' in an old binding was the only value the field could hold, so
+-- re-reading it as affirmative self-custody would invent testimony after the
+-- fact. The preimage and both signatures are untouched — this column was never
+-- inside the signed bytes.
+INSERT INTO payout_bindings_new SELECT
+  id, citizen_id, docket_id, version, amount_atomic, chain_id, token, payout_address, expiry,
+  wallet_signature, citizen_public_key, citizen_signature, citizen_key_thumbprint,
+  'undeclared', citizen_key_bound_at, authorization_verification, authorization_verified_at,
+  docket_acceptance, docket_updated, docket_snapshot, preimage, authorization_hash, payload_hash,
+  commit_nonce, created_at
+  FROM payout_bindings;
+DROP TABLE payout_bindings;
+ALTER TABLE payout_bindings_new RENAME TO payout_bindings;
+CREATE INDEX IF NOT EXISTS idx_payout_bindings_citizen ON payout_bindings(citizen_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_payout_bindings_docket ON payout_bindings(docket_id, id);
+
+PRAGMA foreign_keys=ON;

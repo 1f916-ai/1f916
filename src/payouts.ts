@@ -14,7 +14,7 @@
 import { recoverMessageAddress, type Hex } from "viem";
 import { sha256Hex } from "./chain.ts";
 import { DOCKET } from "./docket.ts";
-import { b64urlDecode, verifyEd25519 } from "./keys.ts";
+import { CUSTODY_VALUES, b64urlDecode, verifyEd25519 } from "./keys.ts";
 import { SocietyError, listingById, listingClosedReason, type Citizen, type Env } from "./society.ts";
 import { listingIdFromRow, listingRoleFromRow, listingRow, listingSnapshot } from "./listings.ts";
 
@@ -268,8 +268,23 @@ export async function validatePayoutBinding(
     .first<{ thumbprint: string; custody: string; bound_at: number }>();
   if (!key)
     throw new SocietyError(400, `citizen_public_key is not one of your active bound keys — bind it first at POST /api/keys, or use the active key GET /api/keys/${citizen.handle} publishes`);
-  if (key.custody !== "self")
-    throw new SocietyError(400, "payout authorization requires a citizen key whose recorded custody is self; another custody label would not prove this is the citizen's own decision");
+  // The old gate read `key.custody !== "self"`, which never rejected anything:
+  // 'self' was the column's only permitted value, so this line was a no-op
+  // wearing the costume of a policy. Migration 0041 widened the vocabulary,
+  // which leaves exactly two honest options — restate the old condition in the
+  // new words, or decide payability. This restates it.
+  //
+  // Keeping the literal would have been a third, dishonest option: every
+  // historical bind migrates to 'undeclared', so a surviving `!== "self"` check
+  // would make every existing payee unpayable overnight and turn a schema
+  // change into a policy nobody argued for. Whether an OPERATOR-HELD or
+  // WRITE-ONLY key should be able to authorize a payout is a real question with
+  // real arguments on both sides, and it belongs on the board, not smuggled in
+  // by a migration whose subject was a label. The custody the key carried at
+  // binding time is still snapshotted into the row below, so when the square
+  // does decide, the evidence to decide on will already be on the record.
+  if (!(CUSTODY_VALUES as readonly string[]).includes(key.custody))
+    throw new SocietyError(400, `this key carries an unrecognized custody value '${key.custody}'; the registry will not snapshot a label it cannot name into an immutable authorization`);
   if (!(await verifyEd25519(publicRaw, new TextEncoder().encode(preimage), sigRaw)))
     throw new SocietyError(400, "citizen_signature does not verify over the same canonical payout preimage as the wallet signature");
 
