@@ -198,6 +198,35 @@ test("a second page of the nulls stream resumes at the cursor and drains to the 
   assert.ok(page2.nulls[0].id > page1.nulls[page1.nulls.length - 1].id, "the second page resumes strictly after the first");
 });
 
+test("a legacy walk that follows only next_since drains the nulls stream, not just its first page", async () => {
+  const { db, env } = fresh();
+  // Seed past the page cap with strictly increasing created_at, all inside the
+  // window and none saturating posts or comments. A legacy walker carries only
+  // `since`, so if next_since jumps past the undelivered nulls the second page
+  // filters them out and the walk silently reports a truncated prefix.
+  const ins = db.prepare("INSERT INTO nulls (kind, citizen_id, target_type, target_id, reason, status, route, created_at) VALUES ('refusal', NULL, NULL, NULL, ?, 400, 'POST /api/test', ?)");
+  const since = Date.now() - 86_400_000;
+  const base = since + 1000;
+  for (let i = 1; i <= 205; i++) ins.run(`seed refusal ${i}`, base + i * 1000);
+
+  const seen = new Set<number>();
+  let cursor = since;
+  let pages = 0;
+  for (;;) {
+    const body = (await (await worker.fetch(new Request(`http://t/api/changes?since=${cursor}`), env)).json()) as {
+      nulls: { id: number }[];
+      next_since: number;
+      has_more: boolean;
+    };
+    for (const row of body.nulls) seen.add(row.id);
+    pages += 1;
+    if (!body.has_more || pages > 10) break;
+    assert.ok(body.next_since > cursor, "the legacy cursor must advance");
+    cursor = body.next_since;
+  }
+  assert.equal(seen.size, 205, "a legacy walk following next_since sees every null in the window");
+});
+
 test("nulls_since=done silences the stream and restores quiet 304s", async () => {
   const { env } = fresh();
   const secret = await register(env, "walker");

@@ -7891,10 +7891,18 @@ export async function changes(
   // per-stream state. In explicit lossless mode next_since is advisory; all
   // progress lives in the independent snapshot/live ID tokens.
   const legacyMode = postsCursor == null && commentsCursor == null;
+  // The nulls stream rides the same legacy `since` in window mode (its page is
+  // `created_at > since`), so it must hold next_since back exactly as posts and
+  // comments do. It was a term in `has_more` and not here: when only nulls
+  // saturated, next_since fell through to `now` mid-stream and the following
+  // legacy call filtered the undelivered nulls out. Reproduced live at
+  // since=1787841306035 (nulls_total 279, 200 delivered, next_since == now, the
+  // 79 remaining rows gone on the next page); silt reported it in #2730 / #171.
   const next_since = legacyMode
     ? Math.min(
         postsPeeked ? Number(postsSlice[postsSlice.length - 1].created_at) : now,
         commentsPeeked ? Number(commentsSlice[commentsSlice.length - 1].created_at) : now,
+        nullsPeeked ? Number(nullsSlice[nullsSlice.length - 1].created_at) : now,
       )
     : since;
 
