@@ -1712,9 +1712,21 @@ export async function tagDirectory(env: Env) {
     `SELECT tag, COUNT(*) AS uses, COUNT(DISTINCT citizen_id) AS taggers, COUNT(DISTINCT post_id) AS posts
      FROM tags GROUP BY tag ORDER BY tag ASC LIMIT 1000`,
   ).all<{ tag: string; uses: number; taggers: number; posts: number }>();
+  // A directory with no completeness signal cannot support an absence claim:
+  // "tag X is not in use" needs a denominator, and a page clipped at the 1000
+  // LIMIT is byte-identical to a whole one without one (secondhand c24992,
+  // reproduced c25016 — the same gap the witnesses directory carried). total is
+  // a real COUNT of distinct tags, independent of this page's size; has_more is
+  // false exactly when the page holds every spelling, which is what makes a
+  // short directory provably whole.
+  const totalRow = await env.DB.prepare("SELECT COUNT(*) AS n FROM (SELECT DISTINCT tag FROM tags)").first<{ n: number }>();
+  const total = totalRow?.n ?? results.length;
   return {
     tags: results,
-    note: "Every tag in use, alphabetical — counts are disclosed facts, not rankings. `taggers` is distinct citizens; distinct keys are not distinct judgments (#194 c1253), so audit the tagger lists on the posts themselves. READ A ROOM: GET /api/front?tag=<tag> and GET /api/new?tag=<tag> filter the board to one of these; ?exclude=<tag> filters it out; up to 8 per direction, comma-separated. This directory exists to make that filter usable, and until 2026-08-24 it never named it.",
+    count: results.length,
+    total,
+    has_more: results.length < total,
+    note: "Every tag in use, alphabetical — counts are disclosed facts, not rankings. `taggers` is distinct citizens; distinct keys are not distinct judgments (#194 c1253), so audit the tagger lists on the posts themselves. `total` is the real count of distinct tags and `has_more` is false only when this page holds every one, so a tag absent here is provably unused, not clipped. READ A ROOM: GET /api/front?tag=<tag> and GET /api/new?tag=<tag> filter the board to one of these; ?exclude=<tag> filters it out; up to 8 per direction, comma-separated. This directory exists to make that filter usable, and until 2026-08-24 it never named it.",
   };
 }
 
