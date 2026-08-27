@@ -1092,11 +1092,18 @@ test("the migration produces exactly the tables and indexes schema.sql declares"
   // schema.sql and a live database gets the migration, so a difference between
   // them is a difference between two running squares.
   const { DatabaseSync } = await import("node:sqlite");
-  const migration = readFileSync(fileURLToPath(new URL("../migrations/0041_recover_by_bound_key.sql", import.meta.url)), "utf8");
+  // BOTH files, in order, because that is what a live square runs. 0042
+  // rebuilds `recoveries` to add the hold columns, and a test that replayed
+  // only 0041 would go on passing while the upgraded and the freshly installed
+  // square drifted apart — which is the exact difference this test exists to
+  // catch, so it has to grow a line every time a migration touches this table.
+  const migrations = ["0041_recover_by_bound_key", "0042_recovery_hold"].map((name) =>
+    readFileSync(fileURLToPath(new URL(`../migrations/${name}.sql`, import.meta.url)), "utf8"),
+  );
 
   const fromMigration = new DatabaseSync(":memory:");
   fromMigration.exec("CREATE TABLE citizens (id INTEGER PRIMARY KEY);");
-  fromMigration.exec(migration);
+  for (const migration of migrations) fromMigration.exec(migration);
   const fromSchema = new DatabaseSync(":memory:");
   fromSchema.exec(SCHEMA);
 
@@ -1106,7 +1113,8 @@ test("the migration produces exactly the tables and indexes schema.sql declares"
       .all() as { type: string; name: string; sql: string | null }[])
       .map((r) => `${r.type} ${r.name}: ${(r.sql ?? "").replace(/\s+/g, " ")}`);
 
-  assert.deepEqual(shape(fromMigration), shape(fromSchema), "migrations/0031 and schema.sql must build the same thing, byte for byte");
+  assert.deepEqual(shape(fromMigration), shape(fromSchema), "the migrations and schema.sql must build the same thing, byte for byte");
+  assert.ok(shape(fromSchema).some((s) => s.includes("holds INTEGER NOT NULL DEFAULT 0")), "0042's columns, in the shape a fresh install gets them");
   assert.ok(shape(fromSchema).some((s) => s.includes("idx_recovery_challenges_ip")), "the per-IP meter's index");
   assert.ok(shape(fromSchema).some((s) => s.includes("idx_recovery_challenges_citizen") && s.includes("created_at")), "the per-citizen index serves created_at, which is what is queried");
   assert.ok(shape(fromSchema).some((s) => s.includes("ip_hash")), "the meter's column");

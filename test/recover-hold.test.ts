@@ -319,3 +319,46 @@ test("A HOLD LANDING MID-COMPLETION STOPS IT — the deadline is in the compare-
   assert.equal(holdsOf(db, 1).status, "pending");
   assert.ok(!kinds(db).includes("recovery-completed"));
 });
+
+test("0042 rebuilds the table WITHOUT dropping the recoveries already in it", async () => {
+  // The one hazard a rebuild adds that an ALTER TABLE does not. If the copy
+  // step is wrong the migration runs clean, the parity test above still
+  // passes — it compares empty schemas — and every recovery in flight at
+  // deploy time is silently gone. A pending recovery is a 48-hour clock
+  // somebody is watching; losing it loses the window AND the record that the
+  // window ever existed.
+  const { DatabaseSync } = await import("node:sqlite");
+  const before = readFileSync(fileURLToPath(new URL("../migrations/0041_recover_by_bound_key.sql", import.meta.url)), "utf8");
+  const rebuild = readFileSync(fileURLToPath(new URL("../migrations/0042_recovery_hold.sql", import.meta.url)), "utf8");
+
+  const db = new DatabaseSync(":memory:");
+  db.exec("CREATE TABLE citizens (id INTEGER PRIMARY KEY);");
+  db.exec(before);
+  db.exec("INSERT INTO citizens (id) VALUES (1), (2), (3);");
+  // One of each status, so a copy that filters on `pending` is caught too.
+  db.prepare("INSERT INTO recoveries (id, citizen_id, thumbprint, status, opened_at, opens_after, resolved_at) VALUES (?,?,?,?,?,?,?)").run(11, 1, "tp-pending", "pending", 1000, 2000, null);
+  db.prepare("INSERT INTO recoveries (id, citizen_id, thumbprint, status, opened_at, opens_after, resolved_at) VALUES (?,?,?,?,?,?,?)").run(12, 2, "tp-cancelled", "cancelled", 1001, 2001, 1500);
+  db.prepare("INSERT INTO recoveries (id, citizen_id, thumbprint, status, opened_at, opens_after, resolved_at) VALUES (?,?,?,?,?,?,?)").run(13, 3, "tp-completed", "completed", 1002, 2002, 1600);
+
+  db.exec(rebuild);
+
+  // Spread into plain objects: node:sqlite hands back null-prototype rows, and
+  // deepEqual compares prototypes.
+  const rows = (db.prepare("SELECT id, citizen_id, thumbprint, status, opened_at, opens_after, resolved_at, holds, last_held_at FROM recoveries ORDER BY id").all() as object[]).map((r) => ({ ...r }));
+  assert.deepEqual(rows, [
+    { id: 11, citizen_id: 1, thumbprint: "tp-pending", status: "pending", opened_at: 1000, opens_after: 2000, resolved_at: null, holds: 0, last_held_at: null },
+    { id: 12, citizen_id: 2, thumbprint: "tp-cancelled", status: "cancelled", opened_at: 1001, opens_after: 2001, resolved_at: 1500, holds: 0, last_held_at: null },
+    { id: 13, citizen_id: 3, thumbprint: "tp-completed", status: "completed", opened_at: 1002, opens_after: 2002, resolved_at: 1600, holds: 0, last_held_at: null },
+  ], "every row, every status, ids preserved, and holds defaulted to nought rather than null");
+
+  // The index went with the old table and has to come back, or the query every
+  // one of these paths runs falls back to a scan.
+  const indexes = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'recoveries'").all() as { name: string }[]).map((r) => r.name);
+  assert.ok(indexes.includes("idx_recoveries_citizen"), "the citizen/status index is recreated after the drop");
+
+  // AUTOINCREMENT has to keep counting from where it was, or the next recovery
+  // reuses an id the identity chain already refers to by number.
+  db.prepare("INSERT INTO recoveries (citizen_id, thumbprint, status, opened_at, opens_after) VALUES (?,?,?,?,?)").run(1, "tp-next", "pending", 3000, 4000);
+  const next = db.prepare("SELECT MAX(id) AS id FROM recoveries").get() as { id: number };
+  assert.ok(next.id > 13, `the next id must not collide with a copied one, got ${next.id}`);
+});
