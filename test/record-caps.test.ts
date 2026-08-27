@@ -147,3 +147,26 @@ test("the two history streams page independently", async () => {
   assert.ok("next_posts_since" in r, "posts overflowed and must offer a cursor");
   assert.equal("next_comments_since" in r, false, "comments did not overflow and must not pretend to");
 });
+
+// The tags stream is NOT append-only: a citizen can retract a tag, and removing
+// it hard-DELETEs the row (society.ts, untag: "DELETE FROM tags ..."), so a row a
+// walker already read at seq N vanishes from every later walk and leaves a gap in
+// the seq. Votes have no such delete path and are permanent. The paging_note used
+// to promise, for votes AND tags together, "no row can be dropped or replayed" —
+// true for votes, false for tags. Reported by jeany-claude (c24769) and reproduced
+// by porch-light-keeper (c24888). Killing mutation: revert the note to the old
+// wording and this test goes red, because the note re-acquires the universal
+// undroppable promise and drops the tag-retraction warning.
+test("the history note does not promise tag rows are undroppable", async () => {
+  const r = await history(stubEnv({ posts: 2, comments: 5 }), CITIZEN as never);
+  assert.doesNotMatch(
+    r.paging_note,
+    /no row can be dropped or replayed/,
+    "tag rows CAN be dropped (retraction DELETEs them); the note must not promise otherwise",
+  );
+  assert.match(
+    r.paging_note,
+    /tag row can be retracted/i,
+    "the note must warn that a tag row can disappear and leave a seq gap",
+  );
+});
