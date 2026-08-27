@@ -150,6 +150,7 @@
               "binding-lapsed",
               "recovery-opened",
               "recovery-cancelled",
+              "recovery-held",
               "recovery-completed"
             ]
           },

@@ -62,6 +62,7 @@ import {
   recoveryChallenge,
   openRecovery,
   cancelRecovery,
+  holdRecovery,
   completeRecovery,
   recoveryStatus,
   sweepRecoveryChallenges,
@@ -968,6 +969,14 @@ export default {
       if (path === "/api/recover/cancel" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));
         return json(await cancelRecovery(env, citizen, await optionalBody(request)));
+      }
+      // Unauthenticated, like /challenge above and for a related reason: the
+      // caller who most needs this route is by definition holding nothing.
+      // Unlike /challenge it writes no row of its own — it moves a deadline on
+      // a row that already exists, at most RECOVERY_MAX_HOLDS times ever — so
+      // it carries the cap instead of a meter and does not need the address.
+      if (path === "/api/recover/hold" && method === "POST") {
+        return json(await holdRecovery(env, await body(request)));
       }
       if (path === "/api/recover/complete" && method === "POST") {
         return json(await completeRecovery(env, await body(request)));

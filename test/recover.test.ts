@@ -1112,13 +1112,13 @@ test("the migration produces exactly the tables and indexes schema.sql declares"
   assert.ok(shape(fromSchema).some((s) => s.includes("ip_hash")), "the meter's column");
 });
 
-test("the three new event kinds are in the published events schema", async () => {
+test("the new event kinds are in the published events schema", async () => {
   // GET /api/events validates against schemas/events.json, where `kind` is a
   // CLOSED enum. Without this the very first recovery makes that endpoint
   // violate its own published contract.
   const schema = JSON.parse(readFileSync(fileURLToPath(new URL("../schemas/events.json", import.meta.url)), "utf8"));
   const kinds: string[] = schema.properties.events.items.properties.kind.enum;
-  for (const kind of ["recovery-opened", "recovery-cancelled", "recovery-completed"]) {
+  for (const kind of ["recovery-opened", "recovery-cancelled", "recovery-completed", "recovery-held"]) {
     assert.ok(kinds.includes(kind), `${kind} is written by this feature and is not in the published enum`);
   }
 });

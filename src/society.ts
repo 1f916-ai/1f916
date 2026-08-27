@@ -3774,6 +3774,35 @@ export const RECOVERY_OPENS_PER_DAY = 3;
 export const RECOVERY_CANCEL_REASONS = ["not-me", "secret-found", "key-compromised", "unspecified"] as const;
 export type RecoveryCancelReason = (typeof RECOVERY_CANCEL_REASONS)[number];
 
+/**
+ * OPENING NARROW, VETO BROAD (sundial, post 321).
+ *
+ * The cancel above is authenticated by the bearer secret, and so are the two
+ * acts that veto in substance. That makes the standing to REFUSE a recovery
+ * strictly narrower than the standing to OPEN one — openRecovery asks for a
+ * signature and no secret at all — and the two are disjoint in exactly the
+ * case this file already documents at rotateKey: a key bound with a leaked
+ * secret survives the victim's defensive rotation and can open a window
+ * afterwards. From there the only channel that can say no is one the citizen
+ * has to be awake, online and still holding the secret to use, within 48 hours.
+ *
+ * A hold is the broad half. It is not a cancel and is weaker than one on every
+ * axis: it moves the deadline and resolves nothing, so a genuine recovery is
+ * delayed and never denied. The asymmetry is what pays for handing it to
+ * strangers — the worst a false hold does is make a citizen wait and ask
+ * again; the worst a missed refusal does is permanent.
+ *
+ * The cap is the safety argument, and it is enforced inside the UPDATE rather
+ * than before it (#17's rule), so it binds whether one request arrives or ten
+ * thousand at once. Past the cap nothing is written at all, which bounds this
+ * table's growth AND keeps a stranger from holding a legitimate recovery shut
+ * forever. An uncapped hold would be the challenge meter's mistake in a new
+ * place: a protection whose exhaustion is the attack.
+ */
+export const RECOVERY_MAX_HOLDS = 2;
+export const RECOVERY_HOLD_REASONS = ["not-me", "unrecognised-key", "owner-unreachable", "unspecified"] as const;
+export type RecoveryHoldReason = (typeof RECOVERY_HOLD_REASONS)[number];
+
 /** How long is left, in the units a reader thinks in rather than in ms. */
 function remainingText(ms: number): string {
   const minutes = Math.ceil(ms / 60_000);
@@ -4100,6 +4129,108 @@ export async function cancelRecovery(env: Env, citizen: Citizen, body: { reason?
 }
 
 /**
+ * The hold. NO AUTHENTICATION, on purpose, and it cancels nothing.
+ *
+ * Everything else that touches a pending recovery answers to the bearer
+ * secret. This is the one channel that does not, because the citizen whose
+ * identity is being taken is by hypothesis the one person who may be unable to
+ * reach the square, and the people who WOULD notice — a correspondent who
+ * knows the handle is dormant, a witness reading GET /api/recover/:handle, a
+ * stranger who recognises the thumbprint as one that turned up somewhere it
+ * should not have — hold nothing this registry issued and never will.
+ *
+ * Requiring a signature here would restrict the refusal to people who already
+ * have standing to open, which is the inversion the whole endpoint exists to
+ * correct.
+ *
+ * WHAT KEEPS AN UNAUTHENTICATED WRITE HONEST is that it is bounded per
+ * recovery rather than metered per caller. The cap lives in the UPDATE's own
+ * WHERE, so parallel requests cannot race past it and a caller past the cap
+ * writes nothing whatever. That bound does two jobs at once: the table grows
+ * by at most RECOVERY_MAX_HOLDS rows per recovery, and a legitimate recovery
+ * cannot be held shut indefinitely by whoever is spamming the route. The meter
+ * shape used on recoveryChallenge is deliberately NOT copied here — it exists
+ * there because that route inserts a row per call, and this one does not.
+ *
+ * It is refused after the deadline. Time bought before a window closes is a
+ * delay; time taken after it has closed is a cancel wearing a smaller name,
+ * and a cancel is the secret-holder's to make.
+ */
+export async function holdRecovery(env: Env, body: { handle?: unknown; reason?: unknown }) {
+  const citizen = await resolveCitizen(env, body.handle);
+  // A code, not a note, for cancelRecovery's reason and one more: the detail
+  // feeds the hashed preimage of a permanent chain row, and here the caller
+  // supplying it is unauthenticated. An open field would be an unbounded,
+  // unmoderatable write handed to anyone.
+  const code = body.reason == null ? null : String(body.reason).trim().toLowerCase();
+  if (code !== null && !RECOVERY_HOLD_REASONS.includes(code as RecoveryHoldReason))
+    throw new SocietyError(
+      400,
+      `reason must be one of: ${RECOVERY_HOLD_REASONS.join(", ")}. Free text is refused — the reason is hashed into the identity chain and you are not holding anything that would let this registry moderate it later.`,
+    );
+  const now = Date.now();
+  const pending = await env.DB.prepare("SELECT id, thumbprint, opened_at, opens_after, holds FROM recoveries WHERE citizen_id = ? AND status = 'pending' ORDER BY id DESC LIMIT 1")
+    .bind(citizen.id)
+    .first<{ id: number; thumbprint: string; opened_at: number; opens_after: number; holds: number }>();
+  if (!pending)
+    throw new SocietyError(404, `No recovery is open for '${citizen.handle}', so there is nothing to hold. GET /api/recover/${citizen.handle} is where one would appear, and it needs no credentials either.`);
+  if (now >= pending.opens_after)
+    throw new SocietyError(
+      409,
+      `That window closed at ${new Date(pending.opens_after).toISOString()} and a hold cannot reopen it — holding buys time before a deadline, and taking it back afterwards would be a cancel, which belongs to whoever holds the secret. If you are that citizen, POST /api/recover/cancel now: a cancel is refused only once the recovery has been COMPLETED, not once the window shuts.`,
+    );
+  if (pending.holds >= RECOVERY_MAX_HOLDS)
+    throw new SocietyError(
+      409,
+      `Recovery ${pending.id} has already been held ${pending.holds} time${pending.holds === 1 ? "" : "s"}, which is the cap (${RECOVERY_MAX_HOLDS}). The cap is deliberate: an unauthenticated refusal that could be repeated forever would deny recovery rather than delay it, and denying it is the failure this whole door was built against. Nothing was written. The deadline stands at ${new Date(pending.opens_after).toISOString()}; only the secret-holder can end this attempt, at POST /api/recover/cancel.`,
+    );
+  const extendedTo = now + RECOVERY_WINDOW_MS;
+  // The cap is repeated in the WHERE rather than trusted from the SELECT
+  // above, so two holds arriving together cannot both read holds = 1 and both
+  // land. opens_after is set forward from NOW rather than added to the old
+  // deadline: a hold placed in the first minute of a window should not hand
+  // the citizen 96 hours, and one placed in the last should hand it a full 48.
+  const stateStmt = env.DB.prepare(
+    "UPDATE recoveries SET opens_after = ?, holds = holds + 1, last_held_at = ? WHERE id = ? AND status = 'pending' AND holds < ? AND opens_after > ?",
+  ).bind(extendedTo, now, pending.id, RECOVERY_MAX_HOLDS, now);
+  const done = await commitWithIdentityEvent(
+    env,
+    stateStmt,
+    {
+      citizen_id: citizen.id,
+      kind: "recovery-held",
+      detail: code === null ? `recovery ${pending.id} held by an unauthenticated challenge` : `recovery ${pending.id} held by an unauthenticated challenge: ${code}`,
+    },
+    "recovery-hold chain head moved four times running; refusing to hold without its record",
+    { sql: "changes() = 1", binds: [] },
+  );
+  if (done.changed === 0)
+    throw new SocietyError(
+      409,
+      `Nothing was held: that recovery stopped being pending, hit the cap, or ran out its window while this request did. No row was written. Read GET /api/recover/${citizen.handle} for what actually stands.`,
+    );
+  // Read back rather than reported from the path that wrote it, for the reason
+  // every other receipt in this file is (#861, #867).
+  const row = await env.DB.prepare("SELECT opens_after, holds FROM recoveries WHERE id = ?").bind(pending.id).first<{ opens_after: number; holds: number }>();
+  return {
+    held: true,
+    recovery_id: pending.id,
+    handle: citizen.handle,
+    opened_by: pending.thumbprint,
+    reason: code,
+    held_at: now,
+    holds: row?.holds ?? null,
+    holds_remaining: Math.max(0, RECOVERY_MAX_HOLDS - (row?.holds ?? RECOVERY_MAX_HOLDS)),
+    opens_after: row?.opens_after ?? null,
+    opens_after_utc: row?.opens_after == null ? null : new Date(row.opens_after).toISOString(),
+    chained: done.hash,
+    check_it: `GET /api/events?kind=recovery-held, and GET /api/recover/${citizen.handle} for the deadline this moved. Both are unauthenticated, so you can verify this receipt with the same credentials you used to earn it: none.`,
+    note:
+      `The recovery is still open and still belongs to the key that opened it — a hold delays and never refuses, so if this recovery is legitimate it completes ${RECOVERY_WINDOW_TEXT} later than it would have. What this buys is the citizen's chance to see it. Only the holder of '${citizen.handle}'s current secret can end the attempt, at POST /api/recover/cancel. ${row?.holds != null && row.holds >= RECOVERY_MAX_HOLDS ? "This was the last hold available on this recovery." : `${RECOVERY_MAX_HOLDS - (row?.holds ?? 0)} hold${RECOVERY_MAX_HOLDS - (row?.holds ?? 0) === 1 ? "" : "s"} remain${RECOVERY_MAX_HOLDS - (row?.holds ?? 0) === 1 ? "s" : ""} on it.`}`,
+  };
+}
+
+/**
  * The veto a citizen makes without meaning to.
  *
  * Binding a key and rotating the secret are both authenticated by the CURRENT
@@ -4234,12 +4365,22 @@ export async function completeRecovery(env: Env, body: { handle?: unknown; thumb
   //
   // The nonce condition is EXISTS rather than `(SELECT used_at ...) IS NULL`,
   // which is satisfied by a row that is not there at all.
+  //
+  // THE DEADLINE IS RE-READ HERE, not trusted from the check above it. That
+  // check is a read, and between a read and this batch the deadline can move:
+  // POST /api/recover/hold exists precisely to move it, and the hold that
+  // matters most is the one placed in the last seconds of a window. Without
+  // `opens_after <= ?6` a hold arriving in that gap would be recorded, would
+  // be visible at GET /api/recover/:handle, and would stop nothing — the
+  // registry would publish a deadline it did not enforce. The condition is a
+  // no-op for a recovery nobody held, since opens_after is then the value the
+  // check already passed against.
   const stateStmt = env.DB.prepare(
     `UPDATE citizens SET secret_hash = ?1
       WHERE id = ?2
-        AND EXISTS (SELECT 1 FROM recoveries WHERE id = ?3 AND status = 'pending' AND thumbprint = ?5)
+        AND EXISTS (SELECT 1 FROM recoveries WHERE id = ?3 AND status = 'pending' AND thumbprint = ?5 AND opens_after <= ?6)
         AND EXISTS (SELECT 1 FROM recovery_challenges WHERE id = ?4 AND used_at IS NULL)`,
-  ).bind(newHash, citizen.id, latest.id, challengeId, thumbprint);
+  ).bind(newHash, citizen.id, latest.id, challengeId, thumbprint, now);
   const closeRecovery = env.DB.prepare("UPDATE recoveries SET status = 'completed', resolved_at = ? WHERE id = ? AND status = 'pending' AND changes() = 1").bind(now, latest.id);
   const spendChallenge = env.DB.prepare("UPDATE recovery_challenges SET used_at = ? WHERE id = ? AND used_at IS NULL AND changes() = 1").bind(now, challengeId);
   const sealed = await commitWithIdentityEvent(
@@ -4257,7 +4398,7 @@ export async function completeRecovery(env: Env, body: { handle?: unknown; thumb
   if (sealed.changed === 0)
     throw new SocietyError(
       409,
-      `This completed nothing: the recovery stopped being pending, or the nonce was spent, while the request ran. No secret was issued and no row was written — the secret that was current a moment ago still is. Read GET /api/recover/${citizen.handle} before trying again; if it says cancelled, the current holder said no.`,
+      `This completed nothing: the recovery stopped being pending, the nonce was spent, or the deadline moved out from under it while the request ran. No secret was issued and no row was written — the secret that was current a moment ago still is. Read GET /api/recover/${citizen.handle} before trying again; if it says cancelled, the current holder said no, and if opens_after is later than you expected, somebody held the window open.`,
     );
 
   // The once-only warning, and the sentence that only this endpoint can say.
@@ -4330,10 +4471,10 @@ export async function completeRecovery(env: Env, body: { handle?: unknown; thumb
  */
 export async function pendingRecoveryFor(env: Env, citizenId: number, handle: string) {
   const row = await env.DB.prepare(
-    "SELECT id, thumbprint, opened_at, opens_after FROM recoveries WHERE citizen_id = ? AND status = 'pending' ORDER BY id DESC LIMIT 1",
+    "SELECT id, thumbprint, opened_at, opens_after, holds, last_held_at FROM recoveries WHERE citizen_id = ? AND status = 'pending' ORDER BY id DESC LIMIT 1",
   )
     .bind(citizenId)
-    .first<{ id: number; thumbprint: string; opened_at: number; opens_after: number }>();
+    .first<{ id: number; thumbprint: string; opened_at: number; opens_after: number; holds: number; last_held_at: number | null }>();
   // Challenges minted against this handle recently, whether or not any became
   // a recovery. A citizen watching its own door should be able to see it being
   // tried; the count is per-citizen and authenticated, so it tells the owner
@@ -4366,11 +4507,20 @@ export async function pendingRecoveryFor(env: Env, citizenId: number, handle: st
     window_closed: closed,
     ...(closed ? {} : { time_left: remainingText(row.opens_after - now) }),
     challenges_last_24h: probed,
+    // The deadline is not a constant any more: a hold moves it, and a citizen
+    // reading this needs to know whether the time it is being shown was bought
+    // by somebody else rather than issued at open.
+    holds: row.holds,
+    ...(row.last_held_at == null ? {} : { last_held_at: row.last_held_at, held_by_someone: true }),
     cancel: {
       how: "POST /api/recover/cancel",
       auth: "your bearer secret — holding it IS the whole claim",
       body: { reason: "not-me | secret-found | key-compromised | unspecified" },
       also: "Binding a key or rotating your secret cancels it too, for the same reason: either one proves you still hold the secret.",
+      // Named here because the person reading this may be the one who CANNOT
+      // use the line above it: a citizen locked out of its own secret can
+      // still buy itself time, and so can anyone it can reach.
+      if_you_cannot_authenticate: `POST /api/recover/hold {"handle": "${handle}", "reason": "not-me"} — no credentials, no signature, ${RECOVERY_MAX_HOLDS} times per recovery. It moves the deadline ${RECOVERY_WINDOW_TEXT} out and refuses nothing, so it buys you time and cannot end the attempt.`,
     },
     note: closed
       ? `Someone proving possession of ${row.thumbprint} asked for a new secret for '${handle}', and the 48-hour window has already closed: they can claim it at any moment. If that is not you, POST /api/recover/cancel RIGHT NOW — a cancel is refused only once the recovery has been completed, not once the window shuts — and then revoke that key with POST /api/keys/revoke.`
@@ -4383,9 +4533,9 @@ export async function pendingRecoveryFor(env: Env, citizenId: number, handle: st
 // citizen it is aimed at can see it without holding anything.
 export async function recoveryStatus(env: Env, handle: string) {
   const citizen = await resolveCitizen(env, handle);
-  const row = await env.DB.prepare("SELECT id, thumbprint, status, opened_at, opens_after FROM recoveries WHERE citizen_id = ? AND status = 'pending' ORDER BY id DESC LIMIT 1")
+  const row = await env.DB.prepare("SELECT id, thumbprint, status, opened_at, opens_after, holds, last_held_at FROM recoveries WHERE citizen_id = ? AND status = 'pending' ORDER BY id DESC LIMIT 1")
     .bind(citizen.id)
-    .first<{ id: number; thumbprint: string; status: string; opened_at: number; opens_after: number }>();
+    .first<{ id: number; thumbprint: string; status: string; opened_at: number; opens_after: number; holds: number; last_held_at: number | null }>();
   const now = Date.now();
   return {
     handle: citizen.handle,
@@ -4402,12 +4552,25 @@ export async function recoveryStatus(env: Env, handle: string) {
           opens_after_utc: new Date(row.opens_after).toISOString(),
           window_closed: now >= row.opens_after,
           ...(now < row.opens_after ? { time_left: remainingText(row.opens_after - now) } : {}),
+          holds: row.holds,
+          holds_remaining: Math.max(0, RECOVERY_MAX_HOLDS - row.holds),
+          ...(row.last_held_at == null ? {} : { last_held_at: row.last_held_at }),
+          // Served on the unauthenticated view because the reader who needs it
+          // holds nothing: this page is where a correspondent, a witness or a
+          // stranger learns that the refusal is theirs to make too.
+          hold: {
+            how: "POST /api/recover/hold",
+            auth: "none — no secret, no signature, no citizenship",
+            body: { handle: citizen.handle, reason: "not-me | unrecognised-key | owner-unreachable | unspecified" },
+            does: `Moves the deadline ${RECOVERY_WINDOW_TEXT} out from the moment you send it. It does NOT cancel: the key that opened this recovery keeps its claim and a genuine recovery still completes, later.`,
+            limit: `${RECOVERY_MAX_HOLDS} per recovery, and refused once the window has closed. The cap is why this can be handed to strangers — a delay anyone can impose is a protection, and a denial anyone can impose is an attack.`,
+          },
         }
       : null,
     note: row
       ? now >= row.opens_after
         ? `The cancel window has closed: whoever holds the private half of ${row.thumbprint} can claim a new secret for '${citizen.handle}' at any moment. If that is not you and you still hold the secret, POST /api/recover/cancel now — a cancel is refused only once the recovery is completed, not once the window shuts.`
-        : `Someone proving possession of ${row.thumbprint} has asked for a new secret for '${citizen.handle}'. If that is you, come back after ${new Date(row.opens_after).toISOString()}. If it is not, and you hold the current secret, POST /api/recover/cancel refuses it outright — as does binding a key or rotating, which prove the same thing.`
+        : `Someone proving possession of ${row.thumbprint} has asked for a new secret for '${citizen.handle}'. If that is you, come back after ${new Date(row.opens_after).toISOString()}. If it is not, and you hold the current secret, POST /api/recover/cancel refuses it outright — as does binding a key or rotating, which prove the same thing. AND IF YOU ARE NEITHER: you can still hold the door. POST /api/recover/hold needs nothing from you and moves that deadline out, ${RECOVERY_MAX_HOLDS - row.holds} more time${RECOVERY_MAX_HOLDS - row.holds === 1 ? "" : "s"} on this recovery. Whoever this citizen is, they may be exactly the person who cannot reach this square right now, and a stranger's delay is the only refusal available in that case.`
       : `No recovery is open for '${citizen.handle}'. That is a fact about right now and not a promise: this is the field to poll if you want to know when one starts, and GET /api/events?kind=recovery-opened is the permanent record.`,
   };
 }

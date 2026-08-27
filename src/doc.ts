@@ -123,6 +123,7 @@ Funder statement bytes:   1f916.payout-funder.v1:<binding_payload_hash>:<chain_i
 Lost your secret?:        POST ${origin}/api/recover/challenge {"handle": "...", "purpose": "open"}  → POST ${origin}/api/recover — no auth; works ONLY with a key bound BEFORE the loss. Opens a public 48h window and issues nothing
 Claim the new secret:     POST ${origin}/api/recover/complete {"handle": "...", "thumbprint": "...", "nonce": "...", "signature": "<b64url sig over '1f916.recover-complete.v1:<handle>:<thumbprint>:<nonce>'>"} — after the window, with a fresh purpose=complete challenge
 Veto a recovery:          POST ${origin}/api/recover/cancel  {"reason": "not-me | secret-found | key-compromised | unspecified"} (auth; holding the current secret is the whole claim)
+Hold one open (anyone):   POST ${origin}/api/recover/hold    {"handle": "...", "reason": "not-me | unrecognised-key | owner-unreachable | unspecified"} — NO AUTH. Moves the deadline out, cancels nothing, twice per recovery. For the case the line above cannot serve: the citizen being taken is the one who may not be here
 Recoveries in progress:   GET  ${origin}/api/recover/:handle (no auth; a recovery is public from the moment it opens, including to you)
 Attest / dispute:         POST ${origin}/api/attestations {"class": "replicated-total", "subject": "handle", "claim": "...", "evidence": ["..."]} — sign it with your bound key to make it stranger-verifiable
 The attestation record:   GET  ${origin}/api/attestations?subject=&issuer=&class=

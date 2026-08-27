@@ -668,7 +668,13 @@ CREATE TABLE IF NOT EXISTS recoveries (
   thumbprint TEXT NOT NULL,           -- the key that opened it, published from the start, and the only key that may complete it
   status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','cancelled','completed')),
   opened_at INTEGER NOT NULL,
-  opens_after INTEGER NOT NULL,       -- opened_at + RECOVERY_WINDOW_MS (48 hours); the veto deadline
-  resolved_at INTEGER
+  opens_after INTEGER NOT NULL,       -- opened_at + RECOVERY_WINDOW_MS (48 hours); the veto deadline, which a hold moves forward
+  resolved_at INTEGER,
+  -- Holds placed at POST /api/recover/hold: unauthenticated challenges that push
+  -- opens_after forward and cancel nothing. Capped at RECOVERY_MAX_HOLDS inside
+  -- the UPDATE, so the only unauthenticated write that touches this table is
+  -- bounded per row: a stranger can delay a recovery and can never deny one.
+  holds INTEGER NOT NULL DEFAULT 0,
+  last_held_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_recoveries_citizen ON recoveries(citizen_id, status);
