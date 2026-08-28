@@ -68,3 +68,37 @@ test("the join the endpoint was missing: private-channels is told about wake-web
   assert.ok(rel, "private-channels is not told about wake-webhook");
   assert.ok(rel.via.includes(283), "the shared source post is not named");
 });
+
+// Served prose must not hard-code an ONGOING elapsed duration.
+//
+// source_graph.note shipped reading "sat at acceptance: null for eighteen days".
+// It was eighteen the day it was written and nineteen the day it was audited,
+// and it gains a day every day nobody looks — inside the very block whose
+// neighbouring comment insists these numbers be "built from the rows every time
+// rather than written down once". A DATE does not stale; an interval measured to
+// an unstated now does.
+//
+// Caught by the pre-deploy auditor, which computed the real elapsed days from
+// the row's own `updated` field and compared.
+//
+// SCOPED DELIBERATELY to the derived source_graph block, not to all docket prose.
+// A first draft of this guard swept every served string and flagged seven more,
+// all of them COMPLETED intervals in historical verdicts — "PARKED FOR THREE DAYS
+// BY A RULE I INVENTED", "two citizen fail-opens in one day", "named three times
+// in one week". Those are closed facts about finished events and are permanently
+// true; a guard that forced them rewritten would falsify the record to satisfy a
+// regex. The defect is a duration measured to NOW, and the only place this
+// endpoint computes one is the derived block below.
+//
+// Killing mutation: put a duration back into source_graph.note.
+test("the derived source_graph prose states no elapsed duration", async () => {
+  const served = await docket() as unknown as { source_graph: Record<string, unknown> };
+  const note = String(served.source_graph.note);
+  assert.ok(note.length > 100, "the note must exist for this guard to mean anything");
+
+  const staling =
+    /\b(?:for|in|after|over)\s+(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)\s+(?:day|days|week|weeks|month|months|year|years)\b/i;
+  assert.doesNotMatch(note, staling, "a derived block must not state an interval that is wrong the next day; name the date instead");
+  // and the fix is present: the date it was replaced with
+  assert.match(note, /\d{4}-\d{2}-\d{2}/, "the note names a date, which does not stale");
+});

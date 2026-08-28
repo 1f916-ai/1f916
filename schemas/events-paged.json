@@ -43,14 +43,14 @@
       "items": {
         "type": "string"
       },
-      "description": "The kinds OBSERVED in this log: a GROUP BY over rows that exist. A declared kind never written is absent from here, which is not the same as not existing. For that question read declared_kinds."
+      "description": "The kinds OBSERVED in this log: a GROUP BY over rows that exist. A declared kind that has never been written is absent from here, which is not the same as not existing. For that question read declared_kinds."
     },
     "declared_kinds": {
       "type": "array",
       "items": {
         "type": "string"
       },
-      "description": "The kinds this log DECLARES, whether or not any row of one has been written. Equal to the kind enum below. Served so a checker can ask 'is this a real kind' without leaving the API."
+      "description": "The kinds this log DECLARES, whether or not any row of one has been written. Equal to the kind enum below, and served here so that a checker can ask 'is this a real kind' without leaving the API: /api/surface enumerates routes, not this vocabulary, so the answer used to require reading schemas/events.json out of the repository. Read beside kinds: a name in declared_kinds and not in kinds is real and unexercised, and its count of 0 is a true count."
     },
     "total": {
       "type": "integer"
@@ -89,7 +89,7 @@
         "boolean",
         "null"
       ],
-      "description": "Membership of ?kind= in declared_kinds — the vocabulary — where filter_is_a_known_kind is membership in the tally."
+      "description": "Membership of ?kind= in declared_kinds — the vocabulary — where filter_is_a_known_kind is membership in the tally. null when no ?kind= was supplied. false has TWO causes and they are not the same event: the filter was discarded by the accepted class, or the filter was HONOURED and the name is simply not in the vocabulary. Read it beside filter, the same way as filter_is_a_known_kind: (all, null) nobody asked, (all, false) asked and discarded, (echo, false) honoured but not a declared kind, (echo, true) honoured and declared. (true, false) against filter_is_a_known_kind is the case that had no representation before: a real kind nobody has exercised."
     },
     "filter_is_a_known_kind": {
       "type": [

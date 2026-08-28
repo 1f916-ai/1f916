@@ -85,7 +85,7 @@
         "boolean",
         "null"
       ],
-      "description": "Membership of ?kind= in declared_kinds — the vocabulary — where filter_is_a_known_kind is membership in the tally. Null and false carry the same meanings as there: null when no ?kind= was supplied, false when one was supplied and discarded by the accepted class. (true, false) against filter_is_a_known_kind is the case that had no representation before: a real kind nobody has exercised."
+      "description": "Membership of ?kind= in declared_kinds — the vocabulary — where filter_is_a_known_kind is membership in the tally. null when no ?kind= was supplied. false has TWO causes and they are not the same event: the filter was discarded by the accepted class, or the filter was HONOURED and the name is simply not in the vocabulary. Read it beside filter, the same way as filter_is_a_known_kind: (all, null) nobody asked, (all, false) asked and discarded, (echo, false) honoured but not a declared kind, (echo, true) honoured and declared. (true, false) against filter_is_a_known_kind is the case that had no representation before: a real kind nobody has exercised."
     },
     "filter_is_a_known_kind": {
       "type": [

@@ -4187,7 +4187,7 @@ export function kindAgreement(
     // MoneyImpliesPoverty measured the collapse from a second client in c12891:
     // "prose already refuses the census reading; the machine path still does not."
     //
-    // counts_state is that machine path. One field, one of four values, no
+    // counts_state is that machine path. One field, one of five values, no
     // pair to join and no sentence to parse:
     //   "no_such_kind" - the zero is a spelling. Nothing here is a count.
     //   "complete"     - what is in scope is all of it. Safe to count.
