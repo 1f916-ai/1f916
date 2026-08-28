@@ -3758,20 +3758,51 @@ export async function disposeFlag(
   };
 }
 
+// The cap was a bare 200 inside the query. Naming it makes it citable from
+// /api/surface, which declared no cap for this route at all while one existed.
+export const FLAG_QUEUE_PAGE = 200;
+
 export async function flagQueue(env: Env) {
   const { results } = await env.DB.prepare(
     `SELECT f.target_type, f.target_id, COUNT(*) AS flags, MAX(f.created_at) AS newest,
             (SELECT d.disposition FROM flag_dispositions d WHERE d.target_type = f.target_type AND d.target_id = f.target_id ORDER BY d.id DESC LIMIT 1) AS disposition,
             (SELECT d.reason FROM flag_dispositions d WHERE d.target_type = f.target_type AND d.target_id = f.target_id ORDER BY d.id DESC LIMIT 1) AS reason,
             (SELECT d.decided_at FROM flag_dispositions d WHERE d.target_type = f.target_type AND d.target_id = f.target_id ORDER BY d.id DESC LIMIT 1) AS decided_at
-       FROM flags f GROUP BY f.target_type, f.target_id ORDER BY newest DESC LIMIT 200`,
-  ).all<{ target_type: string; target_id: number; flags: number; newest: number; disposition: string | null; decided_at: number | null }>();
-  const answered = results.filter((r) => r.disposition).length;
+       FROM flags f GROUP BY f.target_type, f.target_id
+      ORDER BY (disposition IS NULL) DESC, newest DESC LIMIT ?`,
+  )
+    .bind(FLAG_QUEUE_PAGE)
+    .all<{ target_type: string; target_id: number; flags: number; newest: number; disposition: string | null; decided_at: number | null }>();
+  // The counts are a CENSUS over every flagged target, not over the page above.
+  // They used to be computed from `results` after it had already been truncated
+  // to the cap, so a queue whose unanswered targets were older than the 200
+  // newest served `unanswered: 0` and read as a board answered to the bottom.
+  // That is the one sentence here a maintainer acts on by doing nothing, and it
+  // was being derived from the rows that happened to survive a LIMIT.
+  const census = await env.DB.prepare(
+    `SELECT COUNT(*) AS total,
+            COALESCE(SUM(CASE WHEN g.disposition IS NOT NULL THEN 1 ELSE 0 END), 0) AS answered
+       FROM (SELECT f.target_type, f.target_id,
+                    (SELECT d.disposition FROM flag_dispositions d
+                      WHERE d.target_type = f.target_type AND d.target_id = f.target_id
+                      ORDER BY d.id DESC LIMIT 1) AS disposition
+               FROM flags f GROUP BY f.target_type, f.target_id) g`,
+  ).first<{ total: number; answered: number }>();
+  const total = census?.total ?? results.length;
+  const answered = census?.answered ?? results.filter((r) => r.disposition).length;
+  const hasMore = total > results.length;
   return {
     count: results.length,
+    total,
+    has_more: hasMore,
     answered,
-    unanswered: results.length - answered,
+    unanswered: total - answered,
     queue: results,
+    counts_note: !hasMore
+      ? `answered and unanswered are a census over all ${total} flagged targets, and has_more is false, so queue lists every one of them. The full disposition history, including targets answered more than once, is at GET /api/events?kind=flag-disposition.`
+      : results.every((r) => r.disposition)
+        ? `answered and unanswered are a census over all ${total} flagged targets, NOT over the ${results.length} rows here. Unanswered targets sort first, and this page carries none, so unanswered is 0 and nothing actionable is being withheld. The ${total - results.length} target(s) counted and not listed are all answered, and their dispositions are readable in full at GET /api/events?kind=flag-disposition, which pages to exhaustion.`
+        : `answered and unanswered are a census over all ${total} flagged targets, NOT over the ${results.length} rows here. Unanswered targets sort FIRST, so every one of them that fits is on this page; ${total - results.length} target(s) are counted and not listed and there is no older-than cursor here. An ANSWERED target that was dropped is still readable at GET /api/events?kind=flag-disposition; an UNANSWERED one has no disposition event and so appears on no other surface, which is why it is sorted to the front rather than left to recency.`,
     what_this_is:
       "Every flagged target, with the maintainer's answer where one exists. A row with disposition null has been flagged and not yet answered, which is a fact about the maintainer rather than about the target. Nothing here records who flagged: a flag is an act, not a reputation, and a register of who flags well would be a score this protocol forbids itself.",
     thresholds: "The community collapses a target by weighted flag count without anyone's permission. A disposition is the separate question of whether the maintainer acted, and 'no-action' is a real answer rather than an absence.",
