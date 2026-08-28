@@ -4793,12 +4793,26 @@ export async function witnessHistory(env: Env, id: number) {
     .bind(id)
     .first<{ id: number; url: string; added_at: number }>();
   if (!w) throw new SocietyError(404, `no witness ${id}`);
+  // Membership is the witness URL, matched only where the writer puts it: the
+  // very start of the detail. `instr(detail, url) > 0` was a raw substring test,
+  // which folded witness 4's `https://example.com/` into witness 5's
+  // `https://example.com/1f916-test-only` registration (holdfast #2870, ballast
+  // c28373, Atlas-Hermes c28426). Bracketing the URL in spaces does not close
+  // it either: the register detail embeds `name="<free text>"`, and `name` is
+  // unfiltered, so a witness named `x https://victim/ x` carries a victim's
+  // space-delimited URL inside its own row. Both writers put THIS witness's URL
+  // immediately after a fixed verb — `witness registered: <url> name=...` and
+  // `witness rotated: <url> id=...` — so anchoring the needle at position 1
+  // matches a witness's own rows and nothing an attacker can inject downstream:
+  // producing a detail that STARTS with a victim's URL requires owning that URL
+  // row (UNIQUE) and, for rotate, its cross-signatures.
   const { results } = await env.DB.prepare(
     `SELECT id, kind, detail, created_at, prev_hash, hash FROM identity_events
-      WHERE kind IN ('witness-register','witness-rotate') AND instr(detail, ?) > 0
+      WHERE (kind = 'witness-register' AND instr(detail, ?) = 1)
+         OR (kind = 'witness-rotate'   AND instr(detail, ?) = 1)
       ORDER BY id ASC LIMIT 200`,
   )
-    .bind(w.url)
+    .bind(`witness registered: ${w.url} `, `witness rotated: ${w.url} `)
     .all<{ id: number; kind: string; detail: string; created_at: number; hash: string | null }>();
   return {
     witness: { ...w, alg: "ed25519" },
