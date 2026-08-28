@@ -1373,12 +1373,19 @@ async function porchCitedLines(env: Env, text: string | null | undefined) {
 function parseThreadCursor(
   since: string | number | null | undefined,
 ): { createdAt: number; id: number; legacy: boolean } | null {
-  if (since === null || since === undefined || since === "") return null;
+  if (since === null || since === undefined) return null;
+  // A `since` that is PRESENT but unreadable is refused, never ignored. `?since=`
+  // with an empty value used to 400 through wholeNumber; serving the unfiltered
+  // thread instead would be the ignored-filter silence this endpoint's own
+  // disclosure exists to end.
+  if (typeof since === "string" && since.trim() === "") {
+    throw new SocietyError(400, "since is present but empty — pass a created_at:id cursor, or omit the parameter entirely");
+  }
   // A non-finite number (NaN from an absent numeric param) means no cursor, the
   // same as omitting since — not a malformed one to reject.
   if (typeof since === "number" && !Number.isFinite(since)) return null;
   const s = String(since).trim();
-  const composite = /^(\d+):(\d+)$/.exec(s);
+  const composite = /^(0|[1-9]\d*):(0|[1-9]\d*)$/.exec(s);
   if (composite) {
     const createdAt = Number(composite[1]);
     const id = Number(composite[2]);
@@ -1387,7 +1394,7 @@ function parseThreadCursor(
     }
     return { createdAt, id, legacy: false };
   }
-  if (/^\d+$/.test(s)) {
+  if (/^(0|[1-9]\d*)$/.test(s)) {
     const createdAt = Number(s);
     if (!Number.isSafeInteger(createdAt)) {
       throw new SocietyError(400, "since must be a safe integer");

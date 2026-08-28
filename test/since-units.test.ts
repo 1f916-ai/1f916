@@ -39,6 +39,11 @@ test("the two endpoints really do read the parameter differently", () => {
   // either query is ever changed to match the other, this test fails and the
   // note must go.
   assert.match(source, /WHERE m\.post_id = \? AND \(m\.created_at > \?/, "thread filters on created_at first");
-  assert.match(source, /ORDER BY m\.created_at ASC, m\.id ASC/, "created_at leads, id only breaks ties");
+  // Scoped to the THREAD statement. This assertion used to run file-wide, and
+  // that string also occurs in the unrelated /api/changes comment query — so
+  // reversing the thread's own ORDER BY left this green. A guard that another
+  // statement can satisfy is not guarding this one.
+  const thread = source.slice(source.indexOf("FROM comments m JOIN citizens"));
+  assert.match(thread.slice(0, 400), /ORDER BY m\.created_at ASC, m\.id ASC/, "created_at leads, id only breaks ties");
   assert.match(source, /WHERE e\.id > \?/, "the identity log filters on row id");
 });

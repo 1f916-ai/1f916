@@ -118,3 +118,71 @@ test("a non-numeric cursor is refused rather than silently matching everything",
   const e = env();
   await assert.rejects(() => readPost(e, 1, "not-a-cursor"), /created_at:id cursor/);
 });
+
+// The ORDER BY is half the keyset and it had no biting guard. The WHERE leg was
+// pinned by the cases above (a bind swap and an `id >=` both go red), but the
+// ordering was pinned only by a file-wide regex in since-units.test.ts — and
+// that same string occurs in the unrelated /api/changes comment query, so
+// reversing the thread's own ORDER BY to `m.id ASC, m.created_at ASC` left every
+// touched suite green. Measured under that mutation with the seed below:
+// the walk yields [21, 22, 21, 23] — comment 21 served TWICE and the thread out
+// of order — while comments_total still reads 3.
+//
+// The seed above cannot see it: there ids ascend with created_at, so ordering by
+// either column gives the same sequence. Here row 21 is the NEWEST comment, so
+// id order and created_at order disagree and the mutation becomes visible.
+//
+// Killing mutation: swap the thread statement's ORDER BY to `m.id ASC,
+// m.created_at ASC` and this goes red on the duplicate.
+function seedIdOrderDiffersFromTime() {
+  const sqlite = new DatabaseSync(":memory:");
+  sqlite.exec(readFileSync(fileURLToPath(new URL("../schema.sql", import.meta.url)), "utf8"));
+  sqlite.exec(`
+    INSERT INTO citizens (id, handle, model, secret_hash, created_at, last_seen_at)
+    VALUES (1, 'flint', 'test-model', 'hash', 100, 100);
+
+    INSERT INTO posts (id, citizen_id, title, body, url, dupe_hash, author_model, created_at)
+    VALUES (1, 1, 'thread', NULL, NULL, 'p1', NULL, 100);
+
+    INSERT INTO comments (id, post_id, parent_id, citizen_id, body, depth, author_model, created_at)
+    VALUES (21, 1, NULL, 1, 'newest', 0, NULL, 300),
+           (22, 1, NULL, 1, 'oldest', 0, NULL, 100),
+           (23, 1, NULL, 1, 'middle', 0, NULL, 200);
+  `);
+  return sqlite;
+}
+
+test("the walk serves each comment exactly once when id order and created_at order disagree", async () => {
+  const e = { DB: new LocalD1(seedIdOrderDiffersFromTime()) } as unknown as Env;
+  const total = ((await readPost(e, 1)) as { comments_total: number }).comments_total;
+  assert.equal(total, 3);
+
+  const reached = await walk(e);
+  assert.deepEqual(reached, [22, 23, 21], "the thread walks in (created_at, id) order, oldest comment first");
+  assert.equal(new Set(reached).size, reached.length, "no comment is served twice by the walk");
+  assert.equal(reached.length, total, "the walk reaches exactly comments_total");
+});
+
+// A `since` that is PRESENT but unreadable must be refused, never ignored.
+// `?since=` (empty value) used to reach wholeNumber and 400; when the route
+// began handing readPost the raw string, an empty value parsed to "no cursor"
+// and served the WHOLE thread instead — the ignored-filter silence that this
+// endpoint's own since_interpreted disclosure exists to end. Nothing in the
+// suite caught that: it was found by the pre-deploy auditor, not by a test.
+//
+// Killing mutation: make the empty-string branch in parseThreadCursor
+// unreachable (`if (false)`) and this goes red — the read returns a thread
+// instead of throwing.
+test("a since that is present but empty is refused, not ignored", async () => {
+  const e = env();
+  await assert.rejects(
+    () => readPost(e, 1, "", null, false, 2),
+    (err: unknown) => {
+      const e2 = err as { status?: number; message?: string };
+      assert.equal(e2.status, 400, "an unreadable cursor is a 400, not a silently unfiltered page");
+      assert.match(String(e2.message), /present but empty/);
+      return true;
+    },
+    "?since= with an empty value must not serve the whole thread",
+  );
+});
