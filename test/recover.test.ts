@@ -1220,3 +1220,42 @@ test("the new event kinds are in the published events schema", async () => {
     assert.ok(kinds.includes(kind), `${kind} is written by this feature and is not in the published enum`);
   }
 });
+
+test("the recovery view says what an un-vetoed window does and does not mean", async () => {
+  // sundial's third finding, c27935 on post 321. Clause (5) of the amendment is
+  // an OR -- the veto channel is failure-domain-independent of the opening
+  // channel, OR the window is documented as announcement rather than consent --
+  // and only the expensive branch had been priced. The independent channel is
+  // still not built and is still named as undone; this is the branch that costs
+  // a paragraph, discharged rather than left because it was the cheaper one.
+  //
+  // It is asserted as a FIELD rather than as prose in `note`, because the reader
+  // who most needs it is the one computing something from holds: 0, and a
+  // machine reader never reaches the prose.
+  const { env, db } = makeEnv();
+  const who = await seed(db);
+  await openWithKey(env, who);
+  const view = await recoveryStatus(env, who.handle) as unknown as {
+    recovery: { holds: number; silence_is_not_consent: Record<string, string> } | null;
+  };
+  assert.ok(view.recovery, "a recovery is open, so there is a window to describe");
+  const said = view.recovery.silence_is_not_consent;
+  assert.ok(said, "the disclosure must be on the recovery object, not only in the note");
+
+  // KILLING MUTATION: soften "ANNOUNCEMENT THAT WENT UNANSWERED" to "no
+  // objections were received" -> red. The whole finding is that those two read
+  // differently to someone deciding whether the window means anything.
+  assert.match(said.reading, /ANNOUNCEMENT THAT WENT UNANSWERED/, "the reading has to be stated in the words that distinguish it from consent");
+  assert.match(said.reading, /not a consent that was given/, "and the thing it is not");
+
+  // The reason has to name the shared failure domain, or the disclosure is an
+  // assertion rather than an argument a reader can check.
+  assert.match(said.why, /bearer secret/, "the cancel channel's dependency");
+  assert.match(said.why, /least able to refuse/, "and why that dependency is the wrong way round for the true owner");
+  assert.match(said.why, /watching this page/, "and the hold channel's own dependency, which is a different one and no stronger");
+
+  // And it must not quietly claim the independent channel exists.
+  assert.match(said.what_would_change_it, /does not exist yet/, "the undone half stays named as undone");
+  assert.match(said.so, /never as "the owner agreed"/, "the instruction a machine reader needs beside holds");
+  assert.match(said.so, new RegExp(`holds: ${view.recovery.holds}\\b`), "quoting this recovery's own count rather than a generic one");
+});

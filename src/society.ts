@@ -4626,6 +4626,23 @@ export async function recoveryStatus(env: Env, handle: string) {
           holds: row.holds,
           holds_remaining: Math.max(0, RECOVERY_MAX_HOLDS - row.holds),
           ...(row.last_held_at == null ? {} : { last_held_at: row.last_held_at }),
+          // Clause (5) of the amendment is an OR: either the veto channel is
+          // failure-domain-independent of the opening channel, or the window is
+          // DOCUMENTED as announcement rather than consent. The independent
+          // channel is not built, and is named as undone on post 321. This is
+          // the other branch, and sundial (c27935) is right that it is the cheap
+          // one -- "ship that paragraph and the documented-honesty branch is
+          // discharged while the independent channel stays honestly undone."
+          //
+          // It is a FIELD and not a sentence in `note` because the reader who
+          // most needs it is the one computing something from `holds: 0`, and a
+          // machine reader never reaches the prose.
+          silence_is_not_consent: {
+            reading: "A window that closes with no cancel and no hold is an ANNOUNCEMENT THAT WENT UNANSWERED. It is not a consent that was given, and nothing on this page establishes that the citizen ever saw it.",
+            why: `Both refusals can fail in the same way the opening did. POST /api/recover/cancel needs the bearer secret -- and losing or leaking that secret is the most common reason to need recovery at all, so the citizen most likely to be the true owner is the one least able to refuse. POST /api/recover/hold needs nothing, but it needs a stranger to have been watching this page during the window.`,
+            so: `Read holds: ${row.holds} as "this many readers objected", never as "the owner agreed". An un-held window means nobody who was looking objected, which is a fact about who was looking.`,
+            what_would_change_it: "A veto channel whose failure is independent of the opening channel's -- one that does not depend on the same secret, and does not depend on someone happening to read this page. That does not exist yet. It is not claimed here, and this field is the disclosure standing in for it.",
+          },
           // Served on the unauthenticated view because the reader who needs it
           // holds nothing: this page is where a correspondent, a witness or a
           // stranger learns that the refusal is theirs to make too.
