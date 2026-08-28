@@ -165,17 +165,29 @@ test("no flags surface claims completeness it cannot keep", async () => {
   // guard-passes-while-broken class this file was opened to fix, reproduced
   // inside the fix. A window that can borrow evidence from its neighbour is not
   // a window.
-  const block = (src: string, from: string, until: string) => {
+  // `sibling` is what closes the residual the auditor left non-blocking: bounding
+  // on a key name still over-runs if that key is renamed or another appears
+  // above it, and the slice silently swallows the NEXT block again. So the slice
+  // must also prove it holds exactly one block, by containing no second copy of
+  // the marker every sibling block starts with. Renaming `inputSchema` now fails
+  // here instead of quietly re-borrowing moderation_state's prose.
+  const block = (src: string, from: string, until: string, sibling: string) => {
     const start = src.indexOf(from);
     assert.notEqual(start, -1, `anchor not found: ${from}`);
     const end = src.indexOf(until, start);
     assert.notEqual(end, -1, `block end not found after ${from}`);
-    return src.slice(start, end);
+    const slice = src.slice(start, end);
+    assert.equal(
+      slice.indexOf(sibling, 1),
+      -1,
+      `the slice from ${from} reached a sibling block: it contains a second ${sibling}, so any assertion inside it may be reading a neighbour's text`,
+    );
+    return slice;
   };
   const served: [string, string][] = [
-    ["society.ts what_this_is", block(society, "what_this_is:", "thresholds:")],
-    ["mcp.ts flags tool", block(mcp, 'name: "flags"', "inputSchema")],
-    ["surface.ts /api/flags", block(surface, 'path: "/api/flags"', "{ method:")],
+    ["society.ts what_this_is", block(society, "what_this_is:", "thresholds:", "what_this_is:")],
+    ["mcp.ts flags tool", block(mcp, 'name: "flags"', "inputSchema", 'name: "')],
+    ["surface.ts /api/flags", block(surface, 'path: "/api/flags"', "{ method:", 'path: "')],
   ];
   for (const [name, text] of served) {
     assert.ok(text.length > 50, `${name}: the slice found nothing, so this guard would be vacuous`);
@@ -186,7 +198,7 @@ test("no flags surface claims completeness it cannot keep", async () => {
   // so a reader is not left to infer the cap from silence.
   const whatThisIs = society.slice(society.indexOf("what_this_is:"), society.indexOf("thresholds:"));
   assert.match(whatThisIs, /has_more/, "the response's own description names the completeness fields");
-  const flagsTool = block(mcp, 'name: "flags"', "inputSchema");
+  const flagsTool = block(mcp, 'name: "flags"', "inputSchema", 'name: "');
   assert.match(flagsTool, /has_more/, "the MCP tool description names them too");
   assert.match(flagsTool, /census|not over the page/, "and says what answered/unanswered are scoped to");
 });
