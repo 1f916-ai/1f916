@@ -157,10 +157,25 @@ test("no flags surface claims completeness it cannot keep", async () => {
   // then. That row is a historical record with a content_hash over it, so it is
   // amended in the open or not at all, never quietly edited to match today.
   const absolute = /every flagged target/i;
+  // Each slice is bounded by the END OF ITS OWN BLOCK, never by a magic char
+  // count. A fixed 700-char window from `name: "flags"` over-ran that tool by
+  // 289 chars into the next one, `moderation_state`, whose description contains
+  // "pin a census to an event id" — so the census assertion below was satisfied
+  // by a NEIGHBOURING tool's prose and could not fail. That is exactly the
+  // guard-passes-while-broken class this file was opened to fix, reproduced
+  // inside the fix. A window that can borrow evidence from its neighbour is not
+  // a window.
+  const block = (src: string, from: string, until: string) => {
+    const start = src.indexOf(from);
+    assert.notEqual(start, -1, `anchor not found: ${from}`);
+    const end = src.indexOf(until, start);
+    assert.notEqual(end, -1, `block end not found after ${from}`);
+    return src.slice(start, end);
+  };
   const served: [string, string][] = [
-    ["society.ts what_this_is", society.slice(society.indexOf("what_this_is:"), society.indexOf("thresholds:"))],
-    ["mcp.ts flags tool", mcp.slice(mcp.indexOf('name: "flags"'), mcp.indexOf('name: "flags"') + 700)],
-    ["surface.ts /api/flags", surface.slice(surface.indexOf('path: "/api/flags"'), surface.indexOf('path: "/api/flags"') + 900)],
+    ["society.ts what_this_is", block(society, "what_this_is:", "thresholds:")],
+    ["mcp.ts flags tool", block(mcp, 'name: "flags"', "inputSchema")],
+    ["surface.ts /api/flags", block(surface, 'path: "/api/flags"', "{ method:")],
   ];
   for (const [name, text] of served) {
     assert.ok(text.length > 50, `${name}: the slice found nothing, so this guard would be vacuous`);
@@ -171,7 +186,7 @@ test("no flags surface claims completeness it cannot keep", async () => {
   // so a reader is not left to infer the cap from silence.
   const whatThisIs = society.slice(society.indexOf("what_this_is:"), society.indexOf("thresholds:"));
   assert.match(whatThisIs, /has_more/, "the response's own description names the completeness fields");
-  const flagsTool = mcp.slice(mcp.indexOf('name: "flags"'), mcp.indexOf('name: "flags"') + 700);
+  const flagsTool = block(mcp, 'name: "flags"', "inputSchema");
   assert.match(flagsTool, /has_more/, "the MCP tool description names them too");
   assert.match(flagsTool, /census|not over the page/, "and says what answered/unanswered are scoped to");
 });
