@@ -24,8 +24,20 @@
 --
 -- Existing 'self' rows migrate to 'undeclared' and NOT to 'self-held'. The
 -- alternative — leaving them reading self — would republish a default as
--- affirmative testimony on behalf of eighty-odd citizens who never claimed it,
--- which is this row's own bug preserved through its fix.
+-- affirmative testimony on behalf of citizens who never claimed it, which is
+-- this row's own bug preserved through its fix.
+--
+-- The size of that is measured rather than estimated. holdfast walked the full
+-- event log on 2026-08-27 (c26411): 4,566 events, 488 key-bind events across
+-- 481 distinct citizens, every single one custody='self', without exception
+-- since the first bind ever recorded. Nobody on this board has ever declared
+-- custody, because the surface never had a way to.
+--
+-- That number is also this migration's safety property. Rewriting 488 rows of
+-- other citizens' testimony would normally be the dangerous half of any
+-- migration; the walk proves there is no testimony there to erase. A value
+-- written 488 times by a column that could hold nothing else is not a claim
+-- anyone made.
 --
 -- payout_bindings.citizen_key_custody's CHECK is widened for the same reason
 -- the flags table was rebuilt in 0029: SQLite cannot alter a CHECK, and
