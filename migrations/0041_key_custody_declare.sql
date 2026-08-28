@@ -46,6 +46,42 @@
 -- payability question is NOT decided here — see src/payouts.ts, which now
 -- states the old condition in the new words rather than silently changing who
 -- can be paid.
+--
+-- BUT THE HISTORICAL payout_bindings ROWS ARE NOT REWRITTEN, and the first
+-- version of this migration got that wrong. Found by @souchong-still-unburnt
+-- (#1762) in c27222 on #1002, reading the branch at 2ba5b7c rather than the
+-- argument, and confirmed here by running it. The comment that stood on the
+-- copy below said "the preimage and both signatures are untouched — this column
+-- was never inside the signed bytes." That is true of `preimage`,
+-- `wallet_signature` and `citizen_signature`. It is FALSE of `payload_hash`:
+-- `citizen_key_custody` is field thirteen of PAYOUT_BINDING_HASH_FIELDS
+-- (src/payouts.ts:40-45, digested at :349). Rewriting the column while copying
+-- `payload_hash` through leaves every historical binding's published digest
+-- describing a row that no longer exists: every historical authorization
+-- silently decoupled from its own contents, by a migration whose subject is a
+-- label. GET /api/events?kind=payout-binding read 139 rows, counts_state
+-- "complete", at 2026-08-28T13:11Z — it read 137 when the defect was reported
+-- the day before, and the number carries its read time here precisely because
+-- the population is still growing.
+-- Which is the sentence #2700 was written about, turned on its author.
+--
+-- So `'self'` stays in this table's CHECK as a LEGACY-ONLY value, and the old
+-- rows keep the byte their hash was taken over. The reasoning is the same one
+-- src/chain.ts's UNHASHED block states for `tx`: old verifiers' preimages stay
+-- valid. "'self' in an old binding was never a claim anyone made" remains true,
+-- and it is an argument about how to READ the value, not about what to store —
+-- a hash cannot carry a caveat, and a note can. The note is here and beside the
+-- column.
+--
+-- Note the asymmetry with `keys` above, which IS rewritten: keys.custody is a
+-- mutable cache inside no digest, so migrating it erases nothing. This column
+-- is a snapshot inside one. Same word, two different jobs, and only one of them
+-- is safe to change.
+--
+-- schema.sql does NOT carry 'self', deliberately: a fresh install has no
+-- pre-0041 rows and the write path can no longer produce that value, so putting
+-- it there would add a CHECK member nothing in the universe could write — the
+-- exact dead-vocabulary defect this row's own post (#2700) is about.
 
 PRAGMA foreign_keys=OFF;
 
@@ -98,8 +134,17 @@ CREATE TABLE payout_bindings_new (
   -- Widened from CHECK (= 'self'). The snapshot records what the key's custody
   -- cache said at binding time, which is now a word out of the real vocabulary
   -- instead of the only word there was.
+  --
+  -- 'self' is retained as a LEGACY-ONLY member: it is field thirteen of
+  -- PAYOUT_BINDING_HASH_FIELDS, so it is inside payload_hash, and no row
+  -- written before this migration may have it rewritten without invalidating a
+  -- published digest. Nothing can write it going forward — the write path
+  -- snapshots keys.custody, and 'self' is gone from that column's domain above.
+  -- Read a 'self' here as "bound before custody could be declared", never as
+  -- affirmative self-custody. That reading belongs in this note, because a hash
+  -- cannot carry one.
   citizen_key_custody TEXT NOT NULL
-    CHECK (citizen_key_custody IN ('undeclared','self-held','operator-held','principal-held','lost','write-only')),
+    CHECK (citizen_key_custody IN ('self','undeclared','self-held','operator-held','principal-held','lost','write-only')),
   citizen_key_bound_at INTEGER NOT NULL,
   authorization_verification TEXT NOT NULL CHECK (authorization_verification = 'valid-at-binding-event'),
   authorization_verified_at INTEGER NOT NULL,
@@ -112,15 +157,17 @@ CREATE TABLE payout_bindings_new (
   commit_nonce TEXT NOT NULL UNIQUE,
   created_at INTEGER NOT NULL
 );
--- Historical snapshots migrate the same way the live rows do, and for the same
--- reason: 'self' in an old binding was the only value the field could hold, so
--- re-reading it as affirmative self-custody would invent testimony after the
--- fact. The preimage and both signatures are untouched — this column was never
--- inside the signed bytes.
+-- Historical snapshots are copied through UNCHANGED, column for column. Every
+-- one of these columns is inside PAYOUT_BINDING_HASH_FIELDS except id,
+-- citizen_id, docket_id and payload_hash itself, so the only safe copy is a
+-- verbatim one: this statement must not contain a literal in a value position.
+-- test/payout-binding-digest-survives-0041.test.ts asserts that, and also
+-- builds a pre-0041 database, runs this file against it, and recomputes the
+-- digest from the migrated row.
 INSERT INTO payout_bindings_new SELECT
   id, citizen_id, docket_id, version, amount_atomic, chain_id, token, payout_address, expiry,
   wallet_signature, citizen_public_key, citizen_signature, citizen_key_thumbprint,
-  'undeclared', citizen_key_bound_at, authorization_verification, authorization_verified_at,
+  citizen_key_custody, citizen_key_bound_at, authorization_verification, authorization_verified_at,
   docket_acceptance, docket_updated, docket_snapshot, preimage, authorization_hash, payload_hash,
   commit_nonce, created_at
   FROM payout_bindings;

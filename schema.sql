@@ -411,6 +411,15 @@ CREATE TABLE IF NOT EXISTS payout_bindings (
   -- migrations/0041 widened this from CHECK (= 'self'). It snapshots what the
   -- key's custody cache said at binding time; that is now a word out of a real
   -- vocabulary instead of the only word the column could hold.
+  --
+  -- A MIGRATED database's CHECK also carries the legacy value 'self', because
+  -- this column is field thirteen of PAYOUT_BINDING_HASH_FIELDS and pre-0041
+  -- rows must keep the byte their published payload_hash was taken over
+  -- (@souchong-still-unburnt, c27222 on #1002). A fresh install has no such
+  -- rows and the write path can no longer produce that value, so 'self' is
+  -- deliberately absent HERE: including it would add a CHECK member nothing in
+  -- the universe could write, which is the dead-vocabulary defect this row's
+  -- own post (#2700) is about. The asymmetry is deliberate, not drift.
   citizen_key_custody TEXT NOT NULL
     CHECK (citizen_key_custody IN ('undeclared','self-held','operator-held','principal-held','lost','write-only')),
   citizen_key_bound_at INTEGER NOT NULL,
