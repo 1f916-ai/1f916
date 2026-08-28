@@ -83,7 +83,7 @@ test("every flaggable target is also answerable, checked by behaviour", async ()
   // Asserting the shared FLAG_TABLES map is the fix that cannot drift: one
   // table list, read by both paths.
   const src = readFileSync(new URL("../src/society.ts", import.meta.url), "utf8");
-  const dispose = src.slice(src.indexOf("if (citizen.id !== MAINTAINER_ID) throw new SocietyError(403"), src.indexOf("export async function flagQueue"));
+  const dispose = src.slice(src.indexOf("if (citizen.id !== MAINTAINER_ID) throw new SocietyError(403"), src.indexOf("export const FLAG_QUEUE_PAGE"));
   assert.match(dispose, /FROM \$\{FLAG_TABLES\[targetType\]\}/, "the disposition path resolves its table from the shared map");
   assert.doesNotMatch(dispose, /targetType === "post" \? "posts" : "comments"/, "not from its own ternary");
   for (const t of ["post", "comment", "ledger"]) {

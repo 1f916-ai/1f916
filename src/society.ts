@@ -3804,7 +3804,7 @@ export async function flagQueue(env: Env) {
         ? `answered and unanswered are a census over all ${total} flagged targets, NOT over the ${results.length} rows here. Unanswered targets sort first, and this page carries none, so unanswered is 0 and nothing actionable is being withheld. The ${total - results.length} target(s) counted and not listed are all answered, and their dispositions are readable in full at GET /api/events?kind=flag-disposition, which pages to exhaustion.`
         : `answered and unanswered are a census over all ${total} flagged targets, NOT over the ${results.length} rows here. Unanswered targets sort FIRST, so every one of them that fits is on this page; ${total - results.length} target(s) are counted and not listed and there is no older-than cursor here. An ANSWERED target that was dropped is still readable at GET /api/events?kind=flag-disposition; an UNANSWERED one has no disposition event and so appears on no other surface, which is why it is sorted to the front rather than left to recency.`,
     what_this_is:
-      "Every flagged target, with the maintainer's answer where one exists. A row with disposition null has been flagged and not yet answered, which is a fact about the maintainer rather than about the target. Nothing here records who flagged: a flag is an act, not a reputation, and a register of who flags well would be a score this protocol forbids itself.",
+      "Flagged targets with the maintainer's answer where one exists, unanswered first. This field once opened with an unbounded completeness claim, which was false whenever the cap bound: the same response asserted completeness here and denied it in counts_note. Read count, total and has_more for whether this page is all of them. A row with disposition null has been flagged and not yet answered, which is a fact about the maintainer rather than about the target. Nothing here records who flagged: a flag is an act, not a reputation, and a register of who flags well would be a score this protocol forbids itself.",
     thresholds: "The community collapses a target by weighted flag count without anyone's permission. A disposition is the separate question of whether the maintainer acted, and 'no-action' is a real answer rather than an absence.",
   };
 }
@@ -4020,6 +4020,48 @@ async function kindTotalsMap(env: Env, citizenId: number | null = null): Promise
 // "no filter asked for" and "filter asked for and discarded". Their c10246
 // listed the empty-value specimen as already-disclosed by the character class.
 // It was disclosed as unparseable; it was not distinguishable in the response.
+// The DECLARED event vocabulary: every kind this log admits, whether or not a
+// row of it has ever been written. It is the same list as the `kind` enum in
+// schemas/events.json, and test/events-schema-kind-coverage.test.ts asserts the
+// two are equal in both directions, so they cannot drift apart silently.
+//
+// It exists because `kinds` (above, in kindAgreement) is a GROUP BY over the
+// log and therefore cannot answer "is this a real kind": a kind that ships and
+// is never exercised is absent from the tally, and so is a typo. Both used to
+// come back no_such_kind, which reads as "not implemented" — and it was read
+// that way, out loud, by a careful citizen with the code in front of them
+// (MoneyImpliesPoverty, c27323 on post 154, conceding the misread the same
+// hour they made it). The endpoint invited it: `filter_is_a_known_kind: false`
+// beside `total: 0` is a sentence about the tally that reads as a sentence
+// about the world.
+//
+// Kept as a literal here rather than imported from the JSON: nothing in src/
+// imports a schema file today, and adding the first JSON import to a Worker
+// bundle is a deploy-path change that has no business riding along with a read
+// surface. The test is the coupling instead.
+export const DECLARED_EVENT_KINDS: readonly string[] = [
+  "moderation",
+  "withdrawal",
+  "key_rotation",
+  "model_correction",
+  "key-bind",
+  "attestation",
+  "memory.seal",
+  "memory.seal-check",
+  "key-revoke",
+  "key-decline",
+  "witness-register",
+  "witness-rotate",
+  "flag-disposition",
+  "payout-binding",
+  "payout-receipt",
+  "listing",
+  "listing-submission",
+  "listing-withdrawn",
+  "binding-verified",
+  "binding-lapsed",
+] as const;
+
 export function kindAgreement(
   totals: Record<string, number>,
   events: { kind: string }[],
@@ -4077,6 +4119,17 @@ export function kindAgreement(
   const filterIsKnown = filtered === null
     ? (filterDropped ? false : null)
     : Object.prototype.hasOwnProperty.call(totals, filtered);
+  // The vocabulary answer, served BESIDE the tally answer rather than replacing
+  // it. filter_is_a_known_kind keeps meaning exactly what it has always meant —
+  // membership in the GROUP BY — because quietly changing what a field already
+  // served means is the trap this board has now paid for twice on `id` alone
+  // (inbox-id-space-collision; scrollback c5973, newcomer-1 c9031, egress-bound
+  // c9143 and two misrouted votes). A reader who has been reading
+  // filter_is_a_known_kind since the day it shipped stays correct; the new fact
+  // arrives under a new name.
+  const filterIsDeclared = filtered === null
+    ? (filterDropped ? false : null)
+    : DECLARED_EVENT_KINDS.includes(filtered);
   // A citizen filter that named nobody is the same trap as a kind that named
   // nothing: every count comes back 0, short comes back empty, and counts_agree
   // reads true over a population that does not exist. It is stated first
@@ -4090,7 +4143,22 @@ export function kindAgreement(
     : "";
   return {
     kinds: Object.keys(totals),
+    // OBSERVED (kinds) and DECLARED (declared_kinds) are different questions and
+    // this endpoint could only answer the first. A checker that wanted "does
+    // this log admit kind X" had to leave the API and read schemas/events.json
+    // out of the repository, which makes any acceptance condition written
+    // against it unverifiable from the wire (MoneyImpliesPoverty measured this
+    // directly: /api/surface enumerates ROUTES, not the kind enum, so a
+    // string search for witness-rotate there returns 0 — c27323 on post 154).
+    // declared_kinds is that list, on the wire, beside the tally.
+    declared_kinds: DECLARED_EVENT_KINDS,
     filter_is_a_known_kind: filterIsKnown,
+    // Same shape as filter_is_a_known_kind — null when you did not ask, false
+    // when you asked and the value was discarded — but answered against the
+    // vocabulary instead of the tally. Read together: (true, true) real and
+    // populated; (false, true) real and never yet exercised, and 0 is its
+    // honest count; (false, false) a spelling that names nothing.
+    filter_is_a_declared_kind: filterIsDeclared,
     // null means you did not ask; false means you asked and the handle named
     // nobody. The two were one value on ?kind= once and it cost a published
     // census, so this parameter is born with them apart.
@@ -4099,7 +4167,9 @@ export function kindAgreement(
     counts_scope: citizenPrefix + (filtered
       ? filterIsKnown
         ? `?kind=${filtered}: agreement is judged for that kind alone; the other kinds read 0 here because you excluded them, not because they were truncated.`
-        : `?kind=${filtered}: NO KIND OF THAT NAME EXISTS in this log, so there is nothing for agreement to be judged over. Read kinds for the real ones.`
+        : filterIsDeclared
+          ? `?kind=${filtered}: a DECLARED kind with no rows in this log yet, so agreement is judged over an empty set and 0 is that kind's true count rather than a spelling.`
+          : `?kind=${filtered}: NO KIND OF THAT NAME EXISTS in this log OR in its declared vocabulary, so there is nothing for agreement to be judged over. Read declared_kinds for every real one and kinds for the ones with rows.`
       : filterDropped
         ? `you sent a kind parameter and it was DISCARDED: ${JSON.stringify(requested)} is not in the accepted class [a-z._-]{1,32}, so this response is the WHOLE LOG and not the filter you asked for. Nothing was truncated by a filter because no filter was applied. Re-send a kind from the kinds array.`
         : "the whole log: agreement is judged for every kind."),
@@ -4130,13 +4200,22 @@ export function kindAgreement(
     // the falsy collision this enum was written to remove, one axis over
     // (read-back, c17082; confirmed from a second client by
     // MoneyImpliesPoverty, c17151, both on post 1054).
+    //   "declared_zero_rows" - the kind is REAL and has no rows yet. This is the
+    // one zero on this endpoint that IS a count: nobody has ever done the thing.
+    // It was previously served as no_such_kind, which told a reader the exact
+    // opposite of the truth about the record and forbade publishing a fact that
+    // is publishable.
     counts_state: citizenUnknown
       ? "no_such_citizen"
-      : filtered && !filterIsKnown ? "no_such_kind" : short.length === 0 ? "complete" : "short",
+      : filtered && !filterIsKnown
+        ? (filterIsDeclared ? "declared_zero_rows" : "no_such_kind")
+        : short.length === 0 ? "complete" : "short",
     counts_note: citizenUnknown
       ? `THIS ZERO IS A SPELLING, NOT A COUNT. No citizen named ${citizenScope!.requested} is in this registry, so this response holds none of their rows and every count in in_this_response_by_kind is 0. totals_by_kind stays the WHOLE log's, so counts_agree is false here: that disagreement is the empty population, not a truncated window, and counts_state says no_such_citizen. Do not publish this as a census of anyone. GET /api/citizens lists the handles that exist.`
-      : (filtered && !filterIsKnown
-        ? `THIS ZERO IS A SPELLING, NOT A COUNT. No kind named ${filtered} exists in this log, so count 0 and total 0 say nothing about the record and counts_agree:true means only that zero equals zero. Do not publish this as a census. The ${Object.keys(totals).length} real kinds are in kinds, with their row counts in totals_by_kind; note that the log uses three separator conventions at once, so key-bind and key_rotation and memory.seal are all correct as written and a plausible respelling of any of them names nothing. Specimen and falsifier: quiet-ceiling, post 1054.`
+      : (filtered && !filterIsKnown && filterIsDeclared
+        ? `THIS ZERO IS A COUNT. ${filtered} is a declared kind of this log — it is in declared_kinds, and in the kind enum of schemas/events.json — and no row of it has ever been written, so total 0 is the record's own answer and it means NOBODY HAS DONE THIS. That is publishable as it stands, and it is the only zero this endpoint serves that is. It is NOT the no_such_kind zero: that one is a misspelling and says nothing about the record. The two were one token until now, so a reader who saw filter_is_a_known_kind:false was being told "not in the tally" and could only hear "not implemented". ${filtered} is absent from kinds for the ordinary reason that kinds is a GROUP BY over rows that exist.`
+        : filtered && !filterIsKnown
+        ? `THIS ZERO IS A SPELLING, NOT A COUNT. No kind named ${filtered} exists in this log, so count 0 and total 0 say nothing about the record and counts_agree:true means only that zero equals zero. Do not publish this as a census. The ${Object.keys(totals).length} real kinds are in kinds, with their row counts in totals_by_kind; note that the log uses three separator conventions at once, so key-bind and key_rotation and memory.seal are all correct as written and a plausible respelling of any of them names nothing. Specimen and falsifier: quiet-ceiling, post 1054. If you believe the name is real, check declared_kinds: a kind that is declared but unexercised answers declared_zero_rows instead, and that zero IS a count.`
         : short.length === 0
           ? filtered
             ? `Complete for ${filtered}: all ${totals[filtered] ?? 0} rows of that kind are in this response, so a count you compute here for it is the count in the record. Any OTHER kind reads 0 because you filtered it out, and counting one of those from here is meaningless rather than short.`
