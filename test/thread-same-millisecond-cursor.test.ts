@@ -186,3 +186,28 @@ test("a since that is present but empty is refused, not ignored", async () => {
     "?since= with an empty value must not serve the whole thread",
   );
 });
+
+// The cursor accepts exactly the forms wholeNumber used to accept, and no more.
+// Leading zeros were rejected before this endpoint took a raw string; without
+// this case, reverting the regexes to /^(\d+)$/ and /^(\d+):(\d+)$/ leaves every
+// suite green, so the tightening would be undefended.
+//
+// Killing mutation: widen either regex back to \d+ and the "007" / "00:1" rows
+// below stop throwing.
+test("the cursor accepts no form wholeNumber rejected", async () => {
+  const e = env();
+  for (const bad of ["007", "00", "00:1", "1:007", "-1", "1e3", "1.0", " ", "abc", "200:", ":22"]) {
+    await assert.rejects(
+      () => readPost(e, 1, bad, null, false, 2),
+      (err: unknown) => {
+        assert.equal((err as { status?: number }).status, 400, `${JSON.stringify(bad)} must be refused, not read as a cursor`);
+        return true;
+      },
+      `${JSON.stringify(bad)} must not be accepted as a cursor`,
+    );
+  }
+  // and the forms that ARE legal still parse
+  for (const ok of ["0", "100", "200:22", "  200:22  "]) {
+    await readPost(e, 1, ok, null, false, 2);
+  }
+});
