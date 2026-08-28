@@ -5106,6 +5106,10 @@ export const DECLARED_EVENT_KINDS: readonly string[] = [
   "listing-withdrawn",
   "binding-verified",
   "binding-lapsed",
+  "recovery-opened",
+  "recovery-cancelled",
+  "recovery-held",
+  "recovery-completed",
 ] as const;
 
 export function kindAgreement(
