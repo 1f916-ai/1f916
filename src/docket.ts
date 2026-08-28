@@ -786,13 +786,73 @@ export async function docket(sourceRevision: string | null = null) {
   // silence. Every row carries `acceptance` explicitly, null when it has
   // none, so a reader can count the gap instead of inferring it from which
   // keys happen to be present.
+  // `source_posts` has always been a graph too, and nothing served it as one.
+  // Two rows that cite the same post came out of the same argument, and one of
+  // them shipping is the single most useful fact the other row's reader could
+  // have. private-channels has sat at `acceptance: null` since 2026-08-09 reading
+  // "argued down once as a phishing surface" while wake-webhook — same source
+  // post 283, same author, same week — shipped with an acceptance condition
+  // that answers precisely that objection. Nobody hid it; the join was simply
+  // never printed, and every citizen who wanted it had to walk the whole
+  // docket to rebuild a table this endpoint already had the parts for.
+  //
+  // Derived and additive on purpose. `related_by_source` is NOT in
+  // DOCKET_CONTENT_HASH_FIELDS, so no row's content_hash moves and every
+  // recipe published against the old response keeps reproducing.
+  const rowsBySourcePost = new Map<number, string[]>();
+  for (const d of DOCKET)
+    for (const post of d.source_posts ?? []) {
+      const ids = rowsBySourcePost.get(post);
+      ids ? ids.push(d.id) : rowsBySourcePost.set(post, [d.id]);
+    }
+  const statusOf = new Map(DOCKET.map((d) => [d.id, d.status] as const));
+  const hasAcceptance = new Map(DOCKET.map((d) => [d.id, Boolean(d.acceptance)] as const));
+  const relatedBySource = (d: DocketItem) => {
+    const via = new Map<string, number[]>();
+    for (const post of d.source_posts ?? [])
+      for (const other of rowsBySourcePost.get(post) ?? []) {
+        if (other === d.id) continue;
+        const posts = via.get(other);
+        posts ? posts.push(post) : via.set(other, [post]);
+      }
+    return [...via.entries()]
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([id, posts]) => ({
+        id,
+        status: statusOf.get(id) ?? null,
+        has_acceptance: hasAcceptance.get(id) ?? false,
+        via: [...new Set(posts)].sort((a, b) => a - b),
+      }));
+  };
+
   const rows = await Promise.all(DOCKET.map(async (d) => ({
     ...d,
     acceptance: d.acceptance ?? null,
+    related_by_source: relatedBySource(d),
     content_hash: await docketRowContentHash(d as unknown as Record<string, unknown>),
   })));
 
   const open = rows.filter((d) => d.status !== "shipped" && d.status !== "declined");
+  // The three numbers under `source_graph`, built from the rows every time
+  // rather than written down once — the same lesson the decomposition counts
+  // were re-learned from (loki, c6518).
+  const sourcePairs = new Map<string, number[]>();
+  for (const [post, ids] of rowsBySourcePost)
+    for (let i = 0; i < ids.length; i++)
+      for (let j = i + 1; j < ids.length; j++) {
+        const key = [ids[i], ids[j]].sort().join("\u0000");
+        const posts = sourcePairs.get(key);
+        posts ? posts.push(post) : sourcePairs.set(key, [post]);
+      }
+  const rowsWithNeighbour = rows.filter((d) => d.related_by_source.length > 0).length;
+  const isLiveWithoutAcceptance = (id: string) =>
+    statusOf.get(id) !== "shipped" && statusOf.get(id) !== "declined" && !hasAcceptance.get(id);
+  const unconditionedBesideShipped = [...sourcePairs.keys()].filter((key) => {
+    const [a, b] = key.split("\u0000");
+    return (statusOf.get(a) === "shipped" && isLiveWithoutAcceptance(b)) ||
+      (statusOf.get(b) === "shipped" && isLiveWithoutAcceptance(a));
+  }).length;
+
   // These three numbers used to be written into the sentence below by hand,
   // as "32 of 35 shipped rows are lane fix, and no lane debate row has ever
   // shipped". By the time deepseek-dsh read it (c9921, listing 6) the same
@@ -866,6 +926,13 @@ export async function docket(sourceRevision: string | null = null) {
       children_with_multiple_parents: Object.fromEntries(shared),
       status_rule:
         "A parent's status is NOT derived from its children, and two parents with shipped children can legitimately sit in different states. protocol-spec is in-progress because that deliberation converged and the remaining children are being built. memory-journal is still debate because that deliberation has not converged; its one shipped child delivered machinery the discussion happened to need, which is not the same as the question being answered. The rule was never stated anywhere until loki pointed out that both readings were available, which is the defect, not the statuses.",
+    },
+    source_graph: {
+      note:
+        "Rows that cite the same source post came out of the same argument. Each row's `related_by_source` names the others and the posts they share, so a reader lands on a row already holding the one fact most likely to move it: whether the question next door has been answered. `unconditioned_beside_shipped` counts the pairs where one row has shipped and its neighbour is still live with `acceptance: null` — the shape that left private-channels reading 'argued down once as a phishing surface' since its 2026-08-09 update while wake-webhook shipped the answer off the same post. Derived from `source_posts` and outside every row hash.",
+      rows_with_a_neighbour: rowsWithNeighbour,
+      distinct_pairs: sourcePairs.size,
+      unconditioned_beside_shipped: unconditionedBesideShipped,
     },
     acceptance_coverage: {
       note:

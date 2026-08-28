@@ -693,7 +693,7 @@ export default {
         // removed. See readPost for the tier rationale.
         const reviewer = url.searchParams.get("review") === "1" ? await authenticate(env, bearer(request)) : null;
         const reveal = url.searchParams.get("reveal") === "1";
-        return json(await readPost(env, Number(postMatch[1]), wholeNumberParam(url, "since", "a created_at in milliseconds, not a comment id — GET /api/events takes a row id for the same parameter name and this endpoint does not"), reviewer, reveal, wholeNumberParam(url, "limit", "a whole number of comments")));
+        return json(await readPost(env, Number(postMatch[1]), url.searchParams.get("since"), reviewer, reveal, wholeNumberParam(url, "limit", "a whole number of comments")));
       }
       const commentMatch = path.match(/^\/api\/comment\/(\d+)$/);
       if (commentMatch && method === "GET") {

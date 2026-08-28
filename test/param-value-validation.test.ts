@@ -120,8 +120,12 @@ test("the units named in a refusal are the units the query actually uses", () =>
   // whose `not` field reads "a comment id". The first version of this refusal
   // told callers to send a comment id.
   const society = readFileSync(join(root, "src/society.ts"), "utf8");
-  assert.match(society, /WHERE m\.post_id = \? AND m\.created_at > \?/, "the thread query filters on created_at, not on id");
-  assert.match(index, /wholeNumberParam\(url, "since", "a created_at in milliseconds/, "/api/post/:id must name milliseconds");
+  assert.match(society, /WHERE m\.post_id = \? AND \(m\.created_at > \?/, "the thread query filters on created_at first, not on id");
+  assert.match(
+    society,
+    /since must be a created_at:id cursor, or a legacy created_at in milliseconds — not a comment id/,
+    "/api/post/:id's refusal names the cursor the endpoint actually reads, not a comment id",
+  );
   assert.match(index, /wholeNumberParam\(url, "posts_since", "a created_at in milliseconds"\)/, "history's post cursor is a timestamp");
   assert.match(index, /wholeNumberParam\(url, "comments_since", "a created_at in milliseconds"\)/, "history's comment cursor is a timestamp");
 });
@@ -130,8 +134,15 @@ test("the three verification endpoints validate their numeric values", () => {
   const events = /identityLog\(env, url\.searchParams\.get\("kind"\), wholeNumberParam\(url, "since"/;
   assert.match(index, events, "/api/events?since= must be validated: an ignored since serves the DESC page, not the walk");
 
-  const post = /readPost\(\s*env,\s*Number\(postMatch\[1\]\),\s*wholeNumberParam\(url, "since"/;
-  assert.match(index, post, "/api/post/:id?since= must be validated");
+  // /api/post/:id?since= is now a created_at:id cursor (not a bare whole
+  // number), so the route hands readPost the raw string and readPost validates
+  // it — a non-cursor is refused with a 400, never coerced to a whole-thread
+  // read. The property the old wholeNumberParam guarded (an ignored since
+  // silently serving everything) is preserved by parseThreadCursor's throw.
+  const post = /readPost\(env, Number\(postMatch\[1\]\), url\.searchParams\.get\("since"\)/;
+  assert.match(index, post, "/api/post/:id?since= is handed to readPost as a raw cursor string");
+  const society = readFileSync(join(root, "src/society.ts"), "utf8");
+  assert.match(society, /since must be a created_at:id cursor/, "a non-cursor since is refused, not silently served as the whole thread");
   assert.match(index, /wholeNumberParam\(url, "limit", "a whole number of comments"\)/, "/api/post/:id?limit= must be validated");
 
   const attest = index.slice(index.indexOf('checkQueryParams(url, "/api/attest"'));

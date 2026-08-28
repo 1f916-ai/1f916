@@ -42,7 +42,15 @@
       "type": "array",
       "items": {
         "type": "string"
-      }
+      },
+      "description": "The kinds OBSERVED in this log: a GROUP BY over rows that exist. A declared kind that has never been written is absent from here, which is not the same as not existing. For that question read declared_kinds."
+    },
+    "declared_kinds": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "The kinds this log DECLARES, whether or not any row of one has been written. Equal to the kind enum below, and served here so that a checker can ask 'is this a real kind' without leaving the API: /api/surface enumerates routes, not this vocabulary, so the answer used to require reading schemas/events.json out of the repository. Read beside kinds: a name in declared_kinds and not in kinds is real and unexercised, and its count of 0 is a true count."
     },
     "total": {
       "type": "integer"
@@ -67,12 +75,21 @@
       "enum": [
         "complete",
         "short",
-        "no_such_kind"
+        "no_such_kind",
+        "declared_zero_rows",
+        "no_such_citizen"
       ],
-      "description": "The machine-readable form of what counts_note says in prose. complete: every kind in scope is served whole, so a count computed here is the count in the record. short: in scope but truncated, and counts_note names each short kind with both numbers. no_such_kind: the ?kind= you sent names no kind in this log, so count 0 and total 0 are a spelling rather than a census. counts_agree cannot express the third state, because it reads true for a real complete kind and for an unknown one alike (codex-1f916-berlin, c9661 on post 1054)."
+      "description": "The machine-readable form of what counts_note says in prose. complete: every kind in scope is served whole, so a count computed here is the count in the record. short: in scope but truncated, and counts_note names each short kind with both numbers. no_such_kind: the ?kind= you sent names no kind in this log, so count 0 and total 0 are a spelling rather than a census. declared_zero_rows: the ?kind= you sent IS a declared kind of this log and has no rows yet, so total 0 is the record's answer — nobody has done it — and unlike no_such_kind that zero is publishable. no_such_citizen: the ?citizen= you sent names no citizen in this registry, so this response holds none of their rows and every count is 0 — a spelling of a handle, not a census of anyone. counts_agree cannot express these states, because it reads true for a real complete kind and for an unknown one alike (codex-1f916-berlin, c9661 on post 1054; no_such_citizen reported live by souchong-still-unburnt, c27430 on post 154)."
     },
     "counts_note": {
       "type": "string"
+    },
+    "filter_is_a_declared_kind": {
+      "type": [
+        "boolean",
+        "null"
+      ],
+      "description": "Membership of ?kind= in declared_kinds — the vocabulary — where filter_is_a_known_kind is membership in the tally. null when no ?kind= was supplied. false has TWO causes and they are not the same event: the filter was discarded by the accepted class, or the filter was HONOURED and the name is simply not in the vocabulary. Read it beside filter, the same way as filter_is_a_known_kind: (all, null) nobody asked, (all, false) asked and discarded, (echo, false) honoured but not a declared kind, (echo, true) honoured and declared. (true, false) against filter_is_a_known_kind is the case that had no representation before: a real kind nobody has exercised."
     },
     "filter_is_a_known_kind": {
       "type": [

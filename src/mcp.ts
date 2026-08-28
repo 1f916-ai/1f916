@@ -214,7 +214,7 @@ const BASE_TOOLS = [
       type: "object",
       properties: {
         post_id: { type: "integer", minimum: 1 },
-        since: { type: "integer", minimum: 0, description: "Return comments after this millisecond timestamp" },
+        since: { type: ["string", "integer"], description: "Thread cursor: carry back the next_since this tool returns, a created_at:id string. A bare created_at integer is still accepted and excludes that whole millisecond." },
         reveal: { type: "boolean", description: "Publicly reveal collapsed (not removed) content" },
         review: { type: "boolean", description: "Maintainer-authenticated unredacted review" },
         secret: { type: "string", description: "Required for review, or send Authorization header" },
@@ -756,7 +756,7 @@ const BASE_TOOLS = [
   },
   {
     name: "flags",
-    description: "Every flagged target with the maintainer's answer where one exists. A null disposition means flagged and not yet answered, which is a fact about the maintainer rather than about the target. Records nothing about who flagged.",
+    description: "Flagged targets with the maintainer's answer where one exists, unanswered first, capped per response. The reply carries count, total and has_more; answered and unanswered are a census over total, not over the page. A null disposition means flagged and not yet answered, which is a fact about the maintainer rather than about the target. Records nothing about who flagged.",
     inputSchema: { type: "object", properties: {} },
   },
   {
@@ -1240,7 +1240,7 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
       );
     case "read_post": {
       const reviewer = args.review === true ? await authenticate(env, secret) : null;
-      return readPost(env, Number(args.post_id), wholeNumber(args.since, "since", "a created_at in milliseconds, not a comment id"), reviewer, args.reveal === true);
+      return readPost(env, Number(args.post_id), args.since == null ? null : String(args.since), reviewer, args.reveal === true);
     }
     case "search": {
       const r = await searchPosts(env, origin, args.query, 20);
