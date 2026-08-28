@@ -175,3 +175,67 @@ test("comments may quote a retired claim only if they tag it RETIRED:", () => {
     `a source comment states, untagged, that this society has no official token. Tag the quote RETIRED: if it is history, or fix it if it is a live claim:\n${hits.join("\n")}`,
   );
 });
+
+// ---------------------------------------------------------------------------
+// Third layer, added 2026-08-28 with PR #165: the same response must not
+// PROMISE never to do the thing it is doing.
+//
+// The two layers above check that served prose about the contract agrees with
+// official_token. They did not catch the inverse: official_token named a
+// contract while two will_never fields in the SAME payload promised to
+// "endorse a token, ask for keys or funds, or DM anyone". A reader checking us
+// against our own record hits a response that names a token and swears off
+// naming one. 0xRyanC filed it as #165; nothing here caught it, because these
+// guards were looking for prose that contradicts the contract's PROVENANCE,
+// not for a promise that contradicts its EXISTENCE.
+//
+// The anti-phishing force has to survive the fix. These fields exist so an
+// impostor account is checkable as fake in one request, and weakening them to
+// resolve a contradiction would trade a real defence for a tidy sentence. So
+// both halves are pinned: the promise still refuses promotion, key and fund
+// requests, and DMs, AND it draws the record-versus-recommendation line that
+// makes naming official_token consistent with it.
+//
+// Killing mutations, each measured red: restore "endorse a token" to either
+// will_never (reds 3); delete the record-not-a-recommendation clause (reds 1);
+// drop the DM refusal (reds 1).
+
+const ENDORSEMENT_CHANNELS = ["official_x_account", "official_subreddit"] as const;
+// `as never` rather than `as Env`: this file does not import Env, tsx erases the
+// annotation either way, and tsconfig covers only src/** so nothing would have
+// caught the dangling type reference.
+const channelFacts = () => officialFacts({} as never) as unknown as Record<string, Record<string, string>>;
+
+test("no channel promises never to endorse a token while the same response names one", () => {
+  const f = channelFacts();
+  assert.ok(f.official_token?.contract, "official_token must name a contract for this test to mean anything");
+  for (const c of ENDORSEMENT_CHANNELS) {
+    const promise = f[c]?.will_never;
+    assert.ok(promise, `${c} must carry a will_never`);
+    assert.doesNotMatch(
+      promise,
+      /\bendorse a token\b/i,
+      `${c}: this response NAMES official_token, so a blanket "endorse a token" promise contradicts it`,
+    );
+  }
+});
+
+test("the anti-phishing promise keeps every commitment that actually protects a reader", () => {
+  const f = channelFacts();
+  for (const c of ENDORSEMENT_CHANNELS) {
+    const p = f[c].will_never.toLowerCase();
+    assert.match(p, /promote or recommend any asset/, `${c}: must still refuse promotion outright`);
+    assert.match(p, /keys or funds/, `${c}: must still refuse key and fund requests`);
+    assert.match(p, /dm anyone/, `${c}: must still refuse DMs`);
+    assert.match(p, /is not us/, `${c}: must still tell a reader what an account doing so is`);
+  }
+});
+
+test("naming the token is drawn as a record, not a recommendation", () => {
+  const f = channelFacts();
+  for (const c of ENDORSEMENT_CHANNELS) {
+    const p = f[c].will_never;
+    assert.match(p, /not a recommendation/i, `${c}: the distinction is what makes naming a contract consistent with refusing to promote one`);
+    assert.match(p, /official_token/, `${c}: and it must point at the field it is reconciling with`);
+  }
+});

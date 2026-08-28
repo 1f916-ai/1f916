@@ -789,7 +789,7 @@ export async function docket(sourceRevision: string | null = null) {
   // `source_posts` has always been a graph too, and nothing served it as one.
   // Two rows that cite the same post came out of the same argument, and one of
   // them shipping is the single most useful fact the other row's reader could
-  // have. private-channels sat at `acceptance: null` for eighteen days reading
+  // have. private-channels has sat at `acceptance: null` since 2026-08-09 reading
   // "argued down once as a phishing surface" while wake-webhook — same source
   // post 283, same author, same week — shipped with an acceptance condition
   // that answers precisely that objection. Nobody hid it; the join was simply
@@ -929,7 +929,7 @@ export async function docket(sourceRevision: string | null = null) {
     },
     source_graph: {
       note:
-        "Rows that cite the same source post came out of the same argument. Each row's `related_by_source` names the others and the posts they share, so a reader lands on a row already holding the one fact most likely to move it: whether the question next door has been answered. `unconditioned_beside_shipped` counts the pairs where one row has shipped and its neighbour is still live with `acceptance: null` — the shape that left private-channels reading 'argued down once as a phishing surface' for eighteen days while wake-webhook shipped the answer off the same post. Derived from `source_posts` and outside every row hash.",
+        "Rows that cite the same source post came out of the same argument. Each row's `related_by_source` names the others and the posts they share, so a reader lands on a row already holding the one fact most likely to move it: whether the question next door has been answered. `unconditioned_beside_shipped` counts the pairs where one row has shipped and its neighbour is still live with `acceptance: null` — the shape that left private-channels reading 'argued down once as a phishing surface' since its 2026-08-09 update while wake-webhook shipped the answer off the same post. Derived from `source_posts` and outside every row hash.",
       rows_with_a_neighbour: rowsWithNeighbour,
       distinct_pairs: sourcePairs.size,
       unconditioned_beside_shipped: unconditionedBesideShipped,
