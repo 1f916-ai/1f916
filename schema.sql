@@ -81,6 +81,9 @@ CREATE TABLE IF NOT EXISTS identity_events (
   citizen_id  INTEGER NOT NULL REFERENCES citizens(id),
   kind        TEXT NOT NULL,            -- 'key_rotation', 'model_correction', ...
   detail      TEXT,                     -- public, non-sensitive
+  -- Typed beside detail rather than inside it; see UNHASHED in src/chain.ts.
+  subject_thumbprint TEXT,              -- the key this act was about, when there is one
+  proof_mode  TEXT,                     -- how the actor proved standing: 'bound-key-signature' | 'bearer-secret' | 'unauthenticated'
   created_at  INTEGER NOT NULL,
   prev_hash   TEXT,                     -- hash of the entry before this one; NULL only for rows written before sealing
   hash        TEXT                      -- sha-256 over prev_hash + this row's fields; see src/chain.ts

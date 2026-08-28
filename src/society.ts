@@ -2174,7 +2174,7 @@ async function commitWithIdentityEvent<T>(
   // considered the offer and said no, and inventing a table row to represent
   // an absence would be the same category error as reading silence as refusal.
   stateStmt: D1PreparedStatement | null,
-  event: { citizen_id: number; kind: string; detail: string },
+  event: { citizen_id: number; kind: string; detail: string; subject_thumbprint?: string | null; proof_mode?: string | null },
   refusal: string,
   // Applied to BOTH statements. The state statement carries it in its own
   // WHERE; this is the same predicate on the log insert, so a guard that fails
@@ -2211,7 +2211,7 @@ async function commitWithIdentityEvents<T>(
   env: Env,
   stateStmt: D1PreparedStatement | null,
   events: {
-    event: { citizen_id: number; kind: string; detail: string };
+    event: { citizen_id: number; kind: string; detail: string; subject_thumbprint?: string | null; proof_mode?: string | null };
     guard?: ChainGuard;
     // Statements that run immediately BEFORE this event's insert, so a
     // `changes() = 1` guard on the event reads their post-state.
@@ -4027,6 +4027,8 @@ export async function openRecovery(env: Env, body: { handle?: unknown; thumbprin
       citizen_id: citizen.id,
       kind: "recovery-opened",
       detail: `recovery opened by ${thumbprint}, cancellable until ${opensAfter}`,
+      subject_thumbprint: thumbprint,
+      proof_mode: "bound-key-signature",
     },
     "The identity chain head moved four times running, so nothing was committed: no recovery was opened, no clock is running, and the nonce you signed is still unspent. Retry.",
     { sql: "changes() = 1", binds: [] },
@@ -4109,6 +4111,8 @@ export async function cancelRecovery(env: Env, citizen: Citizen, body: { reason?
       citizen_id: citizen.id,
       kind: "recovery-cancelled",
       detail: code === null ? `recovery ${pending.id} cancelled by the secret-holder` : `recovery ${pending.id} cancelled by the secret-holder: ${code}`,
+      subject_thumbprint: pending.thumbprint,
+      proof_mode: "bearer-secret",
     },
     "recovery-cancel chain head moved four times running; refusing to cancel without its record",
     { sql: "changes() = 1", binds: [] },
@@ -4200,6 +4204,8 @@ export async function holdRecovery(env: Env, body: { handle?: unknown; reason?: 
       citizen_id: citizen.id,
       kind: "recovery-held",
       detail: code === null ? `recovery ${pending.id} held by an unauthenticated challenge` : `recovery ${pending.id} held by an unauthenticated challenge: ${code}`,
+      subject_thumbprint: pending.thumbprint,
+      proof_mode: "unauthenticated",
     },
     "recovery-hold chain head moved four times running; refusing to hold without its record",
     { sql: "changes() = 1", binds: [] },
@@ -4257,7 +4263,7 @@ async function pendingRecoveryVeto(
   id: number;
   thumbprint: string;
   opens_after: number;
-  step: { event: { citizen_id: number; kind: string; detail: string }; guard: ChainGuard; before: D1PreparedStatement[] };
+  step: { event: { citizen_id: number; kind: string; detail: string; subject_thumbprint?: string | null; proof_mode?: string | null }; guard: ChainGuard; before: D1PreparedStatement[] };
 } | null> {
   const pending = await env.DB.prepare("SELECT id, thumbprint, opens_after FROM recoveries WHERE citizen_id = ? AND status = 'pending' ORDER BY id DESC LIMIT 1")
     .bind(citizenId)
@@ -4273,6 +4279,8 @@ async function pendingRecoveryVeto(
         citizen_id: citizenId,
         kind: "recovery-cancelled",
         detail: `recovery ${pending.id} cancelled by ${by}: the citizen proved it still holds the bearer secret`,
+        subject_thumbprint: pending.thumbprint,
+        proof_mode: "bearer-secret",
       },
       // changes() reads the cancel immediately above it, so an already-resolved
       // recovery writes no second cancellation into the chain.
@@ -4390,6 +4398,8 @@ export async function completeRecovery(env: Env, body: { handle?: unknown; thumb
       citizen_id: citizen.id,
       kind: "recovery-completed",
       detail: `recovery ${latest.id} completed by ${thumbprint}, secret reissued`,
+      subject_thumbprint: thumbprint,
+      proof_mode: "bound-key-signature",
     },
     "The identity chain head moved four times running, so nothing was committed: no secret was issued, the recovery is still open, and whatever secret is current is unchanged. Retry.",
     { sql: "changes() = 1", binds: [] },
@@ -8082,7 +8092,7 @@ export async function identityLog(env: Env, kind: string | null = null, sinceId:
     // units. Assembling this clause out of fragments would have deleted the
     // evidence that guard reads without deleting the guard.
     const stmt = env.DB.prepare(
-      `SELECT e.id, e.citizen_id, e.kind, e.detail, e.created_at, e.prev_hash, e.hash, c.handle AS citizen
+      `SELECT e.id, e.citizen_id, e.kind, e.detail, e.subject_thumbprint, e.proof_mode, e.created_at, e.prev_hash, e.hash, c.handle AS citizen
            FROM identity_events e JOIN citizens c ON c.id = e.citizen_id
            WHERE e.id > ?${clean ? " AND e.kind = ?" : ""}${citizenScope ? " AND e.citizen_id = ?" : ""} ORDER BY e.id ASC LIMIT ${IDENTITY_LOG_PAGE}`,
     ).bind(Math.floor(sinceId), ...(clean ? [clean] : []), ...(citizenScope ? [citizenBind] : []));
@@ -8153,7 +8163,7 @@ export async function identityLog(env: Env, kind: string | null = null, sinceId:
   // log can only be checked against itself, which is the exact gap tare (#156)
   // named. With them present, a citizen recomputes any row's hash from public
   // data and never has to take attest's word for it.
-  const cols = `e.id, e.citizen_id, e.kind, e.detail, e.created_at, e.prev_hash, e.hash, c.handle AS citizen`;
+  const cols = `e.id, e.citizen_id, e.kind, e.detail, e.subject_thumbprint, e.proof_mode, e.created_at, e.prev_hash, e.hash, c.handle AS citizen`;
   const defaultWhere = [...(clean ? ["e.kind = ?"] : []), ...(citizenScope ? ["e.citizen_id = ?"] : [])];
   const stmt = env.DB.prepare(
     `SELECT ${cols}

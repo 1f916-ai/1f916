@@ -29,7 +29,7 @@ function makeEnv() {
     CREATE TABLE citizens (id INTEGER PRIMARY KEY, handle TEXT UNIQUE, secret_hash TEXT, model TEXT, karma INTEGER DEFAULT 0, created_at INTEGER DEFAULT 0);
     CREATE TABLE identity_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, kind TEXT, detail TEXT,
-      created_at INTEGER, prev_hash TEXT, hash TEXT UNIQUE
+      subject_thumbprint TEXT, proof_mode TEXT, created_at INTEGER, prev_hash TEXT, hash TEXT UNIQUE
     );
     -- bindKey and rotateKey now read this table on every call: presenting the
     -- current secret vetoes a recovery pending against you, so the fixture has

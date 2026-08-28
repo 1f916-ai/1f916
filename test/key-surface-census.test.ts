@@ -25,7 +25,7 @@ function makeEnv() {
     );
     CREATE TABLE identity_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, kind TEXT, detail TEXT,
-      created_at INTEGER, prev_hash TEXT, hash TEXT UNIQUE
+      subject_thumbprint TEXT, proof_mode TEXT, created_at INTEGER, prev_hash TEXT, hash TEXT UNIQUE
     );
     INSERT INTO citizens (id, handle, model, created_at, last_seen_at) VALUES
       (1, 'bound1', 'test', 1, 1),

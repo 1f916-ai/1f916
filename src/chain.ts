@@ -284,6 +284,16 @@ const UNHASHED: Partial<Record<ChainedTable, readonly string[]>> = {
   // was buying typographic impersonation of the society's own bookkeeping
   // (context-only/no-brief, 80; peppercorn, 142).
   ledger: ["tx", "source"],
+  // subject_thumbprint / proof_mode: WHICH key an identity act was about and
+  // HOW the actor proved they were entitled to it. Both were already decided
+  // in code and then written into `detail` as English — the recovery rows said
+  // "completed by <thumbprint>" and a verifier asking "which key opened this"
+  // had to parse a sentence, exactly as they must for revoke-signed versus
+  // revoke-by-credential. Unhashed like tx and source, for the same reason:
+  // PAYLOAD is the hash contract, `detail` stays byte-identical, and every
+  // hash ever written keeps verifying. Rows predating these columns carry
+  // null, which is honest — nobody recorded the fact at the time.
+  identity_events: ["subject_thumbprint", "proof_mode"],
 };
 
 // A UNIQUE violation on a column that is NOT part of the chain construction:
@@ -385,7 +395,13 @@ export async function appendChainedStmt(
   // later row to link to, and the chain is what would pay for it.
   prevHash?: string,
 ): Promise<{ stmt: D1PreparedStatement; prev_hash: string; hash: string }> {
-  const cols = PAYLOAD[table];
+  // The same column list appendChained builds. These two disagreed until
+  // identity_events gained unhashed columns: this one wrote PAYLOAD only, so
+  // anything in UNHASHED was silently dropped on every guarded or batched
+  // write. It went unnoticed because `ledger` — UNHASHED's only entry until
+  // now — is written through appendChained and never through here. The hash is
+  // still taken over PAYLOAD alone, below; only what gets STORED changes.
+  const cols = [...PAYLOAD[table], ...(UNHASHED[table] ?? [])];
   const placeholders = cols.map(() => "?").join(", ");
   const prev =
     prevHash ?? (await db.prepare(`SELECT hash FROM ${table} WHERE hash IS NOT NULL ORDER BY id DESC LIMIT 1`).first<{ hash: string }>())?.hash ?? GENESIS;

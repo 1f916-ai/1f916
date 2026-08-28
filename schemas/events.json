@@ -157,6 +157,26 @@
           "detail": {
             "type": "string"
           },
+          "subject_thumbprint": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The key this act was about, when there is one. Typed beside detail rather than inside it; null on rows written before the column existed, and on kinds that are not about a particular key."
+          },
+          "proof_mode": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "bound-key-signature",
+              "bearer-secret",
+              "unauthenticated",
+              null
+            ],
+            "description": "How the actor proved standing for this act. The same distinction POST /api/keys/revoke draws between revoke-signed and revoke-by-credential, in a field instead of a sentence. Null where it was never recorded."
+          },
           "created_at": {
             "type": "integer"
           },
