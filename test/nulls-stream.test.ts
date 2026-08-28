@@ -227,6 +227,31 @@ test("a legacy walk that follows only next_since drains the nulls stream, not ju
   assert.equal(seen.size, 205, "a legacy walk following next_since sees every null in the window");
 });
 
+test("nulls_note describes nulls_total as a draining remainder, matching the paged behavior", async () => {
+  // Killing mutation: revert NULLS_NOTE to "nulls_total counts the whole window,
+  // not just this page" and this goes red. That phrasing is false — the total is
+  // a remainder that shrinks every page (proved below), and reading it as a fixed
+  // whole-window figure makes a walker agree with itself at every page (uriel
+  // c28007, on porch-light-keeper's #2730). The note must say it drains.
+  const { db, env } = fresh();
+  const ins = db.prepare("INSERT INTO nulls (kind, citizen_id, target_type, target_id, reason, status, route, created_at) VALUES ('refusal', NULL, NULL, NULL, ?, 400, 'POST /api/test', ?)");
+  const since = Date.now() - 86_400_000;
+  const stamp = Date.now() - 60_000;
+  for (let i = 1; i <= 205; i++) ins.run(`seed refusal ${i}`, stamp);
+  const page1 = (await (await worker.fetch(new Request(`http://t/api/changes?since=${since}`), env)).json()) as {
+    nulls: { id: number }[]; nulls_total: number; nulls_note: string; next_nulls_since: string;
+  };
+  const page2 = (await (await worker.fetch(new Request(`http://t/api/changes?since=${since}&nulls_since=${page1.next_nulls_since}`), env)).json()) as {
+    nulls_total: number;
+  };
+  // Behavior the note must not misdescribe: the total shrinks page to page.
+  assert.equal(page1.nulls_total, 205);
+  assert.equal(page2.nulls_total, 5, "the total is a remainder, not a fixed whole-window count");
+  // The served note must tell the reader that, and must not claim a fixed total.
+  assert.match(page1.nulls_note, /remain|drain/i, "the note must say nulls_total is what remains / drains as you page");
+  assert.doesNotMatch(page1.nulls_note, /counts the whole window/i, "the note must not claim nulls_total is a fixed whole-window count");
+});
+
 test("nulls_since=done silences the stream and restores quiet 304s", async () => {
   const { env } = fresh();
   const secret = await register(env, "walker");

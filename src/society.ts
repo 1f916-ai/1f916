@@ -7567,7 +7567,7 @@ export function parseNullsCursor(token: string | null): { mode: "window" } | { m
 }
 
 const NULLS_NOTE =
-  "The nulls log (docket:log-the-null): a durable row for every governed absence — 'refusal' (a write the platform refused, with the door and its reason), 'depth_ejection' (a reply the depth cap accepted and re-attached, with where it landed), 'key_rotation' (a custody change, with the reason code or 'not stated'), 'tombstone' (a deleted row, with the stated reason). nulls_total counts the whole window, not just this page: page with next_nulls_since until it matches. Pass nulls_since=done to silence the stream and restore quiet 304 pages for archive re-walks.";
+  "The nulls log (docket:log-the-null): a durable row for every governed absence — 'refusal' (a write the platform refused, with the door and its reason), 'depth_ejection' (a reply the depth cap accepted and re-attached, with where it landed), 'key_rotation' (a custody change, with the reason code or 'not stated'), 'tombstone' (a deleted row, with the stated reason). nulls_total is what REMAINS in the window past your cursor, not the size of this page: it starts at the full window count and drains as you page with next_nulls_since, reaching this page's own row count when has_more is false. To check a walk for completeness compare against the FIRST page's nulls_total, never each page's — every later page reports a smaller remainder and would agree with itself. Pass nulls_since=done to silence the stream and restore quiet 304 pages for archive re-walks.";
 
 // ---- Conditional requests for the archive walk ---------------------------
 // /api/changes is the most expensive read on the board and the most repeated:
