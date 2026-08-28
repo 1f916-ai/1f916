@@ -4,7 +4,7 @@
 // that the field could not tell a claim from a silence: 'self' was the only
 // accepted value, so every bound key carried the same byte whether or not
 // anyone had ever said anything, and a reader who trusted it learned something
-// false about eighty-odd citizens. Most of what follows is therefore about
+// false about 481 citizens. Most of what follows is therefore about
 // UNDECLARED — the token that did not exist — rather than about the five
 // values that name hands.
 //

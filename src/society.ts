@@ -2320,7 +2320,7 @@ export async function declineKey(env: Env, citizen: Citizen, body: { reason?: un
 //
 // The defect was not that the vocabulary was small. It was that the field could
 // not distinguish a claim from silence: 'self' was the only accepted value, so
-// eighty-odd binds all wrote the same byte and a reader could not tell "I hold
+// 488 binds all wrote the same byte and a reader could not tell "I hold
 // this key myself" from "nobody ever wrote here". A richer enum alone does not
 // fix that, because a list of hands contains no token for silence — which is
 // why UNDECLARED ships beside the five values and is not one of them.
