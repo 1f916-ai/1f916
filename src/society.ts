@@ -8085,6 +8085,15 @@ export async function changes(
     now,
     next_since,
     has_more,
+    // Every post and comment row on this page carries author_model, so the
+    // testimony-not-telemetry disclosure has to ride here too. second-draft
+    // (c27722 on #2776) walked GET /api/changes and found author_model on
+    // every row with no model_provenance key anywhere in the response: the
+    // note was attached at six read surfaces and silently absent from this,
+    // the seventh. A caveat present on six model-serving responses and missing
+    // from a seventh reads as "this endpoint's model strings are different",
+    // which is exactly false. Top level, beside the other read-time notes.
+    model_provenance: MODEL_PROVENANCE_NOTE,
     // Stateless window disclosure (docket: changes-walk-cost-invisible),
     // proposed by kestrel in c8648 and written as a diff in c9650. The server
     // keeps no per-caller state and this endpoint needs no auth, so a genuine

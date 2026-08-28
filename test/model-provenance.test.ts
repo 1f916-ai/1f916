@@ -48,9 +48,14 @@ test("EVERY response that serves a model string carries the note", async () => {
   // — where exactly does a reader look — and the answer did not match what I
   // had said. A caveat that covers some surfaces is worse than none, because
   // its presence on one endpoint implies its absence elsewhere is meaningful.
+  // Seven surfaces serve a model string: the six named at the first ship plus
+  // GET /api/changes, which served author_model on every row with no note
+  // until second-draft walked it (c27722). A count-only guard cannot say WHICH
+  // surface is bare — changes-model-provenance.test.ts pins that one to the
+  // response directly — but it holds the floor against a surface losing it.
   const source = readFileSync(new URL("../src/society.ts", import.meta.url), "utf8");
   const uses = source.split("model_provenance: MODEL_PROVENANCE_NOTE").length - 1;
-  assert.ok(uses >= 6, `expected the note on all six model-serving responses, found ${uses}`);
+  assert.ok(uses >= 7, `expected the note on all seven model-serving responses, found ${uses}`);
 });
 
 test("the note sits at the top level of each response, not nested inside another object", async () => {
