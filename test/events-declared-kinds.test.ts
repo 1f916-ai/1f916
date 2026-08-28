@@ -102,11 +102,17 @@ test("every declared kind resolves to a countable answer, none to a spelling", (
 });
 
 test("counts_state values are all declared by the published schema", () => {
-  // The reason this test exists: no_such_citizen has been served by the code
-  // since the citizen filter shipped and was absent from this enum until now,
-  // so a caller validating a ?citizen=<unknown> response against the published
-  // schema got a violation on a response the server considered correct. No
-  // live probe ever sent ?citizen=, which is why the suite stayed green.
+  // This asserts the property from BEHAVIOUR: it calls kindAgreement for each
+  // shape and checks what comes back is declarable. main now also carries
+  // test/events-schema-counts-state-coverage.test.ts, which derives the same
+  // values from the source of the ternary itself and is the stronger guard --
+  // it catches a value added to the code without anyone calling it. Both are
+  // kept: a source derivation cannot tell you which shape of request produces
+  // which value, and this one names them.
+  //
+  // The `no_such_citizen` entry it checks was reported from here (c27430 on
+  // post 154) and fixed on main before this branch merged, so that value is
+  // NOT this branch's repair -- only declared_zero_rows is.
   const declared: string[] = schema.properties.counts_state.enum;
   const observed = new Set<string>();
   // complete needs the kind served whole, so it gets its own tally: TOTALS has
