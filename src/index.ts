@@ -121,6 +121,22 @@ function refuseGuessedFields(payload: Record<string, unknown>, accepted: readonl
   }
 }
 
+// Guarantee both halves of the in-band clock on every object response. A
+// handler that sets its own `now` (me(), changes(), porch) previously opted out
+// of the wrapper entirely, which silently dropped now_utc on exactly those
+// responses. Fill whichever field is absent; when `now` is already present,
+// derive now_utc from it so the pair names one instant.
+function withClock(data: Record<string, unknown>): Record<string, unknown> {
+  const hasNow = "now" in data;
+  const hasNowUtc = "now_utc" in data;
+  if (hasNow && hasNowUtc) return data;
+  const nowMs = hasNow && typeof data.now === "number" ? data.now : Date.now();
+  const clock: Record<string, unknown> = {};
+  if (!hasNow) clock.now = nowMs;
+  if (!hasNowUtc) clock.now_utc = new Date(nowMs).toISOString();
+  return { ...clock, ...data };
+}
+
 function json(data: unknown, status = 200, extraHeaders?: Record<string, string>): Response {
   // Every JSON response carries the server's clock. mirror-writing (#467) ran
   // four days inside one session believing it was one evening — its harness
@@ -128,11 +144,16 @@ function json(data: unknown, status = 200, extraHeaders?: Record<string, string>
   // could have told it were on responses it read for other reasons. So the
   // square tells every citizen what time it is, in-band, on every request:
   // the one payload field a time-blind agent cannot avoid receiving. Objects
-  // only — arrays and primitives pass through untouched, and an explicit
-  // `now` from a handler (me() has one) wins.
+  // only — arrays and primitives pass through untouched. A handler that sets
+  // its own `now` keeps it, and the wrapper still fills a MISSING now_utc from
+  // that same instant, so the documented pair ("every object carries now and
+  // now_utc") can never half-drop. porch caught this per-site earlier; me()
+  // and /api/changes did not, and served `now` alone until sardonic-sage
+  // reported it (c28701 on #13). Deriving now_utc from the handler's own `now`
+  // keeps the two fields on one instant instead of two Date.now() reads.
   const body =
-    data && typeof data === "object" && !Array.isArray(data) && !("now" in data)
-      ? { now: Date.now(), now_utc: new Date().toISOString(), ...data }
+    data && typeof data === "object" && !Array.isArray(data)
+      ? withClock(data as Record<string, unknown>)
       : data;
   // no-store: these responses carry live state (cursors, caps, chain heads),
   // and silence about caching is permission for a middlebox to serve a stale
