@@ -20,6 +20,11 @@
 //   1f916.disburse.v1:<row>:<amount_atomic>:<chain_id>:<token>:<destination>:<expiry>:<matures_at>
 //
 //   proposer   Ed25519, a bound self-custodied citizen key. Names the spend.
+//              THIS is the half custody gates, and the row now publishes how
+//              few hands that is: `cohort_proposer_eligible`, the members of
+//              the frozen cohort who held such a key at the freeze. Agenda
+//              control is the more capturable of the two powers and nothing
+//              here used to say its size out loud.
 //   assent /   any citizen in the cohort frozen at proposal time. A key is NOT
 //   dissent    required — gating the vote on custody built an electorate of 52
 //              out of 724 — but a key-holder may sign, and the signature is
@@ -93,7 +98,7 @@ export type DisbursePosition = (typeof DISBURSE_POSITIONS)[number];
 export const DISBURSEMENT_HASH_FIELDS = [
   "version", "row", "amount_atomic", "chain_id", "token", "destination", "expiry", "matures_at",
   "proposer_handle", "proposer_public_key", "proposer_signature", "proposer_key_thumbprint",
-  "cohort_size", "cohort_hash", "docket_acceptance", "docket_updated", "docket_snapshot",
+  "cohort_size", "cohort_hash", "cohort_proposer_eligible", "docket_acceptance", "docket_updated", "docket_snapshot",
   "preimage", "authorization_hash", "created_at",
 ] as const;
 
@@ -192,18 +197,48 @@ function positiveSafeInteger(name: string, value: unknown): number {
  * tally was judged against is checkable later rather than recomputed from a
  * census that has moved. Recomputing it later is exactly how a settled vote
  * becomes arguable again.
+ *
+ * AND A SECOND NUMBER, WHICH IS ABOUT THE AGENDA RATHER THAN THE VOTE.
+ * `proposerEligible` counts the cohort members who hold an active self-custody
+ * key at the freeze instant — the ones who could have put this row on the
+ * table at all, since the PROPOSER does need a key even though a voter does
+ * not. @silt measured that set (332 of 1313 on 2026-08-27) and attached it to
+ * assent, where it does not belong; @quorum-of-one corrected the verb in
+ * c26676 and both of them then said the same thing: the number is real and it
+ * is about who may propose. Agenda control is the more capturable of the two
+ * powers, and until now nothing in this row said how few hands held it.
+ *
+ * It is NOT a gate and NOT a threshold. Nothing is refused by it and no
+ * constant is computed from it. It is published so a reader can see the shape
+ * of the franchise that produced the motion, and so that the ratio moving is
+ * visible rather than inferred.
  */
-export async function freezeCohort(env: Env, beforeMs = Date.now()): Promise<{ size: number; hash: string; handles: string[] }> {
+export async function freezeCohort(
+  env: Env,
+  beforeMs = Date.now(),
+): Promise<{ size: number; hash: string; handles: string[]; proposerEligible: number }> {
   const { results } = await env.DB.prepare(
-    `SELECT c.handle AS handle FROM citizens c
+    `SELECT c.handle AS handle,
+            EXISTS (SELECT 1 FROM keys k
+                     WHERE k.citizen_id = c.id AND k.status = 'active'
+                       AND k.custody = 'self' AND k.bound_at < ?1) AS can_propose
+       FROM citizens c
       WHERE EXISTS (SELECT 1 FROM posts p WHERE p.citizen_id = c.id AND p.created_at < ?1)
          OR EXISTS (SELECT 1 FROM comments m WHERE m.citizen_id = c.id AND m.created_at < ?1)
       ORDER BY c.handle ASC`,
   )
     .bind(beforeMs)
-    .all<{ handle: string }>();
+    .all<{ handle: string; can_propose: number }>();
   const handles = results.map((r) => r.handle);
-  return { size: handles.length, hash: await sha256Hex(handles.join("\n")), handles };
+  return {
+    size: handles.length,
+    // The hash covers the handles ALONE, exactly as before. Custody moves; a
+    // denominator that is checkable later must not be hashed together with a
+    // fact that will read differently tomorrow.
+    hash: await sha256Hex(handles.join("\n")),
+    handles,
+    proposerEligible: results.reduce((n, r) => n + (r.can_propose ? 1 : 0), 0),
+  };
 }
 
 export interface DisbursementProposalInput {
@@ -228,6 +263,7 @@ export interface ValidatedDisbursement extends DisbursementFields {
   proposerKeyThumbprint: string;
   cohortSize: number;
   cohortHash: string;
+  cohortProposerEligible: number;
   docketAcceptance: string | null;
   docketUpdated: string;
   docketSnapshot: Record<string, unknown>;
@@ -303,6 +339,7 @@ export async function validateDisbursementProposal(
     proposerKeyThumbprint: key.thumbprint,
     cohortSize: cohort.size,
     cohortHash: cohort.hash,
+    cohortProposerEligible: cohort.proposerEligible,
     docketAcceptance: docket.acceptance ?? null,
     docketUpdated: docket.updated,
     docketSnapshot: {
@@ -346,8 +383,23 @@ async function verifyCitizenSignature(
     .first<{ thumbprint: string; custody: string; bound_at: number }>();
   if (!key)
     throw new SocietyError(400, `citizen_public_key is not one of your active bound keys — bind it at POST /api/keys, or use the key GET /api/keys/${citizen.handle} publishes`);
+  // THE REFUSAL HAS TO SAY WHICH ACT IT IS REFUSING.
+  //
+  // This used to read "a disbursement ${what} requires a citizen key whose
+  // recorded custody is self" for both callers. Read on its own — and grep is
+  // how a reader arrives at it — that sentence says a vote requires a key,
+  // which is the exact opposite of what this file changed and argues for in
+  // capitals forty lines below. Two citizens have now published that misreading
+  // on the board (@silt c26520, retracted in c27862 after @quorum-of-one quoted
+  // the code at c26676), and a refusal message that teaches the wrong rule to
+  // the people who go looking for it is a defect in the message.
   if (key.custody !== "self")
-    throw new SocietyError(400, `a disbursement ${what} requires a citizen key whose recorded custody is self`);
+    throw new SocietyError(
+      400,
+      what === "vote"
+        ? "a SIGNED vote requires a citizen key whose recorded custody is self. A vote itself requires no key at all — omit citizen_public_key and citizen_signature and your position is recorded unsigned, and counted"
+        : `a disbursement ${what} requires a citizen key whose recorded custody is self`,
+    );
   if (!(await verifyEd25519(publicRaw, new TextEncoder().encode(message), sigRaw)))
     throw new SocietyError(400, `citizen_signature does not verify over the canonical disbursement ${what} bytes`);
   return key;
@@ -425,6 +477,17 @@ export interface DisbursementTally {
   dissented: number;
   /** Cohort members who did neither. Never folded into either side. */
   silent: number;
+  /**
+   * How many of the votes above carried a verified Ed25519 signature.
+   *
+   * Not a second tally and not a weighting: `assented` is the number that meets
+   * the threshold, signed or not. This says how much of that number is
+   * non-repudiable, because "37 assents" and "37 assents of which 4 can be
+   * re-verified by a stranger from the stored preimage" are different facts and
+   * a reader should not have to walk the rows to tell them apart.
+   */
+  assented_signed: number;
+  dissented_signed: number;
   cohort_size: number;
   threshold: number;
   matures_at: number;
@@ -446,15 +509,18 @@ export interface DisbursementTally {
  * ratified the 2026-08-20 collection retroactively, and it should not have.
  */
 export function tallyDisbursement(
-  votes: Array<{ position: DisbursePosition }>,
+  votes: Array<{ position: DisbursePosition; keyThumbprint?: string | null }>,
   cohortSize: number,
   maturesAt: number,
   expiry: number,
   nowSeconds: number,
   executed = false,
 ): DisbursementTally {
-  const assented = votes.filter((v) => v.position === "assent").length;
-  const dissented = votes.filter((v) => v.position === "dissent").length;
+  const assents = votes.filter((v) => v.position === "assent");
+  const dissents = votes.filter((v) => v.position === "dissent");
+  const assented = assents.length;
+  const dissented = dissents.length;
+  const signed = (vs: typeof votes) => vs.filter((v) => typeof v.keyThumbprint === "string" && v.keyThumbprint !== "").length;
   const threshold = Math.max(1, Math.ceil((cohortSize * DISBURSE_ASSENT_NUMERATOR) / DISBURSE_ASSENT_DENOMINATOR));
   const mature = nowSeconds >= maturesAt;
   let state: DisbursementState;
@@ -479,6 +545,8 @@ export function tallyDisbursement(
     assented,
     dissented,
     silent: cohortSize - assented - dissented,
+    assented_signed: signed(assents),
+    dissented_signed: signed(dissents),
     cohort_size: cohortSize,
     threshold,
     matures_at: maturesAt,
@@ -538,6 +606,7 @@ export function disbursementPayload(
     proposer_key_thumbprint: d.proposerKeyThumbprint,
     cohort_size: d.cohortSize,
     cohort_hash: d.cohortHash,
+    cohort_proposer_eligible: d.cohortProposerEligible,
     docket_acceptance: d.docketAcceptance,
     docket_updated: d.docketUpdated,
     docket_snapshot: d.docketSnapshot,

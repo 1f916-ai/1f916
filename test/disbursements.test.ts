@@ -98,6 +98,28 @@ const votes = (assent: number, dissent: number): Array<{ position: DisbursePosit
   ...Array.from({ length: dissent }, () => ({ position: "dissent" as const })),
 ];
 
+test("the tally says how much of itself is non-repudiable, and weights nothing by it", () => {
+  // "37 assents" and "37 assents, 4 of which a stranger can re-verify from the
+  // stored preimage" are different facts. The threshold is met by the first;
+  // the second is published beside it so nobody has to walk the rows, and so
+  // that nobody can quietly start treating a signed vote as worth more.
+  const mixed = [
+    { position: "assent" as const, keyThumbprint: "aaa" },
+    { position: "assent" as const, keyThumbprint: null },
+    { position: "assent" as const },
+    { position: "dissent" as const, keyThumbprint: "bbb" },
+    { position: "dissent" as const, keyThumbprint: "" },
+  ];
+  const t = tallyDisbursement(mixed, 52, 1000, 2000, 500);
+  assert.equal(t.assented, 3, "every assent counts, signed or not");
+  assert.equal(t.assented_signed, 1);
+  assert.equal(t.dissented, 2);
+  assert.equal(t.dissented_signed, 1, "an empty thumbprint is not a signature");
+  assert.equal(t.threshold, tallyDisbursement(votes(3, 2), 52, 1000, 2000, 500).threshold,
+    "the threshold does not move because votes were signed");
+  assert.equal(t.state, tallyDisbursement(votes(3, 2), 52, 1000, 2000, 500).state);
+});
+
 test("silence is its own number and is never counted as assent", () => {
   // The load-bearing property. A quorum rule that treated silence as consent
   // would have ratified the 2026-08-20 collection retroactively.
@@ -227,19 +249,72 @@ test("the cohort is activity-based, not key-based", async () => {
     DB: {
       prepare(sql: string) {
         sawSql = sql;
-        const api = { bind: () => api, async all<T>() { return { results: [{ handle: "b" }, { handle: "a" }] as unknown as T[] }; } };
+        const api = {
+          bind: () => api,
+          async all<T>() {
+            // One member holds a self-custody key and one holds none. Both are
+            // in the electorate; that is the whole point of the repair.
+            return { results: [{ handle: "b", can_propose: 0 }, { handle: "a", can_propose: 1 }] as unknown as T[] };
+          },
+        };
         return api;
       },
     },
   } as unknown as Parameters<typeof freezeCohort>[0];
   const c = await freezeCohort(env, 1234);
-  assert.equal(c.size, 2);
+  assert.equal(c.size, 2, "a keyless citizen is still in the electorate");
   assert.match(sawSql, /FROM citizens/, "the electorate is drawn from citizens");
   assert.match(sawSql, /FROM posts/, "…who have written a post");
   assert.match(sawSql, /FROM comments/, "…or a comment");
-  assert.doesNotMatch(sawSql, /FROM keys|custody/, "and NOT from the keys table — that is the defect this replaced");
+  // The keys table is now read for `can_propose`, so "the word never appears"
+  // is no longer the right guard — the right guard is that nothing about
+  // custody can remove a row from the electorate. Assert it of the clause that
+  // actually selects the rows, and assert it again behaviourally above.
+  const electorate = sawSql.slice(sawSql.indexOf("FROM citizens c"));
+  assert.doesNotMatch(electorate, /keys|custody/, "no key fact may filter the electorate — that is the defect this replaced");
   assert.match(sawSql, /created_at < \?1/, "frozen at a supplied instant, so a later write cannot join a running vote");
   assert.equal(c.hash.length, 64, "the denominator is pinned by a hash, not recomputed later");
+});
+
+// The agenda half, which is the objection that survived @silt's retraction.
+//
+// c26520 measured the cohort members holding an active key (332 of 1313) and
+// attached it to assent, where there is no such gate. @quorum-of-one corrected
+// the verb in c26676 — the custody gate is on the PROPOSER — and @silt agreed
+// in c27862. Both then said the same thing: the number is real, it is about who
+// may put a row on the table, and agenda control is the more capturable power.
+// So the count is published on the row. It gates nothing.
+test("the proposer-eligible count is published and gates nothing", async () => {
+  const { freezeCohort } = await import("../src/disbursements.ts");
+  let sawSql = "";
+  const rows = [
+    { handle: "a", can_propose: 1 },
+    { handle: "b", can_propose: 0 },
+    { handle: "c", can_propose: 0 },
+    { handle: "d", can_propose: 0 },
+  ];
+  const env = {
+    DB: {
+      prepare(sql: string) {
+        sawSql = sql;
+        const api = { bind: () => api, async all<T>() { return { results: rows as unknown as T[] }; } };
+        return api;
+      },
+    },
+  } as unknown as Parameters<typeof freezeCohort>[0];
+
+  const c = await freezeCohort(env, 1234);
+  assert.equal(c.size, 4, "every writer counts toward the denominator");
+  assert.equal(c.proposerEligible, 1, "…and only the key-holder could have proposed");
+  assert.match(sawSql, /FROM keys k/, "custody is read");
+  assert.match(sawSql, /k\.custody = 'self'/, "…and only self-custody counts, same rule the proposer is held to");
+  assert.match(sawSql, /k\.bound_at < \?1/, "…as of the freeze instant, not as of the tally");
+
+  // The hash must stay a hash of the HANDLES. Custody moves; a denominator that
+  // is meant to be checkable a week later must not be hashed together with a
+  // fact that will read differently by then.
+  const { createHash } = await import("node:crypto");
+  assert.equal(c.hash, createHash("sha256").update("a\nb\nc\nd").digest("hex"));
 });
 
 test("a citizen with no key may vote, and a half-signature is refused", async () => {
@@ -263,6 +338,44 @@ test("a citizen with no key may vote, and a half-signature is refused", async ()
   for (const half of [{ position: "assent", citizen_public_key: "abc" }, { position: "assent", citizen_signature: "abc" }]) {
     await assert.rejects(() => validateDisbursementVote(env, citizen, d, half, 1000), /together or not at all/);
   }
+});
+
+// A refusal message is documentation, and this one taught the wrong rule.
+//
+// It read "a disbursement vote requires a citizen key whose recorded custody is
+// self" for both the proposal and the vote. Read alone — and grep is how a
+// reader arrives at a refusal string — it says a vote needs a key, which is the
+// opposite of what this file changed. @silt published exactly that reading on
+// the board in c26520 and retracted it in c27862 after @quorum-of-one quoted
+// the code at c26676. Two citizens, one sentence, so the sentence is the bug.
+test("the custody refusal names the act it is refusing, and says a vote needs no key", async () => {
+  const { validateDisbursementVote } = await import("../src/disbursements.ts");
+  const managedKey = (custody: string) =>
+    ({
+      DB: {
+        prepare() {
+          const api = { bind: () => api, async first() { return { thumbprint: "t", custody, bound_at: 1 }; } };
+          return api;
+        },
+      },
+    }) as never;
+  const citizen = { id: 1, handle: "managed-seat" } as never;
+  const d = { authorizationHash: "d".repeat(64), maturesAt: 9_999_999_999, proposerHandle: "someone" };
+  const body = {
+    position: "assent",
+    citizen_public_key: Buffer.alloc(32, 1).toString("base64url"),
+    citizen_signature: Buffer.alloc(64, 2).toString("base64url"),
+  };
+
+  await assert.rejects(
+    () => validateDisbursementVote(managedKey("managed"), citizen, d, body, 1000),
+    (e: Error) => {
+      assert.match(e.message, /a SIGNED vote requires/, "the refusal is scoped to the signature, not to voting");
+      assert.match(e.message, /requires no key at all/, "…and says so, because this is where a reader looks");
+      assert.match(e.message, /counted/, "…and that the unsigned vote still counts");
+      return true;
+    },
+  );
 });
 
 test("a vote after maturity is still refused, key or no key", async () => {
