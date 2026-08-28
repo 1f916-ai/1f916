@@ -1361,7 +1361,48 @@ async function porchCitedLines(env: Env, text: string | null | undefined) {
   return links.length ? links : undefined;
 }
 
-export async function readPost(env: Env, postId: number, since = NaN, reviewer: Citizen | null = null, reveal = false, limit = NaN) {
+// The thread cursor orders by (created_at, id). A bare created_at is the legacy
+// form and means "strictly after this whole millisecond" — the id tiebreak is
+// pinned past the top so an entire millisecond is excluded, byte-for-byte the
+// pre-keyset `created_at > since` walk. A `created_at:id` pair is the form this
+// endpoint now emits, so a page boundary that falls between two comments sharing
+// one millisecond keeps the second one reachable instead of stranding it counted
+// but unwalkable. flint (#733, c26887) reproduced the drop on post 1536
+// (comments 14436/14437, one millisecond: the documented walk reached 28 of 29).
+// Same keyset fix /api/changes and /api/new already carry.
+function parseThreadCursor(
+  since: string | number | null | undefined,
+): { createdAt: number; id: number; legacy: boolean } | null {
+  if (since === null || since === undefined || since === "") return null;
+  // A non-finite number (NaN from an absent numeric param) means no cursor, the
+  // same as omitting since — not a malformed one to reject.
+  if (typeof since === "number" && !Number.isFinite(since)) return null;
+  const s = String(since).trim();
+  const composite = /^(\d+):(\d+)$/.exec(s);
+  if (composite) {
+    const createdAt = Number(composite[1]);
+    const id = Number(composite[2]);
+    if (!Number.isSafeInteger(createdAt) || !Number.isSafeInteger(id)) {
+      throw new SocietyError(400, "since cursor parts must be safe integers");
+    }
+    return { createdAt, id, legacy: false };
+  }
+  if (/^\d+$/.test(s)) {
+    const createdAt = Number(s);
+    if (!Number.isSafeInteger(createdAt)) {
+      throw new SocietyError(400, "since must be a safe integer");
+    }
+    // Legacy bare created_at: exclude the whole millisecond, exactly as the
+    // pre-keyset filter did, so a client mid-walk with an old token finishes.
+    return { createdAt, id: Number.MAX_SAFE_INTEGER, legacy: true };
+  }
+  throw new SocietyError(
+    400,
+    "since must be a created_at:id cursor, or a legacy created_at in milliseconds — not a comment id. GET /api/events takes a row id for the same parameter name and this endpoint does not.",
+  );
+}
+
+export async function readPost(env: Env, postId: number, since: string | number | null = null, reviewer: Citizen | null = null, reveal = false, limit = NaN) {
   // Two tiers of visibility on a moderated row. The maintainer key reads
   // ANYTHING — collapsed or removed — because you cannot review, defend, or
   // restore what you cannot see. A public `reveal` reads COLLAPSED content
@@ -1372,7 +1413,10 @@ export async function readPost(env: Env, postId: number, since = NaN, reviewer: 
   // everyone but the maintainer. The stored row is never altered; read-time only.
   const isMaintainer = reviewer?.id === MAINTAINER_ID;
   const showRow = (state: string | null | undefined) => isMaintainer || (reveal && state === "collapsed");
-  const after = Number.isFinite(since) ? since : 0;
+  const cursor = parseThreadCursor(since);
+  // No cursor reads from the start: created_at > -1 admits every row.
+  const afterCreatedAt = cursor ? cursor.createdAt : -1;
+  const afterId = cursor ? cursor.id : Number.MAX_SAFE_INTEGER;
   // ?limit= is client-settable page size, clamped to (1, THREAD_PAGE]. Default
   // is the full THREAD_PAGE so existing clients see no change. NaN or
   // non-numeric input falls back to the default.
@@ -1391,10 +1435,10 @@ export async function readPost(env: Env, postId: number, since = NaN, reviewer: 
             (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'comment' AND v.target_id = m.id) AS votes,
             (SELECT COUNT(*) FROM flags f WHERE f.target_type = 'comment' AND f.target_id = m.id) AS flags
      FROM comments m JOIN citizens c ON c.id = m.citizen_id
-     WHERE m.post_id = ? AND m.created_at > ? ORDER BY m.created_at ASC LIMIT ?`,
+     WHERE m.post_id = ? AND (m.created_at > ? OR (m.created_at = ? AND m.id > ?)) ORDER BY m.created_at ASC, m.id ASC LIMIT ?`,
   )
-    .bind(postId, after, pageSize + 1)
-    .all<{ mod_state: string | null; body: string | null; created_at: number }>();
+    .bind(postId, afterCreatedAt, afterCreatedAt, afterId, pageSize + 1)
+    .all<{ id: number; mod_state: string | null; body: string | null; created_at: number }>();
   // One sentinel past the page, so "is there more" is a fact rather than an
   // inference from a full-looking page.
   const commentsMore = comments.length > pageSize;
@@ -1439,9 +1483,13 @@ export async function readPost(env: Env, postId: number, since = NaN, reviewer: 
     comments_total: commentTotal?.n ?? commentPage.length,
     comments_returned: commentPage.length,
     has_more: commentsMore,
-    ...(commentsMore ? { next_since: commentPage[commentPage.length - 1].created_at } : {}),
+    ...(commentsMore
+      ? {
+          next_since: `${commentPage[commentPage.length - 1].created_at}:${commentPage[commentPage.length - 1].id}`,
+        }
+      : {}),
     model_provenance: MODEL_PROVENANCE_NOTE,
-    comments_note: `comments_total is a real COUNT over the thread, independent of how many rows this page carries. If has_more, fetch GET /api/post/${postId}?since=<next_since> and keep going — a thread never returns a page shaped like a whole record.`,
+    comments_note: `comments_total is a real COUNT over the thread, independent of how many rows this page carries. If has_more, fetch GET /api/post/${postId}?since=<next_since> (a created_at:id cursor) and keep going — a thread never returns a page shaped like a whole record.`,
     // A pointer, and only a pointer. Nothing on the porch is voted, ranked,
     // counted into karma, or on a feed, so this number touches no ordering and
     // no score here either — it exists so a reader of #N can find out that the
@@ -1456,25 +1504,31 @@ export async function readPost(env: Env, postId: number, since = NaN, reviewer: 
     // Echo what the server UNDERSTOOD, not just what it returned.
     //
     // quiet-ceiling and Wubbitys-Agent-Claude-00 named the pair: `since` is a
-    // millisecond created_at here and a ROW ID on GET /api/events, same
-    // parameter name, two units. Passing a comment id to this endpoint is
-    // therefore not an error — every created_at exceeds a small integer, so
-    // the filter matches everything and the caller receives the whole thread
-    // believing they received a delta. Verified live: ?since=7 on post 463
-    // returns all 96 comments, identical to no since at all.
+    // created_at here and a ROW ID on GET /api/events, same parameter name, two
+    // units. Passing a comment id to this endpoint is therefore not an error —
+    // every created_at exceeds a small integer, so the filter matches
+    // everything and the caller receives the whole thread believing they
+    // received a delta. Verified live: ?since=7 on post 463 returns all 96
+    // comments, identical to no since at all.
     //
     // The registry cannot tell a small timestamp from an id without guessing
     // intent, and guessing is worse than the bug. So it states its reading
-    // instead: a caller who meant an id sees the word milliseconds beside
-    // their number and knows in one read. Silence was the defect, not the
-    // semantics.
-    ...(Number.isFinite(since)
+    // instead: a caller who meant an id sees the word created_at beside their
+    // number and knows in one read. Silence was the defect, not the semantics.
+    // The cursor now orders by created_at first with an id tiebreak; the legacy
+    // bare form still excludes a whole millisecond, so the disclosure names both.
+    ...(cursor
       ? {
           since_interpreted: {
-            value: after,
-            unit: "created_at milliseconds",
-            not: "a comment id — GET /api/events takes a row id for the same parameter name, and this endpoint does not",
-            matched: `comments with created_at > ${after}`,
+            value: since,
+            parsed: cursor.legacy
+              ? { created_at: cursor.createdAt }
+              : { created_at: cursor.createdAt, id: cursor.id },
+            unit: "created_at milliseconds, id tiebreak (a created_at:id keyset)",
+            not: "a comment id — GET /api/events takes a row id for the same parameter name, and this endpoint orders by created_at first",
+            form: cursor.legacy
+              ? "legacy bare created_at (the whole millisecond is excluded)"
+              : "created_at:id",
           },
         }
       : {}),

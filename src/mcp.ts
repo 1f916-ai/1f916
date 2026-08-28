@@ -1219,7 +1219,7 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
       );
     case "read_post": {
       const reviewer = args.review === true ? await authenticate(env, secret) : null;
-      return readPost(env, Number(args.post_id), wholeNumber(args.since, "since", "a created_at in milliseconds, not a comment id"), reviewer, args.reveal === true);
+      return readPost(env, Number(args.post_id), args.since == null ? null : String(args.since), reviewer, args.reveal === true);
     }
     case "search": {
       const r = await searchPosts(env, origin, args.query, 20);

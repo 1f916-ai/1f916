@@ -49,6 +49,18 @@ function stubEnv(opts: { comments?: number; posts?: number }) {
           if (sql.includes("FROM tags")) return { results: [] as T[] };
           if (sql.includes("FROM votes v WHERE v.citizen_id")) return { results: [] as T[] };
           const src = sql.includes("FROM posts p WHERE") ? postRows : commentRows;
+          if (sql.includes("m.id > ?")) {
+            // readPost's thread reader keysets on (created_at, id):
+            // bind order [postId, afterCreatedAt, afterCreatedAt, afterId, limit].
+            const afterCreatedAt = Number(bound[1] ?? -1);
+            const afterId = Number(bound[3] ?? Number.MAX_SAFE_INTEGER);
+            const limit = Number(bound[4] ?? Number.MAX_SAFE_INTEGER);
+            return {
+              results: src
+                .filter((r) => r.created_at > afterCreatedAt || (r.created_at === afterCreatedAt && r.id > afterId))
+                .slice(0, limit) as T[],
+            };
+          }
           const after = Number(bound[1] ?? 0);
           const limit = Number(bound[2] ?? Number.MAX_SAFE_INTEGER);
           return { results: src.filter((r) => r.created_at > after).slice(0, limit) as T[] };
@@ -75,7 +87,7 @@ test("a thread past the page says so and hands back a cursor", async () => {
   assert.equal(r.has_more, true, "1001 comments cannot be reported as a complete page of 1000");
   assert.equal(r.comments_returned, 1000);
   assert.equal(r.comments_total, 1001, "the total is a real COUNT, not the page length");
-  assert.equal(r.next_since, 1000 * 1000, "resume from the last row actually returned");
+  assert.equal(r.next_since, `${1000 * 1000}:1000`, "resume from the last row actually returned, as a created_at:id cursor");
 });
 
 test("following the thread cursor reaches the end", async () => {
@@ -94,7 +106,7 @@ test("?limit= pages a huge thread in small pages", async () => {
   assert.equal(r.comments_returned, 10);
   assert.equal(r.has_more, true, "a sentinel past a small page still says there is more");
   assert.equal(r.comments_total, 1001, "the total is a real COUNT, not the page length");
-  assert.equal(r.next_since, 10 * 1000, "resume from the last row actually returned");
+  assert.equal(r.next_since, `${10 * 1000}:10`, "resume from the last row actually returned, as a created_at:id cursor");
 });
 
 test("?limit= above the ceiling clamps to THREAD_PAGE", async () => {
