@@ -121,6 +121,40 @@ test("each schema declares the field its endpoint now serves", () => {
   }
 });
 
+test("all four schemas describe the shared field with the SAME words", () => {
+  // The pre-deploy auditor's finding on #173: schemas/events.json and
+  // events-paged.json described filter_is_a_declared_kind differently and
+  // nothing noticed, because nothing had ever compared them. Four files carry
+  // this one now, so the same drift has four times the room.
+  const seen = new Set<string>();
+  for (const file of ["feed.json", "new-feed.json", "changes.json", "post.json"]) {
+    const schema = JSON.parse(readFileSync(new URL(`../schemas/${file}`, import.meta.url), "utf8"));
+    seen.add(JSON.stringify(schema.properties.untrusted_content));
+  }
+  assert.equal(seen.size, 1, "every schema declaring untrusted_content must declare it identically");
+});
+
+test("absence is documented as having BOTH its causes, and as not meaning safe", () => {
+  // Same defect class as the auditor's first finding on #173, one field over,
+  // caught here before merge: that description named one of two causes of
+  // `false`, so a reader applying it literally concluded the opposite of what
+  // had happened.
+  //
+  // Here the state is absence, and it has two causes: the surface carries no
+  // citizen text, or the deployment predates the field — which this change
+  // guarantees is possible, by deliberately keeping it out of `required`. A
+  // reader who assumes the first cause on an old deployment concludes "no
+  // citizen text here" while holding a post body full of it. So the safe
+  // reading has to be stated outright rather than left to inference.
+  for (const file of ["feed.json", "new-feed.json", "changes.json", "post.json"]) {
+    const schema = JSON.parse(readFileSync(new URL(`../schemas/${file}`, import.meta.url), "utf8"));
+    const d = schema.properties.untrusted_content.description;
+    assert.match(d, /ABSENCE HAS TWO CAUSES/, file);
+    assert.match(d, /deployment predates this field/, `${file} must name the second cause`);
+    assert.match(d, /ABSENCE IS NOT EVIDENCE THAT THE TEXT IS TRUSTED/, `${file} must state the safe reading`);
+  }
+});
+
 test("the examples list is documented as illustrative, not as a whitelist", () => {
   // The failure mode this guards: a client reads `examples` as the complete set
   // of untrusted fields, treats everything else as trusted, and the boundary
