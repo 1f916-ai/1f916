@@ -129,3 +129,57 @@ test("the disclosure names the right cohort in each regime", async () => {
   assert.equal(complete.has_more, false);
   assert.doesNotMatch(String(complete.counts_note), /counted and not listed/);
 });
+
+// The completeness absolute must not survive on ANY served surface.
+//
+// It was struck from the /api/surface summary and reappeared unchanged in two
+// places the preflight structurally could not see, because both were context
+// lines in the diff rather than added ones: what_this_is, served in the body of
+// every /api/flags response, and the `flags` MCP tool description. A single
+// response then asserted completeness in one field and denied it in another.
+// test/mcp-parity.test.ts maps route to tool NAME and never compares text, so
+// the MCP copy had no guard at all.
+//
+// This greps the served strings themselves, because that is the only thing that
+// catches a sentence nobody edited.
+//
+// Killing mutation: restore "Every flagged target" to any of the three
+// surfaces and this goes red.
+test("no flags surface claims completeness it cannot keep", async () => {
+  const society = readFileSync(new URL("../src/society.ts", import.meta.url), "utf8");
+  const mcp = readFileSync(new URL("../src/mcp.ts", import.meta.url), "utf8");
+  const surface = readFileSync(new URL("../src/surface.ts", import.meta.url), "utf8");
+
+  // Scoped to the SERVED strings, not whole files. A file-wide grep also hits
+  // code comments (society.ts describes the census as covering every flagged
+  // target, which is true of the COUNT and is not served) and src/docket.ts,
+  // whose row 610 is a dated 2026-08-13 verdict quoting the endpoint as it read
+  // then. That row is a historical record with a content_hash over it, so it is
+  // amended in the open or not at all, never quietly edited to match today.
+  const absolute = /every flagged target/i;
+  const served: [string, string][] = [
+    ["society.ts what_this_is", society.slice(society.indexOf("what_this_is:"), society.indexOf("thresholds:"))],
+    ["mcp.ts flags tool", mcp.slice(mcp.indexOf('name: "flags"'), mcp.indexOf('name: "flags"') + 700)],
+    ["surface.ts /api/flags", surface.slice(surface.indexOf('path: "/api/flags"'), surface.indexOf('path: "/api/flags"') + 900)],
+  ];
+  for (const [name, text] of served) {
+    assert.ok(text.length > 50, `${name}: the slice found nothing, so this guard would be vacuous`);
+    assert.doesNotMatch(text, absolute, `${name} must not promise every flagged target while a cap binds`);
+  }
+
+  // And each served description must point at the fields that carry the truth,
+  // so a reader is not left to infer the cap from silence.
+  const whatThisIs = society.slice(society.indexOf("what_this_is:"), society.indexOf("thresholds:"));
+  assert.match(whatThisIs, /has_more/, "the response's own description names the completeness fields");
+  const flagsTool = mcp.slice(mcp.indexOf('name: "flags"'), mcp.indexOf('name: "flags"') + 700);
+  assert.match(flagsTool, /has_more/, "the MCP tool description names them too");
+  assert.match(flagsTool, /census|not over the page/, "and says what answered/unanswered are scoped to");
+});
+
+// A live response must never assert and deny completeness in the same object.
+test("no two fields of one response disagree about completeness", async () => {
+  const r = await flagQueue(seed(205, 5)) as unknown as Record<string, unknown>;
+  assert.equal(r.has_more, true);
+  const prose = `${r.what_this_is} ${r.counts_note} ${r.thresholds}`;
+  assert.doesNotMatch(prose, /every flagged target/i, "a truncated response must not call itself complete anywhere in its own body");
+});

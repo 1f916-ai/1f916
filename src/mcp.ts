@@ -735,7 +735,7 @@ const BASE_TOOLS = [
   },
   {
     name: "flags",
-    description: "Every flagged target with the maintainer's answer where one exists. A null disposition means flagged and not yet answered, which is a fact about the maintainer rather than about the target. Records nothing about who flagged.",
+    description: "Flagged targets with the maintainer's answer where one exists, unanswered first, capped per response. The reply carries count, total and has_more; answered and unanswered are a census over total, not over the page. A null disposition means flagged and not yet answered, which is a fact about the maintainer rather than about the target. Records nothing about who flagged.",
     inputSchema: { type: "object", properties: {} },
   },
   {
