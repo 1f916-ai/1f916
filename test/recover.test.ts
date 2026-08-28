@@ -1097,9 +1097,38 @@ test("the migration produces exactly the tables and indexes schema.sql declares"
   // only 0041 would go on passing while the upgraded and the freshly installed
   // square drifted apart — which is the exact difference this test exists to
   // catch, so it has to grow a line every time a migration touches this table.
-  const migrations = ["0041_recover_by_bound_key", "0042_recovery_hold"].map((name) =>
-    readFileSync(fileURLToPath(new URL(`../migrations/${name}.sql`, import.meta.url)), "utf8"),
-  );
+  const NAMES = ["0041_recover_by_bound_key", "0042_recovery_hold", "0043_identity_event_typed_fields"];
+  const sources = new Map(NAMES.map((name) =>
+    [name, readFileSync(fileURLToPath(new URL(`../migrations/${name}.sql`, import.meta.url)), "utf8")] as const,
+  ));
+  // 0043 ALTERs a table this square did not create, so it is replayed against
+  // identity_events separately below rather than against the bare citizens
+  // stub these two build on.
+  const migrations = [sources.get(NAMES[0])!, sources.get(NAMES[1])!];
+
+  // Every table this branch's migrations touch, read out of the migration text
+  // rather than typed here. sundial's finding (c27935 on post 321): the list
+  // used to be hand-written, so a migration touching a table nobody had added
+  // to it diverged from schema.sql with nothing able to observe it. "The
+  // discipline is constant outside the tables its test watches, so nothing can
+  // observe whether it holds there."
+  const touched = new Set<string>();
+  for (const sql of sources.values())
+    for (const m of sql.matchAll(/(?:CREATE TABLE(?: IF NOT EXISTS)?|ALTER TABLE)\s+([a-z_]+)/gi))
+      if (!/_new$|_old$/.test(m[1])) touched.add(m[1]);
+
+  // A table may leave the byte-parity comparison ONLY with a reason written
+  // here. 0043 adds its two columns by ALTER, which appends to the stored
+  // CREATE, while schema.sql declares them inline with comments no ALTER can
+  // reproduce -- so a migrated square and a fresh install hold the same columns
+  // under different stored text. Rebuilding a hash-chained log table to make
+  // the text match is a categorically larger risk than the cosmetic difference
+  // it would remove, which is why this is accepted rather than fixed. It is
+  // written down HERE, in the test, rather than only in the migration's prose,
+  // because an exception that lives in prose is one nothing checks.
+  const ACCEPTED_TEXT_DIVERGENCE = new Map<string, string>([
+    ["identity_events", "0043 adds subject_thumbprint and proof_mode by ALTER; the columns match and only the stored DDL text differs. Asserted below, both halves."],
+  ]);
 
   const fromMigration = new DatabaseSync(":memory:");
   fromMigration.exec("CREATE TABLE citizens (id INTEGER PRIMARY KEY);");
@@ -1107,9 +1136,18 @@ test("the migration produces exactly the tables and indexes schema.sql declares"
   const fromSchema = new DatabaseSync(":memory:");
   fromSchema.exec(SCHEMA);
 
+  const compared = [...touched].filter((t) => !ACCEPTED_TEXT_DIVERGENCE.has(t)).sort();
+  assert.ok(compared.length >= 2, `expected the migrations to touch tables to compare, derived ${compared.length}`);
+  for (const table of touched)
+    assert.ok(
+      compared.includes(table) || (ACCEPTED_TEXT_DIVERGENCE.get(table) ?? "").length > 20,
+      `${table} is touched by a migration and is neither compared nor accepted with a reason`,
+    );
+
+  const list = compared.map((t) => `'${t}'`).join(", ");
   const shape = (db: InstanceType<typeof DatabaseSync>) =>
     (db
-      .prepare("SELECT type, name, sql FROM sqlite_master WHERE tbl_name IN ('recovery_challenges','recoveries') ORDER BY name")
+      .prepare(`SELECT type, name, sql FROM sqlite_master WHERE tbl_name IN (${list}) ORDER BY name`)
       .all() as { type: string; name: string; sql: string | null }[])
       .map((r) => `${r.type} ${r.name}: ${(r.sql ?? "").replace(/\s+/g, " ")}`);
 
@@ -1118,6 +1156,58 @@ test("the migration produces exactly the tables and indexes schema.sql declares"
   assert.ok(shape(fromSchema).some((s) => s.includes("idx_recovery_challenges_ip")), "the per-IP meter's index");
   assert.ok(shape(fromSchema).some((s) => s.includes("idx_recovery_challenges_citizen") && s.includes("created_at")), "the per-citizen index serves created_at, which is what is queried");
   assert.ok(shape(fromSchema).some((s) => s.includes("ip_hash")), "the meter's column");
+});
+
+test("0043's accepted divergence is real, and is confined to the stored text", async () => {
+  // The other half of sundial's finding. An accepted exception that nothing
+  // measures is prose, and prose goes stale silently: if 0043 were ever changed
+  // to a rebuild, the entry in ACCEPTED_TEXT_DIVERGENCE above would keep
+  // excusing a table that no longer needs excusing, and the byte-parity check
+  // would stay switched off for it forever.
+  //
+  // So both halves are asserted here. The divergence EXISTS -- a migrated
+  // square's stored DDL for identity_events differs from a fresh install's --
+  // and it is CONFINED to that text: the column sets are identical, so no
+  // reader, query or hash sees a difference between the two squares. That
+  // second half is the whole reason the exception is tolerable, and it was the
+  // half stated only in prose.
+  const { DatabaseSync } = await import("node:sqlite");
+  const migration = readFileSync(fileURLToPath(new URL("../migrations/0043_identity_event_typed_fields.sql", import.meta.url)), "utf8");
+
+  // What schema.sql said before 0043: its identity_events block with the two
+  // typed columns and the comment that introduces them taken back out. This is
+  // reconstructed rather than pasted so it cannot rot away from the real file.
+  const block = /CREATE TABLE IF NOT EXISTS identity_events \([\s\S]*?\n\);/.exec(SCHEMA);
+  assert.ok(block, "schema.sql must declare identity_events where this test reads it");
+  const before = block[0]
+    .split("\n")
+    .filter((line) => !/^\s*(subject_thumbprint|proof_mode)\b/.test(line) && !/Typed beside detail rather than inside it/.test(line))
+    .join("\n");
+  assert.ok(!/subject_thumbprint|proof_mode/.test(before), "the reconstruction must not already carry 0043's columns, or it proves nothing");
+  assert.ok(before.split("\n").length + 3 === block[0].split("\n").length, "exactly three lines removed: two columns and the comment above them");
+
+  const upgraded = new DatabaseSync(":memory:");
+  upgraded.exec("CREATE TABLE citizens (id INTEGER PRIMARY KEY);");
+  upgraded.exec(before);
+  upgraded.exec(migration);
+  const fresh = new DatabaseSync(":memory:");
+  fresh.exec(SCHEMA);
+
+  const ddl = (db: InstanceType<typeof DatabaseSync>) =>
+    String((db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'identity_events'").get() as { sql: string }).sql);
+  const columns = (db: InstanceType<typeof DatabaseSync>) =>
+    (db.prepare("SELECT name, type, \"notnull\", dflt_value FROM pragma_table_info('identity_events') ORDER BY name").all() as Record<string, unknown>[])
+      .map((c) => `${c.name} ${c.type} ${c["notnull"]} ${c.dflt_value ?? ""}`);
+
+  // KILLING MUTATION: change 0043 to rebuild the table instead of ALTERing it
+  // -> this reds, and the accepted-divergence entry must then be deleted.
+  assert.notEqual(ddl(upgraded), ddl(fresh), "the divergence this test accepts must actually exist; if it does not, remove the exception rather than keeping a dead excuse");
+
+  // KILLING MUTATION: have 0043 add a third column, or a differently typed one
+  // -> this reds, because the divergence would stop being cosmetic.
+  assert.deepEqual(columns(upgraded), columns(fresh), "and it must be confined to the stored text: the two squares must hold the same columns, or the exception is not cosmetic and is not tolerable");
+  assert.ok(columns(fresh).some((c) => c.startsWith("subject_thumbprint ")), "both squares carry 0043's first column");
+  assert.ok(columns(fresh).some((c) => c.startsWith("proof_mode ")), "and its second");
 });
 
 test("the new event kinds are in the published events schema", async () => {

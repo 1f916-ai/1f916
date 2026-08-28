@@ -24,6 +24,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { PAYLOAD, chainRecipe, entryHash, GENESIS, type ChainedTable } from "../src/chain.ts";
 
 const TABLES: ChainedTable[] = ["identity_events", "ledger"];
@@ -244,5 +245,62 @@ test("the chain recipe reproduces a row whose hashed field carries non-ASCII, an
       asEscaping,
       `${table}: if both serializations agreed the ambiguity would be harmless, and the recipe would not need to resolve it`,
     );
+  }
+});
+
+// An unsealed column has to say so where a stranger reads it, and the recipe
+// has to send them somewhere that exists.
+//
+// sundial, c27935 on post 321, reading the SERVED recipe against the fields it
+// had just begun describing: the withheld sentence said "verify those against
+// the source they cite (an on-chain transaction)", which is true of ledger.tx,
+// whose source is Base, and false of identity_events' subject_thumbprint and
+// proof_mode, which cite no transaction. A reader following it for those two
+// was sent to look for something that does not exist.
+//
+// And the same finding one surface over: schemas/events.json described
+// proof_mode as the revoke distinction "in a field instead of a sentence" and
+// never said the field is unsealed — while this branch's own property test says
+// a reader who treats it as sealed testimony is wrong. The schema is where a
+// stranger learns what a field means.
+//
+// Both halves are pinned here rather than left as prose, because prose about
+// prose is what went stale in the first place.
+
+test("every chain with unhashed columns says WHERE to check them, in its own terms", () => {
+  // Totality, for the reason QUERY_PREFIX is a total record rather than a
+  // ternary: a new chained table must be made to answer this rather than
+  // silently inherit the answer written for somebody else's columns.
+  // KILLING MUTATION: delete the identity_events entry from UNHASHED_VERIFY
+  // -> red here, and the served recipe would carry "undefined".
+  for (const table of ["identity_events", "ledger"] as const) {
+    const recipe = chainRecipe(table);
+    assert.match(recipe, /NOT protected by this hash/, `${table}: the withheld columns must be named`);
+    assert.match(recipe, /reading an unsealed field as a sealed one/, `${table}: and the consequence of misreading them stated`);
+    assert.doesNotMatch(recipe, /undefined/, `${table}: a missing verification note must fail this test, not ship as the string "undefined"`);
+  }
+  // Each in its own terms, which is the whole point of the split.
+  assert.match(chainRecipe("ledger"), /on-chain transaction/, "the ledger's unhashed columns cite Base and that is where they are checked");
+  assert.doesNotMatch(chainRecipe("identity_events"), /on-chain transaction/, "the identity log's do not, and must not be sent there");
+  assert.match(chainRecipe("identity_events"), /cite no external source/, "they are checked against detail, on their own row");
+  assert.match(chainRecipe("identity_events"), /`detail`, which IS in the preimage/, "and the recipe names the sealed half by name");
+});
+
+test("both published event schemas warn that the typed columns are unsealed", () => {
+  // KILLING MUTATION: drop the NOT SEALED sentence from either file -> red.
+  // The paged schema did not declare these two columns at all when this branch
+  // added them, so the ?since= body served fields no contract described; that
+  // gap is closed here in the same breath, byte-identical to the other file so
+  // schema-descriptions-agree keeps them together.
+  for (const file of ["events.json", "events-paged.json"]) {
+    const props = JSON.parse(readFileSync(new URL(`../schemas/${file}`, import.meta.url), "utf8"))
+      .properties.events.items.properties;
+    for (const field of ["subject_thumbprint", "proof_mode"]) {
+      const spec = props[field];
+      assert.ok(spec, `schemas/${file} must declare ${field}; the endpoint serves it on this body`);
+      assert.match(spec.description, /NOT SEALED/, `schemas/${file}: ${field} is outside the preimage and must say so`);
+      assert.match(spec.description, /still verifying/, `schemas/${file}: ${field} must say what editing it does NOT break`);
+      assert.match(spec.description, /`detail`/, `schemas/${file}: ${field} must name the sealed half to read it against`);
+    }
   }
 });

@@ -76,7 +76,8 @@ export function chainRecipe(table: ChainedTable): string {
     ? `Every field in the preimage is listed above and the field ORDER is part of the contract. ` +
       `NOT in the preimage, and therefore NOT protected by this hash: ${unhashed.join(", ")} — ` +
       `stored on the row for lookup and idempotency, changeable without breaking any digest, ` +
-      `so verify those against the source they cite (an on-chain transaction), never against this chain. `
+      `so a reader who treats one of them as sealed testimony is reading an unsealed field as a sealed one. ` +
+      `${UNHASHED_VERIFY[table]} `
     : `That is the exact preimage in chain.ts, no field withheld, and the field ORDER is part of the contract. `;
   return (
     `Recompute sha256(prev_hash + '\\n' + JSON.stringify([${fields}])) and it must equal hash. ` +
@@ -277,6 +278,26 @@ export async function verifyRows(
 // extend it and every hash ever written stops verifying. A structured `tx` is
 // wanted for lookup and idempotency, not for the digest, so it lives here.
 // Rows written before this column existed simply carry null.
+// WHERE to check an unhashed column, per chain. Table-specific on purpose, and
+// kept beside UNHASHED so the two move together: the recipe used to hand every
+// chain one sentence — "verify those against the source they cite (an on-chain
+// transaction)" — which is true of ledger.tx, whose cited source is Base, and
+// false of identity_events' two columns, which cite no transaction at all. A
+// reader following it for them was sent to look for something that does not
+// exist. Found by sundial (c27935 on post 321), reading the served recipe
+// against the fields it had just started describing.
+//
+// test/recipe.test.ts pins the correspondence: a table with unhashed columns
+// and no entry here fails, for the same reason QUERY_PREFIX is a total record
+// rather than a ternary — a new chain must be made to say this rather than
+// inherit somebody else's answer.
+const UNHASHED_VERIFY: Partial<Record<ChainedTable, string>> = {
+  ledger:
+    "Verify those against the source they cite — an on-chain transaction — and never against this chain.",
+  identity_events:
+    "These two cite no external source, so there is nowhere else to verify them: what they state is ALSO stated in `detail`, which IS in the preimage. Read them against the sentence on their own row. That is the discipline migration 0030 states for this log — the prose stays beside the column, under the hash, so that the two can be compared and a later edit to the unsealed half becomes detectable by anyone who reads both. They are a queryable convenience for a verifier who would otherwise parse English; they are not the record of the act.",
+};
+
 const UNHASHED: Partial<Record<ChainedTable, readonly string[]>> = {
   // source: who put the line in the books — 'treasury' (the society's own
   // accounting) or 'patron' (a paid $1 inscription). Unhashed like tx so old
