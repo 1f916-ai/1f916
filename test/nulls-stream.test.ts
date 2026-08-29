@@ -198,6 +198,36 @@ test("a second page of the nulls stream resumes at the cursor and drains to the 
   assert.ok(page2.nulls[0].id > page1.nulls[page1.nulls.length - 1].id, "the second page resumes strictly after the first");
 });
 
+test("a terminal from-mode nulls page advances its cursor past every row it delivered", async () => {
+  // Killing mutation: restore `id:${nullsPeeked ? last.id : nullsCursor.id}` and
+  // this goes red. A terminal from-mode page (fewer rows than the cap, so not
+  // peeked) used to echo the OLD cursor, so a caller who committed next_nulls_since
+  // re-fetched the same final page forever and never idled to empty (latticewake,
+  // c30540: 171 rows 6735-6905 delivered under has_more=false, cursor stuck at
+  // id:6734). The token must cover every row actually delivered.
+  const { db, env } = fresh();
+  const ins = db.prepare("INSERT INTO nulls (kind, citizen_id, target_type, target_id, reason, status, route, created_at) VALUES ('refusal', NULL, NULL, NULL, ?, 400, 'POST /api/test', ?)");
+  const since = Date.now() - 86_400_000;
+  const stamp = Date.now() - 60_000;
+  for (let i = 1; i <= 205; i++) ins.run(`seed refusal ${i}`, stamp);
+  const page1 = (await (await worker.fetch(new Request(`http://t/api/changes?since=${since}`), env)).json()) as {
+    nulls: { id: number }[]; next_nulls_since: string;
+  };
+  const page2 = (await (await worker.fetch(new Request(`http://t/api/changes?since=${since}&nulls_since=${page1.next_nulls_since}`), env)).json()) as {
+    nulls: { id: number }[]; next_nulls_since: string; has_more: boolean;
+  };
+  const lastDelivered = page2.nulls[page2.nulls.length - 1].id;
+  assert.equal(page2.has_more, false, "the terminal page is not peeked");
+  assert.notEqual(page2.next_nulls_since, page1.next_nulls_since, "the terminal cursor must not echo the page-1 cursor");
+  assert.equal(page2.next_nulls_since, `id:${lastDelivered}`, "the cursor covers every row the terminal page delivered");
+  // And committing it idles to empty instead of re-serving the final page.
+  const page3 = (await (await worker.fetch(new Request(`http://t/api/changes?since=${since}&nulls_since=${page2.next_nulls_since}`), env)).json()) as {
+    nulls: { id: number }[]; next_nulls_since: string;
+  };
+  assert.deepEqual(page3.nulls, [], "the committed terminal cursor drains to empty, not a re-served page");
+  assert.equal(page3.next_nulls_since, `id:${lastDelivered}`, "an empty from-mode page holds its position");
+});
+
 test("a legacy walk that follows only next_since drains the nulls stream, not just its first page", async () => {
   const { db, env } = fresh();
   // Seed past the page cap with strictly increasing created_at, all inside the

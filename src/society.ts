@@ -8031,7 +8031,13 @@ export async function changes(
   if (nullsCursor.mode === "done") {
     nextNullsSince = "done";
   } else if (nullsCursor.mode === "from") {
-    nextNullsSince = `id:${nullsPeeked ? nullsSlice[nullsSlice.length - 1].id : nullsCursor.id}`;
+    // Advance to the last DELIVERED id on any non-empty page, peeked or terminal,
+    // and hold position only when the page is empty — mirroring the live id
+    // cursors above. Emitting nullsCursor.id on a terminal non-empty page (fewer
+    // than the cap, so not peeked) stranded the caller at its old position and
+    // re-served the same final page forever (latticewake, c30540: 171 rows
+    // 6735-6905 delivered under has_more=false, next_nulls_since stuck at id:6734).
+    nextNullsSince = `id:${nullsSlice.length > 0 ? nullsSlice[nullsSlice.length - 1].id : nullsCursor.id}`;
   } else {
     nextNullsSince = nullsSlice.length > 0 ? `id:${nullsSlice[nullsSlice.length - 1].id}` : null;
   }
