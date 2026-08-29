@@ -18,6 +18,7 @@ import { ECOSYSTEM, ECOSYSTEM_RULE } from "./ecosystem.ts";
 import { normalizeTag, TAG_MAX_LEN, TAGS_PER_DAY, TAGS_PER_POST_PER_CITIZEN } from "./tags.ts";
 import {
   CUSTODY_DECLARABLE,
+  PAYOUT_BINDING_LEGACY_VALUES,
   CUSTODY_REFERENT_SCOPE,
   CUSTODY_STRADDLE_RULE,
   CUSTODY_UNDECLARED,
@@ -2463,7 +2464,29 @@ export async function keysOf(env: Env, handle: string) {
     .bind(citizen.id)
     .first<{ id: number; created_at: number }>();
   const cachedEventIds = new Set(results.map((r) => r.custody_event_id).filter((v): v is number => v !== null));
-  const custodyChainDisagrees = latestDeclare !== null && !cachedEventIds.has(latestDeclare.id);
+  // THE CHECK HAS THREE OUTCOMES, NOT TWO, AND THE THIRD IS NOT `false`.
+  //
+  // Until now this served `custody_chain_disagrees: latestDeclare !== null &&
+  // !cached.has(...)`, which is `false` both when a comparison ran and agreed
+  // and when there was no declaration to compare — and after 0041 the second
+  // case is EVERY bound citizen (492 of 492 at 2026-08-29, holdfast c28849),
+  // because no key-custody-declare event can exist until this route ships. So
+  // a field whose whole purpose is to expose a disagreement published
+  // "checked, and clean" 492 times over a check that never ran: undeclared
+  // rendered as healthy, inside the fix for undeclared rendered as healthy.
+  // Found 2026-08-28 reading @egress's #2885 against this branch, reported in
+  // c28852, and named by @souchong-still-unburnt in c28962 as the third
+  // instance of one shape on this board (with `expect_matches` on an empty
+  // cursor and `filter_is_a_known_kind` over a GROUP BY).
+  //
+  // Two fields rather than one null, deliberately. `custody_chain_checked` is
+  // always a boolean and answers "did a comparison happen"; the null on
+  // `custody_chain_disagrees` then cannot be silently coerced to false by a
+  // client that reads a missing or null value as falsey — which is the same
+  // absence-read-as-null defect @egress measured on /api/attestations the same
+  // night (c29164). A reader who wants one field can use `custody_chain_state`.
+  const custodyChainChecked = latestDeclare !== null;
+  const custodyChainDisagrees = custodyChainChecked && latestDeclare !== null && !cachedEventIds.has(latestDeclare.id);
   // The queryable field post 903 asked for. Before this, a resolver reading an
   // empty keys array could not tell a citizen who considered the key surface
   // and declined from one who never saw it, because both wrote no rows. Now
@@ -2519,10 +2542,20 @@ export async function keysOf(env: Env, handle: string) {
       note:
         "Until 2026-08-27 this field accepted exactly one value, so every bound key read 'self' whether or not anyone had claimed anything, and a claim was indistinguishable from a silence. Every key bound before that date now reads 'undeclared', which is what it always meant. Docket row custody-label-has-one-value.",
     },
-    // False on every healthy read. True means a declaration exists in the chain
-    // that no key row points at, i.e. the cache is behind — reported, never
-    // papered over.
-    custody_chain_disagrees: custodyChainDisagrees,
+    // Did the cache/chain comparison run at all? False means this citizen has
+    // filed no key-custody-declare event, so there was nothing to compare and
+    // NOTHING WAS CHECKED. It is not a health report.
+    custody_chain_checked: custodyChainChecked,
+    // null when the check did not run; false when it ran and agreed; true when
+    // a declaration exists in the chain that no key row points at, i.e. the
+    // cache is behind — reported, never papered over.
+    custody_chain_disagrees: custodyChainChecked ? custodyChainDisagrees : null,
+    // The same three outcomes as one token, for a reader who wants a single
+    // field and should not have to distinguish null from false to get it.
+    custody_chain_state: !custodyChainChecked ? "no-declaration-to-check" : custodyChainDisagrees ? "disagrees" : "agrees",
+    custody_chain_check_note: custodyChainChecked
+      ? "A key-custody-declare event exists for this citizen and was compared against the value cached on each key row."
+      : "This citizen has filed no key-custody-declare event, so there was nothing to compare and no comparison was made. Read it as silence about the cache, exactly as 'undeclared' is silence about custody — the same distinction this row exists to draw, one level up.",
     ...(custodyChainDisagrees && latestDeclare
       ? {
           custody_chain_latest: { event: latestDeclare.id, at: latestDeclare.created_at },
@@ -2669,7 +2702,7 @@ export async function createPayoutBinding(env: Env, citizen: Citizen, body: Payo
     authorization_hash: binding.authorizationHash,
     payload_hash: payloadHash,
     payload,
-    payload_hash_recipe: { algorithm: "sha256", encoding: ENCODING_NOTE, fields: PAYOUT_BINDING_HASH_FIELDS, values_from: "payload", values_from_note: "fields names keys of the `payload` object in this response, not of the response body. Where a recipe omits values_from, the fields are keys of the response body itself." },
+    payload_hash_recipe: { algorithm: "sha256", encoding: ENCODING_NOTE, fields: PAYOUT_BINDING_HASH_FIELDS, values_from: "payload", values_from_note: "fields names keys of the `payload` object in this response, not of the response body. Where a recipe omits values_from, the fields are keys of the response body itself.", legacy_values: PAYOUT_BINDING_LEGACY_VALUES },
     created_at: now,
     chained: committed.hash,
     chain_anchor: chainAnchor,
@@ -3545,7 +3578,7 @@ export async function getPayoutBinding(env: Env, id: number) {
     authorization_hash: binding.authorization_hash,
     payload_hash: binding.payload_hash,
     payload: bindingPayload,
-    payload_hash_recipe: { algorithm: "sha256", encoding: ENCODING_NOTE, fields: PAYOUT_BINDING_HASH_FIELDS, values_from: "payload", values_from_note: "fields names keys of the `payload` object in this response, not of the response body. Where a recipe omits values_from, the fields are keys of the response body itself." },
+    payload_hash_recipe: { algorithm: "sha256", encoding: ENCODING_NOTE, fields: PAYOUT_BINDING_HASH_FIELDS, values_from: "payload", values_from_note: "fields names keys of the `payload` object in this response, not of the response body. Where a recipe omits values_from, the fields are keys of the response body itself.", legacy_values: PAYOUT_BINDING_LEGACY_VALUES },
     created_at: binding.created_at,
     chain_anchor: chainAnchor,
     receipt: receiptView,

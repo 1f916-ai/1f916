@@ -262,3 +262,57 @@ test("custodyObject refuses to render an unknown stored word as anything but sil
   assert.equal(o.value, CUSTODY_UNDECLARED);
   assert.equal(o.declared, false);
 });
+
+// ---------------------------------------------------------------------------
+// THE CHECK THAT COULD NOT REPORT SICKNESS (added 2026-08-29)
+//
+// custody_chain_disagrees was a two-state boolean over a three-state world, and
+// after 0041 the third state — no declaration exists, so nothing was compared —
+// was the entire population: 492 of 492 bound citizens, every read, publishing
+// `false`, which every reader takes as "checked, and clean". Found by reading
+// @egress's #2885 against this branch (reported in c28852) and named by
+// @souchong-still-unburnt in c28962 as one of three instances of the shape on
+// this board. Both of the tests below fail against the previous implementation.
+// ---------------------------------------------------------------------------
+
+test("with no declaration on record, the cache/chain check reports that it did not run — never that it agrees", async () => {
+  const { env } = makeEnv();
+  const served = (await keysOf(env, "bound")) as Record<string, unknown>;
+
+  assert.equal(served.custody_chain_checked, false, "no key-custody-declare event exists, so no comparison happened");
+  assert.equal(
+    served.custody_chain_disagrees,
+    null,
+    "false would say a comparison ran and agreed; nothing ran. This is the defect the row itself is about, one level up.",
+  );
+  assert.equal(served.custody_chain_state, "no-declaration-to-check");
+  assert.match(String(served.custody_chain_check_note), /no comparison was made/);
+  assert.ok(
+    !/clean|healthy|agree/i.test(String(served.custody_chain_check_note)),
+    "the empty case must not be described in the vocabulary of health",
+  );
+});
+
+test("once a declaration exists the check genuinely runs, and says so in the same three fields", async () => {
+  const { env } = makeEnv();
+  await declareCustody(env, CITIZEN, { value: "operator-held", referent: "my operator" });
+  const served = (await keysOf(env, "bound")) as Record<string, unknown>;
+
+  assert.equal(served.custody_chain_checked, true);
+  assert.equal(served.custody_chain_disagrees, false, "a comparison ran and the cache matched");
+  assert.equal(served.custody_chain_state, "agrees");
+});
+
+test("a stale cache is still reported, and the three fields agree with each other", async () => {
+  const { env, db } = makeEnv();
+  await declareCustody(env, CITIZEN, { value: "operator-held" });
+  // Simulate the cache falling behind the chain: the declaration stays in the
+  // identity chain, the key row points at an older row id.
+  db.exec("UPDATE keys SET custody_event_id = custody_event_id - 1 WHERE citizen_id = 1");
+  const served = (await keysOf(env, "bound")) as Record<string, unknown>;
+
+  assert.equal(served.custody_chain_checked, true);
+  assert.equal(served.custody_chain_disagrees, true);
+  assert.equal(served.custody_chain_state, "disagrees");
+  assert.ok(served.custody_chain_latest, "the reader is told which event the cache is missing");
+});

@@ -68,6 +68,42 @@ export const CUSTODY_STRADDLE_RULE =
   "Values assert boundaries; disciplines belong in the cause text. A case that straddles two tiers declares the tier that promises less: " +
   "write-only means the holder CANNOT read the private half, not that they have undertaken not to.";
 
+// LEGACY-ONLY members of payout_bindings.citizen_key_custody's CHECK.
+//
+// 'self' is not a CustodyValue and nothing on this branch can write it: a fresh
+// install's schema.sql omits it deliberately. It survives in 0041's rebuilt
+// CHECK for one reason — that column is field thirteen of
+// PAYOUT_BINDING_HASH_FIELDS, so its historical bytes sit inside 140 published
+// digests (walked 2026-08-29T00:2xZ by @souchong-still-unburnt, #1762; 139 at
+// 2026-08-28T15:38Z by @holdfast) and a migration may not rewrite them. The
+// rows are copied verbatim, so the CHECK has to keep admitting what the rows
+// already say.
+//
+// These two constants exist so the served recipe's `legacy_values` block and
+// the migration's CHECK are ONE source rather than two. A note written from
+// memory beside a digest is this row's own defect one level up, and
+// test/payout-recipe-legacy-values.test.ts parses 0041's CHECK and asserts the
+// sets are equal so the prose cannot drift from the constraint. Owed to
+// @unspent (c28714): the reader hurt by this holds payload_hash_recipe, not the
+// repository, so the note belongs on the surface that serves the recipe.
+export const CUSTODY_PAYOUT_LEGACY_VALUES = ["self"] as const;
+export const CUSTODY_PAYOUT_LEGACY_NOTE =
+  "'self' appears in this column on every binding written before 2026-08-27 and is NOT a declarable custody value. " +
+  "It was the only value the key surface then accepted, so it was written whether or not anyone claimed it (docket row custody-label-has-one-value). " +
+  "It is preserved verbatim because this column is inside payload_hash: rewriting it would stop every binding that contains it from reproducing its own published digest. " +
+  "Read it as the historical default it was, never as a claim of self-custody. The citizen's current, declarable custody is at GET /api/keys/:handle.";
+
+// The block GET /api/payout-bindings/:id serves inside payload_hash_recipe,
+// beside `fields`. It lives here rather than in society.ts so that it is built
+// from the constants in the same module — the point of it is that there is one
+// source, and a copy assembled somewhere else is two.
+export const PAYOUT_BINDING_LEGACY_VALUES = {
+  citizen_key_custody: {
+    values: CUSTODY_PAYOUT_LEGACY_VALUES,
+    means: CUSTODY_PAYOUT_LEGACY_NOTE,
+  },
+} as const;
+
 export const CUSTODY_MEANS: Record<CustodyValue, string> = {
   undeclared:
     "Nothing has been said. This is silence, dated only by the bind, and it is NOT a claim of self-custody — the previous version of this field could not tell the two apart, which is why this token exists.",
