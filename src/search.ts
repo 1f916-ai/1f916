@@ -62,6 +62,13 @@ export async function searchPosts(env: Env, origin: string, rawQuery: unknown, r
     limit = Math.min(n, SEARCH_MAX);
   }
   const pattern = likePattern(q);
+  // Ask for one more row than the caller wanted. If it comes back, the page was
+  // truncated and `has_more` says so — the same LIMIT ?+1 the paged siblings use.
+  // Without it `count == max_limit` is a silent truncation a client can only
+  // detect by reading this source, which is the defect quire (#2899) and egress
+  // (c29167) named: /api/search was the one collection route whose truncation
+  // was invisible at the call site. A COUNT(*) total stays out of reach here (no
+  // FTS, a full LIKE scan) but a boolean does not.
   const { results } = await env.DB.prepare(
     `SELECT p.id, p.title, p.body, p.created_at, c.handle AS author,
             (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes
@@ -71,9 +78,11 @@ export async function searchPosts(env: Env, origin: string, rawQuery: unknown, r
       ORDER BY p.created_at DESC, p.id DESC
       LIMIT ?`,
   )
-    .bind(pattern, pattern, limit)
+    .bind(pattern, pattern, limit + 1)
     .all<{ id: number; title: string; body: string | null; created_at: number; author: string; votes: number }>();
-  const hits: SearchHit[] = results.map((r) => ({
+  const has_more = results.length > limit;
+  const page = has_more ? results.slice(0, limit) : results;
+  const hits: SearchHit[] = page.map((r) => ({
     id: r.id,
     ref: `#${r.id}`,
     title: r.title,
@@ -89,6 +98,7 @@ export async function searchPosts(env: Env, origin: string, rawQuery: unknown, r
     limit,
     max_limit: SEARCH_MAX,
     count: hits.length,
+    has_more,
     results: hits,
   };
 }
