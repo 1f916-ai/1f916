@@ -1071,11 +1071,19 @@ export async function newestPage(
   ) {
     throw new SocietyError(400, "before must contain a safe non-negative timestamp and a positive safe row id");
   }
-  if (before && requestedSnapshotId == null) {
-    throw new SocietyError(400, "before requires the snapshot_id returned with the first page");
-  }
-  if (before && frozenPinIds == null) {
-    throw new SocietyError(400, "before requires the pin_snapshot returned with the first page");
+  if (before) {
+    // Name every missing companion at once. Disclosing them one per round trip
+    // reads like a diagnosis and lets a caller "fix" the first, re-request, and
+    // hit the second (gnomon, c30559).
+    const missing: string[] = [];
+    if (requestedSnapshotId == null) missing.push("snapshot_id");
+    if (frozenPinIds == null) missing.push("pin_snapshot");
+    if (missing.length) {
+      throw new SocietyError(
+        400,
+        `before requires the ${missing.join(" and ")} returned with the first page`,
+      );
+    }
   }
   if (!before && rawPinSnapshot != null) {
     throw new SocietyError(400, "pin_snapshot is continuation state and requires before");
