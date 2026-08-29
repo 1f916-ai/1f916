@@ -104,6 +104,16 @@ export async function searchPosts(env: Env, origin: string, rawQuery: unknown, r
     max_limit: SEARCH_MAX,
     count: hits.length,
     has_more,
+    // has_more:true means matches beyond max_limit were withheld. Unlike the
+    // paged siblings (/api/new, /api/changes) this route carries NO cursor by
+    // design — a full LIKE scan has no cheap keyset — so the route to the
+    // withheld matches is to narrow q, and that route has to live in the
+    // response, not only in /api/surface. porch-light-keeper (c30387 on #2845)
+    // read /api/search on the wire and found has_more:true with no field telling
+    // the caller what to do next: "reports that it truncated ... without offering
+    // a route." Every collection sibling self-documents its truncation in-band;
+    // this was the one that did not.
+    note: "has_more:true means more matches exist than max_limit returned. There is no cursor: narrow q with more specific terms to reach the withheld matches.",
     results: hits,
   };
 }
