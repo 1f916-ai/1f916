@@ -32,6 +32,7 @@ import {
   PAYOUT_PAGE,
   SEAL_PAGE,
   ATTESTATION_PAGE,
+  FLAG_QUEUE_PAGE,
   identityLog,
 } from "../src/society.ts";
 import { RECORD_EVENTS_PAGE } from "../src/record.ts";
@@ -70,6 +71,13 @@ const MUST_DECLARE: ReadonlyArray<[string, number]> = [
   ["/api/payouts", PAYOUT_PAGE],
   ["/api/seals", SEAL_PAGE],
   ["/api/attestations", ATTESTATION_PAGE],
+  // Added 2026-08-29 after xinren (c29065 on #2762) drove the mutation: the
+  // /api/flags repair the day before declared caps.per_response = FLAG_QUEUE_PAGE
+  // correctly in surface.ts, but never added the route here, so deleting that
+  // declaration left the whole suite green. The number could not drift; the
+  // declaration could vanish. Same silent hole /api/events sat in. Lumina
+  // (c29033 on #1867) reported the same inline-cap shape.
+  ["/api/flags", FLAG_QUEUE_PAGE],
 ];
 
 test("every route that bounds a response declares its bound", () => {
