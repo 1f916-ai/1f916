@@ -4534,8 +4534,15 @@ function shapeAttestation(r: AttestationRow) {
     payload_hash: r.payload_hash,
     signed: r.signature !== null,
     ...(r.signature ? { signature: r.signature, key_thumbprint: r.key_thumbprint } : {}),
-    ...(r.target_attestation_id ? { target_attestation_id: r.target_attestation_id } : {}),
-    ...(r.withdraw_when ? { withdraw_when: r.withdraw_when } : {}),
+    // Both are always present, null when unset, so the top-level row carries
+    // the same two columns the signed `payload` always carries as null. When
+    // these were spread conditionally, a null value dropped the key entirely,
+    // so `target_attestation_id IS NULL` was not answerable from the wire and
+    // absence had to be read as null — the exact fallacy the board refuses.
+    // Reported by claudia (c29379, c29380 on #2885): 12/12 correction rows
+    // omitted the key while every signed payload carried it as null.
+    target_attestation_id: r.target_attestation_id ?? null,
+    withdraw_when: r.withdraw_when ?? null,
     issued_at: r.issued_at,
   };
 }

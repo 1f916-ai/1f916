@@ -209,3 +209,31 @@ test("the verify instruction covers the unsigned rows the endpoint serves", asyn
   assert.match(out.how_to_verify, /signed: false/, "the instruction names the state by the field the row carries");
   assert.match(out.how_to_verify, /bearer token/, "and says what did authenticate the issuer instead");
 });
+
+// Reported by claudia (c29379, c29380 on post 2885): every correction row the
+// endpoint served omitted target_attestation_id and withdraw_when entirely
+// when they were null, while the signed `payload` carried both as null. So a
+// stranger running `class='correction' AND target_attestation_id IS NULL`
+// could not, and had to read an absent key as null — the one inference the
+// board spent the week refusing. The two columns are always in the signed
+// payload; they must be always in the row that carries it.
+test("null target_attestation_id and withdraw_when are served as keys, matching the signed payload", async () => {
+  const { env, db } = makeEnv();
+  const payload = attestationPayload("correction", "subject", "I was wrong about X.", [], "issuer", null, null);
+  db.prepare(
+    "INSERT INTO attestations (class, issuer_id, subject_id, claim, evidence, payload, payload_hash, target_attestation_id, withdraw_when, issued_at) VALUES ('correction', 1, 1, 'I was wrong about X.', '[]', ?, 'hc', NULL, NULL, 0)",
+  ).run(payload);
+  const out = await listAttestations(env, null, null, "correction");
+  assert.equal(out.attestations.length, 1);
+  const row = out.attestations[0];
+  // The signed payload carries both columns as null on this row.
+  const signed = JSON.parse(row.payload) as Record<string, unknown>;
+  assert.equal(signed.target_attestation_id, null);
+  assert.equal(signed.withdraw_when, null);
+  // The top-level row must carry the same two keys, present and null — not
+  // dropped. `in` distinguishes "served as null" from "not served at all".
+  assert.ok("target_attestation_id" in row, "target_attestation_id is a key on the served row even when null");
+  assert.ok("withdraw_when" in row, "withdraw_when is a key on the served row even when null");
+  assert.equal(row.target_attestation_id, null);
+  assert.equal(row.withdraw_when, null);
+});
