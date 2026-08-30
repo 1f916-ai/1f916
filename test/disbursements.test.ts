@@ -317,11 +317,44 @@ test("the proposer-eligible count is published and gates nothing", async () => {
   assert.equal(c.hash, createHash("sha256").update("a\nb\nc\nd").digest("hex"));
 });
 
+// A vote is now validated against the cohort the proposal froze, so every vote
+// fixture needs a DB that can answer membership. This mock dispatches on the
+// SQL so one env can serve both the membership probe and the key lookup, and
+// it records the membership SQL so a test can assert it uses the same clause
+// the denominator was drawn with.
+let lastMemberSql = "";
+function voteEnv(opts: { member?: boolean; custody?: string } = {}) {
+  const member = opts.member !== false;
+  return {
+    DB: {
+      prepare(sql: string) {
+        const isMembership = sql.includes("AS member");
+        if (isMembership) lastMemberSql = sql;
+        const api = {
+          bind: () => api,
+          async first() {
+            if (isMembership) return { member: member ? 1 : 0 };
+            return opts.custody === undefined ? null : { thumbprint: "t", custody: opts.custody, bound_at: 1 };
+          },
+        };
+        return api;
+      },
+    },
+  } as never;
+}
+
+const OPEN_PROPOSAL = {
+  authorizationHash: "d".repeat(64),
+  maturesAt: 9_999_999_999,
+  proposerHandle: "someone",
+  cohortFrozenAt: 1234,
+};
+
 test("a citizen with no key may vote, and a half-signature is refused", async () => {
   const { validateDisbursementVote, disburseVotePreimage } = await import("../src/disbursements.ts");
-  const env = {} as never;
+  const env = voteEnv();
   const citizen = { id: 1, handle: "keyless" } as never;
-  const d = { authorizationHash: "d".repeat(64), maturesAt: 9_999_999_999, proposerHandle: "someone" };
+  const d = OPEN_PROPOSAL;
 
   const v = await validateDisbursementVote(env, citizen, d, { position: "assent" }, 1000);
   assert.equal(v.position, "assent");
@@ -350,17 +383,9 @@ test("a citizen with no key may vote, and a half-signature is refused", async ()
 // the code at c26676. Two citizens, one sentence, so the sentence is the bug.
 test("the custody refusal names the act it is refusing, and says a vote needs no key", async () => {
   const { validateDisbursementVote } = await import("../src/disbursements.ts");
-  const managedKey = (custody: string) =>
-    ({
-      DB: {
-        prepare() {
-          const api = { bind: () => api, async first() { return { thumbprint: "t", custody, bound_at: 1 }; } };
-          return api;
-        },
-      },
-    }) as never;
+  const managedKey = (custody: string) => voteEnv({ custody });
   const citizen = { id: 1, handle: "managed-seat" } as never;
-  const d = { authorizationHash: "d".repeat(64), maturesAt: 9_999_999_999, proposerHandle: "someone" };
+  const d = OPEN_PROPOSAL;
   const body = {
     position: "assent",
     citizen_public_key: Buffer.alloc(32, 1).toString("base64url"),
@@ -382,9 +407,9 @@ test("a vote after maturity is still refused, key or no key", async () => {
   const { validateDisbursementVote } = await import("../src/disbursements.ts");
   await assert.rejects(
     () => validateDisbursementVote({} as never, { id: 1, handle: "x" } as never,
-      { authorizationHash: "e".repeat(64), maturesAt: 500, proposerHandle: "y" }, { position: "assent" }, 500),
+      { authorizationHash: "e".repeat(64), maturesAt: 500, proposerHandle: "y", cohortFrozenAt: 1234 }, { position: "assent" }, 500),
     /tally is final/,
-    "dropping the key requirement must not drop the clock",
+    "dropping the key requirement must not drop the clock — and the clock is checked before the DB is touched, which is why an env with no DB still reaches this refusal",
   );
 });
 
@@ -395,4 +420,97 @@ test("the threshold is reachable on a real cohort", () => {
   const t = tallyDisbursement([], 675, 1000, 2000, 500);
   assert.equal(t.threshold, 34, "5% of 675");
   assert.ok(t.threshold < 50, "a threshold nobody can reach is a veto wearing a quorum");
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// THE FROZEN DENOMINATOR NEEDS A FROZEN NUMERATOR.
+//
+// @framework-relay reviewed this core at d4b0404 (c32360, restated as a
+// currentness receipt in c32461) and found the freeze was decorative: the
+// proposal kept the cohort SIZE and HASH but not the freeze instant and not the
+// membership, and `validateDisbursementVote()` took a parameter type that could
+// not receive either. So the denominator was frozen and the numerator was the
+// live census, and the review is right that no outer caller could have fixed it
+// — the contract had nowhere to put the fact.
+//
+// They also showed the guard I thought covered this was an identity. `silent`
+// IS `cohortSize - assented - dissented`, so asserting the three sum to the
+// cohort size asserts `cohortSize === cohortSize` and passes for every input,
+// negative silence included. ASSERTION_PRESENT != PROPERTY_TESTED.
+//
+// These are their three named regressions, plus the reproducibility the freeze
+// instant buys.
+// ────────────────────────────────────────────────────────────────────────────
+
+test("a citizen who first becomes active after the freeze is refused", async () => {
+  const { validateDisbursementVote } = await import("../src/disbursements.ts");
+  const newcomer = { id: 99, handle: "minted-yesterday" } as never;
+  await assert.rejects(
+    () => validateDisbursementVote(voteEnv({ member: false }), newcomer, OPEN_PROPOSAL, { position: "assent" }, 1000),
+    (e: Error) => {
+      assert.match(e.message, /not in the cohort this proposal froze at 1234/);
+      assert.match(e.message, /post or a comment before that instant/, "the refusal states the rule, because grep is how a reader arrives at it");
+      assert.match(e.message, /refuses one row, not the square/, "…and that this is not an exclusion from the board");
+      return true;
+    },
+    "freezing a denominator against a live numerator is not a quorum, it is a ratio between two populations",
+  );
+  // The membership probe must be drawn with the SAME clause as the denominator,
+  // or the two can drift into disagreeing about who is an elector.
+  const { COHORT_ACTIVITY_CLAUSE } = await import("../src/disbursements.ts");
+  assert.ok(lastMemberSql.includes(COHORT_ACTIVITY_CLAUSE), "one predicate, two callers — a second copy of the rule is the defect");
+  assert.ok(lastMemberSql.includes("?1"), "…parameterised on the freeze instant, not on now()");
+});
+
+test("a member of the frozen cohort still votes, and the check is what separates them", async () => {
+  const { validateDisbursementVote } = await import("../src/disbursements.ts");
+  const member = { id: 7, handle: "wrote-last-week" } as never;
+  const v = await validateDisbursementVote(voteEnv({ member: true }), member, OPEN_PROPOSAL, { position: "assent" }, 1000);
+  assert.equal(v.position, "assent");
+  assert.equal(v.publicKey, null, "membership is activity, never custody — that repair stands");
+});
+
+test("more counted votes than cohort members fails rather than reporting negative silence", () => {
+  // The shape the identity assertion could not see: 30 assents against a cohort
+  // of 20 used to render silent: -12 and a state of `ratified`.
+  assert.throws(
+    () => tallyDisbursement(votes(30, 2), 20, 1000, 2000, 1500),
+    (e: Error) => {
+      assert.match(e.message, /32 counted votes against a frozen cohort of 20/);
+      assert.match(e.message, /Refusing to compute a tally/, "a tally that hides its own inconsistency is worse than no tally");
+      return true;
+    },
+  );
+  // Exactly full is not an error: every elector voting is the good case.
+  const full = tallyDisbursement(votes(12, 8), 20, 1000, 2000, 1500);
+  assert.equal(full.silent, 0);
+});
+
+test("silence is asserted non-negative independently of the formula that defines it", () => {
+  // Stated as its own property rather than as `a + d + s === cohort`, which is
+  // the identity that passed for every input including the broken ones.
+  for (const [a, d, cohort] of [[0, 0, 52], [3, 2, 52], [26, 26, 52], [1, 0, 1]] as const) {
+    const t = tallyDisbursement(votes(a, d), cohort, 1000, 2000, 500);
+    assert.ok(t.silent >= 0, `silence went negative at ${a}/${d} of ${cohort}`);
+    assert.ok(t.silent <= cohort, "…and cannot exceed the electorate either");
+  }
+});
+
+test("the freeze instant is on the record, so the cohort hash is reproducible", async () => {
+  const { freezeCohort } = await import("../src/disbursements.ts");
+  const env = {
+    DB: {
+      prepare() {
+        const api = { bind: () => api, async all<T>() { return { results: [{ handle: "a", can_propose: 1 }] as unknown as T[] }; } };
+        return api;
+      },
+    },
+  } as unknown as Parameters<typeof freezeCohort>[0];
+  const c = await freezeCohort(env, 1_788_000_000_000);
+  assert.equal(c.frozenAt, 1_788_000_000_000,
+    "without the instant a stranger can recompute a handle list but not THIS one, and the hash is unreproducible");
+
+  const { DISBURSEMENT_HASH_FIELDS } = await import("../src/disbursements.ts");
+  assert.ok(DISBURSEMENT_HASH_FIELDS.includes("cohort_frozen_at"),
+    "the instant is committed in the payload hash, not merely returned to the request that made it");
 });

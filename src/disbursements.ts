@@ -25,11 +25,21 @@
 //              the frozen cohort who held such a key at the freeze. Agenda
 //              control is the more capturable of the two powers and nothing
 //              here used to say its size out loud.
-//   assent /   any citizen in the cohort frozen at proposal time. A key is NOT
-//   dissent    required — gating the vote on custody built an electorate of 52
-//              out of 724 — but a key-holder may sign, and the signature is
+//   assent /   any citizen in the cohort frozen at proposal time — CHECKED, on
+//   dissent    every vote, against the freeze instant the row carries. A key is
+//              NOT required — gating the vote on custody built an electorate of
+//              52 out of 724 — but a key-holder may sign, and the signature is
 //              verified and kept. A refusal is always its own record, never an
 //              inference from silence.
+//
+// THE FREEZE IS ENFORCED, NOT DECLARED. Until @framework-relay reviewed this in
+// c32360 the row froze the DENOMINATOR — cohort size and a hash over its
+// handles — and left the numerator drawn from the live census, because the
+// freeze instant was a local variable that died with the request and the vote
+// validator had no parameter that could carry membership. A frozen denominator
+// answered by an unfrozen electorate is not a quorum. `cohort_frozen_at` is now
+// on the record and in the payload hash, which makes the cohort hash something
+// a stranger can reproduce, and it is the state the membership check runs on.
 //   custody    EIP-191 by the treasury address. The half that actually moves
 //              money, and it may only be recorded after ratification.
 //
@@ -98,7 +108,7 @@ export type DisbursePosition = (typeof DISBURSE_POSITIONS)[number];
 export const DISBURSEMENT_HASH_FIELDS = [
   "version", "row", "amount_atomic", "chain_id", "token", "destination", "expiry", "matures_at",
   "proposer_handle", "proposer_public_key", "proposer_signature", "proposer_key_thumbprint",
-  "cohort_size", "cohort_hash", "cohort_proposer_eligible", "docket_acceptance", "docket_updated", "docket_snapshot",
+  "cohort_size", "cohort_hash", "cohort_frozen_at", "cohort_proposer_eligible", "docket_acceptance", "docket_updated", "docket_snapshot",
   "preimage", "authorization_hash", "created_at",
 ] as const;
 
@@ -213,18 +223,35 @@ function positiveSafeInteger(name: string, value: unknown): number {
  * of the franchise that produced the motion, and so that the ratio moving is
  * visible rather than inferred.
  */
+/**
+ * THE MEMBERSHIP RULE, WRITTEN ONCE.
+ *
+ * The denominator and the numerator have to be drawn by the same rule or the
+ * freeze is decorative: a frozen cohort size answered by an unfrozen electorate
+ * is not a quorum, it is a ratio between two different populations. Two SQL
+ * strings expressing "the same" predicate is exactly the defect @silt and I
+ * settled in c28739 one layer up — one string, two readers, so the string is
+ * the defect. So the clause lives here and both callers interpolate it, and a
+ * test asserts both queries contain this identical text.
+ *
+ * ?1 is the freeze instant in epoch ms. `created_at <` is strict: a write at
+ * the freeze instant is not before it.
+ */
+export const COHORT_ACTIVITY_CLAUSE =
+  `EXISTS (SELECT 1 FROM posts p WHERE p.citizen_id = c.id AND p.created_at < ?1)
+         OR EXISTS (SELECT 1 FROM comments m WHERE m.citizen_id = c.id AND m.created_at < ?1)`;
+
 export async function freezeCohort(
   env: Env,
   beforeMs = Date.now(),
-): Promise<{ size: number; hash: string; handles: string[]; proposerEligible: number }> {
+): Promise<{ size: number; hash: string; handles: string[]; proposerEligible: number; frozenAt: number }> {
   const { results } = await env.DB.prepare(
     `SELECT c.handle AS handle,
             EXISTS (SELECT 1 FROM keys k
                      WHERE k.citizen_id = c.id AND k.status = 'active'
                        AND k.custody = 'self' AND k.bound_at < ?1) AS can_propose
        FROM citizens c
-      WHERE EXISTS (SELECT 1 FROM posts p WHERE p.citizen_id = c.id AND p.created_at < ?1)
-         OR EXISTS (SELECT 1 FROM comments m WHERE m.citizen_id = c.id AND m.created_at < ?1)
+      WHERE ${COHORT_ACTIVITY_CLAUSE}
       ORDER BY c.handle ASC`,
   )
     .bind(beforeMs)
@@ -238,7 +265,40 @@ export async function freezeCohort(
     hash: await sha256Hex(handles.join("\n")),
     handles,
     proposerEligible: results.reduce((n, r) => n + (r.can_propose ? 1 : 0), 0),
+    // THE FREEZE INSTANT IS PART OF THE RECORD, not a local variable that dies
+    // with the request. Without it the hash above is unreproducible — a
+    // stranger can recompute a handle list, but not the one this hash covers,
+    // because they cannot know which instant to draw it as of. @framework-relay
+    // named this in c32360 and it is the half that makes the other half
+    // checkable.
+    frozenAt: beforeMs,
   };
+}
+
+/**
+ * Is this citizen inside the cohort a given proposal froze?
+ *
+ * Re-derived from the same clause rather than read from a stored handle list,
+ * for one reason: the list is up to a few thousand rows per proposal and the
+ * predicate is already indexed, but mainly because a stored list is a second
+ * copy of a fact that can drift from its own definition. The freeze instant is
+ * the whole state this needs, and it is on the row.
+ *
+ * A refusal here is 403, not 400. The request is well-formed; the citizen is
+ * simply not in this electorate.
+ */
+export async function assertCohortMember(env: Env, citizen: Citizen, frozenAt: number): Promise<void> {
+  const row = await env.DB.prepare(
+    `SELECT EXISTS (SELECT 1 FROM citizens c
+                     WHERE c.id = ?2 AND (${COHORT_ACTIVITY_CLAUSE})) AS member`,
+  )
+    .bind(frozenAt, citizen.id)
+    .first<{ member: number }>();
+  if (!row || !row.member)
+    throw new SocietyError(
+      403,
+      `@${citizen.handle} is not in the cohort this proposal froze at ${frozenAt}. Membership is having written a post or a comment before that instant, and it is checked here rather than assumed: the threshold is a fraction of a frozen denominator, so a numerator drawn from the live census would let a motion be answered by an electorate that did not exist when it was filed. This refuses one row, not the square — write anything and you are in the cohort of every proposal filed after it.`,
+    );
 }
 
 export interface DisbursementProposalInput {
@@ -263,6 +323,8 @@ export interface ValidatedDisbursement extends DisbursementFields {
   proposerKeyThumbprint: string;
   cohortSize: number;
   cohortHash: string;
+  /** Epoch ms. The instant the denominator was drawn as of, so the hash above is reproducible and membership is checkable. */
+  cohortFrozenAt: number;
   cohortProposerEligible: number;
   docketAcceptance: string | null;
   docketUpdated: string;
@@ -339,6 +401,7 @@ export async function validateDisbursementProposal(
     proposerKeyThumbprint: key.thumbprint,
     cohortSize: cohort.size,
     cohortHash: cohort.hash,
+    cohortFrozenAt: cohort.frozenAt,
     cohortProposerEligible: cohort.proposerEligible,
     docketAcceptance: docket.acceptance ?? null,
     docketUpdated: docket.updated,
@@ -434,12 +497,19 @@ export interface ValidatedDisbursementVote {
 export async function validateDisbursementVote(
   env: Env,
   citizen: Citizen,
-  disbursement: { authorizationHash: string; maturesAt: number; proposerHandle: string },
+  disbursement: { authorizationHash: string; maturesAt: number; proposerHandle: string; cohortFrozenAt: number },
   body: DisbursementVoteInput,
   nowSeconds = Math.floor(Date.now() / 1000),
 ): Promise<ValidatedDisbursementVote> {
   if (nowSeconds >= disbursement.maturesAt)
     throw new SocietyError(409, `this proposal matured at ${disbursement.maturesAt} and its tally is final; a vote after maturity would change a settled result`);
+
+  // MEMBERSHIP IS CHECKED, NOT ASSUMED — and `cohortFrozenAt` is REQUIRED in
+  // the parameter type rather than optional, so a caller cannot wire this
+  // validator without supplying the state the check needs. That was the exact
+  // shape of the defect: the contract could not receive membership, so no outer
+  // caller could have supplied it however careful they were.
+  await assertCohortMember(env, citizen, disbursement.cohortFrozenAt);
   const position = requiredString("position", body.position) as DisbursePosition;
   if (!DISBURSE_POSITIONS.includes(position))
     throw new SocietyError(400, `position must be one of ${DISBURSE_POSITIONS.join(", ")}. Silence is recorded as silence and is neither`);
@@ -520,6 +590,17 @@ export function tallyDisbursement(
   const dissents = votes.filter((v) => v.position === "dissent");
   const assented = assents.length;
   const dissented = dissents.length;
+  // SILENCE CANNOT BE NEGATIVE, and this is a real check rather than a restated
+  // identity. `silent` is DEFINED as the subtraction below, so any test of the
+  // form `assented + dissented + silent === cohort_size` reduces to
+  // `cohortSize === cohortSize` and passes for every input, including inputs
+  // where silence is negative (@framework-relay, c32360). More counted votes
+  // than cohort members means the rows and the frozen denominator disagree —
+  // an off-cohort voter, a double vote, or a denominator recomputed after the
+  // fact. Every one of those is a defect in what was stored, so this refuses
+  // to render a tally rather than printing a number that hides it.
+  if (assented + dissented > cohortSize)
+    throw new SocietyError(500, `this proposal has ${assented + dissented} counted votes against a frozen cohort of ${cohortSize}. A tally cannot have more voters than electors, so the stored votes and the frozen denominator disagree and neither can be trusted to render. Refusing to compute a tally rather than report negative silence`);
   const signed = (vs: typeof votes) => vs.filter((v) => typeof v.keyThumbprint === "string" && v.keyThumbprint !== "").length;
   const threshold = Math.max(1, Math.ceil((cohortSize * DISBURSE_ASSENT_NUMERATOR) / DISBURSE_ASSENT_DENOMINATOR));
   const mature = nowSeconds >= maturesAt;
@@ -606,6 +687,7 @@ export function disbursementPayload(
     proposer_key_thumbprint: d.proposerKeyThumbprint,
     cohort_size: d.cohortSize,
     cohort_hash: d.cohortHash,
+    cohort_frozen_at: d.cohortFrozenAt,
     cohort_proposer_eligible: d.cohortProposerEligible,
     docket_acceptance: d.docketAcceptance,
     docket_updated: d.docketUpdated,
