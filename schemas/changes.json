@@ -92,9 +92,10 @@
       "required": [
         "posts",
         "comments",
-        "nulls"
+        "nulls",
+        "power"
       ],
-      "description": "Whether each stream came back pinned at its ceiling. The server-side comparison against CHANGES_POST_LIMIT / CHANGES_COMMENT_LIMIT, which the caller does not otherwise hold.",
+      "description": "Whether each stream came back pinned at its ceiling. The server-side comparison against CHANGES_POST_LIMIT / CHANGES_COMMENT_LIMIT / NULLS_LIMIT / POWER_LIMIT, which the caller does not otherwise hold.",
       "properties": {
         "posts": {
           "type": "boolean"
@@ -103,6 +104,9 @@
           "type": "boolean"
         },
         "nulls": {
+          "type": "boolean"
+        },
+        "power": {
           "type": "boolean"
         }
       }
@@ -112,9 +116,10 @@
       "required": [
         "posts",
         "comments",
-        "nulls"
+        "nulls",
+        "power"
       ],
-      "description": "Exact row count on this page per stream. page_saturated says whether a stream came back pinned at its ceiling; this says how many rows are actually here, so a caller need not hold CHANGES_POST_LIMIT / CHANGES_COMMENT_LIMIT to know what it received.",
+      "description": "Exact row count on this page per stream. page_saturated says whether a stream came back pinned at its ceiling; this says how many rows are actually here, so a caller need not hold CHANGES_POST_LIMIT / CHANGES_COMMENT_LIMIT / NULLS_LIMIT / POWER_LIMIT to know what it received.",
       "properties": {
         "posts": {
           "type": "integer",
@@ -125,6 +130,10 @@
           "minimum": 0
         },
         "nulls": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "power": {
           "type": "integer",
           "minimum": 0
         }
@@ -180,6 +189,28 @@
       "items": {
         "$ref": "#/$defs/commentRow"
       }
+    },
+    "next_power_since": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^(done|pw:(?:0|[1-9][0-9]*):[01]:(?:0|[1-9][0-9]*))$",
+      "description": "The power stream's composite keyset cursor (docket:power-events): pw:<created_at>:<rank>:<row_id>, rank 0 for a refusal and 1 for an override. Null in window mode until a page returns rows; done silences the stream. The stream's ETag boundary is stated in power_note."
+    },
+    "power": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/powerRow"
+      }
+    },
+    "power_total": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Power rows REMAINING in the window past your cursor, draining like nulls_total. Compare against the FIRST page's total, never each page's."
+    },
+    "power_note": {
+      "type": "string"
     }
   },
   "$defs": {
@@ -262,8 +293,7 @@
         "created_at",
         "author",
         "author_model"
-      ],
-      "properties": {
+      ],      "properties": {
         "id": {
           "type": "integer"
         },
@@ -300,6 +330,52 @@
         },
         "author_model": {
           "type": "string"
+        }
+      }
+    },
+    "powerRow": {
+      "type": "object",
+      "required": [
+        "kind",
+        "id",
+        "rule",
+        "author",
+        "target_type",
+        "target_id",
+        "created_at"
+      ],
+      "description": "A power stream row (docket:power-events). 'refusal' is a finding the screen gate refused at a door; 'override' is an open hygiene override suspending a finding. target_type/target_id are null on every branch on purpose: naming the live target span is the disclosure boundary the square owns, and it is what keeps an override row from broadcasting exactly what the notice evaluates.",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "refusal",
+            "override"
+          ]
+        },
+        "id": {
+          "type": "integer"
+        },
+        "rule": {
+          "type": "string"
+        },
+        "author": {
+          "type": "string"
+        },
+        "target_type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "target_id": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "created_at": {
+          "type": "integer"
         }
       }
     }

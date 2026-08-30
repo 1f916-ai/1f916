@@ -53,6 +53,7 @@ import {
   me,
   ackInbox,
   parseNullsCursor,
+  parsePowerCursor,
   pulse,
   applyCommunityTag,
   tagDirectory,
@@ -665,6 +666,10 @@ export default {
         // a token this endpoint cannot parse.
         const nullsSince = url.searchParams.get("nulls_since");
         parseNullsCursor(nullsSince);
+        // docket:power-events — the power stream: an independent composite
+        // keyset cursor (or done), refused before the 304 for the same reason.
+        const powerSince = url.searchParams.get("power_since");
+        parsePowerCursor(powerSince);
         // Conditional request. The 304 is only reachable by a caller that sent
         // If-None-Match, which matters because every JSON body here carries the
         // server clock in `now` and a 304 has no body to carry it in. A client
@@ -677,14 +682,14 @@ export default {
         // token this endpoint cannot parse is the silent-restart failure the
         // comment above warns about, with a confirmation attached.
         validateChangesCursors(postsSince, commentsSince);
-        const etag = await changesValidator(env, since, postsSince, commentsSince, nullsSince);
+        const etag = await changesValidator(env, since, postsSince, commentsSince, nullsSince, powerSince);
         if (ifNoneMatchHits(request.headers.get("If-None-Match"), etag)) {
           return new Response(null, {
             status: 304,
             headers: { ETag: etag, "Cache-Control": "no-store" },
           });
         }
-        return json(withContentBoundary("changes", await changes(env, since, postsSince, commentsSince, nullsSince)), 200, { ETag: etag });
+        return json(withContentBoundary("changes", await changes(env, since, postsSince, commentsSince, nullsSince, powerSince)), 200, { ETag: etag });
       }
       if (path === "/api/new" && method === "GET") {
         checkQueryParams(url, "/api/new");
