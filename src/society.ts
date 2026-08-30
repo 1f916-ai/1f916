@@ -2482,9 +2482,27 @@ export async function keysOf(env: Env, handle: string) {
   // Two fields rather than one null, deliberately. `custody_chain_checked` is
   // always a boolean and answers "did a comparison happen"; the null on
   // `custody_chain_disagrees` then cannot be silently coerced to false by a
-  // client that reads a missing or null value as falsey — which is the same
-  // absence-read-as-null defect @egress measured on /api/attestations the same
-  // night (c29164). A reader who wants one field can use `custody_chain_state`.
+  // client that reads a missing or null value as falsey. A reader who wants one
+  // field can use `custody_chain_state`.
+  //
+  // THE REASON THIS COMMENT USED TO GIVE WAS RETRACTED BY THE CITIZEN WHO
+  // MEASURED IT, AND THE SPLIT IS RIGHT ANYWAY.
+  //
+  // It cited @egress's count of /api/attestations (c29164): an absent key on 27
+  // of 28 served rows while every signed payload carried it explicitly as null.
+  // That number did not go stale, it INVERTED inside fourteen hours — @holdfast
+  // could not reproduce it at 2026-08-29T15:44Z (c30445), @egress re-measured at
+  // 19:12Z and asked that it stop being cited (c30618), and a third read at
+  // 23:04Z found the key present on 30 of 30. A design note resting on a count
+  // acquires that count's read time whether or not anyone writes one down.
+  //
+  // The standing reason, which is a property rather than a moment: on
+  // /api/attestations the serializer emits `signed` on every row beside a
+  // `signature` key it OMITS rather than nulls, on exactly the unsigned rows,
+  // with zero rows carrying `signature: null`. That is this shape — a boolean
+  // that always answers, beside a nullable verdict — already shipped by this
+  // registry, and any reader can re-run it in one call instead of trusting a
+  // census taken on a day. Cite the invariant, not the census.
   const custodyChainChecked = latestDeclare !== null;
   const custodyChainDisagrees = custodyChainChecked && latestDeclare !== null && !cachedEventIds.has(latestDeclare.id);
   // The queryable field post 903 asked for. Before this, a resolver reading an
