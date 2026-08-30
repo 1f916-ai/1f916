@@ -1460,3 +1460,59 @@ test("a payee with more receipts than rows marks every row they filed and no mor
   assert.deepEqual(detail.submissions.filter((x) => x.paid_by_third_party).map((x) => x.id), [only.id], "one row exists, so one row is marked; the flags cannot invent a row for the second receipt");
   assert.equal(detail.bindings.filter((b) => b.handle === "li-nuwa" && b.receipt_id !== null).length, 2, "and both receipts remain visible under bindings, which is why the note calls the row count an upper bound");
 });
+
+// F-0021 (@xinren, c31019 on #2762, c31018 on #1867): GET /api/listings/:id
+// served `submissions` and `bindings` as bare arrays, both capped at LIMIT 200,
+// with no count/total/has_more — so a page clipped at the cap was
+// byte-identical to a whole one, under a manifest whose paging_note reads "A
+// route with no caps field returns its whole result set. Nothing here truncates
+// silently." @xinren's own negative control was GET /api/tags and
+// GET /api/witnesses, which serve the three fields on the identical rule; this
+// pins the same shape onto listings. The cap does not bind on today's data
+// (largest listing well under 200), which is why the false promise is latent,
+// and why total must be a real COUNT independent of the served page for the
+// signal to mean anything when it does bind.
+//
+// KILLING MUTATIONS, each confirmed red against a scratch revert before
+// shipping:
+//  - drop submissions_total/has_more or bindings_total/has_more from the return
+//    -> the assertions on those fields go red (undefined !== number/boolean).
+//  - fall bindings_total back to the page length (results.length) -> the 201-row
+//    case below reports total 200 against a real 201 and goes red.
+//  - hard-code either has_more to false -> the 201-row case reports
+//    bindings_has_more false where the page clips and goes red.
+test("GET /api/listings/:id serves count/total/has_more on both capped lists, and has_more fires when the 200-row cap binds", async () => {
+  const ed = generateKeyPairSync("ed25519");
+  const publicKey = (ed.publicKey.export({ format: "jwk" }) as { x: string }).x;
+  const { env, db } = makeEnv(publicKey);
+  await createListing(env, FUNDER as never, { title: "Completeness on the listing detail", condition: CONDITION, amount_atomic: "5000000", expiry: NOW + 7 * 86400 });
+  await createSubmission(env, PAYEE as never, 1, { artifact: "https://github.com/1f916-ai/1f916/pull/1000" });
+  await createSubmission(env, VERIFIER as never, 1, { artifact: "https://github.com/1f916-ai/1f916/pull/1001" });
+
+  // Small listing: every row fits on the page, so both lists are provably whole.
+  let detail = await getListing(env, 1);
+  assert.equal(detail.submissions_count, 2);
+  assert.equal(detail.submissions_total, 2);
+  assert.equal(detail.submissions_has_more, false, "two submissions, both served, so nothing is withheld");
+  assert.equal(detail.bindings_count, 0);
+  assert.equal(detail.bindings_total, 0);
+  assert.equal(detail.bindings_has_more, false);
+  assert.equal(detail.submissions_count, detail.submissions.length, "count is the served array length, not a claimed number");
+  assert.equal(detail.bindings_count, detail.bindings.length);
+
+  // Push the bindings list past the 200-row cap so the promise actually binds.
+  // These are raw rows, not filed through createPayoutBinding: the point is the
+  // completeness COUNT and the page clip, not the authorization path.
+  const insert = db.prepare("INSERT INTO payout_bindings (citizen_id, docket_id, created_at) VALUES (2, 'listing-1', ?)");
+  for (let i = 0; i < 201; i++) insert.run(NOW + i);
+
+  detail = await getListing(env, 1);
+  assert.equal(detail.bindings.length, 200, "the query clips the page at LIMIT 200");
+  assert.equal(detail.bindings_count, 200, "count reports the clipped page length");
+  assert.equal(detail.bindings_total, 201, "total is a real COUNT over the whole listing, independent of the page");
+  assert.equal(detail.bindings_has_more, true, "has_more is true exactly because the page does not hold every binding");
+  // The submissions list was untouched and stays provably whole beside the
+  // clipped bindings list, so the two denominators are independent.
+  assert.equal(detail.submissions_total, 2);
+  assert.equal(detail.submissions_has_more, false);
+});

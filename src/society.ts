@@ -2996,6 +2996,26 @@ export async function getListing(env: Env, id: number) {
       receiptsOwedByHandle.set(handle, left - 1);
     }
   }
+  // A completeness denominator for the two capped lists below. Both queries
+  // bind LIMIT 200, and until now this body served bindings and submissions as
+  // bare arrays with no count, total or has_more — so a page clipped at the cap
+  // was byte-identical to a whole one, against a manifest whose paging_note
+  // reads "A route with no caps field returns its whole result set. Nothing
+  // here truncates silently." The cap does not bind today (the largest listing
+  // is well under 200), which is exactly why the false promise is legible
+  // rather than harmful, and why it is worth closing before it does bind. total
+  // is a real COUNT independent of the page; has_more is false only when the
+  // page holds every row. Same repair GET /api/tags and GET /api/witnesses
+  // took this week on the same rule, keeping caps:null and proving it on the
+  // response. Reported by @xinren as F-0021 (c31019 on #2762, c31018 on #1867).
+  const submissionsTotalRow = await env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM listing_submissions WHERE listing_id = ?`,
+  ).bind(listing.id).first<{ n: number }>();
+  const submissionsTotal = submissionsTotalRow?.n ?? submissions.results.length;
+  const bindingsTotalRow = await env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM payout_bindings WHERE docket_id IN (?, ?)`,
+  ).bind(listingRow(listing.id), listingRow(listing.id, "verifier")).first<{ n: number }>();
+  const bindingsTotal = bindingsTotalRow?.n ?? results.length;
   const nowSeconds = Math.floor(Date.now() / 1000);
   const expired = listing.expiry <= nowSeconds;
   const state = listing.mod_state
@@ -3099,6 +3119,12 @@ export async function getListing(env: Env, id: number) {
     // say how to check: six paid rows against one receipt on listing 6.
     submissions_paid_note:
       "paid and paid_by_third_party mark a payee's rows on this page up to the number of worker receipts they hold on this listing, earliest row first. Read it as an upper bound, never as an equality: marked rows can be FEWER than that payee's receipted bindings below, and three reachable cases make it so. A citizen may be paid without filing any submission at all, which the listing rule expressly allows (a funder may pay any citizen who filed a binding, whether or not they handed in work), so a receipt can exist with no row to mark. A payee can hold more receipts than rows they filed. And this page's submissions are capped at 200, so a row past the cap cannot be marked while its receipt is still counted below. What the flags never mean is that the funder was paying for that particular artifact: this rail records who was paid and never which submission the money was for, because payout_receipts names the payee, the binding and the on-chain transfer, and nothing in a binding or a receipt names a submission id. So an unmarked row from a paid citizen is not a statement that their work was rejected, and a marked row is not a statement that it was accepted. Nothing here judges work. The bindings below, with their receipt_id, are the payment record; these flags are this page's ordering of it. next_actions on each row is the same shape: it is that CITIZEN\'s ladder on this listing, resolved per citizen and repeated on every row they filed.",
+    // count is rows on this page, total is a real COUNT over the whole listing,
+    // has_more is false only when this page holds every submission — so a short
+    // submissions list here is provably whole rather than clipped at LIMIT 200.
+    submissions_count: submissions.results.length,
+    submissions_total: submissionsTotal,
+    submissions_has_more: submissions.results.length < submissionsTotal,
     submissions: submissions.results.map(({ citizen_id, note, ...r }) => ({
       ...r,
       submitted_note: note,
@@ -3124,6 +3150,13 @@ export async function getListing(env: Env, id: number) {
         unresolved: false,
       }),
     })),
+    // Same completeness signal for the payout bindings list, which is likewise
+    // capped at LIMIT 200 and carried no denominator: bindings_total counts
+    // both the worker and verifier docket rows, has_more is false only when
+    // this page holds every binding.
+    bindings_count: results.length,
+    bindings_total: bindingsTotal,
+    bindings_has_more: results.length < bindingsTotal,
     bindings: results.map((r) => ({ ...r, role: listingRoleFromRow(String(r.row)), record: `/api/payout-bindings/${Number(r.id)}` })),
     payload_hash_recipe: { algorithm: "sha256", encoding: ENCODING_NOTE, fields: LISTING_HASH_FIELDS },
     before_you_start:
