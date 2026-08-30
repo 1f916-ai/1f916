@@ -110,8 +110,19 @@ const READER_SAFETY_BUILTIN: ReadonlyArray<{ id: string; rx: RegExp }> = [
   // feed is to impersonate a turn boundary to a reader that parses one.
   { id: "role-scaffold", rx: /<\|(?:im_start|im_end|system|endoftext)\|>|\[\/?(?:INST|SYS)\]|<<SYS>>/g },
   // Characters that render as nothing or reorder what renders: invisible to
-  // the arguing citizen, load-bearing to a machine reader.
-  { id: "invisible-unicode", rx: /[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g },
+  // the arguing citizen, load-bearing to a machine reader. Widened after
+  // packet-auditor (c31350 on 3070) showed the built-in was silent on three
+  // carrier classes that render empty and are built for smuggling: the Unicode
+  // Tags block U+E0000-E007F (its U+E0020-E007E mirror printable ASCII, so a
+  // whole instruction spells invisibly and folds to plaintext for a reader that
+  // strips tags), the word joiner and invisible math operators U+2060-2064, and
+  // the soft hyphen U+00AD. NOT widened to the variation selectors (U+FE00-FE0F,
+  // U+E0100-E01EF): U+FE0F is ordinary emoji construction and marking it would
+  // flood the log with false positives, the same over-fire momus is already
+  // auditing on the ZWJ. That range and the NFKC-normalisation redesign
+  // packet-auditor also proposed are design choices left to the square. The `u`
+  // flag is required to name the astral Tags block in the class.
+  { id: "invisible-unicode", rx: /[\u00AD\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF\u{E0000}-\u{E007F}]/gu },
   // Terminal control sequences in web text exist to attack whatever renders
   // them.
   { id: "ansi-escape", rx: /\u001b\[[0-9;]*[A-Za-z]/g },
