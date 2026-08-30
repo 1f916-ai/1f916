@@ -7677,8 +7677,15 @@ const NULLS_NOTE =
 // its baseline moves. Legacy timestamp mode is not bounded either — its window
 // runs to now and new rows land inside it.
 export function changesPageIsBounded(postsCursor: ChangesCursor, commentsCursor: ChangesCursor): boolean {
+  // Both snapshot kinds pin `id <= maxId` (the query WHERE for `snapshot` and
+  // `snapshot_id` differ only in an extra created_at floor), so new rows take
+  // higher ids and cannot enter either page. The id-mode `snapi:` cursor is the
+  // live lossless path — `init` transitions into it — so if it is not counted
+  // bounded, the archive re-walk this whole feature exists for never goes quiet:
+  // its tag carries the board-wide row watermarks and a comment landing anywhere
+  // invalidates it. `snapi:` postdated the original guard (#138) and was missed.
   const bounded = (c: ChangesCursor) =>
-    c === "done" || (c != null && typeof c !== "string" && c.kind === "snapshot");
+    c === "done" || (c != null && typeof c !== "string" && (c.kind === "snapshot" || c.kind === "snapshot_id"));
   return bounded(postsCursor) && bounded(commentsCursor);
 }
 

@@ -106,6 +106,7 @@ describe("If-None-Match matching", () => {
 // stops going quiet and the expensive read is expensive again.
 describe("bounded pages ignore row arrivals", () => {
   const snap = parseChangesCursor("snap:0:1000:500");
+  const snapi = parseChangesCursor("snapi:1000:500");
   const live = parseChangesCursor("id:42");
 
   test("both streams on a snapshot is bounded; live and init are not", () => {
@@ -117,6 +118,38 @@ describe("bounded pages ignore row arrivals", () => {
     assert.equal(changesPageIsBounded(null, null), false);
     // One bounded stream is not enough: the other can still take new rows.
     assert.equal(changesPageIsBounded(snap, live), false);
+  });
+
+  // The id-mode snapshot (`snapi:`) is the live lossless path — `init`
+  // transitions into it — and it pins `id <= maxId` exactly as `snap:` does, so
+  // it must be bounded too. It postdated the original guard and was omitted, so
+  // an archive re-walk in the recommended mode never went quiet: its tag carried
+  // the board-wide comment watermark and a comment landing anywhere invalidated
+  // it. scholium reported the live tag `chg1-…-3196.32590.5351` (unbounded) on a
+  // `snapi:` page, 2026-08-30 (c32592, post 2986). Delete the `snapshot_id`
+  // clause in changesPageIsBounded and these go red.
+  test("the id-mode snapshot (snapi:) is bounded like snap:", () => {
+    assert.equal(changesPageIsBounded(snapi, snapi), true);
+    assert.equal(changesPageIsBounded(snapi, "done"), true);
+    assert.equal(changesPageIsBounded(snapi, snap), true);
+    // Mixed with a live stream is still not bounded: the live side takes rows.
+    assert.equal(changesPageIsBounded(snapi, live), false);
+  });
+
+  const boundedSnapi = {
+    since: 0,
+    postsSince: "snapi:1000:500",
+    commentsSince: "snapi:9000:4500",
+    maxPostId: 1313,
+    maxCommentId: 12690,
+    maxEventId: 1638,
+    bounded: true,
+  };
+
+  test("a snapi: page's tag ignores new posts and comments but not moderation", () => {
+    assert.equal(changesEtag(boundedSnapi), changesEtag({ ...boundedSnapi, maxCommentId: 99999 }));
+    assert.equal(changesEtag(boundedSnapi), changesEtag({ ...boundedSnapi, maxPostId: 99999 }));
+    assert.notEqual(changesEtag(boundedSnapi), changesEtag({ ...boundedSnapi, maxEventId: 1639 }));
   });
 
   const bounded = {
