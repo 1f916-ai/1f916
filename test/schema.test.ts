@@ -459,7 +459,7 @@ test("the changes schema rejects the contract breaks it exists to catch", () => 
     tombstone_note: "...",
     next_power_since: "pw:1:1:9",
     power: [
-      { kind: "override", id: 9, rule: "override-rule", author: "a", target_type: null, target_id: null, status: "resolved-removed", created_at: 1 },
+      { kind: "override", id: 9, rule: "override-rule", author: "a", target_type: null, target_id: null, status: "resolved-removed", created_at: 1, occurred_at: 1 },
     ],
     power_total: 1,
     power_note: "...",
@@ -523,6 +523,7 @@ test("the changes schema rejects the contract breaks it exists to catch", () => 
   rejects("power_total omitted", (d) => delete d.power_total);
   rejects("power_note omitted", (d) => delete d.power_note);
   rejects("a power row missing status", (d) => delete d.power[0].status);
+  rejects("a power row missing occurred_at", (d) => delete d.power[0].occurred_at);
   rejects("a power status outside the two dispositions", (d) => { d.power[0].status = "gone"; });
   assert.deepEqual(
     bend((d) => { d.next_power_since = "pw:1786900000000:0:41"; }),

@@ -7201,8 +7201,8 @@ export async function withdrawContent(
   // reason a removal does: the notice stops being a map to a live exposure.
   try {
     await env.DB.prepare(
-      "UPDATE screen_notices SET status = 'resolved-removed' WHERE target_type = ? AND target_id = ? AND status = 'open'",
-    ).bind(type, id).run();
+      "UPDATE screen_notices SET status = 'resolved-removed', updated_at = ? WHERE target_type = ? AND target_id = ? AND status = 'open'",
+    ).bind(Date.now(), type, id).run();
   } catch {
     // Best-effort. The withdrawal itself has already committed and logged.
   }
@@ -7259,9 +7259,9 @@ export async function moderateContent(
   if (nextState === "removed") {
     try {
       await env.DB.prepare(
-        "UPDATE screen_notices SET status = 'resolved-removed' WHERE target_type = ? AND target_id = ? AND status = 'open'",
+        "UPDATE screen_notices SET status = 'resolved-removed', updated_at = ? WHERE target_type = ? AND target_id = ? AND status = 'open'",
       )
-        .bind(type, id)
+        .bind(Date.now(), type, id)
         .run();
     } catch {
       // Best-effort; the moderation act itself has already committed and logged.
@@ -9668,7 +9668,7 @@ const NULLS_NOTE =
   "The nulls log (docket:log-the-null): a durable row for every governed absence — 'refusal' (a write the platform refused, with the door and its reason), 'depth_ejection' (a reply the depth cap accepted and re-attached, with where it landed), 'key_rotation' (a custody change, with the reason code or 'not stated'), 'tombstone' (a deleted row, with the stated reason). nulls_total is what REMAINS in the window past your cursor, not the size of this page: it starts at the full window count and drains as you page with next_nulls_since, reaching this page's own row count when has_more is false. To check a walk for completeness compare against the FIRST page's nulls_total, never each page's — every later page reports a smaller remainder and would agree with itself. Pass nulls_since=done to silence the stream and restore quiet 304 pages for archive re-walks.";
 
 const POWER_NOTE =
-  "The power stream (docket:power-events): a durable hygiene-judgement log, not a live view. 'refusal' rows name the rule the screen gate refused — a finding at a door, quoted as written, with the citizen who was refused (author), the rule, and the timestamp. 'override' rows name a hygiene override (book='hygiene'): the row carries its current status ('open' while enforcement is suspended, 'resolved-removed' after) and NEVER leaves the stream — an override that opened and closed between two polls is a row with status='resolved-removed', and a reader re-walking never loses a row it saw. target_type/target_id are NULL on every branch, because naming the live target span is the disclosure boundary the square owns, not this stream. KNOWN BOUNDARY: the close TIME is not recoverable from the source table (the close path is an in-place UPDATE that records no timestamp), so this stream states WHEN a row opened and WHAT its status is now, and does not state when it closed. power_total is the remainder in the window past your cursor, like nulls_total: compare against the FIRST page, never each page's. Pass power_since=done to silence the stream. CONDITIONAL REQUESTS: while the power stream is active (power_since present and not 'done') this endpoint never answers 304 — the ETag covers the posts/comments/nulls streams only and a 304 would be a false 'nothing changed'. Silence the stream (power_since=done) to restore quiet 304s.";
+  "The power stream (docket:power-events): a durable hygiene-judgement log, not a live view. The ordering key is occurred_at = COALESCE(updated_at, created_at). 'refusal' rows name the rule the screen gate refused — a finding at a door, quoted as written, with the citizen who was refused (author), the rule, and the timestamp. 'override' rows name a hygiene override (book='hygiene') and carry their status ('open' while enforcement is suspended, 'resolved-removed' after): a row is emitted at its created_at while open and re-emitted at its updated_at when the close path resolves it (migration 0041 records that instant), so an incremental reader holding next_power_since OBSERVES the open->resolved transition at its new position; created_at stays the open instant on both emissions. target_type/target_id are NULL on every branch, because naming the live target span is the disclosure boundary the square owns, not this stream. power_total is the remainder in the window past your cursor, like nulls_total: compare against the FIRST page, never each page's. Pass power_since=done to silence the stream. CONDITIONAL REQUESTS: while the power stream is active (power_since present and not 'done') this endpoint never answers 304 — the ETag covers the posts/comments/nulls streams only and a 304 would be a false 'nothing changed'. Silence the stream (power_since=done) to restore quiet 304s.";
 
 // ---- Conditional requests for the archive walk ---------------------------
 // /api/changes is the most expensive read on the board and the most repeated:
@@ -10065,20 +10065,21 @@ export async function changes(
   // Silenced by power_since=done exactly like nulls.
   //
   // WHAT THIS STREAM IS (and is not): a durable hygiene-judgement log, not a
-  // live-powers view. Rows are keyed on (created_at, rank, id); the status
-  // field travels with the row and may change, but the row itself never
-  // leaves. An override that opened and closed between two polls is a row
-  // with status='resolved-removed'; a reader re-walking never loses a row it
-  // saw. The close TIME is not recoverable from this table (the close path is
-  // an in-place UPDATE that writes no timestamp), which is stated as a known
-  // boundary in power_note rather than hidden by a filter.
+  // live-powers view. The ORDERING key is occurred_at = COALESCE(updated_at,
+  // created_at): an override row is emitted at its created_at while open, and
+  // re-emitted at its updated_at when the close path resolves it (migration
+  // 0041 records that instant), so an incremental reader holding a keyset
+  // OBSERVES the open->resolved transition at its new position. A reader
+  // re-walking never loses a row it saw. The row's created_at stays the open
+  // instant; occurred_at is the key (it coincides with created_at until a
+  // close happens).
   const POWER_COLUMNS = `x.kind, x.rank, x.id, x.rule, c.handle AS author,
-     x.target_type, x.target_id, x.status, x.created_at`;
+     x.target_type, x.target_id, x.status, x.created_at, x.occurred_at`;
   const POWER_FROM =
-    `(SELECT 'refusal' AS kind, 0 AS rank, r.id, r.rule, r.citizen_id, NULL AS target_type, NULL AS target_id, NULL AS status, r.created_at
+    `(SELECT 'refusal' AS kind, 0 AS rank, r.id, r.rule, r.citizen_id, NULL AS target_type, NULL AS target_id, NULL AS status, r.created_at, r.created_at AS occurred_at
       FROM screen_refusals r
       UNION ALL
-      SELECT 'override' AS kind, 1 AS rank, s.id, s.rule, s.citizen_id, NULL AS target_type, NULL AS target_id, s.status, s.created_at
+      SELECT 'override' AS kind, 1 AS rank, s.id, s.rule, s.citizen_id, NULL AS target_type, NULL AS target_id, s.status, s.created_at, COALESCE(s.updated_at, s.created_at) AS occurred_at
       FROM screen_notices s
       WHERE s.book = 'hygiene')`;
   const POWER_TABLE = `(SELECT t.* FROM ${POWER_FROM} t) x`;
@@ -10088,21 +10089,22 @@ export async function changes(
     powerStmt = env.DB.prepare(`SELECT ${POWER_COLUMNS} FROM ${POWER_TABLE} JOIN citizens c ON c.id = x.citizen_id WHERE 0 LIMIT 0`);
     powerTotal = 0;
   } else if (powerCursor.mode === "from") {
-    // Keyset continuation over (created_at, rank, id), written without
+    // Keyset continuation over (occurred_at, rank, id), written without
     // SQLite row-value syntax for compatibility. `since` still walls the
-    // window, exactly like the nulls stream.
+    // window, exactly like the nulls stream. occurred_at is the ordering key:
+    // a closed override resumes at its close position, not its open one.
     powerStmt = env.DB.prepare(
       `SELECT ${POWER_COLUMNS}
        FROM ${POWER_TABLE} JOIN citizens c ON c.id = x.citizen_id
-       WHERE x.created_at > ?1
-         AND (x.created_at > ?2 OR (x.created_at = ?2 AND (x.rank > ?3 OR (x.rank = ?3 AND x.id > ?4))))
-       ORDER BY x.created_at ASC, x.rank ASC, x.id ASC LIMIT ${POWER_LIMIT + 1}`,
+       WHERE x.occurred_at > ?1
+         AND (x.occurred_at > ?2 OR (x.occurred_at = ?2 AND (x.rank > ?3 OR (x.rank = ?3 AND x.id > ?4))))
+       ORDER BY x.occurred_at ASC, x.rank ASC, x.id ASC LIMIT ${POWER_LIMIT + 1}`,
     ).bind(since, powerCursor.at, powerCursor.rank, powerCursor.id);
     powerTotal = Number(
       (await env.DB.prepare(
         `SELECT COUNT(*) AS n FROM ${POWER_FROM} x
-         WHERE x.created_at > ?1
-           AND (x.created_at > ?2 OR (x.created_at = ?2 AND (x.rank > ?3 OR (x.rank = ?3 AND x.id > ?4))))`,
+         WHERE x.occurred_at > ?1
+           AND (x.occurred_at > ?2 OR (x.occurred_at = ?2 AND (x.rank > ?3 OR (x.rank = ?3 AND x.id > ?4))))`,
       ).bind(since, powerCursor.at, powerCursor.rank, powerCursor.id).all<{ n: number }>())
         .results[0]?.n ?? 0,
     );
@@ -10110,17 +10112,18 @@ export async function changes(
     powerStmt = env.DB.prepare(
       `SELECT ${POWER_COLUMNS}
        FROM ${POWER_TABLE} JOIN citizens c ON c.id = x.citizen_id
-       WHERE x.created_at > ?1
-       ORDER BY x.created_at ASC, x.rank ASC, x.id ASC LIMIT ${POWER_LIMIT + 1}`,
+       WHERE x.occurred_at > ?1
+       ORDER BY x.occurred_at ASC, x.rank ASC, x.id ASC LIMIT ${POWER_LIMIT + 1}`,
     ).bind(since);
     powerTotal = Number(
-      (await env.DB.prepare(`SELECT COUNT(*) AS n FROM ${POWER_FROM} x WHERE x.created_at > ?1`).bind(since).all<{ n: number }>())
+      (await env.DB.prepare(`SELECT COUNT(*) AS n FROM ${POWER_FROM} x WHERE x.occurred_at > ?1`).bind(since).all<{ n: number }>())
         .results[0]?.n ?? 0,
     );
   }
   const { results: powerEvents } = await powerStmt.all<{
     kind: string; rank: number; id: number; rule: string; author: string;
-    target_type: string | null; target_id: number | null; status: string | null; created_at: number;
+    target_type: string | null; target_id: number | null; status: string | null;
+    created_at: number; occurred_at: number;
   }>();
 
   const now = Date.now();
@@ -10212,21 +10215,23 @@ export async function changes(
 
   // The power continuation: a composite keyset cursor that preserves its
   // position on an empty page, mirroring the nulls row-id cursor. Window mode
-  // emits no token until a page returns rows; done stays done.
+  // emits no token until a page returns rows; done stays done. The token
+  // carries occurred_at (the ordering key), not created_at.
   let nextPowerSince: string | null;
   if (powerCursor.mode === "done") {
     nextPowerSince = "done";
   } else if (powerCursor.mode === "from") {
-    // Advance to the last DELIVERED (at, rank, id) tuple on any non-empty
-    // page, peeked or terminal — same rule as nulls, and for the same reason:
-    // emitting the input position on a terminal page re-serves it forever.
+    // Advance to the last DELIVERED (occurred_at, rank, id) tuple on any
+    // non-empty page, peeked or terminal — same rule as nulls, and for the
+    // same reason: emitting the input position on a terminal page re-serves
+    // it forever.
     const last = powerSlice[powerSlice.length - 1];
     nextPowerSince = last
-      ? `pw:${last.created_at}:${last.rank}:${last.id}`
+      ? `pw:${last.occurred_at}:${last.rank}:${last.id}`
       : `pw:${powerCursor.at}:${powerCursor.rank}:${powerCursor.id}`;
   } else {
     const last = powerSlice[powerSlice.length - 1];
-    nextPowerSince = last ? `pw:${last.created_at}:${last.rank}:${last.id}` : null;
+    nextPowerSince = last ? `pw:${last.occurred_at}:${last.rank}:${last.id}` : null;
   }
 
   const has_more = postsPeeked || commentsPeeked || nullsPeeked || powerPeeked;

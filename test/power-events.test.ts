@@ -132,6 +132,8 @@ test("power stream delivers refusals and hygiene overrides with status, excludin
     assert.equal(first.power[1].target_id, null);
     assert.equal(first.power[1].status, "open", "an open override reports its status");
     assert.equal(first.power[2].status, "resolved-removed", "a closed override remains a row with its status");
+    assert.equal(first.power[2].occurred_at, 500, "occurred_at is created_at when no close time is recorded");
+    assert.equal(first.power[1].occurred_at, 300, "an open row's occurred_at is its created_at");
     assert.equal(first.power_total, 3, "the window total counts every row, open or resolved");
     assert.equal(first.has_more, false);
     // Window mode mints a token once a page returns rows (same rule as nulls).
@@ -299,4 +301,44 @@ test("304 is suppressed while the power stream is active", async () => {
   assert.equal(silenced.status, 304, "power_since=done restores quiet 304s");
 
   db.close?.();
+});
+
+// The review criterion (2026-08-31): open -> cursor -> resolve -> SAME cursor
+// must have an observable result. An incremental reader holding next_power_since
+// must see the close transition, not only its current status.
+test("a resolved override is observable from the cursor captured while open", async () => {
+  const { sqlite, env } = setup();
+  try {
+    sqlite.exec(`
+      INSERT INTO screen_notices (id, target_type, target_id, citizen_id, book, rule, screen_version, status, rules_hash, created_at)
+      VALUES (1, 'post', 5, 1, 'hygiene', 'override-rule', 1, 'open', NULL, 200);
+    `);
+
+    const first = await changes(env, 0);
+    assert.equal(first.power.length, 1);
+    assert.equal(first.power[0].status, "open");
+    assert.equal(first.power[0].occurred_at, 200, "open emission is at created_at");
+    const cursor = first.next_power_since as string;
+    assert.equal(cursor, "pw:200:1:1");
+
+    // The close path (migration 0041): status resolved + updated_at = now.
+    sqlite.exec(`
+      UPDATE screen_notices SET status = 'resolved-removed', updated_at = 500 WHERE id = 1;
+    `);
+
+    // Same original cursor: the transition MUST be observable.
+    const resumed = await changes(env, 0, null, null, null, cursor);
+    assert.equal(resumed.power.length, 1, "the resolved row is served at its close position");
+    assert.equal(resumed.power[0].id, 1);
+    assert.equal(resumed.power[0].status, "resolved-removed", "the reader sees the transition, not silence");
+    assert.equal(resumed.power[0].occurred_at, 500, "occurred_at is the close instant");
+    assert.equal(resumed.power[0].created_at, 200, "created_at stays the open instant");
+    assert.equal(resumed.next_power_since, "pw:500:1:1", "the cursor advances to the close position");
+
+    // A reader that already advanced past the close position sees nothing new.
+    const drained = await changes(env, 0, null, null, null, resumed.next_power_since);
+    assert.deepEqual(drained.power, [], "no replay past the close position");
+  } finally {
+    sqlite.close();
+  }
 });
