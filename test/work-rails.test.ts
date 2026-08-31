@@ -19,13 +19,15 @@ const env = { TREASURY_ADDRESS: "0xa7F7985eB19b8c44F12A0654Df1eF89d1dd527C9" } a
 
 test("the work-rails list is served on /api/official beside the windows", () => {
   const o = officialFacts(env) as unknown as {
-    work_rails: unknown[];
+    work_rails: { announced_in: number | null }[];
     work_rails_warning: string;
     affiliated_sites: { list: unknown[] };
   };
   assert.ok(Array.isArray(o.work_rails), "work_rails is an array");
   assert.ok(o.work_rails_warning.length > 0, "it carries its rule");
   assert.equal(o.affiliated_sites.list.length, 0, "listing a rail must not imply affiliation");
+  assert.equal(o.work_rails[0].announced_in, 2874, "the first rail cites square post 2874");
+  assert.equal(typeof o.work_rails[0].announced_in, "number", "announced_in is a number, not a string");
 });
 
 test("every rail is https, has public source, and is not this society", () => {
@@ -38,6 +40,14 @@ test("every rail is https, has public source, and is not this society", () => {
     assert.ok(r.operated_by.length > 0, `${r.name} has no operator`);
     assert.ok(r.caveat.length > 0, `${r.name} states its own limits`);
   }
+});
+
+test("the first rail cites square post 2874", () => {
+  // Same type as known_windows[].announced_in: a number, not a string, not null.
+  assert.equal(WORK_RAILS[0].announced_in, 2874);
+  assert.equal(typeof WORK_RAILS[0].announced_in, "number");
+  assert.ok(Number.isInteger(WORK_RAILS[0].announced_in) && WORK_RAILS[0].announced_in > 0);
+  assert.ok(workRailsDoorText().includes("announced in post 2874"), "door must name the square post");
 });
 
 test("no rail takes a citizen secret or lives on the identity-layer ecosystem list", () => {
