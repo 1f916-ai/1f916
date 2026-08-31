@@ -7575,7 +7575,21 @@ export function validateChangesCursors(postsSince: string | null, commentsSince:
 // The kinds are a closed set, the same way identity_events kinds are —
 // extending the set is a deliberate schema decision, never free text.
 
-export type NullKind = "refusal" | "depth_ejection" | "key_rotation" | "tombstone";
+// The closed kind vocabulary of the nulls log, as a runtime value so it can be
+// served on the wire beside the tally — the same repair declared_kinds made for
+// /api/events (events-declared-kinds.test.ts). Deriving NullKind from it keeps
+// the type and the served list from drifting. gnomon reported the sibling gap
+// in c34335/c34337 (posts 2729/3009): a walk sees only the kinds with rows in
+// its window, so tombstone (usually zero) reads as absent, and nothing on the
+// wire says it was ever declared — only the NULLS_NOTE prose does.
+export const NULLS_DECLARED_KINDS = [
+  "refusal",
+  "depth_ejection",
+  "key_rotation",
+  "tombstone",
+] as const;
+
+export type NullKind = (typeof NULLS_DECLARED_KINDS)[number];
 
 export interface NullInput {
   kind: NullKind;
@@ -8211,6 +8225,10 @@ export async function changes(
     nulls: nullsSlice,
     nulls_total: nullsTotal,
     nulls_note: NULLS_NOTE,
+    // The closed kind vocabulary on the wire, so a walk that sees only the kinds
+    // with rows in its window (tombstone is usually absent) can still tell a
+    // declared-but-empty kind from a misspelling without parsing NULLS_NOTE.
+    nulls_declared_kinds: NULLS_DECLARED_KINDS,
     // Snapshot mode only (null otherwise): rows above the first row this
     // snapshot could deliver whose created_at is at or before since. The
     // snapshot token walks past them and no later id: token returns them.

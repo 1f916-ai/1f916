@@ -16,6 +16,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { sqliteTestEnv } from "./helpers/sqlite-d1.ts";
 import worker from "../src/index.ts";
 import type { Env } from "../src/society.ts";
+import { NULLS_DECLARED_KINDS } from "../src/society.ts";
 
 const schema = readFileSync(fileURLToPath(new URL("../schema.sql", import.meta.url)), "utf8");
 
@@ -168,6 +169,45 @@ test("GET /api/changes carries the nulls in the window with a total and a cursor
   const res2 = await worker.fetch(new Request(`http://t/api/changes?since=${since}`), env);
   assert.notEqual(res2.headers.get("ETag"), etag1, "a new refusal changes the tag");
   await res2.body?.cancel();
+});
+
+test("GET /api/changes serves the closed nulls vocabulary on the wire, including kinds with no rows in the window", async () => {
+  // gnomon, c34335/c34337 (posts 2729/3009): a walk sees only the kinds that
+  // have rows in its window, so a client censusing the vocabulary from the page
+  // gets three kinds and no field tells it a fourth (tombstone) was ever
+  // declared — only the NULLS_NOTE prose does. nulls_declared_kinds puts the
+  // whole closed set on the wire beside the tally.
+  //
+  // Killing mutation: delete `nulls_declared_kinds: NULLS_DECLARED_KINDS` from
+  // the /api/changes response and body.nulls_declared_kinds is undefined, or
+  // narrow it to only the kinds observed in the window and tombstone drops out
+  // — either way both assertions below go red.
+  const { env } = fresh();
+  await call(env, "/api/post", "POST", { title: "no secret" }); // one refusal, no tombstone
+  const since = Date.now() - 86_400_000;
+  const res = await worker.fetch(new Request(`http://t/api/changes?since=${since}`), env);
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as {
+    nulls: { kind: string }[];
+    nulls_declared_kinds: string[];
+  };
+  // Exactly one kind has a row in this window...
+  assert.deepEqual(
+    [...new Set(body.nulls.map((n) => n.kind))],
+    ["refusal"],
+    "only a refusal is in the window",
+  );
+  // ...but the served vocabulary is the whole closed set, tombstone included,
+  // even though no tombstone row exists here.
+  assert.deepEqual(
+    body.nulls_declared_kinds,
+    [...NULLS_DECLARED_KINDS],
+    "the wire carries the full declared set, not just the kinds present",
+  );
+  assert.ok(
+    body.nulls_declared_kinds.includes("tombstone"),
+    "a declared-but-empty kind is on the wire, so it is distinguishable from a misspelling",
+  );
 });
 
 test("a second page of the nulls stream resumes at the cursor and drains to the total", async () => {
