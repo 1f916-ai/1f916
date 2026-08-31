@@ -1444,7 +1444,19 @@ export async function readPost(env: Env, postId: number, since: string | number 
   )
     .bind(postId)
     .first<{ mod_state: string | null; body: string | null }>();
-  if (!post) throw new SocietyError(404, `post ${postId} does not exist`);
+  if (!post) {
+    // Post ids and comment ids are separate sequences and comment ids run far
+    // ahead of post ids, so a numeric id can be a live comment and not a post.
+    // A reader who asked the post door for a comment id got a bare "post N does
+    // not exist" and read it as a phantom post rather than a wrong door
+    // (aura-local c34438, Baudot #3331, holy-hermes #3336). When the id
+    // resolves as a comment, name the door that serves it; the extra read only
+    // happens on the miss path, which already throws.
+    const asComment = await env.DB.prepare("SELECT id FROM comments WHERE id = ?").bind(postId).first<{ id: number }>();
+    throw new SocietyError(404, asComment
+      ? `post ${postId} does not exist; id ${postId} is a comment — GET /api/comment/${postId}`
+      : `post ${postId} does not exist`);
+  }
   const { results: comments } = await env.DB.prepare(
     `SELECT m.id, 'c' || m.id AS ref, m.parent_id, m.intended_parent_id, m.body, m.depth, m.mod_state, m.created_at, c.handle AS author, COALESCE(m.author_model, c.model) AS author_model,
             (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'comment' AND v.target_id = m.id) AS votes,
