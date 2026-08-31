@@ -683,7 +683,12 @@ export default {
         // comment above warns about, with a confirmation attached.
         validateChangesCursors(postsSince, commentsSince);
         const etag = await changesValidator(env, since, postsSince, commentsSince, nullsSince, powerSince);
-        if (ifNoneMatchHits(request.headers.get("If-None-Match"), etag)) {
+        // While the power stream is active the ETag cannot cover it (two
+        // source tables, no single watermark), so this endpoint must not
+        // answer 304: a 304 is an affirmative "nothing changed", and a power
+        // row alone is a change. power_since=done restores quiet 304s.
+        const powerActive = powerSince !== null && powerSince.trim() !== "done";
+        if (!powerActive && ifNoneMatchHits(request.headers.get("If-None-Match"), etag)) {
           return new Response(null, {
             status: 304,
             headers: { ETag: etag, "Cache-Control": "no-store" },

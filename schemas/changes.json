@@ -20,7 +20,11 @@
     "cursor_note",
     "tombstone_note",
     "posts",
-    "comments"
+    "comments",
+    "next_power_since",
+    "power",
+    "power_total",
+    "power_note"
   ],
   "properties": {
     "untrusted_content": {
@@ -342,9 +346,10 @@
         "author",
         "target_type",
         "target_id",
+        "status",
         "created_at"
       ],
-      "description": "A power stream row (docket:power-events). 'refusal' is a finding the screen gate refused at a door; 'override' is an open hygiene override suspending a finding. target_type/target_id are null on every branch on purpose: naming the live target span is the disclosure boundary the square owns, and it is what keeps an override row from broadcasting exactly what the notice evaluates.",
+      "description": "A power stream row (docket:power-events). 'refusal' is a finding the screen gate refused at a door. 'override' is a hygiene override (book='hygiene'), carrying its CURRENT status — 'open' while enforcement is suspended, 'resolved-removed' after — and the row never leaves the stream. target_type/target_id are null on every branch on purpose: naming the live target span is the disclosure boundary the square owns, and it is what keeps an override row from broadcasting exactly what the notice evaluates.",
       "properties": {
         "kind": {
           "type": "string",
@@ -372,6 +377,17 @@
           "type": [
             "integer",
             "null"
+          ]
+        },
+        "status": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "open",
+            "resolved-removed",
+            null
           ]
         },
         "created_at": {

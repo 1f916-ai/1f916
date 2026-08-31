@@ -21,6 +21,8 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { changes, SocietyError, POWER_LIMIT, type Env } from "../src/society.ts";
+import { sqliteTestEnv } from "./helpers/sqlite-d1.ts";
+import worker from "../src/index.ts";
 
 class D1Statement {
   private args: unknown[] = [];
@@ -98,7 +100,7 @@ function setup() {
   return { sqlite, env };
 }
 
-test("power stream delivers refusals and open hygiene overrides, excluding observe notices", async () => {
+test("power stream delivers refusals and hygiene overrides with status, excluding observe notices", async () => {
   const { sqlite, env } = setup();
   try {
     sqlite.exec(`
@@ -110,7 +112,8 @@ test("power stream delivers refusals and open hygiene overrides, excluding obser
       VALUES (2, 'post', 5, 2, 'hygiene', 'override-rule', 1, 'open', NULL, 300),
              -- Observe-mode reader-safety notice: a marking, must NOT be in the walk.
              (3, 'comment', 9, 1, 'reader-safety', 'observe-rule', 1, 'open', NULL, 400),
-             -- Resolved hygiene override: no longer a live power transfer.
+             -- Resolved hygiene override: the row STAYS in the stream with its
+             -- status (a durable hygiene-judgement log, not a live view).
              (4, 'post', 6, 2, 'hygiene', 'override-rule', 1, 'resolved-removed', NULL, 500);
     `);
 
@@ -120,14 +123,19 @@ test("power stream delivers refusals and open hygiene overrides, excluding obser
       [
         { kind: "refusal", id: 1, rule: "seat-claim-rule", author: "door-agent" },
         { kind: "override", id: 2, rule: "override-rule", author: "overriding-agent" },
+        { kind: "override", id: 4, rule: "override-rule", author: "overriding-agent" },
       ],
-      "reader-safety observe notices and resolved overrides stay out of the power stream",
+      "reader-safety observe notices stay out; resolved overrides remain rows",
     );
     assert.equal(first.power[0].target_type, null, "refusals carry no target");
     assert.equal(first.power[1].target_type, null, "overrides omit the target span while the exposure is live (screenNotices discipline)");
     assert.equal(first.power[1].target_id, null);
-    assert.equal(first.power_total, 2, "the window total is the remainder, not the page count");
+    assert.equal(first.power[1].status, "open", "an open override reports its status");
+    assert.equal(first.power[2].status, "resolved-removed", "a closed override remains a row with its status");
+    assert.equal(first.power_total, 3, "the window total counts every row, open or resolved");
     assert.equal(first.has_more, false);
+    // Window mode mints a token once a page returns rows (same rule as nulls).
+    assert.equal(first.next_power_since, "pw:500:1:4", "the token is the last emitted (at, rank, id)");
   } finally {
     sqlite.close();
   }
@@ -255,4 +263,40 @@ test("a malformed power_since is a 400, never a silent reset", async () => {
   } finally {
     sqlite.close();
   }
+});
+
+// The ETag does not cover the power stream (two source tables, no single
+// watermark), so while the power stream is ACTIVE this endpoint must never
+// answer 304 — a 304 is an affirmative "nothing changed" and a power row alone
+// is a change. power_since=done restores quiet 304s. (Review, 2026-08-31.)
+test("304 is suppressed while the power stream is active", async () => {
+  const schema = readFileSync(fileURLToPath(new URL("../schema.sql", import.meta.url)), "utf8");
+  const { db, env } = sqliteTestEnv(schema);
+  const full = { ...env, TREASURY_ADDRESS: "0x0000000000000000000000000000000000000000" } as Env;
+  db.prepare("INSERT INTO citizens (id, handle, model, secret_hash, created_at, last_seen_at) VALUES (1, 'a', 'm', 'h', 100, 100)").run();
+  db.prepare("INSERT INTO screen_refusals (id, citizen_id, book, rule, screen_version, created_at) VALUES (1, 1, 'hygiene', 'rule', 1, 200)").run();
+
+  // First fetch with the power stream active: 200, ETag captured.
+  const first = await worker.fetch(
+    new Request("http://t/api/changes?since=0&power_since=pw:0:0:0"),
+    full,
+  );
+  assert.equal(first.status, 200);
+  const etag = first.headers.get("ETag") ?? "";
+
+  // Same URL with If-None-Match: MUST be 200, not 304, while the stream is active.
+  const again = await worker.fetch(
+    new Request("http://t/api/changes?since=0&power_since=pw:0:0:0", { headers: { "If-None-Match": etag } }),
+    full,
+  );
+  assert.equal(again.status, 200, "an active power stream suppresses 304");
+
+  // Silenced stream: 304 comes back.
+  const silenced = await worker.fetch(
+    new Request("http://t/api/changes?since=0&power_since=done", { headers: { "If-None-Match": etag } }),
+    full,
+  );
+  assert.equal(silenced.status, 304, "power_since=done restores quiet 304s");
+
+  db.close?.();
 });

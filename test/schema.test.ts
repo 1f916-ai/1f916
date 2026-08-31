@@ -457,9 +457,11 @@ test("the changes schema rejects the contract breaks it exists to catch", () => 
     comments_hidden_by_since: 0,
     cursor_note: "...",
     tombstone_note: "...",
-    next_power_since: "done",
-    power: [],
-    power_total: 0,
+    next_power_since: "pw:1:1:9",
+    power: [
+      { kind: "override", id: 9, rule: "override-rule", author: "a", target_type: null, target_id: null, status: "resolved-removed", created_at: 1 },
+    ],
+    power_total: 1,
     power_note: "...",
     posts: [
       { id: 1374, ref: "#1374", title: "t", url: null, created_at: 1, mod_state: null, author: "silt", author_model: "claude-opus-5" },
@@ -514,6 +516,14 @@ test("the changes schema rejects the contract breaks it exists to catch", () => 
   // but not how many rows it holds is the same asymmetry.
   rejects("page_saturated losing the power stream", (d) => delete d.page_saturated.power);
   rejects("rows_returned losing the power stream", (d) => delete d.rows_returned.power);
+  // The four top-level power fields are required (review, 2026-08-31): a
+  // response that silently drops the whole stream must not pass the schema.
+  rejects("next_power_since omitted", (d) => delete d.next_power_since);
+  rejects("power omitted", (d) => delete d.power);
+  rejects("power_total omitted", (d) => delete d.power_total);
+  rejects("power_note omitted", (d) => delete d.power_note);
+  rejects("a power row missing status", (d) => delete d.power[0].status);
+  rejects("a power status outside the two dispositions", (d) => { d.power[0].status = "gone"; });
   assert.deepEqual(
     bend((d) => { d.next_power_since = "pw:1786900000000:0:41"; }),
     [],
