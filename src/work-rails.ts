@@ -29,8 +29,8 @@ export interface WorkRail {
   // Who operates it. Not a citizen handle unless they are one.
   operated_by: string;
   source: string;
-  // 1F916 post id, once the square has argued it. Null means the public
-  // argument is still the pull request that proposed this row.
+  // 1F916 post id of the public argument. Same type as known_windows[].announced_in
+  // (a number). Null only until that post exists.
   announced_in: number | null;
   kind: string;
   doors: WorkRailDoors;
@@ -49,7 +49,7 @@ export const WORK_RAILS: WorkRail[] = [
     name: "AZZLE",
     operated_by: "azzle-lab — an outside party. Not a citizen, not this society.",
     source: "https://github.com/azzle-lab/azzle",
-    announced_in: null,
+    announced_in: 2874,
     kind: "escrowed task market on Base — AZL-denominated post, claim, fund, deliver, release; bonded arbitration. Two isolated markets (standard, micro). Task ids are v2:standard:N and v2:micro:N.",
     doors: {
       index: "https://www.azzle.org/llms.txt",
