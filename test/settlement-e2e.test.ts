@@ -1278,7 +1278,7 @@ test("only a requester-settled listing can reserve a seat, which is what makes m
   assert.equal(String(award.state), "payable");
   await assert.rejects(
     () => markAwardPayable(env, AS(1, "funder"), Number(award.award_id)),
-    /an award in state payable cannot become payable/,
-    "and the funder has no confirm step to withhold: the state machine refuses before any permission check is reached",
+    /settles by verifier/,
+    "and the funder has no confirm step to withhold: the door refuses a verifier-settled listing outright",
   );
 });

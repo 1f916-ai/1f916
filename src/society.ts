@@ -3131,7 +3131,15 @@ export async function recordVerdict(
     `INSERT INTO listing_verdicts (listing_id, submission_id, verifier_id, binding_id, verdict, signature, key_thumbprint, payload_hash, commit_nonce, issued_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
   ).bind(listing.id, submission.id, citizen.id, binding.id, input.verdict, sig, key.thumbprint, payloadHash, commitNonce, issuedAt);
-  const committed = await commitWithIdentityEvent<{ id: number }>(
+  // A REPEAT VERDICT IS A REFUSAL, NOT A CRASH. The UNIQUE constraint on
+  // (submission_id, verifier_id) is what stops a verifier overwriting what
+  // they signed, and it surfaced from D1 as a raw error, so the caller got a
+  // 500 and the considered 409 below was dead code. A retry after a lost
+  // response is the ordinary way to reach this, which makes it a normal path
+  // rather than an exceptional one.
+  let committed: { state: { id: number } | null; changed: number; hash: string };
+  try {
+    committed = await commitWithIdentityEvent<{ id: number }>(
     env,
     stateStmt,
     {
@@ -3140,7 +3148,13 @@ export async function recordVerdict(
       detail: `listing-${listing.id}, submission ${submission.id}, verdict=${input.verdict}, binding ${binding.id}, key ${key.thumbprint}, verdict payload sha256=${payloadHash}`,
     },
     "listing-verdict chain head moved four times running; refusing to record a verdict without its anchor",
-  );
+    );
+  } catch (e) {
+    if (e instanceof SocietyError) throw e;
+    if (/UNIQUE constraint failed: listing_verdicts/i.test(String(e)))
+      throw new SocietyError(409, `you have already signed a verdict on submission ${submission.id}. A verifier who changes their mind does not overwrite what they signed: the first verdict stands, is retrievable, and the disagreement belongs in public rather than in a replaced row.`);
+    throw e;
+  }
   if (!committed.state?.id)
     throw new SocietyError(409, `you have already signed a verdict on submission ${submission.id}. A verifier who changes their mind does not overwrite what they signed; the record stands and the disagreement belongs in public.`);
   return { id: Number(committed.state.id), payload_hash: payloadHash, hash: committed.hash };
@@ -3160,7 +3174,8 @@ export async function verdictPreimageDoor(env: Env, citizen: Citizen, listingId:
     issued_at_note: "Send this exact issued_at back with the signature. It is part of the signed bytes, so a different one produces a different preimage and the signature will not verify.",
     binding_id: binding.id,
     algorithm: "Ed25519 over the UTF-8 bytes, signature base64url, by your active self-custodied citizen key",
-    post_to: `POST /api/awards/:id/payable or POST /api/listings/${listingId}/awards with {verdict, signature, issued_at}`,
+    post_to: `POST /api/listings/${listingId}/awards with {submission_id, verdict, signature, issued_at}`,
+    post_to_note: "That door and only that door. POST /api/awards/:id/payable reads no verdict at all and refuses a verifier-settled listing outright, so sending a signed verdict there does nothing.",
     payload_hash_recipe: { algorithm: "sha256", encoding: ENCODING_NOTE, fields: VERDICT_HASH_FIELDS },
     note: "A verdict is a portable document, not an API side effect. PASS on a verifier-settled listing creates a real liability with no further act by the funder, so it is signed; FAIL is signed on identical terms, because a judgment recorded only when it is favourable is not a judgment.",
   };
@@ -3427,28 +3442,24 @@ export async function markAwardPayable(env: Env, citizen: Citizen, awardId: numb
   // Apply the seat's own clock first: a seat that already lapsed cannot be
   // quietly revived by a late decision.
   await sweepExpiredAwards(env, listing.id, nowMs);
+  // MODE FIRST, THEN THE STATE MACHINE. This order is the correction: with the
+  // transition assert first, a verifier-settled listing always failed with
+  // "an award in state payable cannot become payable", and the refusal written
+  // for that case could never run. A caller on the wrong door deserves to be
+  // told which door is right, not handed a state-machine message about a
+  // transition they never asked for.
+  if (listing.settlement_mode === "verifier")
+    throw new SocietyError(400, `listing ${listing.id} settles by verifier: a verifier's signed PASS creates the award already payable, so there is nothing here to mark. Send the verdict to POST /api/listings/${listing.id}/awards instead. A signed FAIL goes to the same door, is recorded, and creates no award, which is why a failed candidate never consumes one of this listing's award slots.`);
   const current = await env.DB.prepare(`SELECT state FROM listing_awards WHERE id = ?`).bind(awardId).first<{ state: AwardState }>();
   assertAwardTransition(current?.state ?? award.state, "payable");
   const mode = await assertMayAward(env, listing, citizen);
   if (mode === "automatic")
     throw new SocietyError(400, `listing ${listing.id} settles automatically: an award is created payable when the declared check passes, so there is nothing to mark`);
   const payee = await handleOf(env, award.citizen_id);
-  // THERE IS NO VERIFIER BRANCH HERE, and its absence is the correction.
-  //
-  // I wrote one, with a signed FAIL moving the award to verification_failed.
-  // It could never run. This endpoint requires an award in state `awarded`;
-  // an award is born `awarded` only when a seat is RESERVED; and reserving is
-  // refused unless the listing settles by requester. So a verifier-settled
-  // listing can never hold a row this endpoint can act on, and the branch was
-  // unreachable code describing a transition Settlement V2 does not have.
-  //
-  // The real verifier semantics are simpler and better: a PASS is what CREATES
-  // the award, in createAward, and a FAIL records a signed verdict and creates
-  // nothing. No award is manufactured and then killed, so no slot is consumed
-  // by a failure and none has to be given back.
-  if (mode === "verifier")
-    throw new SocietyError(400, `listing ${listing.id} settles by verifier: a verifier's signed PASS creates the award already payable, so there is nothing here to mark. Send the verdict to POST /api/listings/${listing.id}/awards instead. A signed FAIL is recorded there too and creates no award, which is why a failed candidate never consumes one of this listing's award slots.`);
-
+  // The verifier case is refused above, before the state machine is consulted.
+  // What remains here is requester settlement: the funder accepting a seat
+  // they reserved. A verifier's PASS creates its award already payable in
+  // createAward, so no award ever waits here for a second act.
   // The claim window starts now, when the entitlement starts existing, not
   // when the seat was reserved.
   const expiresAt = listing.payable_ttl_seconds === null ? null : nowMs + listing.payable_ttl_seconds * 1000;
@@ -3771,6 +3782,12 @@ export async function getListing(env: Env, id: number) {
   // which is the same class of error as reading a binding as a debt.
   const liveRoutes = await liveRoutesFor(env, listing.id, Math.floor(Date.now() / 1000));
   const awardRows = lapseExpiredAwards(await listingAwards(env, listing.id), Date.now(), liveRoutes);
+  const { results: verdictRows } = await env.DB.prepare(
+    `SELECT v.id, v.submission_id, c.handle AS verifier, v.binding_id, v.verdict, v.signature, v.key_thumbprint,
+            v.payload_hash, v.commit_nonce, v.issued_at
+       FROM listing_verdicts v JOIN citizens c ON c.id = v.verifier_id
+      WHERE v.listing_id = ? ORDER BY v.id ASC`,
+  ).bind(listing.id).all<{ id: number; submission_id: number; verifier: string; binding_id: number; verdict: string; signature: string; key_thumbprint: string; payload_hash: string; commit_nonce: string; issued_at: number }>();
   const economics = listingEconomics({
     settlement_version: listing.settlement_version,
     amount_atomic: listing.amount_atomic,
@@ -3863,6 +3880,39 @@ export async function getListing(env: Env, id: number) {
     settlement_mode_note: SETTLEMENT_MODE_NOTE,
     ...(listing.settlement_mode === "automatic" ? { automatic_check_note: AUTOMATIC_CHECK_NOTE } : {}),
     ...(listing.funding_mode === "funded" ? { adapter_status: ADAPTER_STATUS } : {}),
+    // EVERY SIGNED VERDICT ON THIS LISTING, served in full.
+    //
+    // Without this the verdict was written and never readable: no door
+    // returned the signature, the issued_at or the commit_nonce, while the
+    // published recipe named all three and the refusal text promised the
+    // document was "durable and retrievable". It was neither. A signature
+    // nobody can fetch is not evidence, and a hash nobody can recompute is a
+    // checksum for this registry's own comfort. Both outcomes appear here,
+    // because a rail that published only the verdicts that led to money could
+    // not be used to check the ones that did not.
+    verdicts: verdictRows.map((v) => ({
+      verdict_id: v.id,
+      submission_id: v.submission_id,
+      verifier: v.verifier,
+      verdict: v.verdict,
+      binding_id: v.binding_id,
+      issued_at: v.issued_at,
+      commit_nonce: v.commit_nonce,
+      signature: v.signature,
+      key_thumbprint: v.key_thumbprint,
+      payload_hash: v.payload_hash,
+      preimage: verdictPreimage({
+        listingId: listing.id,
+        submissionId: v.submission_id,
+        verifier: v.verifier,
+        verdict: v.verdict as "pass" | "fail",
+        bindingId: v.binding_id,
+        issuedAt: v.issued_at,
+      }),
+      payload_hash_recipe: { algorithm: "sha256", encoding: ENCODING_NOTE, fields: VERDICT_HASH_FIELDS },
+    })),
+    verdicts_note:
+      "A verifier's signed judgment on one submission, PASS or FAIL, served with the exact bytes that were signed. Check it without trusting this registry: verify `signature` as Ed25519 over `preimage` under the verifier's active key (GET /api/citizens/<verifier> lists their keys and `key_thumbprint` names the one used), then recompute `payload_hash` by sha256 over the JSON array of the fields named in payload_hash_recipe, in that order. On a verifier-settled listing a PASS is what CREATES the award, with no further act by the funder; a FAIL creates no award, no liability and consumes no award slot, and is recorded here anyway, because a judgment written down only when it is favourable is not a judgment.",
     awards: awardRows.map((a) => ({
       award_id: a.id,
       submission_id: a.submission_id,
@@ -3881,9 +3931,17 @@ export async function getListing(env: Env, id: number) {
       settlement_block: settlementBlock({ state: a.state, ready_at: a.ready_at, live_route: liveRoutes.has(a.citizen_id) }),
       receipt_id: a.receipt_id,
       paid_at: a.paid_at,
+      // DERIVED, not stored. The verdict_id COLUMN is constrained by the
+      // schema to the reserved verification_failed state, so writing a PASS
+      // verdict into it would violate that CHECK; and adding a third migration
+      // to loosen a constraint that is doing its job would be the wrong trade.
+      // The join a reader needs is exact anyway: one verdict per verifier per
+      // submission, and this award names its submission.
+      verdict_id: verdictRows.find((v) => v.submission_id === a.submission_id)?.id ?? null,
       payload_hash: a.payload_hash,
+      payload_hash_recipe: { algorithm: "sha256", encoding: ENCODING_NOTE, fields: AWARD_HASH_FIELDS },
     })),
-    awards_note: "One row per award slot that has been consumed. A submission with no row here has no entitlement and is not money owed; a payout binding is not represented here at all, because a binding is a routing record and creates nothing.",
+    awards_note: "One row per award slot that has been consumed. `verdict_id` names the signed verdict in `verdicts` above that created it, where one did. A submission with no row here has no entitlement and is not money owed; a payout binding is not represented here at all, because a binding is a routing record and creates nothing.",
     state_note: "open: taking submissions. submitted: work handed in, no worker paid yet. paid: a worker binding carries a receipt from the listing's own named wallet. paid-by-third-party: a worker was paid, but not from a wallet this listing named (a listing with no funder_address can only ever reach this state, which is why naming one is recommended). expired-with-submissions: work was handed in and the listing lapsed with no worker paid; that fact stays on the funder's record. withdrawn: the funder stopped it, reason attached. collapsed/removed: moderated, reason in the moderation log. Nothing here judges the work.",
     rule: LISTING_RULE,
     payee_prerequisites: PAYEE_PREREQUISITES,

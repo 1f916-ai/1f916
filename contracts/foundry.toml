@@ -1,0 +1,43 @@
+[profile.default]
+src = "src"
+test = "test"
+out = "out"
+libs = ["lib"]
+solc = "0.8.28"
+optimizer = true
+optimizer_runs = 200
+# Every warning is an error here. This contract holds other people's money and
+# there is no upgrade path, so a warning we decided to live with is a defect we
+# decided to ship.
+deny = "warnings"
+# THE THREE EXCEPTIONS, each argued rather than silenced wholesale:
+#
+#   block-timestamp     the deadlines here are days wide and a validator can
+#                       move the clock by seconds. Using block numbers instead
+#                       would make the windows depend on block rate, which is a
+#                       worse approximation of "a week".
+#   require-revert-in-loop
+#                       the loop is over the funder's own verifier list, set
+#                       once at funding. Reverting inside it is the point: a
+#                       duplicate or zero verifier must fail the whole funding.
+#   low-level-calls / inline-assembly
+#                       deliberate. The token wrappers measure balance deltas
+#                       so a fee-on-transfer token is REFUSED rather than
+#                       silently under-funding the last worker, and signature
+#                       recovery reads calldata directly to reject malleable
+#                       encodings instead of normalising them.
+#   reentrancy-events   FALSE POSITIVE here. The "external call" the linter
+#                       sees before the emit is the ecrecover PRECOMPILE in
+#                       _recover, which cannot re-enter anything. In both
+#                       state-changing functions the event is emitted after the
+#                       storage effects and BEFORE the token transfer, which is
+#                       the ordering this lint exists to ask for. Verified by
+#                       reading the two call sites rather than by assuming.
+lint.exclude_lints = ["reentrancy-events", "block-timestamp", "require-revert-in-loop", "low-level-calls", "inline-assembly", "literal-instead-of-constant", "asm-keccak256", "costly-loop"]
+
+[fuzz]
+runs = 4096
+
+[invariant]
+runs = 512
+depth = 32

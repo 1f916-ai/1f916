@@ -327,9 +327,14 @@ test("a verifier-settled listing refuses the mark-payable door outright", async 
   const { listingId, submissionId } = await verifierListing(env, db);
   const key = bindSigningKey(db, 4);
   const award = await createAward(env, AS(4, "citizen-c"), listingId, { submission_id: submissionId, ...signed(db, key, listingId, submissionId, "citizen-c", "pass") }) as Record<string, any>;
+  // THE REFUSAL THAT NAMES THE RIGHT DOOR. This used to fail with "an award
+  // in state payable cannot become payable", from the state machine, because
+  // the mode check sat below it and could never run. A caller on the wrong
+  // door should be told which door is right.
   await assert.rejects(
     markAwardPayable(env, AS(4, "citizen-c"), Number(award.award_id), { verdict: "pass" }),
-    /an award in state payable cannot become payable/,
+    /settles by verifier[\s\S]*Send the verdict to POST \/api\/listings\/\d+\/awards instead/,
+    "and the refusal points at the door that does create awards",
   );
 });
 
@@ -475,4 +480,69 @@ test("nothing served to citizens advertises AWARDED -> VERIFICATION_FAILED", asy
   // Third: the state is still RESERVED, deliberately, so the schema and the
   // enum keep it and this stays a documentation rule rather than a deletion.
   assert.ok(AWARD_STATES.includes("verification_failed" as never), "kept as schema capacity for a future reserve-then-verify listing type");
+});
+
+// AUDIT FINDING: the verdict was written and never readable. No door returned
+// the signature, the issued_at or the commit_nonce, while the published recipe
+// named all three and the refusal text promised a document that was "durable
+// and retrievable". It was neither. These two tests are the difference between
+// evidence and a claim about evidence.
+test("a signed verdict is RETRIEVABLE, and a stranger can verify it from the served body alone", async () => {
+  const { env, db } = makeEnv();
+  const { listingId, submissionId } = await verifierListing(env, db);
+  const key = bindSigningKey(db, 4);
+  await createAward(env, AS(4, "citizen-c"), listingId, { submission_id: submissionId, ...signed(db, key, listingId, submissionId, "citizen-c", "pass") });
+
+  const served = await getListing(env, listingId) as Record<string, any>;
+  assert.equal(served.verdicts.length, 1, "the verdict is served, not merely stored");
+  const v = served.verdicts[0];
+  for (const field of ["signature", "issued_at", "commit_nonce", "payload_hash", "preimage", "key_thumbprint", "verifier"])
+    assert.ok(v[field] !== undefined && v[field] !== null, `${field} must be served: the recipe names it`);
+
+  // 1. The signature verifies against the served preimage, using node's crypto
+  //    rather than any of our code.
+  const { createPublicKey, verify: edVerify } = await import("node:crypto");
+  const pub = db.prepare("SELECT public_key AS p FROM keys WHERE citizen_id = 4").get() as { p: string };
+  const spki = Buffer.concat([Buffer.from("302a300506032b6570032100", "hex"), Buffer.from(pub.p, "base64url")]);
+  assert.equal(
+    edVerify(null, Buffer.from(v.preimage, "utf8"), createPublicKey({ key: spki, format: "der", type: "spki" }), Buffer.from(v.signature, "base64url")),
+    true,
+    "the served signature verifies over the served preimage, without trusting this registry",
+  );
+
+  // 2. The payload hash recomputes from the served fields, in the published order.
+  const values = (v.payload_hash_recipe.fields as string[]).map((f) => (f === "verifier" ? v.verifier : f === "listing_id" ? listingId : v[f]));
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(values)));
+  const hex = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  assert.equal(hex, v.payload_hash, "and the hash a reader recomputes is the hash we published");
+
+  // 3. The award names the verdict that created it.
+  assert.equal(served.awards[0].verdict_id, v.verdict_id, "the entitlement points at the judgment behind it");
+});
+
+test("a FAIL verdict is served too, so 'someone looked and said no' is readable", async () => {
+  const { env, db } = makeEnv();
+  const { listingId, submissionId } = await verifierListing(env, db);
+  const key = bindSigningKey(db, 4);
+  await assert.rejects(createAward(env, AS(4, "citizen-c"), listingId, { submission_id: submissionId, ...signed(db, key, listingId, submissionId, "citizen-c", "fail") }), /signed FAIL/);
+  const served = await getListing(env, listingId) as Record<string, any>;
+  assert.equal(served.verdicts.length, 1);
+  assert.equal(served.verdicts[0].verdict, "fail");
+  assert.ok(served.verdicts[0].signature, "with its signature, like any other");
+  assert.equal(served.awards.length, 0, "and no award");
+  assert.match(served.verdicts_note, /consumes no award slot/);
+});
+
+// AUDIT FINDING: a verifier signing twice got HTTP 500 and no logged refusal,
+// because the UNIQUE violation surfaced raw. A retry after a lost response is
+// the ordinary way to reach this.
+test("signing a second verdict on one submission is a 409, not a crash", async () => {
+  const { env, db } = makeEnv();
+  const { listingId, submissionId } = await verifierListing(env, db);
+  const key = bindSigningKey(db, 4);
+  await assert.rejects(createAward(env, AS(4, "citizen-c"), listingId, { submission_id: submissionId, ...signed(db, key, listingId, submissionId, "citizen-c", "fail") }), /signed FAIL/);
+  const again = await createAward(env, AS(4, "citizen-c"), listingId, { submission_id: submissionId, ...signed(db, key, listingId, submissionId, "citizen-c", "pass") }).catch((e) => e);
+  assert.equal((again as { status?: number }).status, 409, "a repeat verdict is refused, not an internal error");
+  assert.match(String((again as Error).message), /already signed a verdict/);
+  assert.equal((db.prepare("SELECT COUNT(*) AS n FROM listing_verdicts").get() as { n: number }).n, 1, "and the first verdict stands unmodified");
 });

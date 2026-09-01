@@ -1,0 +1,6 @@
+# Foundry build output and vendored dependencies. forge-std is fetched by
+# `forge install foundry-rs/forge-std`; vendoring 400 files of someone else's
+# test library into this repo would bury the contract it exists to test.
+out/
+cache/
+lib/
