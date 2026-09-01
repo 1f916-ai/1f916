@@ -487,6 +487,9 @@ export interface ValidatedSettlement {
 
 export const MAX_ESCROW_VERIFIERS = 8;
 
+// Mirrors ListingEscrow.MIN_CLAIM_GRACE. Two days.
+export const MIN_CLAIM_GRACE_SECONDS = 2 * 24 * 3600;
+
 // The v3 half of validateSettlement, kept separate so the v2 path it does not
 // touch stays exactly as it was.
 export function validateEscrowTerms(body: SettlementInput, maxAwards: number, listingExpiry: number | undefined, nowSeconds: number) {
@@ -508,6 +511,14 @@ export function validateEscrowTerms(body: SettlementInput, maxAwards: number, li
   // THE SAME ORDERING THE CONTRACT ENFORCES, checked here so a funder learns
   // it at posting time rather than from a revert. The gap is the payee's, and
   // no verifier delay can consume it.
+  // THE SAME MINIMUM THE CONTRACT ENFORCES. "Strictly after" is satisfied by
+  // one second, and Base makes a block every two, so a listing could publish a
+  // claim window narrower than a single block: a verdict signed at the last
+  // legal instant would be uncollectable and the whole escrow would refund to
+  // the funder. Checked in both layers, because a rule enforced only on chain
+  // is one a funder discovers from a revert.
+  if (claimDeadline > verifierDeadline && claimDeadline - verifierDeadline < MIN_CLAIM_GRACE_SECONDS)
+    throw new SocietyError(400, `escrow_claim_deadline must leave the payee at least ${MIN_CLAIM_GRACE_SECONDS} seconds after escrow_verifier_deadline. A window shorter than that is not a grace period: a verdict signed at the last legal instant of the verifier window would be uncollectable, and the money would refund to the funder while the work stayed done.`);
   if (claimDeadline <= verifierDeadline)
     throw new SocietyError(400, "escrow_claim_deadline must be strictly after escrow_verifier_deadline: the gap between them is the window the PAYEE has to collect, and a listing that leaves none hands a slow verifier the power to run out the clock on work it already approved");
   if (listingExpiry !== undefined && verifierDeadline < listingExpiry)

@@ -95,6 +95,12 @@ export interface EscrowTerms {
   claimDeadline: number;
   refunded: boolean;
   committed: bigint;
+  // keccak256(abi.encode(address[] verifiers, uint32[] caps)) as committed at
+  // funding. THE ONLY WAY TO SEE A VERIFIER THE LISTING NEVER NAMED: the caps
+  // live in a mapping, which cannot be enumerated, so asking the chain "who
+  // may release this" is impossible and asking "may THIS address release it"
+  // requires already knowing the address. A hidden verifier changes this hash.
+  verifierSet: string;
 }
 
 // WHAT MAY BE DISPLAYED AS FUNDED, and the rule is deliberately strict.
@@ -194,6 +200,11 @@ export function fundedDisagreements(
     onchain: EscrowTerms | null;
     verifierAuthority: { address: string; cap: number; used: number }[];
     funderAddress: string | null;
+    // keccak256(abi.encode(verifiers, caps)) recomputed from the listing's own
+    // published verifier list, in the order the listing published them. Absent
+    // means the reader did not compute it, which is itself a disagreement:
+    // a reader that cannot rule out a hidden verifier must not say FUNDED.
+    expectedVerifierSet?: string;
   },
 ): string[] {
   const out: string[] = [];
@@ -244,11 +255,43 @@ export function fundedDisagreements(
     if (onchainAuth.cap !== listing.verifiers[i].cap)
       out.push(`this listing gives verifier ${addr} a cap of ${listing.verifiers[i].cap} and the escrow gives it ${onchainAuth.cap}`);
   }
+  // Kept as defence in depth: it fires only when the reader happens to have
+  // looked up the stranger's address, which means it catches a verifier you
+  // already suspected and never one you did not. That is why the commitment
+  // below exists rather than this loop alone.
   for (const auth of chain.verifierAuthority)
     if (auth.cap > 0 && !named.has(auth.address.toLowerCase()))
       out.push(`the escrow authorizes ${auth.address} to release this listing's money and this listing never named them`);
 
+  // THE ONLY CHECK THAT CAN SEE A HIDDEN VERIFIER, and the loop above
+  // cannot. That loop walks `chain.verifierAuthority`, an array a caller
+  // builds by looking up addresses it already knows, which in practice is the
+  // listing's OWN named set, so it can never contain a verifier the listing
+  // did not name. On its own it was a guard over a list that structurally
+  // excluded the attacker.
+  //
+  // The consequence was not theoretical: a funder could name a second verifier
+  // that appears nowhere in the published terms, wait for the work, then sign
+  // releases to himself and take the entire escrow back immediately, with no
+  // deadline to wait for and this page saying FUNDED the whole time.
+  if (chain.expectedVerifierSet !== undefined && !same(chain.onchain.verifierSet, chain.expectedVerifierSet))
+    out.push(`the escrow's verifier set does not match the one this listing published: the escrow may authorize a party this listing never named, and a verifier nobody agreed to can release this money to anyone`);
+  if (chain.expectedVerifierSet === undefined)
+    out.push("this reader did not recompute the escrow's verifier set from the listing's published verifiers, so it cannot rule out a verifier the listing never named");
+
+  // AND A DRAINED ESCROW IS NOT A FUNDED ONE. `held` above is maxAwards times
+  // the award amount, a constant that ignores how many awards have already
+  // been released, so an escrow paid down to nothing still matched its terms
+  // and this page printed "FUNDED. 0 atomic units are committed" to a worker
+  // deciding whether to start.
+  if (onchainRemaining(chain.onchain) === 0n)
+    out.push("every award on this listing has already been released or refunded, so the escrow holds nothing and no further work on it can be paid from here");
+
   return out;
+}
+
+export function onchainRemaining(onchain: EscrowTerms): bigint {
+  return onchain.refunded ? 0n : BigInt(onchain.maxAwards - onchain.released) * onchain.amountPerAward;
 }
 
 // What a worker is entitled to be told before doing the work, in one sentence
@@ -256,6 +299,6 @@ export function fundedDisagreements(
 export function fundingStatement(disagreements: string[], onchain: EscrowTerms | null): string {
   if (disagreements.length > 0)
     return `NOT FUNDED, and this is not a delay: the money on chain does not match this listing's published terms. ${disagreements.join("; ")}. Treat this listing as a promise and nothing more until it agrees with itself.`;
-  const remaining = onchain ? BigInt(onchain.maxAwards - onchain.released) * onchain.amountPerAward : 0n;
+  const remaining = onchain ? onchainRemaining(onchain) : 0n;
   return `FUNDED. ${remaining} atomic units are committed in the escrow named in this listing's own hashed terms, and this registry cannot move any of it. Release needs a signature from a verifier this listing named before the work began, and anyone may relay it.`;
 }

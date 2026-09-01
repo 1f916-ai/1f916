@@ -44,6 +44,7 @@ contract ListingEscrow {
     error VerifierCapExceeded();
     error ZeroAddress();
     error DeadlineOrder();
+    error ClaimGraceTooShort();
     error VerifierWindowClosed();
     error ClaimWindowClosed();
     error ClaimWindowOpen();
@@ -99,6 +100,25 @@ contract ListingEscrow {
         uint64 verifierDeadline;
         uint64 claimDeadline;
         bool refunded;
+        /// THE WHOLE VERIFIER SET, IN ONE CHECKABLE VALUE.
+        ///
+        /// The caps live in a mapping, and a mapping CANNOT BE ENUMERATED. So
+        /// a reader could only ever ask "does address X have authority here",
+        /// which requires already knowing X, which means a verifier the
+        /// listing never named was invisible to every possible query. A funder
+        /// could name a secret second verifier that appears nowhere in the
+        /// published terms, let a worker do the work, then sign releases to
+        /// himself with his own hidden key and take the entire escrow back
+        /// immediately: no deadline to wait for, no refund() call, and the
+        /// website displaying FUNDED the whole time because the check for
+        /// unnamed verifiers iterated a list built from the named ones and
+        /// therefore could never contain him.
+        ///
+        /// This is the commitment that makes the set checkable: a reader
+        /// recomputes it from the verifiers the LISTING publishes and compares.
+        /// A hidden verifier changes this hash, so the escrow stops matching
+        /// the listing and the site refuses to call it funded.
+        bytes32 verifierSetHash;
     }
 
     /// @dev KEYED BY (listingHash, funder), NOT BY listingHash ALONE.
@@ -127,6 +147,11 @@ contract ListingEscrow {
     ///      registry's own award ledger, so one on-chain payment corresponds to
     ///      exactly one off-chain entitlement.
     mapping(bytes32 => bool) public paid;
+
+    /// @notice The shortest claim window a listing may give its payee. Two
+    ///         days: long enough that an agent which polls hourly, or a human
+    ///         who checks the next morning, still collects.
+    uint64 public constant MIN_CLAIM_GRACE = 2 days;
 
     // ---------------------------------------------------------------- EIP-712
     bytes32 private constant _EIP712_DOMAIN_TYPEHASH =
@@ -165,6 +190,12 @@ contract ListingEscrow {
         );
     }
 
+    /// @notice The commitment to a verifier set, recomputable by anyone who
+    ///         has the published list. Order matters and is the funder's.
+    function verifierSetHash(address[] calldata verifiers, uint32[] calldata caps) public pure returns (bytes32) {
+        return keccak256(abi.encode(verifiers, caps));
+    }
+
     /// @notice The storage key for one funder's escrow on one listing.
     /// @dev Public and pure so an off-chain reader derives it exactly as this
     ///      contract does rather than reimplementing the rule.
@@ -200,6 +231,14 @@ contract ListingEscrow {
         if (token == address(0)) revert ZeroAddress();
         // The worker's claim grace must be strictly positive.
         if (claimDeadline <= verifierDeadline) revert DeadlineOrder();
+        // A POSITIVE GRACE IS NOT A USABLE ONE. `claimDeadline > verifierDeadline`
+        // is satisfied by one second, and Base produces a block every two, so a
+        // funder could publish a window narrower than a single block: a verdict
+        // signed at the last legal instant of the verifier window would be
+        // uncollectable and the whole escrow would refund to the funder. The
+        // fuzz test that "proved" the grace existed asserted only that it was
+        // POSITIVE, which is the same blind spot written down twice.
+        if (claimDeadline - verifierDeadline < MIN_CLAIM_GRACE) revert ClaimGraceTooShort();
         if (verifierDeadline <= block.timestamp) revert DeadlineOrder();
 
         if (verifierCaps.length != verifiers.length) revert CapMismatch();
@@ -218,6 +257,7 @@ contract ListingEscrow {
         }
 
         l.funder = msg.sender;
+        l.verifierSetHash = verifierSetHash(verifiers, verifierCaps);
         l.token = token;
         l.amountPerAward = amountPerAward;
         l.maxAwards = maxAwards;
@@ -345,7 +385,8 @@ contract ListingEscrow {
             uint64 verifierDeadline,
             uint64 claimDeadline,
             bool refunded_,
-            uint256 committed
+            uint256 committed,
+            bytes32 verifierSet
         )
     {
         Listing storage l = _listings[escrowKey(listingHash, fundedBy)];
@@ -362,7 +403,8 @@ contract ListingEscrow {
             // otherwise: it reported the full remainder after the money had
             // gone back to the funder. An off-chain reader that trusted it
             // would print "FUNDED, N committed" about an empty escrow.
-            l.refunded ? 0 : uint256(l.maxAwards - l.released) * l.amountPerAward
+            l.refunded ? 0 : uint256(l.maxAwards - l.released) * l.amountPerAward,
+            l.verifierSetHash
         );
     }
 

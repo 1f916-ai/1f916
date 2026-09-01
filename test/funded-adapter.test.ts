@@ -23,6 +23,7 @@ const terms = (over: Partial<EscrowTerms> = {}): EscrowTerms => ({
   claimDeadline: 2,
   refunded: false,
   committed: 15_000_000n,
+  verifierSet: SET_HASH,
   ...over,
 });
 
@@ -112,11 +113,13 @@ const v3Listing = {
   escrow_verifier_deadline: 1000, escrow_claim_deadline: 2000,
 };
 
+const SET_HASH = "0xaaaabbbbccccddddeeeeffff00001111222233334444555566667777888899990";
 const chainOk = {
   chainId: 8453, escrowAddress: ESCROW,
   onchain: terms({ verifierDeadline: 1000, claimDeadline: 2000 }),
   verifierAuthority: [{ address: V, cap: 3, used: 0 }],
   funderAddress: "0xF00D000000000000000000000000000000000000",
+  expectedVerifierSet: SET_HASH,
 };
 
 test("the read ABI cannot express a state change", () => {
@@ -175,10 +178,14 @@ test("every way the chain can disagree with the listing is caught and stated", (
   }
 });
 
-test("AN UNNAMED VERIFIER WITH AUTHORITY IS THE DANGEROUS DIRECTION, and it is caught", () => {
+test("an unnamed verifier the reader HAPPENS to know about is caught, which is not the same as being safe", () => {
   // Someone who can release this listing's money without appearing in the
   // document the work was done against. Every other mismatch shortchanges the
   // funder; this one shortchanges the worker.
+  //
+  // This check only fires when the caller already looked the stranger up, so
+  // it catches a verifier you suspected and never one you did not. The set
+  // commitment in the test below is what covers the case that matters.
   const stranger = "0x5555555555555555555555555555555555555555";
   const found = fundedDisagreements(v3Listing, {
     ...chainOk,
@@ -245,7 +252,7 @@ test("a funder_address cannot be declared without a signature from that wallet",
 
 // ---------- settlement v3: the terms, and the two keys ----------
 
-import { MAX_ESCROW_VERIFIERS, validateSettlement } from "../src/settlement.ts";
+import { MAX_ESCROW_VERIFIERS, MIN_CLAIM_GRACE_SECONDS, validateSettlement } from "../src/settlement.ts";
 
 const NOW_S = Math.floor(Date.now() / 1000);
 const v3Terms = (over: Record<string, unknown> = {}) => ({
@@ -270,8 +277,13 @@ test("an escrow-backed listing declares both of a verifier's keys, and neither i
     /must declare its verifiers/);
 });
 
-test("the escrow's deadlines must leave the payee a claim window, checked at posting time", () => {
+test("the escrow's deadlines must leave the payee a USABLE claim window, checked at posting time", () => {
   const d = NOW_S + 7 * 86400;
+  // One second satisfies "strictly after" and is narrower than a Base block.
+  assert.throws(() => validateSettlement(v3Terms({ escrow_verifier_deadline: d, escrow_claim_deadline: d + 1 }) as never, NOW_S + 5 * 86400, NOW_S),
+    /at least 172800 seconds/, "a window shorter than a block is not a grace period");
+  // And the two layers agree on the number.
+  assert.equal(MIN_CLAIM_GRACE_SECONDS, 2 * 24 * 3600);
   assert.throws(() => validateSettlement(v3Terms({ escrow_claim_deadline: d, escrow_verifier_deadline: d }) as never, NOW_S + 5 * 86400, NOW_S),
     /the gap between them is the window the PAYEE has to collect/);
   assert.throws(() => validateSettlement(v3Terms({ escrow_verifier_deadline: NOW_S + 3 * 86400 }) as never, NOW_S + 4 * 86400, NOW_S),
@@ -349,4 +361,45 @@ test("an escrow-backed listing settles by verifier and says why the other two ar
     assert.throws(() => validateSettlement(v3Terms({ settlement_mode: mode, automatic_check: mode === "automatic" ? { kind: "comment_artifact_contains", expect: "REPRODUCED-quadrilateral-7f3a" } : undefined }) as never, NOW_S + 5 * 86400, NOW_S),
       /settles by verifier in this version/);
   }
+});
+
+// ---------- what the second independent review found ----------
+
+test("A HIDDEN VERIFIER IS CAUGHT, and the check it replaces could never have caught one", () => {
+  // The verifier caps live in a solidity mapping, which cannot be enumerated.
+  // So the old check walked an array the CALLER built from addresses it
+  // already knew, i.e. from the listing's own named set: a guard over a list
+  // that structurally excluded the attacker. A funder could name a second
+  // verifier appearing nowhere in the published terms, let the work happen,
+  // then sign releases to himself and take the whole escrow back immediately,
+  // with no deadline and this page saying FUNDED throughout.
+  const found = fundedDisagreements(v3Listing, {
+    ...chainOk,
+    onchain: terms({ verifierDeadline: 1000, claimDeadline: 2000, verifierSet: "0x" + "de".repeat(32) }),
+  });
+  assert.ok(found.some((f) => /verifier set does not match/.test(f)), JSON.stringify(found));
+  assert.match(fundingStatement(found, chainOk.onchain), /^NOT FUNDED/);
+});
+
+test("a reader that did not recompute the verifier set must not say FUNDED", () => {
+  const { expectedVerifierSet, ...withoutIt } = chainOk;
+  void expectedVerifierSet;
+  const found = fundedDisagreements(v3Listing, withoutIt as never);
+  assert.ok(found.some((f) => /did not recompute the escrow's verifier set/.test(f)),
+    "silence about a check nobody ran is not the same as passing it");
+});
+
+test("a fully released escrow is NOT funded, however well its terms match", () => {
+  // `held` was maxAwards times the award amount, a constant that ignored how
+  // many awards had already been paid, so a drained escrow matched its terms
+  // and this page printed "FUNDED. 0 atomic units are committed" to a worker
+  // deciding whether to begin.
+  const drained = terms({ verifierDeadline: 1000, claimDeadline: 2000, released: 3, committed: 0n });
+  const found = fundedDisagreements(v3Listing, { ...chainOk, onchain: drained });
+  assert.ok(found.some((f) => /already been released or refunded/.test(f)), JSON.stringify(found));
+  assert.match(fundingStatement(found, drained), /^NOT FUNDED/);
+  // And the honest partial case still reads as funded, with the right number.
+  const partial = terms({ verifierDeadline: 1000, claimDeadline: 2000, released: 1 });
+  assert.deepEqual(fundedDisagreements(v3Listing, { ...chainOk, onchain: partial }), []);
+  assert.match(fundingStatement([], partial), /10000000 atomic units are committed/);
 });

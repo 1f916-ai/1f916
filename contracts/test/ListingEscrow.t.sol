@@ -108,7 +108,7 @@ contract ListingEscrowTest is Test {
     function test_fund_commits_the_maximum_liability_not_one_award() public {
         _fund(5_000_000, 3);
         assertEq(usdc.balanceOf(address(escrow)), 15_000_000, "the whole ceiling is committed at publication");
-        (,,,,,,,, uint256 committed) = escrow.listingOf(LH, funder);
+        (,,,,,,,, uint256 committed,) = escrow.listingOf(LH, funder);
         assertEq(committed, 15_000_000);
     }
 
@@ -283,14 +283,14 @@ contract ListingEscrowTest is Test {
 
         // The real funder is unaffected: their escrow is a different key.
         _fund(5_000_000, 3);
-        (address who,,,,,,,, uint256 committed) = escrow.listingOf(LH, funder);
+        (address who,,,,,,,, uint256 committed,) = escrow.listingOf(LH, funder);
         assertEq(who, funder, "the listing a reader looks up is the one its funder backed");
         assertEq(committed, 15_000_000);
         assertEq(usdc.balanceOf(address(escrow)), 15_000_000);
 
         // And the squatter's escrow is visible only to someone who asks for
         // it by his address, which no reader of this listing does.
-        (address sq,,,,,,,,) = escrow.listingOf(LH, squatter);
+        (address sq,,,,,,,,,) = escrow.listingOf(LH, squatter);
         assertEq(sq, squatter);
         // His verifier authority does not reach the real funder's escrow.
         assertEq(escrow.isVerifier(LH, funder, squatter), false, "a squatter authorizes nothing on the listing that matters");
@@ -351,7 +351,7 @@ contract ListingEscrowTest is Test {
         _fund(5_000_000, 3);
         vm.warp(cDeadline + 1);
         escrow.refund(LH, funder);
-        (,,,,,,, bool refunded_, uint256 committed) = escrow.listingOf(LH, funder);
+        (,,,,,,, bool refunded_, uint256 committed,) = escrow.listingOf(LH, funder);
         assertEq(refunded_, true);
         assertEq(committed, 0, "a view that reports money the escrow does not hold is a lie a reader will repeat");
         assertEq(usdc.balanceOf(address(escrow)), 0);
@@ -483,26 +483,132 @@ contract ListingEscrowTest is Test {
         vm.expectRevert(ListingEscrow.DeadlineOrder.selector);
         escrow.fund(LH, address(usdc), 5_000_000, 3, vs, caps, uint64(block.timestamp), cDeadline);
         vm.stopPrank();
-        (address f,,,,,,,,) = escrow.listingOf(LH, funder);
+        (address f,,,,,,,,,) = escrow.listingOf(LH, funder);
         assertEq(f, address(0), "none of those listings exist");
     }
 
-    function testFuzz_any_funded_listing_leaves_a_positive_claim_grace(uint64 v, uint64 c) public {
+    /// REWRITTEN. This asserted the grace was POSITIVE, which is satisfied by
+    /// one second on a chain with two-second blocks, so it "proved" a property
+    /// that did not protect anyone. An independent reviewer demonstrated a
+    /// listing with a one-second window whose verdict was uncollectable and
+    /// whose whole escrow refunded to the funder.
+    function testFuzz_any_funded_listing_leaves_a_USABLE_claim_grace(uint64 v, uint64 c) public {
         v = uint64(bound(v, block.timestamp + 1, block.timestamp + 3650 days));
         c = uint64(bound(c, block.timestamp, block.timestamp + 7300 days));
         address[] memory vs = new address[](1);
         uint32[] memory caps = new uint32[](1);
         vs[0] = verifier;
         caps[0] = 1;
+        // Mint per run: forge reuses the deployed contracts across fuzz runs,
+        // so a fixture that spends its balance starves later cases and the
+        // failure surfaces as TokenNotExact, which looks like a token bug.
+        // A FRESH LISTING AND A FRESH BALANCE PER RUN. forge reuses the
+        // deployed contracts across fuzz runs, so reusing one hash makes later
+        // cases fail on AlreadyFunded or on an exhausted balance, and the
+        // failure surfaces as TokenNotExact, which reads like a token bug.
+        bytes32 lh = keccak256(abi.encode(v, c));
+        // READ THE CONSTANT BEFORE THE PRANK. vm.prank applies to the NEXT
+        // call, and a view call counts: reading MIN_CLAIM_GRACE() inside the
+        // branch condition consumed the prank, so fund() ran as the test
+        // contract, which holds no USDC, and the failure surfaced as
+        // TokenNotExact. The same shape as an expectRevert armed against a
+        // staticcall.
+        uint64 minGrace = escrow.MIN_CLAIM_GRACE();
+        usdc.mint(funder, 1_000_000);
+        vm.prank(funder);
+        usdc.approve(address(escrow), 1_000_000);
         vm.prank(funder);
         if (c <= v) {
             vm.expectRevert(ListingEscrow.DeadlineOrder.selector);
-            escrow.fund(LH, address(usdc), 1_000_000, 1, vs, caps, v, c);
+            escrow.fund(lh, address(usdc), 1_000_000, 1, vs, caps, v, c);
+        } else if (c - v < minGrace) {
+            vm.expectRevert(ListingEscrow.ClaimGraceTooShort.selector);
+            escrow.fund(lh, address(usdc), 1_000_000, 1, vs, caps, v, c);
         } else {
-            escrow.fund(LH, address(usdc), 1_000_000, 1, vs, caps, v, c);
-            (,,,,, uint64 vd, uint64 cd,,) = escrow.listingOf(LH, funder);
-            assertGt(cd, vd, "every funded listing has a grace window that belongs to the payee");
+            escrow.fund(lh, address(usdc), 1_000_000, 1, vs, caps, v, c);
+            (,,,,, uint64 vd, uint64 cd,,,) = escrow.listingOf(lh, funder);
+            assertGe(cd - vd, minGrace, "every funded listing leaves the payee a window they can actually use");
         }
+    }
+
+    /// INDEPENDENT REVIEW, CRITICAL. The verifier caps live in a mapping, and
+    /// a mapping cannot be enumerated, so a reader could only ask "does X have
+    /// authority" and had to already know X. A funder could therefore name a
+    /// SECRET verifier that appears nowhere in the published listing, let the
+    /// work happen, and sign releases to himself: the whole escrow back
+    /// immediately, no deadline, no refund() call, with the site displaying
+    /// FUNDED throughout because its check for unnamed verifiers iterated a
+    /// list built from the named ones and could never contain him.
+    function test_a_hidden_verifier_changes_the_committed_set_and_is_therefore_visible() public {
+        address secret = vm.addr(0x5EC4E7);
+        address[] memory vs = new address[](2);
+        uint32[] memory caps = new uint32[](2);
+        vs[0] = verifier; caps[0] = 3;
+        vs[1] = secret;   caps[1] = 3;   // named to the contract, nowhere in the listing
+        vm.prank(funder);
+        escrow.fund(LH, address(usdc), 5_000_000, 3, vs, caps, vDeadline, cDeadline);
+
+        // The escrow still answers every question the old reader could ask in
+        // exactly the way it did before: the honest verifier looks correct.
+        (uint32 cap,) = escrow.verifierAuthority(LH, funder, verifier);
+        assertEq(cap, 3, "the named verifier's authority is intact, which is why this was invisible");
+
+        // THE SET COMMITMENT IS WHAT EXPOSES HIM. A reader recomputes it from
+        // the verifiers the LISTING publishes and compares.
+        address[] memory published = new address[](1);
+        uint32[] memory publishedCaps = new uint32[](1);
+        published[0] = verifier; publishedCaps[0] = 3;
+        (,,,,,,,,, bytes32 onchainSet) = escrow.listingOf(LH, funder);
+        assertTrue(onchainSet != escrow.verifierSetHash(published, publishedCaps), "the escrow's verifier set does not match the listing's, and a reader can see it");
+
+        // And the attack itself still works against the CONTRACT, which is why
+        // the off-chain check is the defence: the contract cannot know what the
+        // listing said. The funder drains his own escrow to himself.
+        uint64 t = uint64(block.timestamp);
+        for (uint256 i = 1; i <= 3; i++) {
+            bytes32 sh = keccak256(abi.encode(
+                keccak256("Release(bytes32 listingHash,address funder,bytes32 awardId,bytes32 submissionHash,address payee,bytes32 verdictHash,uint64 issuedAt)"),
+                LH, funder, bytes32(i), bytes32(0), funder, bytes32(0), t
+            ));
+            (uint8 vv, bytes32 r, bytes32 ss) = vm.sign(0x5EC4E7, keccak256(abi.encodePacked("\x19\x01", escrow.domainSeparator(), sh)));
+            escrow.release(LH, funder, bytes32(i), bytes32(0), funder, bytes32(0), t, abi.encodePacked(r, ss, vv));
+        }
+        assertEq(usdc.balanceOf(address(escrow)), 0, "the contract cannot see the listing, so only the off-chain set check stops this");
+        assertEq(usdc.balanceOf(funder), 1_000_000_000, "and the funder has it all back, before any deadline");
+    }
+
+    /// The honest case: the committed set matches what the listing published,
+    /// so a reader recomputes it and agrees.
+    function test_an_honest_verifier_set_recomputes_to_the_committed_hash() public {
+        _fundCapped(5_000_000, 3, 3);
+        address[] memory published = new address[](1);
+        uint32[] memory publishedCaps = new uint32[](1);
+        published[0] = verifier; publishedCaps[0] = 3;
+        (,,,,,,,,, bytes32 onchainSet) = escrow.listingOf(LH, funder);
+        assertEq(onchainSet, escrow.verifierSetHash(published, publishedCaps));
+        // THE CAPS ARE PART OF THE COMMITMENT TOO. Without them, a funder
+        // could publish "this verifier may authorize one award" and commit a
+        // set that gives the same verifier all of them, and the hash would
+        // still match.
+        uint32[] memory biggerCap = new uint32[](1);
+        biggerCap[0] = 1;
+        assertTrue(onchainSet != escrow.verifierSetHash(published, biggerCap), "a cap the listing did not publish changes the commitment");
+
+        // Order is part of the commitment, and the funder chooses it.
+        address[] memory swapped = new address[](2);
+        uint32[] memory swappedCaps = new uint32[](2);
+        swapped[0] = address(0xAAA); swapped[1] = verifier; swappedCaps[0] = 1; swappedCaps[1] = 3;
+        assertTrue(onchainSet != escrow.verifierSetHash(swapped, swappedCaps));
+    }
+
+    function test_a_one_second_claim_grace_is_refused_outright() public {
+        address[] memory vs = new address[](1);
+        uint32[] memory caps = new uint32[](1);
+        vs[0] = verifier; caps[0] = 1;
+        vm.prank(funder);
+        vm.expectRevert(ListingEscrow.ClaimGraceTooShort.selector);
+        escrow.fund(LH, address(usdc), 5_000_000, 3, vs, caps, vDeadline, vDeadline + 1);
+        assertEq(escrow.MIN_CLAIM_GRACE(), 2 days);
     }
 
     // -------------------------------------------------------------- refunds
@@ -602,7 +708,7 @@ contract ListingEscrowTest is Test {
             bytes memory s = _sig(LH, bytes32(i), bytes32(0), payee, bytes32(0), t, verifierKey);
             escrow.release(LH, funder, bytes32(i), bytes32(0), payee, bytes32(0), t, s);
         }
-        (,,,,,,,, uint256 committed) = escrow.listingOf(LH, funder);
+        (,,,,,,,, uint256 committed,) = escrow.listingOf(LH, funder);
         assertEq(usdc.balanceOf(address(escrow)), committed, "held == owed, always");
         assertEq(usdc.balanceOf(payee), uint256(per) * toRelease);
     }
