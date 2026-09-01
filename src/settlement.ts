@@ -78,12 +78,7 @@ export type AwardState = (typeof AWARD_STATES)[number];
 // earned it and did not claim in time", and a rail that cannot tell those
 // apart can make an earned obligation disappear by calling it not-selected.
 const AWARD_TRANSITIONS: Record<AwardState, readonly AwardState[]> = {
-  // verification_failed is reachable ONLY from awarded, and only by a signed
-  // verifier FAIL. A failed verification is not an expiry (no clock ran out)
-  // and not a non-selection (an award was made), so forcing it into either
-  // would destroy the one fact it records: a named verifier looked at this
-  // work, said no, and signed for it.
-  awarded: ["payable", "expired_unmet", "verification_failed"],
+    awarded: ["payable", "expired_unmet"],
   payable: ["paid", "expired_unclaimed", "overdue_unpaid"],
   // An overdue debt is still a debt. The only way out of it is paying, and
   // there is deliberately no path from here to any expiry: a deadline the
@@ -92,8 +87,27 @@ const AWARD_TRANSITIONS: Record<AwardState, readonly AwardState[]> = {
   paid: [],
   expired_unmet: [],
   expired_unclaimed: [],
+  // RESERVED, WITH NO IN-EDGE IN SETTLEMENT V2. Nothing transitions to it and
+  // nothing may, which is why the row above for `awarded` does not list it.
+  //
+  // It exists because I built a verifier FAIL that moved an award here, and it
+  // could never run: this state needs an award in `awarded`, only a RESERVED
+  // seat is born `awarded`, and only a requester-settled listing may reserve.
+  // A verifier listing therefore has no such row to fail. The real semantics
+  // turned out cleaner than the diagram I was coding to: a verifier's PASS is
+  // what CREATES the award, and a FAIL records a signed verdict and creates
+  // nothing, so a failed candidate never consumes a slot and none has to be
+  // returned. The state stays in AWARD_STATES and in the schema CHECK as
+  // capacity for a future listing type that DOES reserve seats before a
+  // verdict (buying attempts rather than outcomes), and removing it would cost
+  // a migration to gain nothing. It must not be advertised as a V2 transition.
   verification_failed: [],
 };
+
+// Exported so the guard in test/award-proof-chain.test.ts can assert the
+// reserved state has no in-edge against THIS table rather than a copy of it
+// that could drift from it.
+export const AWARD_TRANSITIONS_FOR_TEST: Record<string, readonly string[]> = AWARD_TRANSITIONS;
 
 // THE INVARIANT THAT DECIDES WHICH WAY A DEADLINE FALLS:
 //
@@ -125,15 +139,18 @@ export function lapseStateFor(from: AwardState, workerReadyToBePaid: boolean): A
 // theirs: in every one of them the work was accepted, and re-selling the seat
 // would pay twice for one accepted piece of work.
 //
-// verification_failed RETURNS the seat, and it is the only other state that
-// does. The rule is not "which outcome is nicer", it is whether the declared
-// condition was ever satisfied: expired_unmet and verification_failed are the
-// two states where it demonstrably was not, so nothing was earned and the seat
-// belongs back in the market. In every other state an entitlement existed at
-// some point, and selling that seat again would pay twice for one accepted
-// piece of work. NOTE this is a protocol rule and not a per-listing option: a
-// funder cannot declare that a failed verification keeps its seat spent,
-// because that would let a listing burn its own capacity on work it refused.
+// verification_failed would also return its seat, and it is reserved rather
+// than reachable in V2 (see the transition table above). The rule is not
+// "which outcome is nicer", it is whether the declared condition was ever
+// satisfied: those are the two states where it demonstrably was not, so
+// nothing was earned and the seat belongs back in the market. In every other
+// state an entitlement existed at some point, and selling that seat again
+// would pay twice for one accepted piece of work.
+//
+// In V2 a failed verification never reaches this function at all, because a
+// verifier FAIL creates no award: the slot is never consumed, so it never has
+// to be given back. The line below is kept correct for the day the reserved
+// state acquires an in-edge.
 export function consumesSlot(state: AwardState): boolean {
   return state !== "expired_unmet" && state !== "verification_failed";
 }
@@ -200,7 +217,7 @@ export const SETTLEMENT_BLOCK_NOTE =
   "Who settlement is waiting on, for an award that is owed. waiting_for_payee: the entitlement exists and the payee has not yet supplied a payout destination, which is the one act only they can take; the payer's clock has not started. ready_to_pay: the payee supplied a valid destination, readiness is latched against this award with the route it named, and the payer's payment deadline is running. payer_late: the deadline passed with the payee ready, so the amount is still owed and the lateness is the payer's. payee_route_lapsed: readiness is latched and the debt stands, and the destination the payee gave has since expired or been replaced, so a payer sending right now has nowhere to send it; this NEVER un-latches readiness, reduces the liability, or saves a payer from becoming overdue. null: nothing is owed on this award.";
 
 export const SUBMISSION_STATE_NOTE =
-  "submitted: handed in, no award, no entitlement, no liability of any kind. awarded: a slot is reserved for this citizen and the amount is outstanding, but the declared condition is not satisfied yet. payable: the declared condition IS satisfied and this citizen is entitled to the amount. paid: a payout receipt is joined to the award. not_selected: NO AWARD WAS EVER MADE against this submission and the listing closed, which is not a judgment of the work. expired_unmet: a reserved seat lapsed under the listing's declared award_ttl_seconds without the condition ever being met, so nothing was earned and the seat returned to the market. expired_unclaimed: this citizen WAS entitled to the amount and did not do the one thing only they could do, supply a payout destination, before the claim deadline the listing declared; the entitlement lapsed because of an action they controlled. overdue_unpaid: this citizen WAS entitled to the amount AND supplied a payout destination, so they had done everything available to them, and the payer did not settle by the deadline; THE AMOUNT IS STILL OWED, it stays in outstanding liability, and the missed deadline is on the payer's settlement history rather than the worker's. verification_failed: a named verifier holding an authorization filed before the verdict examined this work, said FAIL, and SIGNED that verdict, which is retrievable and reproducible by anyone. Nothing is owed, the seat returns to the market, and this is the only non-paid outcome that records a judgment of the work rather than a clock or a silence. The non-paid outcomes are different economic facts about different parties and none of them is ever reported as not_selected. A submission is never money owed; only an award in state awarded, payable or overdue_unpaid is.";
+  "submitted: handed in, no award, no entitlement, no liability of any kind. awarded: a slot is reserved for this citizen and the amount is outstanding, but the declared condition is not satisfied yet. payable: the declared condition IS satisfied and this citizen is entitled to the amount. paid: a payout receipt is joined to the award. not_selected: NO AWARD WAS EVER MADE against this submission and the listing closed, which is not a judgment of the work. expired_unmet: a reserved seat lapsed under the listing's declared award_ttl_seconds without the condition ever being met, so nothing was earned and the seat returned to the market. expired_unclaimed: this citizen WAS entitled to the amount and did not do the one thing only they could do, supply a payout destination, before the claim deadline the listing declared; the entitlement lapsed because of an action they controlled. overdue_unpaid: this citizen WAS entitled to the amount AND supplied a payout destination, so they had done everything available to them, and the payer did not settle by the deadline; THE AMOUNT IS STILL OWED, it stays in outstanding liability, and the missed deadline is on the payer's settlement history rather than the worker's. verification_failed: RESERVED AND NOT PRODUCED BY SETTLEMENT V2. No award transitions to it, because a verifier FAIL creates no award in the first place: the signed FAIL verdict is durable and retrievable, nothing is owed, and no award slot is consumed, so there is no award to move here. It is kept as schema capacity for a future listing type that reserves seats before a verdict. The non-paid outcomes are different economic facts about different parties and none of them is ever reported as not_selected. A submission is never money owed; only an award in state awarded, payable or overdue_unpaid is.";
 
 // The signed verdict artifact. A verifier PASS creates a real liability, so
 // the verdict cannot live only as an authenticated API call that left a state

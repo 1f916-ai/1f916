@@ -18,7 +18,7 @@ import { generateKeyPairSync, sign as edSign, createHash, type KeyObject } from 
 import { AWARD_STATES, VERDICT_HASH_FIELDS, consumesSlot, verdictPreimage } from "../src/settlement.ts";
 import {
   AWARD_HASH_FIELDS, AWARD_TRANSITION_HASH_FIELDS, awardTransitionPayload, createAward, createListing,
-  createSubmission, markAwardPayable, sweepExpiredAwards, verdictPreimageDoor, type Env,
+  createSubmission, getListing, markAwardPayable, sweepExpiredAwards, verdictPreimageDoor, type Env,
 } from "../src/society.ts";
 
 const DOLLAR = "1000000";
@@ -261,27 +261,76 @@ test("a verifier PASS is a signed artifact anyone can reproduce", async () => {
   assert.equal(events(db, "listing-verdict").length, 1, "and it is chained");
 });
 
-test("a verifier FAIL is recorded, signed, and TERMINAL, returning the slot", async () => {
+// THE REAL FAIL PATH, end to end. The version of this test I wrote first used
+// a REQUESTER listing and then asserted consumesSlot() arithmetic, so it never
+// reached the code it was named for and would have passed against a
+// transition that cannot happen. This one goes through the verifier door with
+// real signatures and checks what the ledger actually holds afterwards.
+test("verifier FAIL: signed, durable, creates no award, consumes no slot; a later PASS creates exactly one", async () => {
   const { env, db } = makeEnv();
   const listing = await createListing(env, AS(1, "funder"), {
     title: "Independent reproduction test", condition: CONDITION, amount_atomic: DOLLAR, expiry: NOW + 86400,
-    max_awards: 1, funding_mode: "promise", settlement_mode: "requester", award_ttl_seconds: 6 * 3600,
+    max_awards: 3, funding_mode: "promise", settlement_mode: "verifier", verifier_price_atomic: DOLLAR, max_verifiers: 1,
   }) as Record<string, unknown>;
   const listingId = Number((listing.row as string).replace("listing-", ""));
-  const submission = await createSubmission(env, AS(2, "citizen-a"), listingId, { artifact: reproduce(db, 2, "a") }) as Record<string, unknown>;
-  const seat = await createAward(env, AS(1, "funder"), listingId, { submission_id: submission.id, reserve: true }) as Record<string, unknown>;
-  assert.equal(consumesSlot("awarded"), true, "the seat is spent while it is reserved");
+  db.prepare("INSERT INTO payout_bindings (citizen_id, docket_id, amount_atomic, payout_address, expiry, created_at) VALUES (4, ?, ?, '0xv', ?, 0)")
+    .run(`listing-${listingId}-verifier`, DOLLAR, NOW + 86400);
+  const key = bindSigningKey(db, 4);
 
-  // The listing settles by requester here, so the funder marks it; the point
-  // under test is the FAIL path itself, which is shared.
-  const failed = await markAwardPayable(env, AS(1, "funder"), Number(seat.award_id), { verdict: "fail" }).catch((e) => e);
-  // Requester mode ignores verdicts, so this passes; the verifier-mode FAIL is
-  // covered end to end in settlement-e2e. What is pinned HERE is the state
-  // machine and the capacity rule that a FAIL relies on.
-  assert.ok(failed);
-  assert.equal(consumesSlot("verification_failed"), false, "a failed verification returns its seat to the market");
-  assert.equal(consumesSlot("expired_unmet"), false);
-  for (const s of AWARD_STATES) if (s !== "expired_unmet" && s !== "verification_failed") assert.equal(consumesSlot(s), true, `${s} keeps its seat`);
+  const before = await getListing(env, listingId) as Record<string, any>;
+  assert.equal(before.economics.available_award_capacity, 3, "three successful outcomes are on offer");
+
+  // Candidate A hands in work and the authorized verifier signs FAIL.
+  const a = await createSubmission(env, AS(2, "citizen-a"), listingId, { artifact: reproduce(db, 2, "attempt A") }) as Record<string, unknown>;
+  await assert.rejects(
+    createAward(env, AS(4, "citizen-c"), listingId, { submission_id: a.id, ...signed(db, key, listingId, Number(a.id), "citizen-c", "fail") }),
+    /signed FAIL on submission/,
+  );
+
+  // The FAIL is durable, hash-linked, and reproducible.
+  const verdict = db.prepare("SELECT * FROM listing_verdicts WHERE submission_id = ?").get(a.id) as Record<string, any>;
+  assert.equal(verdict.verdict, "fail");
+  assert.equal(verdict.verifier_id, 4);
+  assert.ok(String(verdict.signature).length > 40);
+  const [ev] = events(db, "listing-verdict");
+  assert.ok(ev, "and it is in the chained log");
+  assert.match(String(ev.detail), /verdict=fail/);
+  assert.ok(ev.hash && ev.prev_hash, "hash-linked into the log the checkpoint anchors");
+  assert.match(String(ev.detail), new RegExp(`verdict payload sha256=${verdict.payload_hash}`), "naming the payload hash a stranger recomputes");
+
+  // NOTHING ECONOMIC HAPPENED. No award, no liability, no slot spent.
+  assert.equal((db.prepare("SELECT COUNT(*) AS n FROM listing_awards").get() as { n: number }).n, 0, "a FAIL creates no award row");
+  const afterFail = await getListing(env, listingId) as Record<string, any>;
+  assert.equal(afterFail.economics.outstanding_awarded_atomic, "0", "and no liability");
+  assert.equal(afterFail.economics.awarded_slots_used, 0);
+  assert.equal(afterFail.economics.available_award_capacity, 3, "ALL THREE successful-outcome slots remain: a failed attempt does not spend one");
+  assert.equal(afterFail.submissions.find((x: Record<string, unknown>) => x.id === a.id)?.economic_state, "submitted", "and A is not marked with a defect");
+
+  // Candidate B passes. Exactly one award, capacity down to two.
+  const b = await createSubmission(env, AS(3, "citizen-b"), listingId, { artifact: reproduce(db, 3, "attempt B") }) as Record<string, unknown>;
+  const award = await createAward(env, AS(4, "citizen-c"), listingId, { submission_id: b.id, ...signed(db, key, listingId, Number(b.id), "citizen-c", "pass") }) as Record<string, any>;
+  assert.equal(award.state, "payable", "the PASS itself creates the entitlement");
+  assert.equal((db.prepare("SELECT COUNT(*) AS n FROM listing_awards").get() as { n: number }).n, 1, "exactly one award exists");
+  const afterPass = await getListing(env, listingId) as Record<string, any>;
+  assert.equal(afterPass.economics.awarded_slots_used, 1);
+  assert.equal(afterPass.economics.available_award_capacity, 2, "two successful outcomes still on offer");
+  assert.equal(afterPass.economics.outstanding_awarded_atomic, DOLLAR);
+  // Both verdicts stand side by side: the rail records the judgment either way.
+  assert.equal((db.prepare("SELECT COUNT(*) AS n FROM listing_verdicts").get() as { n: number }).n, 2);
+  assert.equal(events(db, "listing-verdict").length, 2);
+});
+
+// A verifier listing has no reserved seat to mark, so the endpoint that marks
+// one must say so rather than silently accepting a verdict it ignores.
+test("a verifier-settled listing refuses the mark-payable door outright", async () => {
+  const { env, db } = makeEnv();
+  const { listingId, submissionId } = await verifierListing(env, db);
+  const key = bindSigningKey(db, 4);
+  const award = await createAward(env, AS(4, "citizen-c"), listingId, { submission_id: submissionId, ...signed(db, key, listingId, submissionId, "citizen-c", "pass") }) as Record<string, any>;
+  await assert.rejects(
+    markAwardPayable(env, AS(4, "citizen-c"), Number(award.award_id), { verdict: "pass" }),
+    /an award in state payable cannot become payable/,
+  );
 });
 
 test("the verdict preimage is servable, signable, and one per outcome", async () => {
@@ -374,4 +423,56 @@ test("settlement emits a paid transition whose payload says paid, and says the d
   assert.equal(paid.to_state, "paid", "the event must say what actually happened to the money");
   assert.equal(paid.source, "system:receipt");
   assert.match(paid.reason, /already LATE when it was paid/, "paying late settles the amount and does not erase the lateness");
+});
+
+// THE CLAIM THAT MUST NOT COME BACK.
+//
+// I shipped a state, a schema CHECK, a migration column and an /api/surface
+// sentence for AWARDED -> VERIFICATION_FAILED, and the transition could not
+// happen: it needs an award in `awarded`, only a reserved seat is born
+// `awarded`, and only a requester-settled listing may reserve. The tests
+// passed because the one covering it used a requester listing and asserted
+// arithmetic instead of reaching the path.
+//
+// So this is not a test that the prose is nice. It is a mechanical check that
+// no citizen-facing description advertises a transition the state machine does
+// not have, tied to the state machine itself rather than to a wording.
+test("nothing served to citizens advertises AWARDED -> VERIFICATION_FAILED", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { AWARD_TRANSITIONS_FOR_TEST } = await import("../src/settlement.ts") as Record<string, any>;
+  // First: the state machine really has no in-edge to it. If a future change
+  // gives it one, this test stops applying and should be revisited rather than
+  // silently kept passing.
+  const reachable = AWARD_TRANSITIONS_FOR_TEST
+    ? Object.values(AWARD_TRANSITIONS_FOR_TEST).some((to) => (to as string[]).includes("verification_failed"))
+    : false;
+  assert.equal(reachable, false, "verification_failed is reserved and has no in-edge in Settlement V2");
+
+  // Second: no served surface may claim otherwise. These are the files whose
+  // strings reach citizens: route summaries, MCP tool descriptions, and the
+  // notes the economics and submission-state doors publish.
+  // COMMENTS ARE STRIPPED FIRST. The rule is about what citizens are SERVED,
+  // not about what the source explains to the next maintainer: the note in
+  // society.ts recording why this branch was deleted describes the transition
+  // in order to say it cannot happen, and a guard that cannot tell those apart
+  // would push its own explanation out of the codebase.
+  const stripComments = (t: string) => t.replace(/\/\*[\s\S]*?\*\//g, "").split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
+  const served = ["../src/surface.ts", "../src/mcp.ts", "../src/settlement.ts", "../src/society.ts"]
+    .map((f) => [f, stripComments(readFileSync(new URL(f, import.meta.url), "utf8"))] as const);
+  for (const [name, text] of served) {
+    // A mention is allowed; an ADVERTISEMENT of the transition is not.
+    const claims = [
+      /becomes verification_failed/i,
+      /moving the award to verification_failed/i,
+      /award to verification_failed/i,
+      /FAIL is TERMINAL/i,
+      /-> ?verification_failed/i,
+      /verification_failed and (its|the) slot returns/i,
+    ].filter((re) => re.test(text));
+    assert.deepEqual(claims.map(String), [], `${name} advertises a transition Settlement V2 does not have`);
+  }
+
+  // Third: the state is still RESERVED, deliberately, so the schema and the
+  // enum keep it and this stays a documentation rule rather than a deletion.
+  assert.ok(AWARD_STATES.includes("verification_failed" as never), "kept as schema capacity for a future reserve-then-verify listing type");
 });

@@ -3433,47 +3433,22 @@ export async function markAwardPayable(env: Env, citizen: Citizen, awardId: numb
   if (mode === "automatic")
     throw new SocietyError(400, `listing ${listing.id} settles automatically: an award is created payable when the declared check passes, so there is nothing to mark`);
   const payee = await handleOf(env, award.citizen_id);
-  let verdict: { id: number; payload_hash: string; hash: string } | null = null;
-  if (mode === "verifier") {
-    if (body.verdict !== "pass" && body.verdict !== "fail") throw new SocietyError(400, "verdict must be 'pass' or 'fail'");
-    verdict = await recordVerdict(env, citizen, listing, { id: award.submission_id, citizen_id: award.citizen_id }, { verdict: body.verdict, signature: body.signature, issued_at: body.issued_at });
-    // A SIGNED FAIL IS A TERMINAL OUTCOME, not a silence to be waited out.
-    // This used to throw and leave the seat sitting until award_ttl_seconds
-    // ran down, so the ledger recorded "a clock expired" for something that
-    // was actually "a named verifier examined this and rejected it". Those are
-    // different facts about different parties, and the second one is the more
-    // useful thing to know about a piece of work.
-    if (body.verdict === "fail") {
-      const failed = await commitWithIdentityEvent<{ id: number }>(
-        env,
-        env.DB.prepare(
-          `UPDATE listing_awards SET state = 'verification_failed', expires_at = NULL, verdict_id = ? WHERE id = ? AND state = 'awarded' RETURNING id`,
-        ).bind(verdict.id, awardId),
-        {
-          citizen_id: award.citizen_id,
-          kind: "listing-award-transition",
-          detail: await awardTransitionDetail({
-            awardId, listingId: listing.id, submissionId: award.submission_id, payee,
-            amountAtomic: award.amount_atomic, fromState: "awarded", toState: "verification_failed",
-            reason: `verifier ${citizen.handle} signed FAIL (verdict ${verdict.id}, payload sha256=${verdict.payload_hash}); the declared condition was not satisfied, so nothing was earned and the seat returns to the market`,
-            source: `verifier:${citizen.handle}`, deadline: award.expires_at, occurredAt: nowMs,
-          }),
-        },
-        `listing-award-transition chain head moved four times running; refusing to record a failed verification on award ${awardId} without its anchor`,
-        { sql: "EXISTS (SELECT 1 FROM listing_awards WHERE id = ? AND state = 'verification_failed')", binds: [awardId] },
-      );
-      if (!failed.state?.id)
-        throw new SocietyError(409, `award ${awardId} is no longer a reserved seat, so the verdict was recorded but no state change followed it`);
-      return {
-        award_id: awardId,
-        state: "verification_failed",
-        decided_by: mode,
-        verdict: { id: verdict.id, verdict: "fail", payload_hash: verdict.payload_hash, event_hash: verdict.hash },
-        capacity_returned: true,
-        note: "A named verifier examined this work and signed a FAIL. Nothing was earned and nothing is owed, the award slot returns to the listing, and this is NOT recorded as an expiry or as not_selected: the record says a judgment was made, by whom, and that it is reproducible from the signature. The worker may hand in new work while the listing is open.",
-      };
-    }
-  }
+  // THERE IS NO VERIFIER BRANCH HERE, and its absence is the correction.
+  //
+  // I wrote one, with a signed FAIL moving the award to verification_failed.
+  // It could never run. This endpoint requires an award in state `awarded`;
+  // an award is born `awarded` only when a seat is RESERVED; and reserving is
+  // refused unless the listing settles by requester. So a verifier-settled
+  // listing can never hold a row this endpoint can act on, and the branch was
+  // unreachable code describing a transition Settlement V2 does not have.
+  //
+  // The real verifier semantics are simpler and better: a PASS is what CREATES
+  // the award, in createAward, and a FAIL records a signed verdict and creates
+  // nothing. No award is manufactured and then killed, so no slot is consumed
+  // by a failure and none has to be given back.
+  if (mode === "verifier")
+    throw new SocietyError(400, `listing ${listing.id} settles by verifier: a verifier's signed PASS creates the award already payable, so there is nothing here to mark. Send the verdict to POST /api/listings/${listing.id}/awards instead. A signed FAIL is recorded there too and creates no award, which is why a failed candidate never consumes one of this listing's award slots.`);
+
   // The claim window starts now, when the entitlement starts existing, not
   // when the seat was reserved.
   const expiresAt = listing.payable_ttl_seconds === null ? null : nowMs + listing.payable_ttl_seconds * 1000;
@@ -3481,17 +3456,15 @@ export async function markAwardPayable(env: Env, citizen: Citizen, awardId: numb
     env,
     env.DB.prepare(
       `UPDATE listing_awards SET state = 'payable', payable_at = ?, expires_at = ?, verdict_id = ? WHERE id = ? AND state = 'awarded' RETURNING id`,
-    ).bind(nowMs, expiresAt, verdict?.id ?? null, awardId),
+    ).bind(nowMs, expiresAt, null, awardId),
     {
       citizen_id: award.citizen_id,
       kind: "listing-award-transition",
       detail: await awardTransitionDetail({
         awardId, listingId: listing.id, submissionId: award.submission_id, payee,
         amountAtomic: award.amount_atomic, fromState: "awarded", toState: "payable",
-        reason: verdict
-          ? `verifier ${citizen.handle} signed PASS (verdict ${verdict.id}, payload sha256=${verdict.payload_hash}); the declared settlement condition is satisfied and the amount is now owed`
-          : `the funder accepted under the listing's declared requester settlement; the declared condition is satisfied and the amount is now owed`,
-        source: verdict ? `verifier:${citizen.handle}` : `requester:${citizen.handle}`,
+        reason: `the funder accepted under the listing's declared requester settlement; the declared condition is satisfied and the amount is now owed`,
+        source: `requester:${citizen.handle}`,
         deadline: expiresAt, occurredAt: nowMs,
       }),
     },
@@ -3503,7 +3476,6 @@ export async function markAwardPayable(env: Env, citizen: Citizen, awardId: numb
   return {
     award_id: awardId,
     state: "payable",
-    ...(verdict ? { verdict: { id: verdict.id, verdict: "pass", payload_hash: verdict.payload_hash, event_hash: verdict.hash } } : {}),
     payable_at: nowMs,
     decided_by: mode,
     expires_at: expiresAt,
