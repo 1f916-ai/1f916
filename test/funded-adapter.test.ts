@@ -649,3 +649,40 @@ test("the hand-rolled abi encoder matches the recipe the contract uses", async (
   // And that value is the one pinned against the deployed contract.
   assert.equal(mine, "0xdac3538a537f76d4fd3d9f8dc2bdecfc078f7a2e6035833468f373b40e5758b6");
 });
+
+test("the escrow read is bounded: agreement once, then one provider", async () => {
+  // The audit's blocking-adjacent finding. The first version walked all nine
+  // providers for EVERY call, two fetches each, sequentially, on an
+  // unauthenticated GET: 162 subrequests and 405 seconds worst case for a
+  // listing with eight verifiers, on a platform with a hard subrequest cap.
+  // The balance read it was copied from only ever ran on a rate-limited POST.
+  const { ESCROW_PROVIDER_ATTEMPTS } = await import("../src/payouts.ts");
+  assert.ok(ESCROW_PROVIDER_ATTEMPTS <= 3, "a public read path cannot fan out across every provider");
+  // AND THE CAP IS ACTUALLY APPLIED. Asserting the constant alone left the
+  // mutation that deletes the slice alive: the number was right and nothing
+  // used it. Pinned at the source because the provider list comes from env
+  // and the failure is a count of network calls, not a value a test can read.
+  const { readFileSync } = await import("node:fs");
+  const payouts = readFileSync(new URL("../src/payouts.ts", import.meta.url), "utf8");
+  const reader = payouts.slice(payouts.indexOf("export function escrowReader"), payouts.indexOf("export function baseRpcUrls"));
+  assert.match(reader, /baseRpcUrls\(env\)\.slice\(0, ESCROW_PROVIDER_ATTEMPTS\)/,
+    "escrowReader must bound how many providers one public read may try");
+  assert.ok(!/for \(const rpcUrl of baseRpcUrls\(env\)\)/.test(reader), "an unbounded walk is what put 162 subrequests on one GET");
+
+  // Measured rather than asserted: count the fetches a full read makes.
+  const { readEscrow } = await import("../src/funded.ts");
+  let calls = 0;
+  const word = (n: number | bigint) => BigInt(n).toString(16).padStart(64, "0");
+  const reply = "0x" + word(1) + word(2) + word(1_000_000) + word(8) + word(0) + word(1) + word(2) + word(0) + word(8_000_000) + word(0);
+  const eight = Array.from({ length: 8 }, (_, i) => `0x${(i + 1).toString(16).padStart(40, "0")}`);
+  await readEscrow(
+    async (_to, data) => { calls += 1; return data.slice(2, 10) === "b3e64062" ? reply : "0x" + word(1) + word(0); },
+    "0x2222222222222222222222222222222222222222",
+    "52deaea8a16fc23d4b8f2df6098146d6723a272f1269c3caeb5a49b3625066f5",
+    "0xF00D000000000000000000000000000000000000",
+    eight,
+  );
+  // One listingOf plus one authority read per verifier. The provider voting
+  // happens inside the reader, and it stops at agreement.
+  assert.equal(calls, 9, "one call for the escrow and one per named verifier, and no repetition");
+});

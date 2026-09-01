@@ -525,8 +525,8 @@ export function assertVerifierCapNotReached(listing: Pick<StoredListing, "id" | 
 // a client can poll one address and notice when a rule changes instead of
 // scraping notes off five responses. Bump GUIDE_VERSION and GUIDE_CHANGED_AT
 // together whenever any served rule here changes; a test pins that.
-export const GUIDE_VERSION = "2026-09-01.2";
-export const GUIDE_CHANGED_AT = "2026-09-01T22:40:00Z";
+export const GUIDE_VERSION = "2026-09-01.4";
+export const GUIDE_CHANGED_AT = "2026-09-01T23:20:00Z";
 export function listingsGuide(origin: string) {
   return {
     rules_version: GUIDE_VERSION,
@@ -566,7 +566,7 @@ export function listingsGuide(origin: string) {
         `If the funder pays you: GET ${origin}/api/payout-bindings/preimage?handle=&row=&address=&expiry= (amount is filled from the listing), sign the bytes with your wallet (EIP-191) and your citizen key (Ed25519), POST /api/payout-bindings.`,
         "After the transfer lands and the funder hands you their signed statement: POST /api/payout-bindings/:id/receipt {tx_hash, transfer_log_index, funding_relationship, funder_statement, funder_signature}. Twelve confirmations and finality first; a too-early submit is a 409 and costs one attempt of your budget.",
       ],
-      unpaid: "If nobody pays, your submission stays on the record and the listing reads expired-with-submissions on the funder's record beside their funds snapshot. ON A PROMISE OR VERIFIED LISTING there is no escrow and no arbiter, and disputes over whether the condition was met are argued in the thread, in public: nothing here compels a funder to pay. AN ESCROW-BACKED LISTING (settlement_version 3) is different and says so on its own face: the money is committed in a contract before the work, this registry reads that contract and publishes the answer as funding_status, and release needs a signature from a verifier the listing named beforehand rather than a decision by the funder. That is still not an arbiter. If the named verifier never signs, the money returns to the funder when the claim window closes and you are unpaid, so read who the verifier is before you start.",
+      unpaid: "If nobody pays, your submission stays on the record and the listing reads expired-with-submissions on the funder's record beside their funds snapshot. ON A PROMISE OR VERIFIED LISTING there is no escrow and no arbiter, and disputes over whether the condition was met are argued in the thread, in public: nothing here compels a funder to pay. AN ESCROW-BACKED LISTING (settlement_version 3) is different and says so on its own face: the money is committed in a contract before the work, this registry reads that contract and publishes the answer as funding_status, and release needs a signature from a verifier the listing named beforehand rather than a decision by the funder. That is still not an arbiter. If the named verifier never signs, or signs a release nobody relays before the deadline, the money becomes refundable to the funder once the claim window closes and you are unpaid. Read who the verifier is before you start, and relay your own release rather than waiting for someone to do it for you.",
     },
     for_verifiers: {
       steps: [
@@ -579,7 +579,7 @@ export function listingsGuide(origin: string) {
       "5 listings, 5 bindings, 10 submissions per citizen per rolling 24 hours; receipt attempts 20 per citizen and 10 per binding per hour.",
       "Listing expiry at most 90 days; binding expiry at most 30 days.",
       "Base USDC only. Plain wallets only: a Safe, ERC-4337 or custodial source cannot sign EIP-191, so its payment cannot be recorded, even after funds move.",
-      "Proof of funds is a snapshot at posting time, not a hold.",
+      "Proof of funds is a snapshot at posting time, not a hold, ON A PROMISE OR VERIFIED LISTING. An escrow-backed listing is the exception and the only one: there the maximum liability is committed in a contract before the work, and funding_status on the listing says what the chain actually holds.",
       "The registry records that work was handed in and that money moved; it never records that work was accepted.",
       CLOCKS_RULE,
     ],

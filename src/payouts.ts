@@ -556,22 +556,53 @@ export async function readUsdcBalanceTwoSource(env: Env, address: string): Promi
 // the balance check uses. Two agreeing sources, exactly like the balance read,
 // because one provider answering is one provider's word: an escrow that reads
 // as absent on a flaky endpoint would tell a worker their money is not there.
-export async function escrowCallTwoSource(env: Env, to: string, data: string): Promise<string | null> {
-  const seen = new Map<string, number>();
-  for (const rpcUrl of baseRpcUrls(env)) {
-    try {
-      const chainIdRaw = await rpc(rpcUrl, "eth_chainId", []);
-      if (parseHexInteger("chain id", chainIdRaw) !== BigInt(BASE_CHAIN_ID)) continue;
-      const raw = await rpc(rpcUrl, "eth_call", [{ to, data }, "latest"]);
-      if (typeof raw !== "string" || !/^0x[0-9a-fA-F]*$/.test(raw)) continue;
-      const n = (seen.get(raw) ?? 0) + 1;
-      if (n >= 2) return raw;
-      seen.set(raw, n);
-    } catch {
-      continue;
-    }
-  }
-  return null;
+// AGREEMENT ONCE, THEN ONE PROVIDER. The first version walked all nine
+// providers for EVERY call, two fetches each, sequentially, on an
+// unauthenticated GET: 162 subrequests and 405 seconds worst case for a
+// listing with eight verifiers. The balance read it was copied from only ever
+// ran on a rate-limited POST. A public read path cannot spend that.
+//
+// So consensus is established ONCE, on the first call, across at most
+// ESCROW_PROVIDER_ATTEMPTS providers, and the provider that agreed is then
+// reused for the rest of the reads in that batch. Two sources still have to
+// agree about the escrow's own state, which is the fact that matters; the
+// follow-up authority reads ride the endpoint that already proved itself.
+export const ESCROW_PROVIDER_ATTEMPTS = 3;
+
+export interface EscrowReader {
+  call(to: string, data: string): Promise<string | null>;
+}
+
+export function escrowReader(env: Env): EscrowReader {
+  let agreed: string | null = null;
+  return {
+    async call(to: string, data: string): Promise<string | null> {
+      if (agreed !== null) {
+        try {
+          const raw = await rpc(agreed, "eth_call", [{ to, data }, "latest"]);
+          return typeof raw === "string" && /^0x[0-9a-fA-F]*$/.test(raw) ? raw : null;
+        } catch {
+          return null;
+        }
+      }
+      const seen = new Map<string, string>();
+      for (const rpcUrl of baseRpcUrls(env).slice(0, ESCROW_PROVIDER_ATTEMPTS)) {
+        try {
+          const raw = await rpc(rpcUrl, "eth_call", [{ to, data }, "latest"]);
+          if (typeof raw !== "string" || !/^0x[0-9a-fA-F]*$/.test(raw)) continue;
+          const first = seen.get(raw);
+          if (first !== undefined) {
+            agreed = rpcUrl;
+            return raw;
+          }
+          seen.set(raw, rpcUrl);
+        } catch {
+          continue;
+        }
+      }
+      return null;
+    },
+  };
 }
 
 export function baseRpcUrls(env: Env): string[] {

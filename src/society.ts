@@ -48,7 +48,8 @@ import {
   payoutPreimage,
   readUsdcBalanceTwoSource,
   BASE_USDC,
-  escrowCallTwoSource,
+  escrowReader,
+  type EscrowReader,
   MAX_PAYOUT_LIFETIME_SECONDS,
   PREIMAGE_EXPIRY_SLACK_SECONDS,
   PAYOUT_BINDING_HASH_FIELDS,
@@ -2972,7 +2973,7 @@ export async function createListing(
     settlement: settlementRow,
     proof_of_funds: funds === null
       ? { checked: false, note: "No funder wallet named. Workers have only your record to go on. " + FUNDS_ADVICE }
-      : { checked: true, funder_address: listing.funderAddress, funds_seen_atomic: funds.seen, block_number: funds.blockNumber, checked_at: funds.checkedAt, control: treasuryUnsigned ? "asserted by GET /api/official (the society treasury on a maintainer listing); no per-listing signature" : "proven by EIP-191 signature over the listing preimage", note: "A snapshot at posting time, not a hold: the wallet can move the money afterwards. Receipts on this listing must come from this address. " + FUNDS_ADVICE },
+      : { checked: true, funder_address: listing.funderAddress, funds_seen_atomic: funds.seen, block_number: funds.blockNumber, checked_at: funds.checkedAt, control: treasuryUnsigned ? "asserted by GET /api/official (the society treasury on a maintainer listing); no per-listing signature" : "proven by EIP-191 signature over the listing preimage", note: "A snapshot at posting time, not a hold ON THIS LISTING: the wallet can move the money afterwards, and this figure is what it held at the moment named above. An escrow-backed listing is the one exception on this rail, where the maximum liability is committed in a contract before the work and funding_status reports what the chain holds now." + FUNDS_ADVICE },
     bind_with: id === null ? null : `worker: POST /api/payout-bindings with row "${listingRow(id)}" and amount_atomic "${listing.amountAtomic}"` + (listing.verifierPriceAtomic === null ? "" : `; verifier: row "${listingRow(id, "verifier")}" and amount_atomic "${listing.verifierPriceAtomic}" (up to ${listing.maxVerifiers})`),
     note:
       "A listing is a funder's public statement of a task, its acceptance condition and its price. It is not escrow, not a promise the registry enforces, and not a maintainer endorsement. A payee who binds against it is authorizing an address to be paid; whether the condition was met is judged in the open by people who are neither payer nor payee. Immutable: a listing that is wrong expires, it is not edited.",
@@ -3846,7 +3847,7 @@ export async function keyPrerequisite(env: Env, citizenId: number) {
   };
 }
 
-export async function getListing(env: Env, id: number) {
+export async function getListing(env: Env, id: number, deps: { escrowReader?: EscrowReader } = {}) {
   const listing = await listingById(env, id);
   if (!listing) throw new SocietyError(404, `no listing ${id}`);
   const { results } = await env.DB.prepare(
@@ -3961,8 +3962,12 @@ export async function getListing(env: Env, id: number) {
   let fundedStatus: { funded: boolean; statement: string; disagreements: string[]; onchain: unknown } | null = null;
   if (listing.settlement_version >= 3 && ESCROW_ADDRESS !== null && listing.escrow_address !== null) {
     const declared = declaredVerifiers(listing);
+    // Injectable so the mapping from row to reader can be tested. Without
+    // this only the read-failure branch was reachable, so swapping the two
+    // deadlines in the block below would have stayed green.
+    const reader = deps.escrowReader ?? escrowReader(env);
     const read = await readEscrow(
-      (to, data) => escrowCallTwoSource(env, to, data).then((r) => r ?? ""),
+      (to, data) => reader.call(to, data).then((r) => r ?? ""),
       listing.escrow_address,
       listing.payload_hash,
       String(listing.funder_address ?? ""),
@@ -8890,7 +8895,7 @@ export async function identityLog(env: Env, kind: string | null = null, sinceId:
 // Nobody reported this one; I hit it by following my own recipe as a stranger
 // would, which is the only way it surfaces.
 const ENCODING_NOTE =
-  "UTF-8 JSON array, compact: JSON.stringify semantics with no whitespace between elements, and NON-ASCII CHARACTERS ARE NOT ESCAPED. If your JSON library escapes them to \\uXXXX by default (Python's json.dumps does, unless you pass ensure_ascii=False), turn that off or you will hash different bytes and get a different digest for identical content.";
+  "UTF-8 JSON array, compact: JSON.stringify semantics with no whitespace between elements, and NON-ASCII CHARACTERS ARE NOT ESCAPED. If your JSON library escapes them to \\uXXXX by default (Python's json.dumps does, unless you pass ensure_ascii=False), turn that off or you will hash different bytes and get a different digest for identical content. OBJECT KEY ORDER IS PART OF THE BYTES. Where a hashed field is an object rather than a scalar, its keys are hashed in the order this response serves them, so a library that sorts keys alphabetically will produce a different digest. On a settlement-version-3 listing the `verifiers` entries are the only such objects and their order is handle, key_thumbprint, evm_address, cap. Reproduce them in that order or the hash will not match, and the mismatch will look like a tampered listing rather than a serialization difference.";
 
 // ---------- attestation ----------
 

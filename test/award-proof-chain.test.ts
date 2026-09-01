@@ -772,3 +772,85 @@ test("a v3 listing's payload hash reproduces from its own served body, escrow te
   assert.notEqual([...new Uint8Array(other)].map((b) => b.toString(16).padStart(2, "0")).join(""), served.payload_hash,
     "if blanking the escrow terms leaves the hash unchanged, the escrow is bound to a hash that does not name it");
 });
+
+// ---------- funding_status, driven through the real door ----------
+//
+// The audit's second finding: nothing tested this through getListing, and the
+// escrow read was not injectable, so only the read-failure branch was
+// reachable. Swapping escrow_verifier_deadline and escrow_claim_deadline in
+// the mapping below would have stayed green, and the site would have reported
+// a listing as funded while comparing the wrong deadline to the wrong one.
+
+function escrowWord(hex: string) { return hex.replace(/^0x/, "").toLowerCase().padStart(64, "0"); }
+function escrowNum(n: number | bigint) { return BigInt(n).toString(16).padStart(64, "0"); }
+
+/// A stub escrow that answers exactly as the deployed contract does.
+function stubEscrow(over: Partial<{ funder: string; token: string; amountPerAward: bigint; maxAwards: number; released: number; verifierDeadline: number; claimDeadline: number; refunded: boolean; verifierSet: string; cap: number; used: number }> = {}) {
+  const t = {
+    funder: "0xa7f7985eb19b8c44f12a0654df1ef89d1dd527c9",
+    token: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+    amountPerAward: 1_000_000n, maxAwards: 2, released: 0,
+    verifierDeadline: NOW + 7 * 86400, claimDeadline: NOW + 37 * 86400,
+    refunded: false, verifierSet: "", cap: 2, used: 0, ...over,
+  };
+  return {
+    async call(_to: string, data: string) {
+      if (data.slice(2, 10) === "b3e64062") {
+        return "0x" + escrowWord(t.funder) + escrowWord(t.token) + escrowNum(t.amountPerAward)
+          + escrowNum(t.maxAwards) + escrowNum(t.released) + escrowNum(t.verifierDeadline)
+          + escrowNum(t.claimDeadline) + escrowNum(t.refunded ? 1 : 0)
+          + escrowNum(BigInt(t.maxAwards - t.released) * t.amountPerAward)
+          + (t.verifierSet ? t.verifierSet.replace(/^0x/, "") : escrowNum(0));
+      }
+      return "0x" + escrowNum(t.cap) + escrowNum(t.used);
+    },
+  };
+}
+
+test("funding_status reports what the chain says, through the real listing door", async () => {
+  const { env, db } = makeEnv();
+  bindSigningKey(db, 4);
+  const thumb = (db.prepare("SELECT thumbprint AS t FROM keys WHERE citizen_id = 4").get() as { t: string }).t;
+  const { listingId } = await escrowListing(env, db, "citizen-c", 4, thumb);
+  const served = await getListing(env, listingId) as Record<string, any>;
+
+  // The real set commitment, computed the way the reader computes it.
+  const { encodeAddressUint32Arrays, expectedVerifierSetHash } = await import("../src/funded.ts");
+  const { keccak256 } = await import("viem");
+  const set = expectedVerifierSetHash(
+    (served.verifiers as { evm_address: string; cap: number }[]).map((v) => ({ evm_address: v.evm_address, cap: v.cap })),
+    encodeAddressUint32Arrays,
+    (hex) => keccak256(hex as `0x${string}`),
+  );
+
+  // Matching escrow: FUNDED.
+  const ok = await getListing(env, listingId, { escrowReader: stubEscrow({ verifierSet: set }) }) as Record<string, any>;
+  assert.equal(ok.funding_status.funded, true, JSON.stringify(ok.funding_status?.disagreements));
+  assert.match(ok.funding_status.statement, /^FUNDED\./);
+  assert.equal(ok.funding_status.onchain.remaining_atomic, "2000000");
+
+  // THE DEADLINES ARE NOT INTERCHANGEABLE. Moving only the verifier deadline
+  // must be caught, which is the mapping bug this test exists for.
+  const wrongVerifierDeadline = await getListing(env, listingId, { escrowReader: stubEscrow({ verifierSet: set, verifierDeadline: NOW + 6 * 86400 }) }) as Record<string, any>;
+  assert.equal(wrongVerifierDeadline.funding_status.funded, false);
+  assert.ok(wrongVerifierDeadline.funding_status.disagreements.some((d: string) => /verifier deadline/.test(d)), JSON.stringify(wrongVerifierDeadline.funding_status.disagreements));
+
+  const wrongClaimDeadline = await getListing(env, listingId, { escrowReader: stubEscrow({ verifierSet: set, claimDeadline: NOW + 36 * 86400 }) }) as Record<string, any>;
+  assert.ok(wrongClaimDeadline.funding_status.disagreements.some((d: string) => /claim deadline/.test(d)));
+
+  // A hidden verifier, seen only through the set commitment.
+  const hidden = await getListing(env, listingId, { escrowReader: stubEscrow({ verifierSet: "0x" + "de".repeat(32) }) }) as Record<string, any>;
+  assert.ok(hidden.funding_status.disagreements.some((d: string) => /verifier set does not match/.test(d)));
+
+  // Spent authority, drained, refunded.
+  const spent = await getListing(env, listingId, { escrowReader: stubEscrow({ verifierSet: set, used: 2 }) }) as Record<string, any>;
+  assert.ok(spent.funding_status.disagreements.some((d: string) => /spent their authority/.test(d)));
+  const refunded = await getListing(env, listingId, { escrowReader: stubEscrow({ verifierSet: set, refunded: true }) }) as Record<string, any>;
+  assert.equal(refunded.funding_status.funded, false);
+
+  // And a read that fails says so, rather than falling back to the terms.
+  const blind = await getListing(env, listingId, { escrowReader: { async call() { return null; } } }) as Record<string, any>;
+  assert.equal(blind.funding_status.funded, false);
+  assert.match(blind.funding_status.statement, /NOT CONFIRMED FUNDED/);
+  void served;
+});
