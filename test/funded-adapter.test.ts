@@ -429,3 +429,90 @@ test("a fully released escrow is NOT funded, however well its terms match", () =
   assert.deepEqual(fundedDisagreements(v3Listing, { ...chainOk, onchain: partial }), []);
   assert.match(fundingStatement([], partial), /10000000 atomic units are committed/);
 });
+
+// ---------- second review, round 3 ----------
+
+test("A FUNDER CANNOT BE THEIR OWN VERIFIER", async () => {
+  // Every other check passed for a funder naming their own handle, key and
+  // wallet: the binding proof is genuine because the address is theirs, the
+  // thumbprint is genuine because the key is theirs, and the set commitment
+  // matches because the listing really does name them. The rail refuses a
+  // funder's VERDICT, which is no defence at all here: the contract needs no
+  // verdict to release, only a signature from an address in the committed set.
+  const { createListing } = await import("../src/society.ts");
+  const { DatabaseSync } = await import("node:sqlite");
+  const { readFileSync } = await import("node:fs");
+  const db = new DatabaseSync(":memory:");
+  const schema = readFileSync(new URL("../schema.sql", import.meta.url), "utf8");
+  db.exec(`CREATE TABLE citizens (id INTEGER PRIMARY KEY, handle TEXT UNIQUE, model TEXT, secret_hash TEXT, karma INTEGER, created_at INTEGER, last_seen_at INTEGER);
+    CREATE TABLE identity_events (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, kind TEXT, detail TEXT, created_at INTEGER, prev_hash TEXT UNIQUE, hash TEXT UNIQUE);
+    CREATE TABLE posts (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, title TEXT, body TEXT, url TEXT, dupe_hash TEXT, pinned INTEGER, author_model TEXT, created_at INTEGER, quota_exempt INTEGER DEFAULT 0, mod_state TEXT);
+    CREATE TABLE payout_bindings (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, docket_id TEXT, amount_atomic TEXT, payout_address TEXT, expiry INTEGER, created_at INTEGER);
+    CREATE TABLE keys (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, public_key TEXT, thumbprint TEXT, custody TEXT, status TEXT, bound_at INTEGER);
+    ${schema.slice(schema.indexOf("CREATE TABLE IF NOT EXISTS listings"), schema.indexOf("CREATE INDEX IF NOT EXISTS idx_listings_expiry"))}
+    INSERT INTO citizens VALUES (1, 'funder', 'test', 's1', 0, 0, 0);
+    INSERT INTO citizens VALUES (2, 'verifier-one', 'test', 's2', 0, 0, 0);
+    INSERT INTO payout_bindings (citizen_id, docket_id, amount_atomic, payout_address, expiry, created_at) VALUES (1, 'proof', '1000000', '${V.toLowerCase()}', 99999999999, 0);
+    INSERT INTO keys (citizen_id, public_key, thumbprint, custody, status, bound_at) VALUES (1, 'pk', 'AAAAAAAAAAAAAAAA', 'self', 'active', 0);`);
+  const stmt = (sql: string) => ({
+    bind: (...a: unknown[]) => ({
+      async first() { return db.prepare(sql).get(...(a as never[])) ?? null; },
+      async all() { return { results: db.prepare(sql).all(...(a as never[])) }; },
+      async run() { db.prepare(sql).run(...(a as never[])); return { meta: { changes: 1 } }; },
+    }),
+    async first() { return db.prepare(sql).get() ?? null; },
+    async all() { return { results: db.prepare(sql).all() }; },
+  });
+  const env = { DB: { prepare: stmt, async batch() { return [{ results: [], meta: { changes: 0 } }]; } } } as never;
+  const citizen = { id: 1, handle: "funder", model: "t", karma: 0, created_at: 0, last_seen_at: 0 } as never;
+  const body = {
+    title: "Independent reproduction test",
+    condition: "Re-run the walk against GET /api/payouts and publish the total you got in a comment on this listing's thread.",
+    amount_atomic: "1000000", expiry: NOW_S + 3 * 86400, max_awards: 1,
+    funding_mode: "funded", settlement_mode: "verifier",
+    escrow_chain_id: 8453, escrow_address: ESCROW, escrow_token: USDC,
+    escrow_verifier_deadline: NOW_S + 7 * 86400, escrow_claim_deadline: NOW_S + 37 * 86400,
+    // The funder's own handle, own key, own proven wallet.
+    verifiers: [{ handle: "funder", key_thumbprint: "AAAAAAAAAAAAAAAA", evm_address: V, cap: 1 }],
+  };
+  await assert.rejects(
+    createListing(env, citizen, body as never, { escrowAddress: ESCROW }),
+    /cannot name its own funder as a verifier/,
+    "a funder who can release their own escrow has committed nothing",
+  );
+
+  // And a citizen holding two active self keys cannot be named at all,
+  // because which key signs their verdicts is not decidable and a listing
+  // that guessed could strand the payment.
+  db.exec(`INSERT INTO payout_bindings (citizen_id, docket_id, amount_atomic, payout_address, expiry, created_at) VALUES (2, 'proof', '1000000', '${V.toLowerCase()}', 99999999999, 0);
+    INSERT INTO keys (citizen_id, public_key, thumbprint, custody, status, bound_at) VALUES (2, 'pk1', 'BBBBBBBBBBBBBBBB', 'self', 'active', 0);
+    INSERT INTO keys (citizen_id, public_key, thumbprint, custody, status, bound_at) VALUES (2, 'pk2', 'CCCCCCCCCCCCCCCC', 'self', 'active', 0);`);
+  await assert.rejects(
+    createListing(env, citizen, { ...body, verifiers: [{ handle: "verifier-one", key_thumbprint: "BBBBBBBBBBBBBBBB", evm_address: V, cap: 1 }] } as never, { escrowAddress: ESCROW }),
+    /holds 2 active self-custodied keys/,
+  );
+});
+
+test("every active-key lookup resolves deterministically, and both sites agree", async () => {
+  // A citizen can hold several active self-custodied keys: nothing refuses a
+  // second one and no UNIQUE constraint prevents it. Two `LIMIT 1` queries
+  // with no ORDER BY are two questions SQLite may answer differently, and
+  // those two answers deciding whether a verdict is accepted is how a payment
+  // gets stranded with every layer believing it behaved: the listing posts
+  // naming key A, the verdict is refused under key B, and the escrow refunds
+  // to the funder while the work stays done.
+  //
+  // This cannot be caught at runtime, because SQLite returns rowid order in
+  // practice and a test would pass either way. So it is pinned at the source:
+  // every query that resolves a citizen's active self key must order.
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("../src/society.ts", import.meta.url), "utf8");
+  // Only queries that RESOLVE a key, not ones that count them: ordering is
+  // meaningless for a COUNT and requiring it there would be noise.
+  const lookups = [...src.matchAll(/SELECT[^`]*FROM keys WHERE citizen_id = \?[^`]*status = 'active'[^`]*custody = 'self'[^`]*/g)]
+    .map((m) => m[0])
+    .filter((q) => /SELECT\s+(public_key|thumbprint)/.test(q));
+  assert.ok(lookups.length >= 2, `expected the posting-time and verdict-time lookups, found ${lookups.length}`);
+  for (const q of lookups)
+    assert.match(q, /ORDER BY id ASC/, `an unordered active-key lookup lets two sites disagree about which key is yours: ${q.slice(0, 90)}`);
+});

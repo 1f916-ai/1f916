@@ -2708,14 +2708,41 @@ export async function createListing(
       const who = await env.DB.prepare("SELECT id FROM citizens WHERE handle = ?").bind(v.handle).first<{ id: number }>();
       if (!who)
         throw new SocietyError(400, `no citizen ${v.handle}: a listing cannot name a verifier who does not exist`);
+      // THE FUNDER MAY NOT BE THEIR OWN VERIFIER, and this was missing.
+      //
+      // Every other check passed for a funder who named their own handle,
+      // their own key and their own wallet: the binding proof is genuine
+      // because it is their address, the thumbprint is genuine because it is
+      // their key, and the set commitment matches because the listing really
+      // does name them. The site would say FUNDED, the worker would work, and
+      // the funder would sign the releases to themselves. The rail refuses a
+      // funder's verdict at VERDICT time, which is no defence here at all:
+      // the contract needs no verdict to release, only a signature from an
+      // address in the committed set.
+      if (who.id === citizen.id)
+        throw new SocietyError(400, "a listing cannot name its own funder as a verifier. The verifier is the party who can release this money, and a funder who can release their own escrow has committed nothing: they would take it back the moment the work was done. Name someone else, and expect a worker to check who that someone is.");
       const proven = await env.DB.prepare(
         `SELECT 1 AS ok FROM payout_bindings WHERE citizen_id = ? AND lower(payout_address) = ? LIMIT 1`,
       ).bind(who.id, v.evmAddress).first<{ ok: number }>();
       if (!proven)
         throw new SocietyError(400, `${v.handle} has never proved control of ${v.evmAddress}. A verifier's wallet is what the money obeys, so naming one they did not sign for would let a funder print a trusted handle beside an address of their own choosing and take the escrow back through it. ${v.handle} must file a payout binding for that address first: it is an EIP-191 signature by the wallet AND their citizen key over one preimage, which is the proof this check wants.`);
-      const key = await env.DB.prepare(
-        `SELECT thumbprint FROM keys WHERE citizen_id = ? AND status = 'active' AND custody = 'self' LIMIT 1`,
-      ).bind(who.id).first<{ thumbprint: string }>();
+      // ONE ACTIVE KEY, OR THE LISTING DOES NOT POST.
+      //
+      // Nothing stops a citizen holding several active self-custodied keys,
+      // and both this check and the verdict-time one used LIMIT 1 with no
+      // ORDER BY. SQLite promises no row order, so a listing could post
+      // naming key A while the verdict path later resolved key B and refused
+      // the verdict forever: the escrow would refund to the funder at the
+      // claim deadline and the worker would go unpaid, with every layer
+      // reporting that it had done its job. Rather than pick a winner, both
+      // sites now order explicitly and this one refuses ambiguity at posting
+      // time, when it is still free to fix.
+      const { results: activeKeys } = await env.DB.prepare(
+        `SELECT thumbprint FROM keys WHERE citizen_id = ? AND status = 'active' AND custody = 'self' ORDER BY id ASC`,
+      ).bind(who.id).all<{ thumbprint: string }>();
+      if (activeKeys.length > 1)
+        throw new SocietyError(409, `${v.handle} holds ${activeKeys.length} active self-custodied keys, so which one signs their verdicts is not decidable, and a listing that guessed could strand the payment: posted under one key and refused at verdict time under another. They must revoke the ones they no longer use before being named as a verifier.`);
+      const key = activeKeys[0] ?? null;
       if (!key || key.thumbprint !== v.keyThumbprint)
         throw new SocietyError(400, `${v.handle}'s declared verifier key ${v.keyThumbprint} is not their active self-custodied key. The thumbprint is checked at posting time as well as at verdict time, so a listing cannot be published naming a key that could never sign for it.`);
     }
@@ -3186,8 +3213,12 @@ export async function recordVerdict(
   if (!binding)
     throw new SocietyError(403, `you hold no verifier authorization on listing ${listing.id}: a verifier is a citizen who filed a binding on ${listingRow(listing.id, "verifier")} BEFORE the verdict, which is what makes the appointment a dated public act rather than a claim made afterwards`);
 
+  // ORDER BY id, the same rule the posting-time check uses. Two LIMIT 1
+  // queries with no ordering are two questions SQLite may answer differently,
+  // and those two answers deciding whether a verdict is accepted is how a
+  // payment gets stranded with every layer believing it behaved.
   const key = await env.DB.prepare(
-    `SELECT public_key, thumbprint FROM keys WHERE citizen_id = ? AND status = 'active' AND custody = 'self' LIMIT 1`,
+    `SELECT public_key, thumbprint FROM keys WHERE citizen_id = ? AND status = 'active' AND custody = 'self' ORDER BY id ASC LIMIT 1`,
   ).bind(citizen.id).first<{ public_key: string; thumbprint: string }>();
   // ON AN ESCROW-BACKED LISTING, THE VERIFIER IS NAMED BY BOTH KEYS.
   //
