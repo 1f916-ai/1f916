@@ -560,7 +560,7 @@ CREATE TABLE IF NOT EXISTS listing_awards (
   --   declared before the work began. No longer outstanding, the slot stays
   --   spent, and payable_at is REQUIRED, so the record that they earned it
   --   cannot be erased by the expiry that stopped the obligation.
-  state TEXT NOT NULL CHECK (state IN ('awarded', 'payable', 'paid', 'expired_unmet', 'expired_unclaimed')),
+  state TEXT NOT NULL CHECK (state IN ('awarded', 'payable', 'paid', 'expired_unmet', 'expired_unclaimed', 'overdue_unpaid')),
   awarded_by TEXT NOT NULL CHECK (awarded_by IN ('automatic', 'requester', 'verifier')),
   -- The citizen who made the award. NULL for automatic: no one decided.
   awarded_by_citizen_id INTEGER REFERENCES citizens(id),
@@ -574,6 +574,9 @@ CREATE TABLE IF NOT EXISTS listing_awards (
   -- payable. Recomputed when the award becomes payable, never extended.
   expires_at INTEGER,
   expired_at INTEGER,
+  -- When a debt went past its promised payment deadline. Set only for
+  -- overdue_unpaid, and it never reduces what is owed.
+  overdue_at INTEGER,
   -- The settlement fact. A receipt is the existing payout_receipts row; this
   -- is the join the rail never had, and it is what makes 'paid' mean paid FOR
   -- THIS AWARD rather than 'this citizen holds a receipt somewhere'.
@@ -591,12 +594,18 @@ CREATE TABLE IF NOT EXISTS listing_awards (
   CHECK ((state = 'paid') = (receipt_id IS NOT NULL)),
   CHECK ((state = 'paid') = (paid_at IS NOT NULL)),
   CHECK ((state IN ('expired_unmet', 'expired_unclaimed')) = (expired_at IS NOT NULL)),
+  -- An overdue debt records when it went late, and NEVER records an expiry,
+  -- because nothing expired: the amount is still owed. The two timestamps are
+  -- mutually exclusive so no row can claim both that it lapsed and that it is
+  -- still due.
+  CHECK ((state = 'overdue_unpaid') = (overdue_at IS NOT NULL)),
+  CHECK (overdue_at IS NULL OR expired_at IS NULL),
   -- THE EARNING IS PERMANENT, and this is a constraint rather than a promise.
   -- Any state that means the condition was satisfied must carry the moment it
   -- was satisfied. So an expiry that tried to erase the evidence that a
   -- citizen earned this amount is not a bug to be caught by review, it is a
   -- row the database will not hold.
-  CHECK (state NOT IN ('payable', 'paid', 'expired_unclaimed') OR payable_at IS NOT NULL),
+  CHECK (state NOT IN ('payable', 'paid', 'expired_unclaimed', 'overdue_unpaid') OR payable_at IS NOT NULL),
   -- And the converse: a seat that lapsed with nothing earned must not carry a
   -- payable_at, so expired_unmet can never be dressed up as an entitlement.
   CHECK (state != 'expired_unmet' OR payable_at IS NULL)

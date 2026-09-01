@@ -2847,6 +2847,7 @@ export interface StoredAward {
   payable_at: number | null;
   expires_at: number | null;
   expired_at: number | null;
+  overdue_at: number | null;
   receipt_id: number | null;
   paid_at: number | null;
   payload_hash: string;
@@ -2864,30 +2865,64 @@ export async function listingAwards(env: Env, listingId: number): Promise<Stored
 // sweep. Reading it as still outstanding would overstate the funder's debt, so
 // the read path applies the lapse before it counts, and the write path below
 // persists it. Pure, and applied identically in both places.
-export function lapseExpiredAwards(awards: readonly StoredAward[], nowMs: number): StoredAward[] {
-  return awards.map((a) =>
-    isOutstanding(a.state) && a.expires_at !== null && a.expires_at <= nowMs
-      // lapseStateFor picks by WHICH CLOCK WAS RUNNING: a reserved seat lapses
-      // unmet, an earned entitlement lapses unclaimed. payable_at is untouched
-      // either way, so the record of having earned it survives the expiry.
-      ? { ...a, state: lapseStateFor(a.state), expired_at: a.expires_at }
-      : a,
-  );
+// `readyPayees` is the set of citizen ids who hold a live payout destination on
+// this listing: the workers who have done the one thing only they can do. It
+// decides which way a lapsing clock falls, so it is a required argument rather
+// than an option, and a caller that does not know cannot accidentally default
+// every worker into losing their entitlement.
+export function lapseExpiredAwards(awards: readonly StoredAward[], nowMs: number, readyPayees: ReadonlySet<number>): StoredAward[] {
+  return awards.map((a) => {
+    // Only a clock that is still running can fire. An award already resolved
+    // to overdue_unpaid keeps its expires_at as the record of the deadline it
+    // missed, and must not be re-lapsed by it: the deadline already had its
+    // effect, and that effect was not an expiry.
+    if ((a.state !== "awarded" && a.state !== "payable") || a.expires_at === null || a.expires_at > nowMs) return a;
+    const to = lapseStateFor(a.state, readyPayees.has(a.citizen_id));
+    if (to === a.state) return a;
+    // payable_at is untouched in every branch, so the record of having earned
+    // it survives whatever the clock does. An overdue debt records WHEN it went
+    // late and never records an expiry, because nothing expired.
+    return to === "overdue_unpaid"
+      ? { ...a, state: to, overdue_at: a.expires_at }
+      : { ...a, state: to, expired_at: a.expires_at };
+  });
+}
+
+// Who holds a live payout destination on this listing's worker row. A binding
+// whose own expiry has passed does not count: keeping a current one is also
+// the worker's action and nobody else can take it for them.
+export async function readyPayeesFor(env: Env, listingId: number, nowSeconds: number): Promise<Set<number>> {
+  const { results } = await env.DB.prepare(
+    `SELECT DISTINCT citizen_id FROM payout_bindings WHERE docket_id = ? AND expiry > ?`,
+  ).bind(listingRow(listingId), nowSeconds).all<{ citizen_id: number }>();
+  return new Set(results.map((r) => Number(r.citizen_id)));
 }
 
 export async function sweepExpiredAwards(env: Env, listingId: number, nowMs: number): Promise<number> {
-  // Two statements, not one, because the terminal state is decided by the
-  // clock that was running and a single UPDATE would have to pick one of them
-  // for both. payable_at is never cleared: the entitlement existed.
+  const nowSeconds = Math.floor(nowMs / 1000);
+  // Three statements, because a lapsing clock has three outcomes and they are
+  // decided by two different questions: which clock was running, and whether
+  // the worker had done their part. A single UPDATE would have to pick one
+  // answer for all of them. payable_at is never cleared in any branch.
   const unmet = await env.DB.prepare(
     `UPDATE listing_awards SET state = 'expired_unmet', expired_at = expires_at
       WHERE listing_id = ? AND state = 'awarded' AND expires_at IS NOT NULL AND expires_at <= ?`,
   ).bind(listingId, nowMs).run();
+  // The worker never supplied a payout destination by the deadline: the one
+  // action only they could take. Their entitlement expires.
   const unclaimed = await env.DB.prepare(
     `UPDATE listing_awards SET state = 'expired_unclaimed', expired_at = expires_at
-      WHERE listing_id = ? AND state = 'payable' AND expires_at IS NOT NULL AND expires_at <= ?`,
-  ).bind(listingId, nowMs).run();
-  return Number(unmet.meta?.changes ?? 0) + Number(unclaimed.meta?.changes ?? 0);
+      WHERE listing_id = ? AND state = 'payable' AND expires_at IS NOT NULL AND expires_at <= ?
+        AND NOT EXISTS (SELECT 1 FROM payout_bindings pb WHERE pb.docket_id = ? AND pb.citizen_id = listing_awards.citizen_id AND pb.expiry > ?)`,
+  ).bind(listingId, nowMs, listingRow(listingId), nowSeconds).run();
+  // The worker DID supply one. Nothing expires: the debt goes late, stays
+  // owed, and the missed deadline attaches to the payer.
+  const overdue = await env.DB.prepare(
+    `UPDATE listing_awards SET state = 'overdue_unpaid', overdue_at = expires_at
+      WHERE listing_id = ? AND state = 'payable' AND expires_at IS NOT NULL AND expires_at <= ?
+        AND EXISTS (SELECT 1 FROM payout_bindings pb WHERE pb.docket_id = ? AND pb.citizen_id = listing_awards.citizen_id AND pb.expiry > ?)`,
+  ).bind(listingId, nowMs, listingRow(listingId), nowSeconds).run();
+  return Number(unmet.meta?.changes ?? 0) + Number(unclaimed.meta?.changes ?? 0) + Number(overdue.meta?.changes ?? 0);
 }
 
 // Who may award on this listing, by its declared settlement mode. The mode is
@@ -3438,7 +3473,7 @@ export async function getListing(env: Env, id: number) {
   // Awards, with any lapsed ttl applied before anything counts them. Reading a
   // lapsed award as still outstanding would overstate what the funder owes,
   // which is the same class of error as reading a binding as a debt.
-  const awardRows = lapseExpiredAwards(await listingAwards(env, listing.id), Date.now());
+  const awardRows = lapseExpiredAwards(await listingAwards(env, listing.id), Date.now(), await readyPayeesFor(env, listing.id, Math.floor(Date.now() / 1000)));
   const economics = listingEconomics({
     settlement_version: listing.settlement_version,
     amount_atomic: listing.amount_atomic,
@@ -4141,7 +4176,7 @@ export async function createPayoutReceipt(env: Env, submitter: Citizen, bindingI
 
 // One receipt settles at most one award. Returns the award id it closed, or
 // null when there was nothing to close.
-async function settleAwardFromReceipt(env: Env, binding: { docket_id: string }, receiptId: number | null, payeeId: number, now: number): Promise<number | null> {
+export async function settleAwardFromReceipt(env: Env, binding: { docket_id: string }, receiptId: number | null, payeeId: number, now: number): Promise<number | null> {
   if (receiptId === null) return null;
   const listingId = listingIdFromRow(binding.docket_id);
   // A verifier fee is not an award. Awards are the worker-side entitlement,
@@ -4149,14 +4184,18 @@ async function settleAwardFromReceipt(env: Env, binding: { docket_id: string }, 
   if (listingId === null || listingRoleFromRow(binding.docket_id) !== "worker") return null;
   const open = await env.DB.prepare(
     `SELECT id, state FROM listing_awards
-      WHERE listing_id = ? AND citizen_id = ? AND state IN ('awarded', 'payable')
+      WHERE listing_id = ? AND citizen_id = ? AND state IN ('awarded', 'payable', 'overdue_unpaid')
       ORDER BY id ASC LIMIT 1`,
   ).bind(listingId, payeeId).first<{ id: number; state: AwardState }>();
   if (!open) return null;
   assertAwardTransition(open.state, "paid");
   const result = await env.DB.prepare(
-    `UPDATE listing_awards SET state = 'paid', receipt_id = ?, paid_at = ?
-      WHERE id = ? AND state IN ('awarded', 'payable') AND receipt_id IS NULL`,
+    // overdue_at is cleared on payment: the row can no longer be overdue once
+    // it is paid, and the schema refuses to hold one that claims both. The
+    // lateness does not vanish from the record, it is in the identity event
+    // chain and in the receipt's own timestamp against payable_at.
+    `UPDATE listing_awards SET state = 'paid', receipt_id = ?, paid_at = ?, overdue_at = NULL
+      WHERE id = ? AND state IN ('awarded', 'payable', 'overdue_unpaid') AND receipt_id IS NULL`,
   ).bind(receiptId, now, open.id).run();
   // Losing the race is not an error for the PAYMENT: the money moved and the
   // receipt stands. It only means some other write closed the award first.
@@ -4191,10 +4230,22 @@ export async function railCensus(env: Env) {
   ).all<Record<string, unknown>>();
 
   const { results: awardRows } = await env.DB.prepare(
-    `SELECT id, listing_id, submission_id, citizen_id, amount_atomic, state, awarded_by, awarded_at, expires_at, receipt_id, paid_at
+    `SELECT id, listing_id, submission_id, citizen_id, amount_atomic, state, awarded_by, awarded_at, payable_at, expires_at, expired_at, overdue_at, receipt_id, paid_at
        FROM listing_awards ORDER BY id ASC`,
   ).all<StoredAward>();
-  const awards = lapseExpiredAwards(awardRows, now);
+  // Readiness rail-wide, in one query: which citizens hold a live payout
+  // destination on which listing. A lapsing clock cannot be resolved without
+  // it, because the answer decides whose failure it was.
+  const { results: readyRows } = await env.DB.prepare(
+    `SELECT DISTINCT docket_id, citizen_id FROM payout_bindings WHERE expiry > ?`,
+  ).bind(nowSeconds).all<{ docket_id: string; citizen_id: number }>();
+  const readyByListing = new Map<number, Set<number>>();
+  for (const r of readyRows) {
+    const id = listingIdFromRow(String(r.docket_id));
+    if (id === null || listingRoleFromRow(String(r.docket_id)) !== "worker") continue;
+    readyByListing.set(id, (readyByListing.get(id) ?? new Set<number>()).add(Number(r.citizen_id)));
+  }
+  const awards = awardRows.flatMap((a) => lapseExpiredAwards([a], now, readyByListing.get(a.listing_id) ?? new Set<number>()));
   const awardsByListing = new Map<number, StoredAward[]>();
   for (const a of awards) awardsByListing.set(a.listing_id, [...(awardsByListing.get(a.listing_id) ?? []), a]);
 
@@ -4255,6 +4306,15 @@ export async function railCensus(env: Env) {
       // and a lapsed binding is a routing record that went stale, never a debt.
       lapsed_bindings: Number(worker.lapsed_bindings) + Number(verifier.lapsed_bindings),
       awards: mine.length,
+      // Who each outcome belongs to, which is the question the raw counts
+      // could never answer.
+      accountability: {
+        currently_due_atomic: economics.currently_due_atomic,
+        overdue_unpaid_atomic: economics.overdue_unpaid_atomic,
+        expired_unclaimed_atomic: economics.expired_unclaimed_atomic,
+        paid_atomic: economics.amount_paid_atomic,
+        note: "currently_due: owed, not yet late. overdue_unpaid: owed and late, and the lateness is the PAYER's, because the worker had already supplied a payout destination. expired_unclaimed: the WORKER did not supply one before the declared deadline, so their entitlement lapsed. paid: settled. Every timeout on this rail has an owner.",
+      },
       // The award ledger's own history, so a reader can see that an
       // entitlement existed even where it has since lapsed.
       award_states: mine.reduce<Record<string, number>>((acc, a) => ({ ...acc, [a.state]: (acc[a.state] ?? 0) + 1 }), {}),
@@ -4272,6 +4332,8 @@ export async function railCensus(env: Env) {
       receipts: acc.receipts + r.worker_receipts + r.verifier_receipts,
       lapsed_bindings: acc.lapsed_bindings + r.lapsed_bindings,
       awards: acc.awards + r.awards,
+      currently_due_atomic: (BigInt(acc.currently_due_atomic) + BigInt(r.economics.currently_due_atomic)).toString(),
+      overdue_unpaid_atomic: (BigInt(acc.overdue_unpaid_atomic) + BigInt(r.economics.overdue_unpaid_atomic)).toString(),
       outstanding_awarded_atomic: (BigInt(acc.outstanding_awarded_atomic) + BigInt(r.economics.outstanding_awarded_atomic)).toString(),
       paid_atomic: (BigInt(acc.paid_atomic) + BigInt(r.economics.amount_paid_atomic)).toString(),
       expired_unclaimed_atomic: (BigInt(acc.expired_unclaimed_atomic) + BigInt(r.economics.expired_unclaimed_atomic)).toString(),
@@ -4281,13 +4343,30 @@ export async function railCensus(env: Env) {
           : (BigInt(acc.maximum_remaining_liability_atomic) + BigInt(r.economics.maximum_remaining_liability_atomic)).toString(),
       listings_without_declared_cap: acc.listings_without_declared_cap + (r.economics.max_liability_atomic === null ? 1 : 0),
     }),
-    { listings: 0, open: 0, submissions: 0, bindings: 0, receipts: 0, lapsed_bindings: 0, awards: 0, outstanding_awarded_atomic: "0", paid_atomic: "0", expired_unclaimed_atomic: "0", maximum_remaining_liability_atomic: "0", listings_without_declared_cap: 0 },
+    { listings: 0, open: 0, submissions: 0, bindings: 0, receipts: 0, lapsed_bindings: 0, awards: 0, currently_due_atomic: "0", overdue_unpaid_atomic: "0", outstanding_awarded_atomic: "0", paid_atomic: "0", expired_unclaimed_atomic: "0", maximum_remaining_liability_atomic: "0", listings_without_declared_cap: 0 },
   );
 
+  // Settlement history, per funder. A missed payment deadline is a fact about
+  // the party who missed it, and on a promise listing their history is the
+  // only thing standing behind the next listing they post.
+  const funders = new Map<string, { funder: string; listings: number; paid_atomic: string; currently_due_atomic: string; overdue_unpaid_atomic: string; overdue_awards: number; expired_unclaimed_atomic: string }>();
+  for (const r of rows) {
+    const key = String(r.funder);
+    const f = funders.get(key) ?? { funder: key, listings: 0, paid_atomic: "0", currently_due_atomic: "0", overdue_unpaid_atomic: "0", overdue_awards: 0, expired_unclaimed_atomic: "0" };
+    f.listings += 1;
+    f.paid_atomic = (BigInt(f.paid_atomic) + BigInt(r.economics.amount_paid_atomic)).toString();
+    f.currently_due_atomic = (BigInt(f.currently_due_atomic) + BigInt(r.economics.currently_due_atomic)).toString();
+    f.overdue_unpaid_atomic = (BigInt(f.overdue_unpaid_atomic) + BigInt(r.economics.overdue_unpaid_atomic)).toString();
+    f.expired_unclaimed_atomic = (BigInt(f.expired_unclaimed_atomic) + BigInt(r.economics.expired_unclaimed_atomic)).toString();
+    f.overdue_awards += (awardsByListing.get(r.listing_id) ?? []).filter((a) => a.state === "overdue_unpaid").length;
+    funders.set(key, f);
+  }
   return {
     now,
     now_utc: new Date(now).toISOString(),
     totals,
+    funders: [...funders.values()].sort((a, b) => (BigInt(b.overdue_unpaid_atomic) > BigInt(a.overdue_unpaid_atomic) ? 1 : -1)),
+    funders_note: "One row per funder. overdue_unpaid_atomic is money they owe on work that was accepted, where the worker had already supplied a payout destination and the deadline passed anyway. It is a fact about this funder and never about the workers, and on a promise listing a reader has nothing else to go on. expired_unclaimed_atomic on the same row is NOT a mark against them: it is money their listing owed to a worker who did not supply a destination in time.",
     listings: rows,
     // Every derivation, written where the numbers are, so a stranger can
     // reproduce each one and disagree with a named filter rather than guess at
@@ -4298,6 +4377,8 @@ export async function railCensus(env: Env) {
       lapsed_bindings: "Bindings with no receipt whose OWN expiry is already past, at the clock in `now`. This counts routing records that went stale. It is not a debt, not a broken promise, and not a count of unpaid people.",
       awards: "Rows in the award ledger, with any award past its listing's award_ttl_seconds treated as expired before it is counted.",
       outstanding_awarded_atomic: "The sum of awards in state awarded or payable. THIS, and only this, is money a funder currently owes on this rail.",
+      currently_due_atomic: "Owed and not yet past a promised payment deadline. Part of outstanding_awarded_atomic.",
+      overdue_unpaid_atomic: "Owed, AND the worker had already supplied a payout destination, AND the payer did not settle by the deadline. Still part of outstanding_awarded_atomic and never deducted from it: missing a deadline does not reduce a debt. The missed deadline belongs to the payer and appears in funders below, never on the worker's record.",
       expired_unclaimed_atomic: "The sum of awards that BECAME PAYABLE and then lapsed unclaimed past the claim window their listing declared before the work began. This money was genuinely earned and is no longer owed, and both halves of that are true at once. It is served on its own line so it can be read as neither 'still owed' nor 'never earned', and the award rows keep the timestamp at which each became payable.",
       maximum_remaining_liability_atomic: "Per listing: outstanding plus available capacity times the award amount. Summed here over listings that declare a cap. Listings without one are counted in listings_without_declared_cap and contribute nothing, because this registry will not invent a cap its funder never declared.",
     },

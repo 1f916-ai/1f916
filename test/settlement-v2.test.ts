@@ -326,3 +326,24 @@ test("an erased earning is not a bug to catch, it is a row the database refuses 
   insert("expired_unclaimed", 5, 9, "ok1");
   insert("expired_unmet", null, 9, "ok2");
 });
+
+// The pure lapse decision, tested directly. The persisted sweep has its own
+// SQL and its own test; this is the read model's copy of the same rule, and
+// the first mutation sweep found that nothing exercised it: reverting the
+// whole fix left every test green because they all ran the sweep first.
+test("the lapse decision asks who could have acted, in both directions", () => {
+  // The worker did the one thing only they can do. A missed payment deadline
+  // is then the PAYER's, and nothing expires.
+  assert.equal(lapseStateFor("payable", true), "overdue_unpaid");
+  // The worker never supplied a destination. Their entitlement lapses.
+  assert.equal(lapseStateFor("payable", false), "expired_unclaimed");
+  // A reserved seat is about the work, not the money: readiness is irrelevant
+  // and it lapses unmet either way.
+  assert.equal(lapseStateFor("awarded", true), "expired_unmet");
+  assert.equal(lapseStateFor("awarded", false), "expired_unmet");
+  assert.throws(() => lapseStateFor("paid", true), /does not lapse/);
+  assert.throws(() => lapseStateFor("overdue_unpaid", true), /does not lapse/, "an overdue debt has already lapsed as far as it can; it cannot expire");
+  // And the two outcomes differ in the only way that matters economically.
+  assert.equal(isOutstanding("overdue_unpaid"), true, "still owed");
+  assert.equal(isOutstanding("expired_unclaimed"), false);
+});

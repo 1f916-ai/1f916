@@ -55,7 +55,7 @@ export const SETTLEMENT_MODE_NOTE =
 // under award_ttl_seconds, which the funder declares before any work is done.
 // A listing that closes does not reopen slots: closing ends the listing, and
 // an outstanding award stays outstanding.
-export const AWARD_STATES = ["awarded", "payable", "paid", "expired_unmet", "expired_unclaimed"] as const;
+export const AWARD_STATES = ["awarded", "payable", "paid", "expired_unmet", "expired_unclaimed", "overdue_unpaid"] as const;
 export type AwardState = (typeof AWARD_STATES)[number];
 
 // The two expirations are DIFFERENT ECONOMIC FACTS and are never one state.
@@ -79,36 +79,55 @@ export type AwardState = (typeof AWARD_STATES)[number];
 // apart can make an earned obligation disappear by calling it not-selected.
 const AWARD_TRANSITIONS: Record<AwardState, readonly AwardState[]> = {
   awarded: ["payable", "expired_unmet"],
-  payable: ["paid", "expired_unclaimed"],
+  payable: ["paid", "expired_unclaimed", "overdue_unpaid"],
+  // An overdue debt is still a debt. The only way out of it is paying, and
+  // there is deliberately no path from here to any expiry: a deadline the
+  // debtor controls cannot be the thing that cancels what they owe.
+  overdue_unpaid: ["paid"],
   paid: [],
   expired_unmet: [],
   expired_unclaimed: [],
 };
 
-// An awarded seat can only ever lapse as unmet; a payable entitlement can only
-// ever lapse as unclaimed. Encoding it here means no caller can pick the
-// flattering one.
-export function lapseStateFor(from: AwardState): AwardState {
+// THE INVARIANT THAT DECIDES WHICH WAY A DEADLINE FALLS:
+//
+//   A deadline may extinguish an entitlement only when the party losing the
+//   entitlement controls the action required to preserve it.
+//
+// So a lapsing clock is not one outcome, it is a question about who could
+// still have acted. A worker who never supplied a payout destination failed at
+// something only they could do, and their entitlement expires. A worker who
+// supplied one has done everything available to them, and a funder who then
+// lets the deadline pass has not extinguished anything: they are late. That
+// second case is a debt, stays a debt, and lands on their record.
+//
+// Without this, payable_ttl_seconds hands every promise-listing funder a way
+// to make an earned obligation disappear by doing nothing, which is the free
+// option this rail exists to remove, wearing a clock.
+export function lapseStateFor(from: AwardState, workerReadyToBePaid: boolean): AwardState {
   if (from === "awarded") return "expired_unmet";
-  if (from === "payable") return "expired_unclaimed";
+  if (from === "payable") return workerReadyToBePaid ? "overdue_unpaid" : "expired_unclaimed";
   throw new SocietyError(500, `an award in state ${from} does not lapse`);
 }
 
-// States that consume an award slot. expired_unclaimed KEEPS its slot: the
-// work was accepted and the entitlement existed, so the seat is spent.
+// States that consume an award slot. Both expiries and an overdue debt keep
+// theirs: in every one of them the work was accepted, and re-selling the seat
+// would pay twice for one accepted piece of work.
 export function consumesSlot(state: AwardState): boolean {
   return state !== "expired_unmet";
 }
 
-// States that are money a funder currently owes.
+// States that are money a funder currently owes. overdue_unpaid is in here on
+// purpose and is the whole point of it existing: passing a payment deadline
+// does not reduce the liability, it only records that it went unpaid on time.
 export function isOutstanding(state: AwardState): boolean {
-  return state === "awarded" || state === "payable";
+  return state === "awarded" || state === "payable" || state === "overdue_unpaid";
 }
 
 // Was this entitlement ever real? Permanent, and read off the state alone, so
 // no read path can lose it.
 export function wasEverPayable(award: { state: AwardState; payable_at: number | null }): boolean {
-  return award.state === "paid" || award.state === "payable" || award.state === "expired_unclaimed" || award.payable_at !== null;
+  return award.state !== "awarded" && award.state !== "expired_unmet" ? true : award.payable_at !== null;
 }
 
 export function assertAwardTransition(from: AwardState, to: AwardState): void {
@@ -118,7 +137,7 @@ export function assertAwardTransition(from: AwardState, to: AwardState): void {
 
 // The state of one SUBMISSION, which is what a reader actually asks about.
 // Derived, never stored: storing it would let it disagree with the award rows.
-export type SubmissionState = "submitted" | "awarded" | "payable" | "paid" | "not_selected" | "expired_unmet" | "expired_unclaimed";
+export type SubmissionState = "submitted" | "awarded" | "payable" | "paid" | "not_selected" | "expired_unmet" | "expired_unclaimed" | "overdue_unpaid";
 
 // NOT_SELECTED means one thing only: no award was ever made against this
 // submission. A submission that was awarded and lapsed NEVER reads as
@@ -134,7 +153,7 @@ export function submissionState(input: {
 }
 
 export const SUBMISSION_STATE_NOTE =
-  "submitted: handed in, no award, no entitlement, no liability of any kind. awarded: a slot is reserved for this citizen and the amount is outstanding, but the declared condition is not satisfied yet. payable: the declared condition IS satisfied and this citizen is entitled to the amount. paid: a payout receipt is joined to the award. not_selected: NO AWARD WAS EVER MADE against this submission and the listing closed, which is not a judgment of the work. expired_unmet: a reserved seat lapsed under the listing's declared award_ttl_seconds without the condition ever being met, so nothing was earned and the seat returned to the market. expired_unclaimed: the condition WAS met and this citizen WAS entitled to the amount, and the entitlement went unclaimed past the claim window the listing declared before the work began; the money stopped being outstanding, and the fact that it was earned is permanent and stays on this row with the timestamp it became payable. expired_unmet and expired_unclaimed are different economic facts and neither is ever reported as not_selected. A submission is never money owed; only an award in state awarded or payable is.";
+  "submitted: handed in, no award, no entitlement, no liability of any kind. awarded: a slot is reserved for this citizen and the amount is outstanding, but the declared condition is not satisfied yet. payable: the declared condition IS satisfied and this citizen is entitled to the amount. paid: a payout receipt is joined to the award. not_selected: NO AWARD WAS EVER MADE against this submission and the listing closed, which is not a judgment of the work. expired_unmet: a reserved seat lapsed under the listing's declared award_ttl_seconds without the condition ever being met, so nothing was earned and the seat returned to the market. expired_unclaimed: this citizen WAS entitled to the amount and did not do the one thing only they could do, supply a payout destination, before the claim deadline the listing declared; the entitlement lapsed because of an action they controlled. overdue_unpaid: this citizen WAS entitled to the amount AND supplied a payout destination, so they had done everything available to them, and the payer did not settle by the deadline; THE AMOUNT IS STILL OWED, it stays in outstanding liability, and the missed deadline is on the payer's settlement history rather than the worker's. The three non-paid outcomes are different economic facts about different parties and none of them is ever reported as not_selected. A submission is never money owed; only an award in state awarded or payable is.";
 
 // ---------- the arithmetic ----------
 
@@ -165,6 +184,10 @@ export interface ListingEconomics {
   // claim window. Never money still owed, and never evidence nothing was
   // earned. Its own line so it can be neither.
   expired_unclaimed_atomic: string;
+  // Inside outstanding_awarded_atomic, not beside it: an overdue debt is a
+  // debt. currently_due_atomic is the rest of it.
+  overdue_unpaid_atomic: string;
+  currently_due_atomic: string;
   maximum_remaining_liability_atomic: string | null;
   note: string;
 }
@@ -173,7 +196,7 @@ const V1_NOTE =
   "This listing was posted before settlement v2 and carries no award ledger and no declared award cap, so this registry does not know what its maximum liability was and will not invent one: max_liability_atomic, max_awards and available_award_capacity are null rather than guessed. amount_paid_atomic counts receipts joined to awards, and a v1 listing has no awards, so it is 0 here even where money moved; the payment record for these listings is the bindings and receipts below, exactly where it always was. Nothing about a v1 listing is a debt.";
 
 const V2_NOTE =
-  "Four separate quantities, and the separation is the point. expired_unclaimed_atomic is money that WAS earned and became payable and then lapsed unclaimed under the claim window this listing declared before the work began: it is not still owed, and it is not evidence that nobody earned it. It is reported on its own line so that neither reading is available. available_award_capacity is how many awards this listing may still make. outstanding_awarded_atomic is money already awarded and not yet paid. maximum_remaining_liability_atomic is the sum of the two: outstanding plus capacity times the award amount. Do NOT compute remaining liability as available_award_capacity times award_amount: that omits awards already made, which is how an awarded-but-unpaid slot disappears from the books. Submissions and payout bindings appear in NEITHER: a submission is work handed in and a binding is a routing record, and no number of either changes what this listing can cost.";
+  "Six separate quantities, and the separation is the point. outstanding_awarded_atomic is everything still owed, and it splits into currently_due_atomic and overdue_unpaid_atomic: overdue is owed AND already past a promised payment deadline, so it is reported apart without ever being deducted, because a payer cannot reduce a debt by missing its deadline. expired_unclaimed_atomic is money that WAS earned and became payable and then lapsed unclaimed under the claim window this listing declared before the work began: it is not still owed, and it is not evidence that nobody earned it. It is reported on its own line so that neither reading is available. available_award_capacity is how many awards this listing may still make. outstanding_awarded_atomic is money already awarded and not yet paid. maximum_remaining_liability_atomic is the sum of the two: outstanding plus capacity times the award amount. Do NOT compute remaining liability as available_award_capacity times award_amount: that omits awards already made, which is how an awarded-but-unpaid slot disappears from the books. Submissions and payout bindings appear in NEITHER: a submission is work handed in and a binding is a routing record, and no number of either changes what this listing can cost.";
 
 export function listingEconomics(input: ListingEconomicsInput): ListingEconomics {
   const paid = sumAtomic(input.awards.filter((a) => a.state === "paid"));
@@ -181,10 +204,16 @@ export function listingEconomics(input: ListingEconomicsInput): ListingEconomics
   // either expiry (the listing said before the work what would end the
   // obligation, and it did).
   const outstanding = sumAtomic(input.awards.filter((a) => isOutstanding(a.state)));
-  // Earned but never paid, in money. Served as its own figure rather than
-  // folded into anything: it is the number that says an obligation existed and
-  // was extinguished by a declared clock, and it must never be invisible.
+  // Earned, and lapsed because the WORKER did not do the one thing they
+  // controlled. Its own line: an obligation existed and was extinguished by a
+  // declared clock, and neither half may be invisible.
   const expiredUnclaimed = sumAtomic(input.awards.filter((a) => a.state === "expired_unclaimed"));
+  // Earned, the worker was ready, and the PAYER missed the deadline. Still
+  // owed, counted inside outstanding above, and reported separately so a
+  // reader can see how much of what is owed is already late.
+  const overdue = sumAtomic(input.awards.filter((a) => a.state === "overdue_unpaid"));
+  // What is owed and not yet late.
+  const currentlyDue = outstanding - overdue;
   // Anything that is not literally 2 or more is treated as v1 and publishes
   // nulls. A missing or malformed version must fail SAFE, because the unsafe
   // direction here is inventing a cap and a liability for a listing whose
@@ -200,6 +229,8 @@ export function listingEconomics(input: ListingEconomicsInput): ListingEconomics
       amount_paid_atomic: paid.toString(),
       outstanding_awarded_atomic: outstanding.toString(),
       expired_unclaimed_atomic: expiredUnclaimed.toString(),
+      overdue_unpaid_atomic: overdue.toString(),
+      currently_due_atomic: currentlyDue.toString(),
       maximum_remaining_liability_atomic: null,
       note: V1_NOTE,
     };
@@ -225,6 +256,8 @@ export function listingEconomics(input: ListingEconomicsInput): ListingEconomics
     amount_paid_atomic: paid.toString(),
     outstanding_awarded_atomic: outstanding.toString(),
     expired_unclaimed_atomic: expiredUnclaimed.toString(),
+    overdue_unpaid_atomic: overdue.toString(),
+    currently_due_atomic: currentlyDue.toString(),
     maximum_remaining_liability_atomic: remaining.toString(),
     note: V2_NOTE,
   };

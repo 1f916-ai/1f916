@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "node:fs";
 import { MockSettlementAdapter } from "../src/settlement.ts";
-import { createAward, createListing, createSubmission, getListing, markAwardPayable, railCensus, sweepExpiredAwards, type Env } from "../src/society.ts";
+import { createAward, createListing, createSubmission, getListing, markAwardPayable, railCensus, settleAwardFromReceipt, sweepExpiredAwards, type Env } from "../src/society.ts";
 
 const DOLLAR = "1000000";
 const NOW = Math.floor(Date.now() / 1000);
@@ -661,4 +661,253 @@ test("an entitlement is born carrying the listing's declared claim window, and a
   const closed = await markAwardPayable(env, AS(1, "funder"), Number(seat.award_id)) as Record<string, unknown>;
   assert.equal(closed.state, "payable");
   assert.ok(Number(closed.expires_at) > seatExpires, "the claim window starts at the earning, not at the reservation");
+});
+
+// THE INVARIANT: a deadline may extinguish an entitlement only when the party
+// losing it controls the action required to preserve it. The five scenarios
+// below are the whole of it, and the first two are the same listing, the same
+// clock and the same lapse, differing only in whether the worker did their
+// part. They must not produce the same state.
+
+function bindPayout(db: DatabaseSync, citizenId: number, listingId: number, expiry: number) {
+  db.prepare("INSERT INTO payout_bindings (citizen_id, docket_id, amount_atomic, payout_address, expiry, created_at) VALUES (?, ?, '25000000', '0xw', ?, 0)")
+    .run(citizenId, `listing-${listingId}`, expiry);
+}
+
+async function payableListing(env: Env, db: DatabaseSync, citizenId: number, handle: string) {
+  const listing = await createListing(env, AS(1, "funder"), {
+    title: "Independent reproduction test", condition: CONDITION, amount_atomic: "25000000", expiry: NOW + 90 * 86400,
+    max_awards: 1, funding_mode: "promise", settlement_mode: "requester", payable_ttl_seconds: 30 * 24 * 3600,
+  }) as Record<string, unknown>;
+  const listingId = Number((listing.row as string).replace("listing-", ""));
+  const submission = await createSubmission(env, AS(citizenId, handle), listingId, { artifact: reproduce(db, citizenId, `done ${EXPECT}`) }) as Record<string, unknown>;
+  const award = await createAward(env, AS(1, "funder"), listingId, { submission_id: submission.id }) as Record<string, unknown>;
+  return { listingId, awardId: Number(award.award_id), payableAt: Number(award.payable_at) };
+}
+
+test("1. worker never binds, claim deadline passes: EXPIRED_UNCLAIMED, and the lapse is the worker's", async () => {
+  const { env, db } = makeEnv();
+  const { listingId, awardId, payableAt } = await payableListing(env, db, 2, "citizen-a");
+  // No payout binding is ever filed: the one act only the worker can take.
+  db.prepare("UPDATE listing_awards SET expires_at = ? WHERE id = ?").run(Date.now() - 1000, awardId);
+  assert.equal(await sweepExpiredAwards(env, listingId, Date.now()), 1);
+
+  const row = db.prepare("SELECT state, payable_at, expired_at, overdue_at FROM listing_awards WHERE id = ?").get(awardId) as Record<string, unknown>;
+  assert.equal(row.state, "expired_unclaimed");
+  assert.equal(row.payable_at, payableAt, "the earning is still on the record");
+  assert.ok(row.expired_at);
+  assert.equal(row.overdue_at, null, "nothing went overdue: there was nowhere to send it");
+
+  const served = await getListing(env, listingId) as Record<string, any>;
+  assert.equal(served.economics.outstanding_awarded_atomic, "0", "the entitlement lapsed on an action the worker controlled");
+  assert.equal(served.economics.expired_unclaimed_atomic, "25000000");
+  assert.equal(served.economics.overdue_unpaid_atomic, "0");
+});
+
+test("2. worker binds, funder waits past the deadline: OVERDUE_UNPAID, and the liability REMAINS", async () => {
+  const { env, db } = makeEnv();
+  const { listingId, awardId, payableAt } = await payableListing(env, db, 2, "citizen-a");
+  // The worker does the one thing available to them.
+  bindPayout(db, 2, listingId, NOW + 86400);
+  db.prepare("UPDATE listing_awards SET expires_at = ? WHERE id = ?").run(Date.now() - 1000, awardId);
+  assert.equal(await sweepExpiredAwards(env, listingId, Date.now()), 1);
+
+  const row = db.prepare("SELECT state, payable_at, expired_at, overdue_at FROM listing_awards WHERE id = ?").get(awardId) as Record<string, unknown>;
+  assert.equal(row.state, "overdue_unpaid", "the funder's inaction cannot expire someone else's entitlement");
+  assert.equal(row.payable_at, payableAt);
+  assert.equal(row.expired_at, null, "nothing expired");
+  assert.ok(row.overdue_at, "it went late, and when is recorded");
+
+  const served = await getListing(env, listingId) as Record<string, any>;
+  assert.equal(served.economics.outstanding_awarded_atomic, "25000000", "STILL OWED: a payer cannot reduce a debt by missing its deadline");
+  assert.equal(served.economics.overdue_unpaid_atomic, "25000000");
+  assert.equal(served.economics.currently_due_atomic, "0", "all of what is owed here is already late");
+  assert.equal(served.economics.expired_unclaimed_atomic, "0", "and none of it is the worker's failure");
+  assert.equal(served.submissions[0].economic_state, "overdue_unpaid");
+
+  // The missed deadline lands on the FUNDER's settlement history, not the worker's.
+  const census = await railCensus(env) as Record<string, any>;
+  const funder = census.funders.find((f: Record<string, unknown>) => f.funder === "funder");
+  assert.equal(funder.overdue_unpaid_atomic, "25000000");
+  assert.equal(funder.overdue_awards, 1);
+  assert.equal(funder.expired_unclaimed_atomic, "0");
+  assert.equal(census.totals.outstanding_awarded_atomic, "25000000");
+  assert.equal(census.totals.overdue_unpaid_atomic, "25000000");
+});
+
+test("3. an overdue funder pays late: the debt settles to PAID and stops being outstanding", async () => {
+  const { env, db } = makeEnv();
+  const { listingId, awardId } = await payableListing(env, db, 2, "citizen-a");
+  bindPayout(db, 2, listingId, NOW + 86400);
+  db.prepare("UPDATE listing_awards SET expires_at = ? WHERE id = ?").run(Date.now() - 1000, awardId);
+  await sweepExpiredAwards(env, listingId, Date.now());
+  assert.equal((db.prepare("SELECT state AS s FROM listing_awards WHERE id = ?").get(awardId) as { s: string }).s, "overdue_unpaid");
+
+  // Paying late is still paying: the receipt closes the debt.
+  db.prepare("INSERT INTO payout_receipts (binding_id, submitter_id, tx_hash, source_address, created_at) VALUES (1, 2, '0xlate', '0xfunder', 0)").run();
+  const receiptId = Number((db.prepare("SELECT last_insert_rowid() AS id").get() as { id: number }).id);
+  const closed = db.prepare("UPDATE listing_awards SET state = 'paid', receipt_id = ?, paid_at = ?, overdue_at = NULL WHERE id = ? AND state = 'overdue_unpaid'").run(receiptId, Date.now(), awardId);
+  assert.equal(Number(closed.changes), 1, "overdue_unpaid -> paid is a reachable transition");
+
+  const served = await getListing(env, listingId) as Record<string, any>;
+  assert.equal(served.economics.amount_paid_atomic, "25000000");
+  assert.equal(served.economics.outstanding_awarded_atomic, "0", "the debt is discharged by paying it");
+  assert.equal(served.economics.overdue_unpaid_atomic, "0");
+});
+
+test("4. a funded listing with a worker-controlled claim: the worker lets it lapse, EXPIRED_UNCLAIMED and the funds follow the listing's refund rule", async () => {
+  const { env, db } = makeEnv();
+  const adapter = new MockSettlementAdapter();
+  // Verifier settlement, so release is not automatic and there IS a genuine
+  // claim step: the worker must supply a destination for the release to reach.
+  const listing = await createListing(env, AS(1, "funder"), {
+    title: "Independent reproduction test", condition: CONDITION, amount_atomic: "25000000", expiry: NOW + 90 * 86400,
+    max_awards: 1, funding_mode: "funded", settlement_mode: "verifier",
+    verifier_price_atomic: DOLLAR, max_verifiers: 1, payable_ttl_seconds: 30 * 24 * 3600,
+  }, { settlementAdapter: adapter }) as Record<string, unknown>;
+  const listingId = Number((listing.row as string).replace("listing-", ""));
+  assert.equal(await adapter.fundedBalance(listingId), "25000000");
+
+  const submission = await createSubmission(env, AS(2, "citizen-a"), listingId, { artifact: reproduce(db, 2, `done ${EXPECT}`) }) as Record<string, unknown>;
+  db.prepare("INSERT INTO payout_bindings (citizen_id, docket_id, amount_atomic, payout_address, expiry, created_at) VALUES (4, ?, '1000000', '0xv', ?, 0)").run(`listing-${listingId}-verifier`, NOW + 86400);
+  const award = await createAward(env, AS(4, "citizen-c"), listingId, { submission_id: submission.id, verdict: "pass" }) as Record<string, unknown>;
+  assert.equal(award.state, "payable");
+
+  // The worker never supplies a destination, so the release has nowhere to go.
+  db.prepare("UPDATE listing_awards SET expires_at = ? WHERE id = ?").run(Date.now() - 1000, Number(award.award_id));
+  await sweepExpiredAwards(env, listingId, Date.now());
+  assert.equal((db.prepare("SELECT state AS s FROM listing_awards WHERE id = ?").get(Number(award.award_id)) as { s: string }).s, "expired_unclaimed");
+
+  // The committed funds follow the refund rule declared at creation.
+  const refund = await adapter.refundUnused(listingId);
+  assert.equal(refund.refundedAtomic, "25000000");
+  assert.equal(await adapter.fundedBalance(listingId), "0");
+  const served = await getListing(env, listingId) as Record<string, any>;
+  assert.equal(served.economics.expired_unclaimed_atomic, "25000000");
+  assert.equal(served.economics.outstanding_awarded_atomic, "0");
+});
+
+test("5. a funded automatic listing never sits in a claim window: PASS releases and the window is refused outright", async () => {
+  const { env, db } = makeEnv();
+  const adapter = new MockSettlementAdapter();
+  // The claim window is refused at posting time rather than stored and ignored.
+  await assert.rejects(
+    createListing(env, AS(1, "funder"), {
+      title: "Independent reproduction test", condition: CONDITION, amount_atomic: DOLLAR, expiry: NOW + 86400,
+      max_awards: 1, funding_mode: "funded", settlement_mode: "automatic",
+      automatic_check: { kind: "comment_artifact_contains", expect: EXPECT }, payable_ttl_seconds: 3600,
+    }, { settlementAdapter: adapter }),
+    /does not apply to a funded automatic listing/,
+  );
+
+  const listing = await createListing(env, AS(1, "funder"), {
+    title: "Independent reproduction test", condition: CONDITION, amount_atomic: DOLLAR, expiry: NOW + 86400,
+    max_awards: 1, funding_mode: "funded", settlement_mode: "automatic",
+    automatic_check: { kind: "comment_artifact_contains", expect: EXPECT },
+  }, { settlementAdapter: adapter }) as Record<string, unknown>;
+  const listingId = Number((listing.row as string).replace("listing-", ""));
+  bindPayout(db, 2, listingId, NOW + 86400);
+
+  const submission = await createSubmission(env, AS(2, "citizen-a"), listingId, { artifact: reproduce(db, 2, `done ${EXPECT}`) }) as Record<string, unknown>;
+  const award = await createAward(env, AS(2, "citizen-a"), listingId, { submission_id: submission.id }, { settlementAdapter: adapter }) as Record<string, any>;
+
+  // FUND -> SUBMIT -> PAID. No window, nothing waiting on anyone.
+  assert.equal(award.expires_at, null, "a listing that releases on pass has no interval to sit in");
+  assert.ok(award.released, "the money was released in the same request the check passed");
+  assert.equal(award.released.already_released, false);
+  assert.equal(await adapter.fundedBalance(listingId), "0");
+});
+
+// SURVIVOR: every scenario above ran the persisted sweep before reading, so
+// the READ MODEL's own copy of the lapse rule was never exercised and
+// reverting the whole fix left the suite green. A GET that lands before any
+// sweep must reach the same verdict, or a reader sees an earned debt reported
+// as the worker's failure until some later write happens to correct it.
+test("a read that arrives before any sweep reaches the same verdict, in both directions", async () => {
+  const { env, db } = makeEnv();
+
+  // Worker READY: the read model must say overdue, not expired. No sweep runs.
+  const ready = await payableListing(env, db, 2, "citizen-a");
+  bindPayout(db, 2, ready.listingId, NOW + 86400);
+  db.prepare("UPDATE listing_awards SET expires_at = ? WHERE id = ?").run(Date.now() - 1000, ready.awardId);
+  assert.equal((db.prepare("SELECT state AS s FROM listing_awards WHERE id = ?").get(ready.awardId) as { s: string }).s, "payable",
+    "nothing has swept this row: the read model is on its own");
+  const readyServed = await getListing(env, ready.listingId) as Record<string, any>;
+  assert.equal(readyServed.awards[0].state, "overdue_unpaid");
+  assert.equal(readyServed.economics.outstanding_awarded_atomic, "25000000", "still owed on a read that never swept");
+  assert.equal(readyServed.economics.expired_unclaimed_atomic, "0");
+
+  // Worker NOT ready, same clock, same read path: the entitlement expires.
+  const unready = await payableListing(env, db, 3, "citizen-b");
+  db.prepare("UPDATE listing_awards SET expires_at = ? WHERE id = ?").run(Date.now() - 1000, unready.awardId);
+  const unreadyServed = await getListing(env, unready.listingId) as Record<string, any>;
+  assert.equal(unreadyServed.awards[0].state, "expired_unclaimed");
+  assert.equal(unreadyServed.economics.outstanding_awarded_atomic, "0");
+
+  // And the census, which resolves readiness rail-wide in one query rather
+  // than per listing, must agree with both.
+  const census = await railCensus(env) as Record<string, any>;
+  assert.equal(census.totals.overdue_unpaid_atomic, "25000000");
+  assert.equal(census.totals.expired_unclaimed_atomic, "25000000");
+  assert.equal(census.totals.outstanding_awarded_atomic, "25000000", "exactly one of the two is still a debt");
+});
+
+// SURVIVOR: nothing distinguished a live payout destination from a lapsed one,
+// so treating any binding as readiness passed. Keeping a current destination is
+// also an act only the worker can take.
+test("a payout binding that has itself expired is not a live destination", async () => {
+  const { env, db } = makeEnv();
+  const { listingId, awardId } = await payableListing(env, db, 2, "citizen-a");
+  // The worker bound once, and let that binding lapse.
+  bindPayout(db, 2, listingId, NOW - 10);
+  db.prepare("UPDATE listing_awards SET expires_at = ? WHERE id = ?").run(Date.now() - 1000, awardId);
+
+  const served = await getListing(env, listingId) as Record<string, any>;
+  assert.equal(served.awards[0].state, "expired_unclaimed",
+    "a funder cannot pay to a lapsed binding, and renewing it is the worker's own act");
+  assert.equal(await sweepExpiredAwards(env, listingId, Date.now()), 1);
+  assert.equal((db.prepare("SELECT state AS s FROM listing_awards WHERE id = ?").get(awardId) as { s: string }).s, "expired_unclaimed",
+    "and the persisted sweep agrees with the read model");
+
+  // A live binding on the same listing flips it, which is the control.
+  const live = await payableListing(env, db, 3, "citizen-b");
+  bindPayout(db, 3, live.listingId, NOW + 86400);
+  db.prepare("UPDATE listing_awards SET expires_at = ? WHERE id = ?").run(Date.now() - 1000, live.awardId);
+  const control = await getListing(env, live.listingId) as Record<string, any>;
+  assert.equal(control.awards[0].state, "overdue_unpaid");
+});
+
+// SURVIVOR: scenario 3 closed the debt with a hand-written UPDATE, so the
+// actual settlement path never saw an overdue row. Paying late has to work
+// through the code that runs when a receipt lands.
+test("the receipt path settles an overdue debt, and settles each award at most once", async () => {
+  const { env, db } = makeEnv();
+  const { listingId, awardId } = await payableListing(env, db, 2, "citizen-a");
+  bindPayout(db, 2, listingId, NOW + 86400);
+  db.prepare("UPDATE listing_awards SET expires_at = ? WHERE id = ?").run(Date.now() - 1000, awardId);
+  await sweepExpiredAwards(env, listingId, Date.now());
+  assert.equal((db.prepare("SELECT state AS s FROM listing_awards WHERE id = ?").get(awardId) as { s: string }).s, "overdue_unpaid");
+
+  db.prepare("INSERT INTO payout_receipts (binding_id, submitter_id, tx_hash, source_address, created_at) VALUES (1, 2, '0xlate', '0xfunder', 0)").run();
+  const receiptId = Number((db.prepare("SELECT last_insert_rowid() AS id").get() as { id: number }).id);
+
+  // The real path: a receipt on this listing's worker row, for this payee.
+  const closed = await settleAwardFromReceipt(env, { docket_id: `listing-${listingId}` }, receiptId, 2, Date.now());
+  assert.equal(closed, awardId, "paying late settles the overdue debt through the ordinary receipt path");
+  const row = db.prepare("SELECT state, receipt_id FROM listing_awards WHERE id = ?").get(awardId) as Record<string, unknown>;
+  assert.equal(row.state, "paid");
+  assert.equal(row.receipt_id, receiptId);
+
+  const served = await getListing(env, listingId) as Record<string, any>;
+  assert.equal(served.economics.outstanding_awarded_atomic, "0", "a paid debt is no longer owed");
+  assert.equal(served.economics.overdue_unpaid_atomic, "0");
+  assert.equal(served.economics.amount_paid_atomic, "25000000");
+
+  // A second receipt cannot settle the same award again.
+  db.prepare("INSERT INTO payout_receipts (binding_id, submitter_id, tx_hash, source_address, created_at) VALUES (2, 2, '0xagain', '0xfunder', 0)").run();
+  const second = Number((db.prepare("SELECT last_insert_rowid() AS id").get() as { id: number }).id);
+  assert.equal(await settleAwardFromReceipt(env, { docket_id: `listing-${listingId}` }, second, 2, Date.now()), null,
+    "there is no open award left to close, and the paid one cannot be paid twice");
+  // A verifier fee is not an award and must never consume one.
+  assert.equal(await settleAwardFromReceipt(env, { docket_id: `listing-${listingId}-verifier` }, second, 2, Date.now()), null);
 });
