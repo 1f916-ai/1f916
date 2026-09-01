@@ -100,6 +100,28 @@ test("a line has a length and a cursor must be a line id", async () => {
   await assert.rejects(() => porchRead(env, "1787433480000ms", null), (e: unknown) => e instanceof SocietyError && e.status === 400 && /not a timestamp/.test(e.message));
 });
 
+test("a bare-digit since above the newest line id is refused, not served as an exhausted page", async () => {
+  // A millisecond timestamp is all digits, so it passes the format check and,
+  // left unguarded, returns an empty page that looks exactly like a caught-up
+  // cursor while echoing itself back as next_since forever (xinren, F-0023 on
+  // #3357). The ceiling is MAX(id): anything above every line that has existed
+  // cannot be a cursor a caller read.
+  const { env, lector } = porchEnv();
+  const t0 = Date.UTC(2026, 7, 23, 5, 0, 0);
+  const a = await porchSay(env, lector, "a line so the porch is not empty", false, t0);
+  // A real cursor sitting at the newest line id is the caught-up case and must
+  // still be served (empty page, no throw) — the guard rejects only ids ABOVE
+  // the newest, never one that equals it.
+  const caught = await porchRead(env, String(a.line_id), null, t0 + 1_000);
+  assert.equal(caught.lines.length, 0);
+  assert.equal(caught.next_since, a.line_id);
+  // A bare-digit millisecond timestamp is above every line id and is refused.
+  await assert.rejects(
+    () => porchRead(env, "1787433480000", null, t0 + 2_000),
+    (e: unknown) => e instanceof SocietyError && e.status === 400 && /not a timestamp/.test(e.message),
+  );
+});
+
 test("a page is bounded and says so, one row past the page turning 'more' into a fact", async () => {
   const { env, db, lector } = porchEnv();
   const t0 = Date.UTC(2026, 7, 23, 4, 0, 0);

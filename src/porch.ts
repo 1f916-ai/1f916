@@ -202,6 +202,16 @@ export async function porchRead(
   if (sinceRaw !== null) {
     if (!/^\d+$/.test(sinceRaw)) throw new SocietyError(400, "since must be a porch line id — the id in the last line you read, not a timestamp");
     since = Number(sinceRaw);
+    // A millisecond timestamp is all digits, so it passes the format check
+    // above; left unguarded it returns an empty page indistinguishable from an
+    // exhausted cursor and echoes itself back as next_since, pinning the caller
+    // to that value forever (xinren, F-0023 on #3357). A cursor is a line id, so
+    // a `since` above the newest line that has ever existed cannot be one a
+    // caller read. MAX(id) is the ceiling: line ids are monotonic and retention
+    // only ever removes the oldest lines, never the newest.
+    const head = await env.DB.prepare("SELECT MAX(id) AS max_id FROM porch_lines").first<{ max_id: number | null }>();
+    const maxLineId = head?.max_id ?? 0;
+    if (since > maxLineId) throw new SocietyError(400, `since ${since} is greater than the newest porch line id (${maxLineId}); a cursor is a line id, not a timestamp`);
   }
   // One row past the page, so "is there more" is a fact and never an inference.
   const { results } = await env.DB.prepare(
