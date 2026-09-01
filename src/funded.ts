@@ -28,6 +28,11 @@ export const ESCROW_NOTE =
 export const RELEASE_TYPE = {
   Release: [
     { name: "listingHash", type: "bytes32" },
+    // WHOSE ESCROW. Escrows are keyed by (listingHash, funder), so a signature
+    // that named only the hash left the relayer to choose which escrow it
+    // spent: an attacker could escrow the same listing with a worthless token,
+    // collect verdicts against that, and replay them onto the honest funder.
+    { name: "funder", type: "address" },
     { name: "awardId", type: "bytes32" },
     { name: "submissionHash", type: "bytes32" },
     { name: "payee", type: "address" },
@@ -52,6 +57,7 @@ export function releaseDomain(escrow: string) {
 // does not exist cannot authorize money.
 export function releaseMessage(input: {
   listingHash: string;
+  funder: string;
   awardId: string;
   submissionHash: string;
   payee: string;
@@ -60,6 +66,7 @@ export function releaseMessage(input: {
 }) {
   return {
     listingHash: hex32(input.listingHash, "listing payload_hash"),
+    funder: input.funder,
     awardId: hex32(input.awardId, "award id"),
     submissionHash: hex32(input.submissionHash, "submission payload_hash"),
     payee: input.payee,

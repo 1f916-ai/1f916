@@ -17,8 +17,8 @@ contract InteropTest is Test {
     ///      is inside the EIP-712 domain.
     function test_typescript_and_solidity_hash_the_same_release() public pure {
         bytes32 typeHash =
-            keccak256("Release(bytes32 listingHash,bytes32 awardId,bytes32 submissionHash,address payee,bytes32 verdictHash,uint64 issuedAt)");
-        assertEq(typeHash, 0xc6569ae2914d99e37b5f731eee5cf4d4a49ad89261ee6dca5efb077d0f80ea8c, "typehash agrees with the registry");
+            keccak256("Release(bytes32 listingHash,address funder,bytes32 awardId,bytes32 submissionHash,address payee,bytes32 verdictHash,uint64 issuedAt)");
+        assertEq(typeHash, 0x0b41ef31cb32204f4e6033fd53bdce581e050536be8456955fc8bf0a589461c4, "typehash agrees with the registry");
 
         // The struct hash is independent of chain and address, so it is the
         // part that can be pinned to a value the TypeScript side printed.
@@ -26,6 +26,7 @@ contract InteropTest is Test {
             abi.encode(
                 typeHash,
                 bytes32(0x52deaea8a16fc23d4b8f2df6098146d6723a272f1269c3caeb5a49b3625066f5),
+                address(0xF00D000000000000000000000000000000000000),
                 bytes32(uint256(7)),
                 bytes32(0x1111111111111111111111111111111111111111111111111111111111111111),
                 address(0xBEEF00000000000000000000000000000000BEEf),
@@ -35,7 +36,7 @@ contract InteropTest is Test {
         );
         assertEq(
             structHash,
-            0x53c6e28fbd4a153c996e46c78f6c45cef7a34fdb134bdc874efaf757e3d77a03,
+            0x8b3f4a7fd4b41625ab689ce6f27ce6ac0d48e9584b10e42a3b4323d966c8eb1f,
             "the registry and the contract encode the same release to the same bytes"
         );
     }

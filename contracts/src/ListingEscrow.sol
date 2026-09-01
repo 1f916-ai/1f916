@@ -66,10 +66,14 @@ contract ListingEscrow {
         uint64 verifierDeadline,
         uint64 claimDeadline
     );
+    /// @dev funder is indexed because listingHash alone no longer identifies
+    ///      an escrow: a reader indexing by hash would conflate several and
+    ///      could not attribute a payment or rebuild `released` per escrow.
     event Released(
         bytes32 indexed listingHash,
+        address indexed funder,
         bytes32 indexed awardId,
-        address indexed payee,
+        address payee,
         address verifier,
         uint256 amount
     );
@@ -132,8 +136,20 @@ contract ListingEscrow {
     ///      verifier states it and signs it. Without this field the
     ///      verifierDeadline could not be enforced at all: a relay could carry
     ///      a stale verdict forever, and the deadline would be a comment.
+    /// @dev `funder` IS IN THE SIGNED STRUCT, and leaving it out was a hole I
+    ///      opened while closing another one. When escrows were keyed by
+    ///      listingHash alone, that hash named exactly one escrow and the
+    ///      signature was complete. Keying by (listingHash, funder) made the
+    ///      hash name a FAMILY of escrows while the digest still covered only
+    ///      the hash, so the relayer chose whose money a verifier's signature
+    ///      moved. An attacker could escrow the same listing with a token he
+    ///      minted himself, solicit verdicts against that visibly worthless
+    ///      escrow, and replay each signature byte for byte onto the honest
+    ///      funder's escrow, where the award id is fresh and the verifier's
+    ///      cap is a separate counter. A verifier must be able to see, from
+    ///      the bytes it signs, whose money it is moving.
     bytes32 private constant _RELEASE_TYPEHASH = keccak256(
-        "Release(bytes32 listingHash,bytes32 awardId,bytes32 submissionHash,address payee,bytes32 verdictHash,uint64 issuedAt)"
+        "Release(bytes32 listingHash,address funder,bytes32 awardId,bytes32 submissionHash,address payee,bytes32 verdictHash,uint64 issuedAt)"
     );
     bytes32 private immutable _DOMAIN_SEPARATOR;
 
@@ -269,7 +285,7 @@ contract ListingEscrow {
             abi.encodePacked(
                 "\x19\x01",
                 _DOMAIN_SEPARATOR,
-                keccak256(abi.encode(_RELEASE_TYPEHASH, listingHash, awardId, submissionHash, payee, verdictHash, issuedAt))
+                keccak256(abi.encode(_RELEASE_TYPEHASH, listingHash, funder, awardId, submissionHash, payee, verdictHash, issuedAt))
             )
         );
         address signer = _recover(digest, signature);
@@ -292,7 +308,7 @@ contract ListingEscrow {
         // it could still interleave log lines that off-chain readers order by
         // position. The event is part of the record this society reads, so it
         // is written from the state that is already final.
-        emit Released(listingHash, awardId, payee, signer, l.amountPerAward);
+        emit Released(listingHash, funder, awardId, payee, signer, l.amountPerAward);
         _pushExact(l.token, payee, l.amountPerAward);
     }
 

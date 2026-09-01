@@ -87,8 +87,8 @@ contract SepoliaE2ETest is Test {
 
     function _sig(bytes32 lh, bytes32 awardId, address to, uint64 issuedAt, uint256 key) internal view returns (bytes memory) {
         bytes32 structHash = keccak256(abi.encode(
-            keccak256("Release(bytes32 listingHash,bytes32 awardId,bytes32 submissionHash,address payee,bytes32 verdictHash,uint64 issuedAt)"),
-            lh, awardId, keccak256("submission-1"), to, keccak256("verdict-payload-hash"), issuedAt
+            keccak256("Release(bytes32 listingHash,address funder,bytes32 awardId,bytes32 submissionHash,address payee,bytes32 verdictHash,uint64 issuedAt)"),
+            lh, funder, awardId, keccak256("submission-1"), to, keccak256("verdict-payload-hash"), issuedAt
         ));
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(key, keccak256(abi.encodePacked("\x19\x01", escrow.domainSeparator(), structHash)));
         return abi.encodePacked(r, s, v);
@@ -161,7 +161,7 @@ contract SepoliaE2ETest is Test {
         // for a different escrow recovers a different address here.
         ListingEscrow other = new ListingEscrow();
         bytes32 structHash = keccak256(abi.encode(
-            keccak256("Release(bytes32 listingHash,bytes32 awardId,bytes32 submissionHash,address payee,bytes32 verdictHash,uint64 issuedAt)"),
+            keccak256("Release(bytes32 listingHash,address funder,bytes32 awardId,bytes32 submissionHash,address payee,bytes32 verdictHash,uint64 issuedAt)"),
             listingHash, bytes32(uint256(1)), keccak256("submission-1"), payee, keccak256("verdict-payload-hash"), uint64(block.timestamp)
         ));
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(verifierKey, keccak256(abi.encodePacked("\x19\x01", other.domainSeparator(), structHash)));

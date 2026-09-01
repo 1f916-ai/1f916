@@ -30,7 +30,7 @@ echo "ESCROW=$ESCROW"
 SLOT=$(cast index address $FUNDER 9)
 cast rpc anvil_setStorageAt $USDC $SLOT 0x00000000000000000000000000000000000000000000000000000000000f4240 --rpc-url $RPC >/dev/null
 echo "funder USDC: $(cast call $USDC 'balanceOf(address)(uint256)' $FUNDER --rpc-url $RPC)"
-LH=0x$(python3 -c "import hashlib;print(hashlib.sha256(b'1f916-listing-sepolia-e2e-run3').hexdigest())")
+LH=0x$(python3 -c "import hashlib;print(hashlib.sha256(b'1f916-listing-sepolia-e2e-run4').hexdigest())")
 echo "LISTING_HASH=$LH"
 NOW=$(cast block latest --rpc-url $RPC --field timestamp)
 VD=$((NOW + 604800)); CD=$((NOW + 3196800))
@@ -38,10 +38,10 @@ cast send $USDC "approve(address,uint256)" $ESCROW 1000000 --private-key $FUNDER
 cast send $ESCROW "fund(bytes32,address,uint256,uint32,address[],uint32[],uint64,uint64)" $LH $USDC 1000000 1 "[$VERIFIER]" "[1]" $VD $CD --private-key $FUNDER_KEY --rpc-url $RPC --json | python3 -c "import sys,json;d=json.load(sys.stdin);print('FUND tx',d['transactionHash'],'status',d['status'],'gas',int(d['gasUsed'],16))"
 echo "escrow USDC after fund: $(cast call $USDC 'balanceOf(address)(uint256)' $ESCROW --rpc-url $RPC)"
 DS=$(cast call $ESCROW "domainSeparator()(bytes32)" --rpc-url $RPC)
-TH=$(cast keccak "Release(bytes32 listingHash,bytes32 awardId,bytes32 submissionHash,address payee,bytes32 verdictHash,uint64 issuedAt)")
+TH=$(cast keccak "Release(bytes32 listingHash,address funder,bytes32 awardId,bytes32 submissionHash,address payee,bytes32 verdictHash,uint64 issuedAt)")
 AWARD=0x0000000000000000000000000000000000000000000000000000000000000001
 SUB=$(cast keccak "submission-1"); VH=$(cast keccak "verdict-payload-hash")
-STRUCT=$(cast keccak $(cast abi-encode "f(bytes32,bytes32,bytes32,bytes32,address,bytes32,uint64)" $TH $LH $AWARD $SUB $PAYEE $VH $NOW))
+STRUCT=$(cast keccak $(cast abi-encode "f(bytes32,bytes32,address,bytes32,bytes32,address,bytes32,uint64)" $TH $LH $FUNDER $AWARD $SUB $PAYEE $VH $NOW))
 DIGEST=$(cast keccak $(cast concat-hex 0x1901 $DS $STRUCT))
 SIG=$(cast wallet sign --no-hash --private-key $VERIFIER_KEY $DIGEST)
 echo "VERIFIER=$VERIFIER"

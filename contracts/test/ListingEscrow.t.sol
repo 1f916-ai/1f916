@@ -95,8 +95,8 @@ contract ListingEscrowTest is Test {
         internal view returns (bytes memory)
     {
         bytes32 structHash = keccak256(abi.encode(
-            keccak256("Release(bytes32 listingHash,bytes32 awardId,bytes32 submissionHash,address payee,bytes32 verdictHash,uint64 issuedAt)"),
-            listingHash, awardId, subHash, to, verdictHash, issuedAt
+            keccak256("Release(bytes32 listingHash,address funder,bytes32 awardId,bytes32 submissionHash,address payee,bytes32 verdictHash,uint64 issuedAt)"),
+            listingHash, funder, awardId, subHash, to, verdictHash, issuedAt
         ));
         bytes32 digest = keccak256(abi.encodePacked("\x19\x01", escrow.domainSeparator(), structHash));
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(key, digest);
@@ -296,6 +296,54 @@ contract ListingEscrowTest is Test {
         assertEq(escrow.isVerifier(LH, funder, squatter), false, "a squatter authorizes nothing on the listing that matters");
     }
 
+    /// HIGH, found on re-review: my own fix for the squat opened this. Keying
+    /// escrows by (listingHash, funder) made listingHash name a FAMILY of
+    /// escrows while the signed digest still covered only the hash, so the
+    /// RELAYER chose whose money a verifier's signature moved.
+    ///
+    /// The attack: escrow the same listing with a token you minted yourself,
+    /// solicit verdicts against that visibly worthless escrow, then replay
+    /// each signature byte for byte onto the honest funder's escrow, where the
+    /// award id is fresh and the verifier's cap is a separate counter. The
+    /// verifier believed it was authorizing 3 junk units and authorized $15.
+    function test_a_signature_cannot_be_replayed_onto_another_funders_escrow() public {
+        _fundCapped(5_000_000, 3, 3);              // the honest funder
+        MockUSDC junk = new MockUSDC();            // the decoy
+        address attacker = address(0xDEC0);
+        junk.mint(attacker, 3);
+        vm.deal(attacker, 1 ether);
+        vm.startPrank(attacker);
+        junk.approve(address(escrow), 3);
+        address[] memory vs = new address[](1);
+        uint32[] memory caps = new uint32[](1);
+        vs[0] = verifier;                          // the SAME verifier the listing names
+        caps[0] = 3;
+        escrow.fund(LH, address(junk), 1, 3, vs, caps, vDeadline, cDeadline);
+        vm.stopPrank();
+
+        // The verifier signs a verdict for the DECOY escrow, in good faith.
+        uint64 t = uint64(block.timestamp);
+        bytes32 structHash = keccak256(abi.encode(
+            keccak256("Release(bytes32 listingHash,address funder,bytes32 awardId,bytes32 submissionHash,address payee,bytes32 verdictHash,uint64 issuedAt)"),
+            LH, attacker, bytes32(uint256(1)), bytes32(0), payee, bytes32(0), t
+        ));
+        (uint8 v, bytes32 r, bytes32 sg) = vm.sign(verifierKey, keccak256(abi.encodePacked("\x19\x01", escrow.domainSeparator(), structHash)));
+        bytes memory decoySig = abi.encodePacked(r, sg, v);
+
+        // It spends the decoy, which is what the verifier agreed to.
+        escrow.release(LH, attacker, bytes32(uint256(1)), bytes32(0), payee, bytes32(0), t, decoySig);
+        assertEq(junk.balanceOf(payee), 1, "the escrow the verifier actually looked at");
+
+        // AND IT CANNOT BE REPLAYED ONTO THE HONEST FUNDER'S ESCROW. The
+        // funder is inside the signed bytes, so this recovers a different
+        // address entirely.
+        vm.expectRevert(ListingEscrow.NotAVerifier.selector);
+        escrow.release(LH, funder, bytes32(uint256(1)), bytes32(0), payee, bytes32(0), t, decoySig);
+        assertEq(usdc.balanceOf(address(escrow)), 15_000_000, "not one atom of the honest listing moved");
+        (, uint32 used) = escrow.verifierAuthority(LH, funder, verifier);
+        assertEq(used, 0, "and the verifier spent none of its authority there");
+    }
+
     /// MEDIUM: listingOf().committed reported the full remainder after a
     /// refund had already returned the money, so a reader would print
     /// "FUNDED, N committed" about an empty escrow.
@@ -322,6 +370,19 @@ contract ListingEscrowTest is Test {
         vm.expectRevert(ListingEscrow.NothingToRefund.selector);
         escrow.release(LH, funder, bytes32(uint256(1)), bytes32(0), payee, bytes32(0), t, sig);
         assertEq(usdc.balanceOf(payee), 0);
+    }
+
+    /// The log is the record this society reads. With several escrows per
+    /// listing hash, a reader indexing by hash alone conflates them and cannot
+    /// attribute a payment or rebuild `released` per escrow, so the funder is
+    /// in the event and indexed.
+    function test_the_release_log_names_which_escrow_paid() public {
+        _fundCapped(5_000_000, 3, 3);
+        uint64 t = uint64(block.timestamp);
+        bytes memory sig = _sig(LH, bytes32(uint256(1)), bytes32(0), payee, bytes32(0), t, verifierKey);
+        vm.expectEmit(true, true, true, true, address(escrow));
+        emit ListingEscrow.Released(LH, funder, bytes32(uint256(1)), payee, verifier, 5_000_000);
+        escrow.release(LH, funder, bytes32(uint256(1)), bytes32(0), payee, bytes32(0), t, sig);
     }
 
     // ---------------------------------------------------- double payment

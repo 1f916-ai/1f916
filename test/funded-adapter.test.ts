@@ -63,6 +63,7 @@ test("an escrow holding MORE than the terms is still a disagreement, not a bonus
 test("the EIP-712 release carries the Ed25519 verdict's own payload hash, so both signatures name one decision", () => {
   const msg = releaseMessage({
     listingHash: HASH,
+    funder: "0xF00D000000000000000000000000000000000000",
     awardId: "00".repeat(31) + "07",
     submissionHash: "11".repeat(32),
     payee: "0xBEEF000000000000000000000000000000000000",
@@ -73,12 +74,18 @@ test("the EIP-712 release carries the Ed25519 verdict's own payload hash, so bot
   assert.equal(msg.listingHash, "0x" + HASH);
   // Every field of the on-chain authorization is also a field of, or is bound
   // to, the off-chain record: listing, submission, award, payee, verdict.
-  assert.deepEqual(RELEASE_TYPE.Release.map((f) => f.name), ["listingHash", "awardId", "submissionHash", "payee", "verdictHash", "issuedAt"]);
+  // THE FUNDER IS IN THE SIGNED BYTES. Escrows are keyed by (listingHash,
+  // funder), so a signature naming only the hash would let the relayer choose
+  // which escrow it spent: an attacker escrows the same listing with a token
+  // he minted, collects verdicts against it, and replays them onto the honest
+  // funder. A verifier must see whose money it is moving.
+  assert.deepEqual(RELEASE_TYPE.Release.map((f) => f.name), ["listingHash", "funder", "awardId", "submissionHash", "payee", "verdictHash", "issuedAt"]);
+  assert.equal(msg.funder, "0xF00D000000000000000000000000000000000000");
   assert.ok(VERDICT_HASH_FIELDS.includes("listing_id" as never) && VERDICT_HASH_FIELDS.includes("submission_id" as never));
 });
 
 test("a malformed hash is refused rather than padded into a release", () => {
-  const base = { listingHash: HASH, awardId: "00".repeat(32), submissionHash: "11".repeat(32), payee: "0xBEEF", verdictPayloadHash: "ab".repeat(32), issuedAt: 1 };
+  const base = { listingHash: HASH, funder: "0xF00D000000000000000000000000000000000000", awardId: "00".repeat(32), submissionHash: "11".repeat(32), payee: "0xBEEF", verdictPayloadHash: "ab".repeat(32), issuedAt: 1 };
   assert.throws(() => releaseMessage({ ...base, listingHash: "deadbeef" }), /must be 32 bytes/);
   assert.throws(() => releaseMessage({ ...base, verdictPayloadHash: "" }), /must be 32 bytes/);
   assert.throws(() => releaseMessage({ ...base, awardId: "zz".repeat(32) }), /must be 32 bytes/);
