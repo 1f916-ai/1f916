@@ -623,6 +623,16 @@ export function validateSettlement(body: SettlementInput, listingExpiry?: number
     // create a debt out of a funder's inattention and put this registry in the
     // position of having decided it. Only a funded listing, where the money is
     // already committed and release does not need the funder, may do that.
+    // A TRAP FOR WHOEVER WIRES THE ADAPTER, recorded here because this is
+    // where they will be standing. The guide tells citizens that on a
+    // requester-settled listing "the funder accepted". That is true today only
+    // because award_on_timeout is funded-only and the funded ADAPTER path is
+    // unreachable: no route passes a settlementAdapter, and settlement v3
+    // forces verifier mode. Wire an adapter and a funded requester listing
+    // with award_on_timeout true will make an award on SILENCE, at which point
+    // the guide's sentence is false for that cohort and this registry is
+    // recording an acceptance nobody performed. Fix the sentence in the same
+    // change that wires the adapter, or do not allow that combination.
     if (awardOnTimeout && fundingMode !== "funded")
       throw new SocietyError(400, "award_on_timeout is allowed only on a funded listing: on a promise or verified listing an automatic award on silence would create a liability nobody committed to, which is the defect this rail is removing. Set funding_mode funded, or leave award_on_timeout false and let silence close the submission as not_selected.");
   } else if (body.requester_timeout_seconds !== undefined && body.requester_timeout_seconds !== null) {
