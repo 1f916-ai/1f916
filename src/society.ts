@@ -4375,14 +4375,34 @@ export async function railCensus(env: Env) {
       // and a lapsed binding is a routing record that went stale, never a debt.
       lapsed_bindings: Number(worker.lapsed_bindings) + Number(verifier.lapsed_bindings),
       awards: mine.length,
+      settlement_version: Number(l.settlement_version),
+      // WHAT THIS REGISTRY IS ENTITLED TO SAY ABOUT THIS ROW. A v2 listing
+      // carries an award ledger, so its liability is derived and exact. A v1
+      // listing has no ledger and awards cannot be made against it, so every
+      // atomic figure below is a fact about an empty ledger and not a finding
+      // about the listing's history. The two must never be added together
+      // under one name, because a zero that means "derived none" and a zero
+      // that means "not derivable" are different claims.
+      liability_scope: Number(l.settlement_version) >= 2 ? "v2_ledger" : "legacy_unclassified",
+      // Bindings on a pre-v2 listing with no receipt against them. These are
+      // the records liability CANNOT be derived from: a binding never recorded
+      // whether an award was made, so each one is unknown, not zero and not a
+      // debt. Served so the unknown has a size.
+      legacy_bindings_unclassified:
+        Number(l.settlement_version) >= 2
+          ? 0
+          : Number(worker.bindings) + Number(verifier.bindings) - Number(worker.receipts) - Number(verifier.receipts),
       // Who each outcome belongs to, which is the question the raw counts
       // could never answer.
       accountability: {
-        currently_due_atomic: economics.currently_due_atomic,
-        overdue_unpaid_atomic: economics.overdue_unpaid_atomic,
-        expired_unclaimed_atomic: economics.expired_unclaimed_atomic,
-        paid_atomic: economics.amount_paid_atomic,
-        note: "currently_due: owed, not yet late. overdue_unpaid: owed and late, and the lateness is the PAYER's, because the worker had already supplied a payout destination. expired_unclaimed: the WORKER did not supply one before the declared deadline, so their entitlement lapsed. paid: settled. Every timeout on this rail has an owner.",
+        v2_currently_due_atomic: economics.currently_due_atomic,
+        v2_overdue_unpaid_atomic: economics.overdue_unpaid_atomic,
+        v2_expired_unclaimed_atomic: economics.expired_unclaimed_atomic,
+        v2_paid_atomic: economics.amount_paid_atomic,
+        note:
+          Number(l.settlement_version) >= 2
+            ? "currently_due: owed, not yet late. overdue_unpaid: owed and late, and the lateness is the PAYER's, because the worker had already supplied a payout destination. expired_unclaimed: the WORKER did not supply one before the declared deadline, so their entitlement lapsed. paid: settled. Every timeout on this rail has an owner."
+            : "EVERY FIGURE ON THIS ROW IS SCOPED TO THE V2 AWARD LEDGER, WHICH THIS PRE-V2 LISTING DOES NOT HAVE. Awards cannot be made against it, so these are necessarily zero and are not a finding that nothing was owed. Liability here is not derivable from payout bindings, and legacy_bindings_unclassified is how many such records this listing holds. Read this row as: no v2 liability recorded, history unknown to this registry.",
       },
       // The award ledger's own history, so a reader can see that an
       // entitlement existed even where it has since lapsed.
@@ -4392,6 +4412,14 @@ export async function railCensus(env: Env) {
     };
   });
 
+  // EVERY LIABILITY TOTAL CARRIES A v2_ PREFIX AND EVERY UNKNOWN CARRIES A
+  // legacy_ ONE, and the prefixes are the whole point. What this endpoint can
+  // compute is the explicit v2 award ledger. What it cannot compute is what a
+  // pre-v2 listing may have owed, because the only records those listings left
+  // are payout bindings and a binding never said whether an award was made.
+  // Serving one unprefixed "outstanding" over both would turn "we cannot
+  // derive it" into "we have proved it is zero", which is the opposite error to
+  // the one this rail was built to fix and is just as wrong.
   const totals = rows.reduce(
     (acc, r) => ({
       listings: acc.listings + 1,
@@ -4401,41 +4429,54 @@ export async function railCensus(env: Env) {
       receipts: acc.receipts + r.worker_receipts + r.verifier_receipts,
       lapsed_bindings: acc.lapsed_bindings + r.lapsed_bindings,
       awards: acc.awards + r.awards,
-      currently_due_atomic: (BigInt(acc.currently_due_atomic) + BigInt(r.economics.currently_due_atomic)).toString(),
-      overdue_unpaid_atomic: (BigInt(acc.overdue_unpaid_atomic) + BigInt(r.economics.overdue_unpaid_atomic)).toString(),
-      outstanding_awarded_atomic: (BigInt(acc.outstanding_awarded_atomic) + BigInt(r.economics.outstanding_awarded_atomic)).toString(),
-      paid_atomic: (BigInt(acc.paid_atomic) + BigInt(r.economics.amount_paid_atomic)).toString(),
-      expired_unclaimed_atomic: (BigInt(acc.expired_unclaimed_atomic) + BigInt(r.economics.expired_unclaimed_atomic)).toString(),
-      maximum_remaining_liability_atomic:
+      v2_listings: acc.v2_listings + (r.liability_scope === "v2_ledger" ? 1 : 0),
+      v2_currently_due_atomic: (BigInt(acc.v2_currently_due_atomic) + BigInt(r.economics.currently_due_atomic)).toString(),
+      v2_overdue_unpaid_atomic: (BigInt(acc.v2_overdue_unpaid_atomic) + BigInt(r.economics.overdue_unpaid_atomic)).toString(),
+      v2_outstanding_awarded_atomic: (BigInt(acc.v2_outstanding_awarded_atomic) + BigInt(r.economics.outstanding_awarded_atomic)).toString(),
+      v2_paid_atomic: (BigInt(acc.v2_paid_atomic) + BigInt(r.economics.amount_paid_atomic)).toString(),
+      v2_expired_unclaimed_atomic: (BigInt(acc.v2_expired_unclaimed_atomic) + BigInt(r.economics.expired_unclaimed_atomic)).toString(),
+      v2_maximum_remaining_liability_atomic:
         r.economics.maximum_remaining_liability_atomic === null
-          ? acc.maximum_remaining_liability_atomic
-          : (BigInt(acc.maximum_remaining_liability_atomic) + BigInt(r.economics.maximum_remaining_liability_atomic)).toString(),
-      listings_without_declared_cap: acc.listings_without_declared_cap + (r.economics.max_liability_atomic === null ? 1 : 0),
+          ? acc.v2_maximum_remaining_liability_atomic
+          : (BigInt(acc.v2_maximum_remaining_liability_atomic) + BigInt(r.economics.maximum_remaining_liability_atomic)).toString(),
+      legacy_listings: acc.legacy_listings + (r.liability_scope === "legacy_unclassified" ? 1 : 0),
+      legacy_listings_without_declared_cap: acc.legacy_listings_without_declared_cap + (r.economics.max_liability_atomic === null ? 1 : 0),
+      legacy_bindings_unclassified: acc.legacy_bindings_unclassified + r.legacy_bindings_unclassified,
     }),
-    { listings: 0, open: 0, submissions: 0, bindings: 0, receipts: 0, lapsed_bindings: 0, awards: 0, currently_due_atomic: "0", overdue_unpaid_atomic: "0", outstanding_awarded_atomic: "0", paid_atomic: "0", expired_unclaimed_atomic: "0", maximum_remaining_liability_atomic: "0", listings_without_declared_cap: 0 },
+    { listings: 0, open: 0, submissions: 0, bindings: 0, receipts: 0, lapsed_bindings: 0, awards: 0, v2_listings: 0, v2_currently_due_atomic: "0", v2_overdue_unpaid_atomic: "0", v2_outstanding_awarded_atomic: "0", v2_paid_atomic: "0", v2_expired_unclaimed_atomic: "0", v2_maximum_remaining_liability_atomic: "0", legacy_listings: 0, legacy_listings_without_declared_cap: 0, legacy_bindings_unclassified: 0 },
   );
 
   // Settlement history, per funder. A missed payment deadline is a fact about
   // the party who missed it, and on a promise listing their history is the
   // only thing standing behind the next listing they post.
-  const funders = new Map<string, { funder: string; listings: number; paid_atomic: string; currently_due_atomic: string; overdue_unpaid_atomic: string; overdue_awards: number; expired_unclaimed_atomic: string }>();
+  const funders = new Map<string, { funder: string; listings: number; v2_listings: number; v2_paid_atomic: string; v2_currently_due_atomic: string; v2_overdue_unpaid_atomic: string; v2_overdue_awards: number; v2_expired_unclaimed_atomic: string; legacy_listings: number; legacy_bindings_unclassified: number; liability_scope: string }>();
   for (const r of rows) {
     const key = String(r.funder);
-    const f = funders.get(key) ?? { funder: key, listings: 0, paid_atomic: "0", currently_due_atomic: "0", overdue_unpaid_atomic: "0", overdue_awards: 0, expired_unclaimed_atomic: "0" };
+    const f = funders.get(key) ?? { funder: key, listings: 0, v2_listings: 0, v2_paid_atomic: "0", v2_currently_due_atomic: "0", v2_overdue_unpaid_atomic: "0", v2_overdue_awards: 0, v2_expired_unclaimed_atomic: "0", legacy_listings: 0, legacy_bindings_unclassified: 0, liability_scope: "v2_ledger" };
     f.listings += 1;
-    f.paid_atomic = (BigInt(f.paid_atomic) + BigInt(r.economics.amount_paid_atomic)).toString();
-    f.currently_due_atomic = (BigInt(f.currently_due_atomic) + BigInt(r.economics.currently_due_atomic)).toString();
-    f.overdue_unpaid_atomic = (BigInt(f.overdue_unpaid_atomic) + BigInt(r.economics.overdue_unpaid_atomic)).toString();
-    f.expired_unclaimed_atomic = (BigInt(f.expired_unclaimed_atomic) + BigInt(r.economics.expired_unclaimed_atomic)).toString();
-    f.overdue_awards += (awardsByListing.get(r.listing_id) ?? []).filter((a) => a.state === "overdue_unpaid").length;
+    f.v2_paid_atomic = (BigInt(f.v2_paid_atomic) + BigInt(r.economics.amount_paid_atomic)).toString();
+    f.v2_currently_due_atomic = (BigInt(f.v2_currently_due_atomic) + BigInt(r.economics.currently_due_atomic)).toString();
+    f.v2_overdue_unpaid_atomic = (BigInt(f.v2_overdue_unpaid_atomic) + BigInt(r.economics.overdue_unpaid_atomic)).toString();
+    f.v2_expired_unclaimed_atomic = (BigInt(f.v2_expired_unclaimed_atomic) + BigInt(r.economics.expired_unclaimed_atomic)).toString();
+    f.v2_overdue_awards += (awardsByListing.get(r.listing_id) ?? []).filter((a) => a.state === "overdue_unpaid").length;
+    // A funder whose listings are all pre-v2 must never read as settled. Their
+    // v2 zeros are the arithmetic of an empty ledger, so the row says so on its
+    // own face rather than leaving it to a note further down the page.
+    if (r.liability_scope === "legacy_unclassified") {
+      f.legacy_listings += 1;
+      f.legacy_bindings_unclassified += r.legacy_bindings_unclassified;
+    } else {
+      f.v2_listings += 1;
+    }
+    f.liability_scope = f.legacy_listings === 0 ? "v2_ledger" : f.v2_listings === 0 ? "legacy_unclassified" : "mixed";
     funders.set(key, f);
   }
   return {
     now,
     now_utc: new Date(now).toISOString(),
     totals,
-    funders: [...funders.values()].sort((a, b) => (BigInt(b.overdue_unpaid_atomic) > BigInt(a.overdue_unpaid_atomic) ? 1 : -1)),
-    funders_note: "One row per funder. overdue_unpaid_atomic is money they owe on work that was accepted, where the worker had already supplied a payout destination and the deadline passed anyway. It is a fact about this funder and never about the workers, and on a promise listing a reader has nothing else to go on. expired_unclaimed_atomic on the same row is NOT a mark against them: it is money their listing owed to a worker who did not supply a destination in time.",
+    funders: [...funders.values()].sort((a, b) => (BigInt(b.v2_overdue_unpaid_atomic) > BigInt(a.v2_overdue_unpaid_atomic) ? 1 : -1)),
+    funders_note: "One row per funder. v2_overdue_unpaid_atomic is money they owe on work that was accepted, where the worker had already supplied a payout destination and the deadline passed anyway. It is a fact about this funder and never about the workers, and on a promise listing a reader has nothing else to go on. v2_expired_unclaimed_atomic on the same row is NOT a mark against them: it is money their listing owed to a worker who did not supply a destination in time. READ THE ZEROS CORRECTLY: every atomic figure here is derived from the v2 award ledger alone, so a funder showing 0 has NO V2-RECORDED OUTSTANDING LIABILITY, which is not a finding that they never owed anyone anything. Where liability_scope is legacy_unclassified or mixed, that funder also holds legacy_listings whose obligations are NOT DERIVABLE from their payout bindings, counted as legacy_bindings_unclassified on the same row. This registry will not clear a funder it cannot audit, and it will not accuse one either.",
     listings: rows,
     // Every derivation, written where the numbers are, so a stranger can
     // reproduce each one and disagree with a named filter rather than guess at
@@ -4445,14 +4486,19 @@ export async function railCensus(env: Env) {
       receipts: "The same rows LEFT JOINed to payout_receipts, counting those with a receipt. A receipt is two Base RPC sources agreeing on one finalized USDC Transfer, signed for by its source.",
       lapsed_bindings: "Bindings with no receipt whose OWN expiry is already past, at the clock in `now`. This counts routing records that went stale. It is not a debt, not a broken promise, and not a count of unpaid people.",
       awards: "Rows in the award ledger, with any award past its listing's award_ttl_seconds treated as expired before it is counted.",
-      outstanding_awarded_atomic: "The sum of awards in state awarded or payable. THIS, and only this, is money a funder currently owes on this rail.",
-      currently_due_atomic: "Owed and not yet past a promised payment deadline. Part of outstanding_awarded_atomic.",
-      overdue_unpaid_atomic: "Owed, AND the worker had already supplied a payout destination, AND the payer did not settle by the deadline. Still part of outstanding_awarded_atomic and never deducted from it: missing a deadline does not reduce a debt. The missed deadline belongs to the payer and appears in funders below, never on the worker's record.",
-      expired_unclaimed_atomic: "The sum of awards that BECAME PAYABLE and then lapsed unclaimed past the claim window their listing declared before the work began. This money was genuinely earned and is no longer owed, and both halves of that are true at once. It is served on its own line so it can be read as neither 'still owed' nor 'never earned', and the award rows keep the timestamp at which each became payable.",
-      maximum_remaining_liability_atomic: "Per listing: outstanding plus available capacity times the award amount. Summed here over listings that declare a cap. Listings without one are counted in listings_without_declared_cap and contribute nothing, because this registry will not invent a cap its funder never declared.",
+      v2_outstanding_awarded_atomic: "The sum of awards in state awarded or payable, over settlement_version 2 listings, which are the only listings that can hold awards. THIS, and only this, is money a funder is RECORDED as currently owing on this rail. It is a floor on what is owed and never a ceiling, because pre-v2 listings carry no ledger to sum.",
+      v2_currently_due_atomic: "Owed and not yet past a promised payment deadline. Part of v2_outstanding_awarded_atomic.",
+      v2_overdue_unpaid_atomic: "Owed, AND the worker had already supplied a payout destination, AND the payer did not settle by the deadline. Still part of v2_outstanding_awarded_atomic and never deducted from it: missing a deadline does not reduce a debt. The missed deadline belongs to the payer and appears in funders below, never on the worker's record.",
+      v2_expired_unclaimed_atomic: "The sum of awards that BECAME PAYABLE and then lapsed unclaimed past the claim window their listing declared before the work began. This money was genuinely earned and is no longer owed, and both halves of that are true at once. It is served on its own line so it can be read as neither 'still owed' nor 'never earned', and the award rows keep the timestamp at which each became payable.",
+      v2_paid_atomic: "Receipts joined to award rows. A pre-v2 payment has no award row to join to, so money that genuinely moved on a legacy listing is NOT in this figure; the `receipts` count above is where those live.",
+      v2_maximum_remaining_liability_atomic: "Per listing: outstanding plus available capacity times the award amount. Summed here over listings that declare a cap. Legacy listings declare none, are counted in legacy_listings_without_declared_cap, and contribute nothing, because this registry will not invent a cap its funder never declared.",
+      legacy_listings: "Listings posted before settlement v2. They hold no award ledger and awards cannot be made against them, so they contribute exactly 0 to every v2_ figure above BY CONSTRUCTION. That zero is an absence of records, not a finding.",
+      legacy_bindings_unclassified: "Payout bindings on legacy listings with no receipt against them. Each one is a routing record that never said whether an award was made, so it is UNKNOWN: not a debt, and not proof there was none. This is the size of what settlement v2 cannot audit, published so that the unknown is a number on the page rather than an omission.",
     },
+    liability_scope_note:
+      "WHAT THIS PAGE CAN AND CANNOT TELL YOU. Every v2_ figure is derived from the explicit award ledger and is exact. Every legacy_ figure counts records this registry CANNOT derive liability from. Settlement v2 does not backfill awards for pre-v2 listings, deliberately: a payout binding does not prove an award was made, so manufacturing award rows from bindings would invent debts that may never have existed. The consequence must be stated in the same breath, because it cuts the other way too: v2_outstanding_awarded_atomic of 0 means THIS REGISTRY RECORDS NO EXPLICIT V2 LIABILITY. It does not mean, and must never be quoted as meaning, that no historical obligation ever existed on this rail. For settlement_version 1 listings the honest answer is UNKNOWN, and legacy_bindings_unclassified says how large the unknown is. The defensible sentence is: bindings are not debts, settlement v2 records N of explicit liability, and legacy obligations are not derivable from bindings either way.",
     reading_note:
-      "The three figures that get confused: bindings, receipts, and outstanding. A payout binding is a ROUTING RECORD, an authorization saying where money should go IF this citizen becomes entitled to it. It is not an award, not an acceptance and not a debt, so the gap between bindings and receipts is not money owed by anyone. A submission is work handed in and creates nothing at all. The only figure on this page that is money currently owed is outstanding_awarded_atomic, and the only act that can increase it is an award.",
+      "The three figures that get confused: bindings, receipts, and outstanding. A payout binding is a ROUTING RECORD, an authorization saying where money should go IF this citizen becomes entitled to it. It is not an award, not an acceptance and not a debt, so the gap between bindings and receipts is not money owed by anyone. A submission is work handed in and creates nothing at all. The only figure on this page that is money recorded as currently owed is v2_outstanding_awarded_atomic, and the only act that can increase it is an award. THE OPPOSITE MISREADING IS ALSO AVAILABLE AND IS ALSO WRONG: that figure covers the v2 award ledger only, so it is not a certificate that legacy listings owed nothing. See liability_scope_note before quoting any zero.",
   };
 }
 

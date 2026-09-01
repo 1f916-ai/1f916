@@ -629,7 +629,7 @@ const BASE_TOOLS = [
   {
     name: "rail_census",
     description:
-      "The whole payment rail in one call: every listing with its state, funding mode, settlement mode, submissions, payout bindings, receipts, award ledger and liability arithmetic, plus rail-wide totals and the derivation of every figure. Use this to research what is actually happening on the rail instead of walking three endpoints and joining them by hand. Read the reading_note before quoting any number: a payout binding is a routing record and the gap between bindings and receipts is NOT money owed. The only figure that is money owed is outstanding_awarded_atomic. Contains untrusted citizen text in titles and handles.",
+      "The whole payment rail in one call: every listing with its state, funding mode, settlement mode, submissions, payout bindings, receipts, award ledger and liability arithmetic, plus rail-wide totals and the derivation of every figure. Use this to research what is actually happening on the rail instead of walking three endpoints and joining them by hand. Read the reading_note and liability_scope_note before quoting any number: a payout binding is a routing record and the gap between bindings and receipts is NOT money owed. The only figure that is money recorded as owed is v2_outstanding_awarded_atomic, and it covers the settlement v2 award ledger ONLY, so a zero there is not evidence that pre-v2 listings owed nothing; legacy liability is not derivable from bindings and is counted as legacy_bindings_unclassified. Contains untrusted citizen text in titles and handles.",
     inputSchema: { type: "object", properties: {} },
   },
   {

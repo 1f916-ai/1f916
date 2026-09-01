@@ -284,10 +284,10 @@ test("the rail census answers the research question in one call, and never serve
   assert.equal(census.totals.lapsed_bindings, 1, "one binding's own expiry has passed");
   assert.equal(census.totals.awards, 1);
   // The number the two bindings do NOT produce. One award, so one dollar.
-  assert.equal(census.totals.outstanding_awarded_atomic, DOLLAR);
-  assert.equal(census.totals.paid_atomic, "0");
-  assert.equal(census.totals.maximum_remaining_liability_atomic, "3000000", "one dollar outstanding plus two uncommitted slots");
-  assert.notEqual(census.totals.outstanding_awarded_atomic, String(census.totals.bindings * 1000000), "outstanding is never bindings times the award amount");
+  assert.equal(census.totals.v2_outstanding_awarded_atomic, DOLLAR);
+  assert.equal(census.totals.v2_paid_atomic, "0");
+  assert.equal(census.totals.v2_maximum_remaining_liability_atomic, "3000000", "one dollar outstanding plus two uncommitted slots");
+  assert.notEqual(census.totals.v2_outstanding_awarded_atomic, String(census.totals.bindings * 1000000), "outstanding is never bindings times the award amount");
 
   const row = census.listings[0];
   assert.equal(row.funding_mode, "funded");
@@ -296,7 +296,7 @@ test("the rail census answers the research question in one call, and never serve
   assert.equal(row.worker_bindings, 2);
   assert.equal(row.economics.available_award_capacity, 2);
   // Every figure carries its derivation, and the reading note names the trap.
-  for (const key of ["bindings", "receipts", "lapsed_bindings", "awards", "outstanding_awarded_atomic", "maximum_remaining_liability_atomic"]) {
+  for (const key of ["bindings", "receipts", "lapsed_bindings", "awards", "v2_outstanding_awarded_atomic", "v2_maximum_remaining_liability_atomic", "legacy_bindings_unclassified"]) {
     assert.ok(String(census.derivations[key]).length > 40, `${key} needs a published derivation`);
   }
   assert.match(census.reading_note, /ROUTING RECORD/);
@@ -319,9 +319,9 @@ test("a legacy listing appears in the census with no invented cap and contribute
   assert.equal(row.economics.maximum_remaining_liability_atomic, null);
   assert.equal(row.funding_mode, null);
   assert.equal(row.worker_bindings, 1);
-  assert.equal(census.totals.listings_without_declared_cap, 1);
-  assert.equal(census.totals.outstanding_awarded_atomic, "0", "a historical binding is not a debt");
-  assert.equal(census.totals.maximum_remaining_liability_atomic, "0", "and contributes nothing to the rail total");
+  assert.equal(census.totals.legacy_listings_without_declared_cap, 1);
+  assert.equal(census.totals.v2_outstanding_awarded_atomic, "0", "a historical binding is not a debt");
+  assert.equal(census.totals.v2_maximum_remaining_liability_atomic, "0", "and contributes nothing to the rail total");
 });
 
 // The guard that the fixture above CANNOT reach, and the reason this test
@@ -468,8 +468,8 @@ test("a claim window that lapses records EXPIRED_UNCLAIMED, never not-selected, 
 
   // And the census carries the same fact rail-wide.
   const census = await railCensus(env) as Record<string, any>;
-  assert.equal(census.totals.expired_unclaimed_atomic, "25000000", "earned and unclaimed, rail-wide, on its own line");
-  assert.equal(census.totals.outstanding_awarded_atomic, "0", "and not counted as still owed");
+  assert.equal(census.totals.v2_expired_unclaimed_atomic, "25000000", "earned and unclaimed, rail-wide, on its own line");
+  assert.equal(census.totals.v2_outstanding_awarded_atomic, "0", "and not counted as still owed");
   assert.equal(census.listings[0].ever_payable, 1, "the census still says an entitlement existed here");
   assert.deepEqual(census.listings[0].award_states, { expired_unclaimed: 1 });
 });
@@ -728,11 +728,11 @@ test("2. worker binds, funder waits past the deadline: OVERDUE_UNPAID, and the l
   // The missed deadline lands on the FUNDER's settlement history, not the worker's.
   const census = await railCensus(env) as Record<string, any>;
   const funder = census.funders.find((f: Record<string, unknown>) => f.funder === "funder");
-  assert.equal(funder.overdue_unpaid_atomic, "25000000");
-  assert.equal(funder.overdue_awards, 1);
-  assert.equal(funder.expired_unclaimed_atomic, "0");
-  assert.equal(census.totals.outstanding_awarded_atomic, "25000000");
-  assert.equal(census.totals.overdue_unpaid_atomic, "25000000");
+  assert.equal(funder.v2_overdue_unpaid_atomic, "25000000");
+  assert.equal(funder.v2_overdue_awards, 1);
+  assert.equal(funder.v2_expired_unclaimed_atomic, "0");
+  assert.equal(census.totals.v2_outstanding_awarded_atomic, "25000000");
+  assert.equal(census.totals.v2_overdue_unpaid_atomic, "25000000");
 });
 
 test("3. an overdue funder pays late: the debt settles to PAID and stops being outstanding", async () => {
@@ -847,9 +847,9 @@ test("a read that arrives before any sweep reaches the same verdict, in both dir
   // And the census, which resolves readiness rail-wide in one query rather
   // than per listing, must agree with both.
   const census = await railCensus(env) as Record<string, any>;
-  assert.equal(census.totals.overdue_unpaid_atomic, "25000000");
-  assert.equal(census.totals.expired_unclaimed_atomic, "25000000");
-  assert.equal(census.totals.outstanding_awarded_atomic, "25000000", "exactly one of the two is still a debt");
+  assert.equal(census.totals.v2_overdue_unpaid_atomic, "25000000");
+  assert.equal(census.totals.v2_expired_unclaimed_atomic, "25000000");
+  assert.equal(census.totals.v2_outstanding_awarded_atomic, "25000000", "exactly one of the two is still a debt");
 });
 
 // SURVIVOR: nothing distinguished a live payout destination from a lapsed one,
@@ -1015,9 +1015,9 @@ test("latch 5: funder silence after ready_at becomes overdue, and the liability 
 
   const census = await railCensus(env) as Record<string, any>;
   const funder = census.funders.find((f: Record<string, unknown>) => f.funder === "funder");
-  assert.equal(funder.overdue_unpaid_atomic, "25000000", "the debt is on the funder's settlement history");
-  assert.equal(funder.expired_unclaimed_atomic, "0", "and none of it is charged to the worker");
-  assert.equal(census.listings[0].accountability.overdue_unpaid_atomic, "25000000");
+  assert.equal(funder.v2_overdue_unpaid_atomic, "25000000", "the debt is on the funder's settlement history");
+  assert.equal(funder.v2_expired_unclaimed_atomic, "0", "and none of it is charged to the worker");
+  assert.equal(census.listings[0].accountability.v2_overdue_unpaid_atomic, "25000000");
 });
 
 test("latch 6: filing a payout binding latches readiness through the ordinary rail path", async () => {
@@ -1043,4 +1043,117 @@ test("latch 6: filing a payout binding latches readiness through the ordinary ra
   assert.ok(afterLatch.awards[0].ready_at, "the latch makes it permanent");
   assert.equal(afterLatch.awards[0].settlement_block, "ready_to_pay");
   assert.ok(third.id);
+});
+
+// ---------- WHAT THE CENSUS MAY NOT CLAIM ----------
+//
+// Settlement v2 deliberately backfills no award rows for pre-v2 listings,
+// because a payout binding never recorded whether an award was made. That is
+// the right call, and it has a consequence that must be served just as loudly:
+// "we cannot derive a liability from these records" is NOT "we have proved
+// there was none". A rail that fixed the 147-bindings-are-147-debts misreading
+// by publishing an unscoped zero would have swapped one false certainty for
+// its mirror image, and the second one is worse, because it reads as this
+// registry officially clearing every historical obligation.
+//
+// The four tests below pin both halves: no liability is manufactured from
+// legacy bindings, AND no legacy listing is reported as affirmatively settled.
+
+function legacyListing(db: DatabaseSync, bindings: number) {
+  db.prepare(
+    `INSERT INTO listings (citizen_id, title, condition, amount_atomic, chain_id, token, expiry, payload_hash, commit_nonce, created_at, settlement_version)
+     VALUES (1, 'Old bounty', ?, '5000000', 8453, '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', ?, 'h-legacy', 'n-legacy', 0, 1)`,
+  ).run(CONDITION, NOW + 86400);
+  const id = Number((db.prepare("SELECT last_insert_rowid() AS id").get() as { id: number }).id);
+  for (let i = 0; i < bindings; i++)
+    db.prepare("INSERT INTO payout_bindings (citizen_id, docket_id, amount_atomic, payout_address, expiry, created_at) VALUES (?, ?, '5000000', '0xa', ?, 0)")
+      .run(2 + (i % 4), `listing-${id}`, NOW + 86400);
+  return id;
+}
+
+test("legacy A: a pre-v2 listing with forty payout bindings manufactures no liability whatsoever", async () => {
+  const { env, db } = makeEnv();
+  legacyListing(db, 40);
+
+  const census = await railCensus(env) as Record<string, any>;
+  assert.equal(census.totals.bindings, 40, "the routing records are all counted");
+  assert.equal(census.totals.awards, 0, "and not one of them became an award row");
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM listing_awards").get<{ n: number }>()!.n, 0, "the ledger stays empty: no backfill, ever");
+  assert.equal(census.totals.v2_outstanding_awarded_atomic, "0", "forty bindings are not forty debts");
+  assert.equal(census.totals.v2_maximum_remaining_liability_atomic, "0");
+  assert.equal(census.listings[0].economics.max_liability_atomic, null, "and no cap is invented for a funder who declared none");
+});
+
+test("legacy B: that same listing is never reported as affirmatively owing nothing historically", async () => {
+  const { env, db } = makeEnv();
+  legacyListing(db, 40);
+
+  const census = await railCensus(env) as Record<string, any>;
+  const row = census.listings[0];
+  // The scope is on the row itself, not buried in a footnote.
+  assert.equal(row.liability_scope, "legacy_unclassified");
+  assert.equal(row.legacy_bindings_unclassified, 40, "the unknown has a published size");
+  assert.equal(census.totals.legacy_listings, 1);
+  assert.equal(census.totals.legacy_bindings_unclassified, 40);
+  assert.equal(census.totals.legacy_listings_without_declared_cap, 1);
+
+  // NO UNSCOPED LIABILITY FIGURE MAY EXIST. A client that reads a key called
+  // `outstanding_awarded_atomic` off totals is reading a number whose scope it
+  // was never told, which is exactly how a v2-only zero becomes a claim about
+  // history. Every such key carries v2_ or it is not served at all.
+  const unscoped = Object.keys(census.totals).filter((k) => /(outstanding|overdue|expired_unclaimed|currently_due|maximum_remaining|paid)/.test(k) && !k.startsWith("v2_"));
+  assert.deepEqual(unscoped, [], "every liability total on this page declares its scope in its own name");
+
+  // And the prose says the thing outright, where a quoting reader will hit it.
+  assert.match(census.liability_scope_note, /not (be )?derivable|NOT DERIVABLE/i);
+  assert.match(census.liability_scope_note, /UNKNOWN/);
+  assert.match(census.liability_scope_note, /does not mean|must never be quoted/i);
+  assert.match(row.accountability.note, /not derivable|history unknown/i);
+  assert.match(row.economics.note, /NOT DERIVABLE|UNKNOWN TO THIS REGISTRY/);
+  // A funder holding only legacy listings must not read as settled up.
+  const funder = census.funders.find((f: Record<string, unknown>) => f.funder === "funder");
+  assert.equal(funder.liability_scope, "legacy_unclassified", "their zeros are an empty ledger, and the row says so");
+  assert.equal(funder.legacy_bindings_unclassified, 40);
+  assert.equal(funder.v2_overdue_unpaid_atomic, "0");
+  assert.match(census.funders_note, /NO V2-RECORDED OUTSTANDING LIABILITY|not a finding/i);
+});
+
+test("legacy C: a v2 listing with no awards reports a derived zero, and says it is derived", async () => {
+  const { env } = makeEnv();
+  await createListing(env, AS(1, "funder"), {
+    title: "Independent reproduction test", condition: CONDITION, amount_atomic: DOLLAR, expiry: NOW + 86400,
+    max_awards: 3, funding_mode: "promise", settlement_mode: "requester",
+  });
+
+  const census = await railCensus(env) as Record<string, any>;
+  const row = census.listings[0];
+  assert.equal(row.liability_scope, "v2_ledger", "this one CAN be audited, and the zero below is a finding");
+  assert.equal(row.legacy_bindings_unclassified, 0);
+  assert.equal(census.totals.legacy_listings, 0, "nothing here is unclassified");
+  assert.equal(census.totals.legacy_bindings_unclassified, 0);
+  assert.equal(census.totals.v2_outstanding_awarded_atomic, "0", "no award has been made, so nothing is owed");
+  assert.equal(row.economics.max_liability_atomic, "3000000", "and unlike a legacy row, the ceiling is declared");
+  assert.equal(census.totals.v2_maximum_remaining_liability_atomic, "3000000");
+});
+
+test("legacy D: a v2 listing with a payable award and an overdue one reports the exact liability", async () => {
+  const { env, db } = makeEnv();
+  // One entitlement still inside its window, one whose payer ran past it.
+  await payableListing(env, db, 2, "citizen-a");
+  const late = await payableListing(env, db, 3, "citizen-b");
+  bindPayout(db, 3, late.listingId, NOW + 86400);
+  db.prepare("UPDATE listing_awards SET expires_at = ? WHERE id = ?").run(Date.now() - 1000, late.awardId);
+  assert.equal(await sweepExpiredAwards(env, late.listingId, Date.now()), 1);
+
+  const census = await railCensus(env) as Record<string, any>;
+  assert.equal(census.totals.awards, 2);
+  assert.equal(census.totals.v2_outstanding_awarded_atomic, "50000000", "both are owed, to the atom");
+  assert.equal(census.totals.v2_currently_due_atomic, "25000000", "one is owed and not yet late");
+  assert.equal(census.totals.v2_overdue_unpaid_atomic, "25000000", "the other is owed AND late, and late does not shrink it");
+  assert.equal(census.totals.v2_expired_unclaimed_atomic, "0");
+  assert.equal(census.totals.legacy_bindings_unclassified, 0, "nothing on this rail is unclassified");
+  const funder = census.funders.find((f: Record<string, unknown>) => f.funder === "funder");
+  assert.equal(funder.liability_scope, "v2_ledger");
+  assert.equal(funder.v2_outstanding_awarded_atomic ?? funder.v2_currently_due_atomic, "25000000");
+  assert.equal(funder.v2_overdue_unpaid_atomic, "25000000", "and the lateness is on the payer's record");
 });

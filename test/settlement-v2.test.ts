@@ -111,14 +111,18 @@ test("the two expirations are different economic facts, and only one returns a s
   assert.equal(closed.maximum_remaining_liability_atomic, "1000000");
 });
 
-test("a listing posted before settlement v2 publishes nulls, never an invented cap, and is never a debt", () => {
+test("a listing posted before settlement v2 publishes nulls, never an invented cap, and never a verdict on its history", () => {
   const e = listingEconomics({ settlement_version: 1, amount_atomic: DOLLAR, max_awards: 1, awards: [], open: true });
   assert.equal(e.max_liability_atomic, null);
   assert.equal(e.max_awards, null);
   assert.equal(e.available_award_capacity, null);
   assert.equal(e.maximum_remaining_liability_atomic, null);
   assert.equal(e.outstanding_awarded_atomic, "0", "no awards exist on a v1 listing, so nothing is outstanding");
-  assert.match(e.note, /Nothing about a v1 listing is a debt/);
+  // And the zero says what kind of zero it is. An empty ledger is not an
+  // audit finding, and the note must not let a reader turn it into one.
+  assert.match(e.note, /NOT DERIVABLE/);
+  assert.match(e.note, /UNKNOWN TO THIS REGISTRY rather than zero/);
+  assert.match(e.note, /makes no claim in either direction/);
   assert.equal(awardRefusal({ settlement_version: 1, max_awards: 1, awards: [], open: true })?.includes("no award ledger"), true);
 });
 
