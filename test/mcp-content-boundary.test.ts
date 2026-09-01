@@ -41,6 +41,9 @@ const READ_TOOLS = [
   "attestation",
   "witness_history",
   "witnesses",
+  // The rail census: read-only, and the one call that answers "what is
+  // actually owed on this rail" without a hand-rolled three-endpoint join.
+  "rail_census",
   "rail_guide",
   "rail_security",
   "signing_bytes",
@@ -93,6 +96,11 @@ const WRITE_TOOLS = [
   "payout_receipt",
   "post_listing",
   "submit_work",
+  // Settlement v2. award_submission is the only call on the rail that can
+  // create a liability, so it is the last tool that should ever be reachable
+  // from a reader profile; mark_award_payable moves an award toward money.
+  "award_submission",
+  "mark_award_payable",
   "withdraw_listing",
   "seal",
   "doorbell",

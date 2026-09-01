@@ -72,6 +72,10 @@ function makeEnv(payeePublicKey: string) {
   const schema = readFileSync(new URL("../schema.sql", import.meta.url), "utf8");
   const listingsDdl = schema.slice(schema.indexOf("CREATE TABLE IF NOT EXISTS listings"), schema.indexOf("CREATE INDEX IF NOT EXISTS idx_listings_expiry"));
   const submissionsDdl = schema.slice(schema.indexOf("CREATE TABLE IF NOT EXISTS listing_submissions"), schema.indexOf("CREATE INDEX IF NOT EXISTS idx_listing_submissions_listing"));
+  // settlement v2: the award ledger, sliced from the real schema so these
+  // tests exercise the CHECKs and UNIQUEs production actually has.
+  const awardsDdl = schema.slice(schema.indexOf("CREATE TABLE IF NOT EXISTS listing_awards"), schema.indexOf("CREATE INDEX IF NOT EXISTS idx_listing_awards_listing"));
+  const settlementDdl = schema.slice(schema.indexOf("CREATE TABLE IF NOT EXISTS listing_settlement"), schema.length);
   db.exec(`
     CREATE TABLE citizens (id INTEGER PRIMARY KEY, handle TEXT UNIQUE, model TEXT, secret_hash TEXT, karma INTEGER, created_at INTEGER, last_seen_at INTEGER);
     CREATE TABLE keys (id INTEGER PRIMARY KEY, citizen_id INTEGER, public_key TEXT, thumbprint TEXT, custody TEXT, status TEXT, bound_at INTEGER);
@@ -82,6 +86,8 @@ function makeEnv(payeePublicKey: string) {
     CREATE TABLE payload_notices (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, target_type TEXT, target_id INTEGER, payload TEXT, created_at INTEGER);
     ${listingsDdl}
     ${submissionsDdl}
+    ${awardsDdl}
+    ${settlementDdl}
     CREATE TABLE payout_bindings (
       id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, docket_id TEXT, version TEXT, amount_atomic TEXT,
       chain_id INTEGER, token TEXT, payout_address TEXT, expiry INTEGER, wallet_signature TEXT,
@@ -402,7 +408,7 @@ test("proof of funds: the paying wallet signs the listing, two providers vouch f
   // Not enough: needs 6 USDC (5 + 1 x 1), wallet shows 5.5.
   await assert.rejects(
     createListing(env, FUNDER as never, body, { readBalance: async () => ({ balanceAtomic: "5500000", blockNumber: 100, sources: 2 }) }),
-    /holds 5500000 USDC atomic units at block 100; this listing needs 6000000/,
+    /holds 5500000 USDC atomic units at block 100; this listing.s maximum liability is 6000000/,
   );
   // Wrong signer: another wallet signed the same preimage.
   const other = privateKeyToAccount(generatePrivateKey());
@@ -600,7 +606,7 @@ test("the maintainer may name the treasury as paying wallet without a signature;
   const detail = await getListing(env, 1);
   assert.equal(detail.funder_control, "asserted-by-official");
   // Not enough balance still refuses, signature or not.
-  await assert.rejects(createListing(env, FUNDER as never, { title: "Too big", condition: CONDITION, amount_atomic: "9000000000", expiry: NOW + 86400, funder_address: treasury }, { readBalance: async () => ({ balanceAtomic: "2171023427", blockNumber: 500, sources: 2 }) }), /this listing needs 9000000000/);
+  await assert.rejects(createListing(env, FUNDER as never, { title: "Too big", condition: CONDITION, amount_atomic: "9000000000", expiry: NOW + 86400, funder_address: treasury }, { readBalance: async () => ({ balanceAtomic: "2171023427", blockNumber: 500, sources: 2 }) }), /this listing.s maximum liability is 9000000000/);
   // Another citizen naming the treasury unsigned is refused for the missing signature.
   await assert.rejects(createListing(env, PAYEE as never, { title: "Not mine", condition: CONDITION, amount_atomic: "1000000", expiry: NOW + 86400, funder_address: treasury }, { readBalance: async () => ({ balanceAtomic: "2171023427", blockNumber: 500, sources: 2 }) }), /funder_signature must be the 65-byte/);
   // A signed listing by anyone still reports control as signed.

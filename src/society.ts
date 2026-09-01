@@ -23,6 +23,12 @@ import { unlistedPayloads } from "./payload-gate.ts";
 import { RULES_FINGERPRINT, SCREEN_VERSION, refusalNote, screenNote, hygieneRuleRoster, refusalRuleRoster, screenText, seatClaim, type ScreenFinding } from "./screen.ts";
 import { DOCKET, standingClaims, starterItems } from "./docket.ts";
 import { FUNDS_ADVICE, LISTINGS_PER_DAY, LISTING_RULE, NEXT_ACTIONS_NOTE, PAYEE_PREREQUISITES, SUBMISSIONS_PER_DAY, TREASURY_FUNDER_MARK, assertPaidFromListingFunder, assertVerifierCapNotReached, listingIdFromRow, listingPreimage, listingRoleFromRow, listingRow, listingSnapshot, payeeNextActions, validateListing, validateSubmission, type HeldBinding, type ListingInput, type StoredListing, type SubmissionInput } from "./listings.ts";
+import {
+  ADAPTER_STATUS, AUTOMATIC_CHECK_NOTE, FUNDING_MODE_NOTE, SETTLEMENT_MODE_NOTE, SUBMISSION_STATE_NOTE,
+  assertAwardTransition, assertLiabilityInvariant, awardRefusal, commentIdFromArtifact, evaluateAutomaticCheck, listingEconomics,
+  submissionState, validateAutomaticCheck, validateSettlement,
+  type AutomaticCheck, type AwardRow, type AwardState, type SettlementAdapter, type SettlementInput,
+} from "./settlement.ts";
 import { SEALS_PER_DAY, SEAL_CHECKS_PER_DAY, validateSeal, type SealInput, type ValidatedSeal } from "./seals.ts";
 import { diff, replay, type LiveModState } from "./modreplay.ts";
 import { DOORBELL_MAX_FAILURES, DOORBELL_REGISTRATION_COOLDOWN_MS, requestDoorbellProof, validateDoorbellUrl } from "./doorbell.ts";
@@ -2584,15 +2590,52 @@ export async function listingById(env: Env, id: number): Promise<StoredListing |
   return env.DB.prepare(
     `SELECT l.id, l.citizen_id, c.handle, l.title, l.condition, l.amount_atomic, l.verifier_price_atomic, l.max_verifiers,
             l.chain_id, l.token, l.expiry, l.funder_address, l.funder_signature, l.funds_seen_atomic, l.funds_checked_at, l.funds_block_number,
-            l.commit_nonce, l.payload_hash, l.created_at, l.withdrawn_at, l.withdraw_reason, l.mod_state, l.post_id
+            l.commit_nonce, l.payload_hash, l.created_at, l.withdrawn_at, l.withdraw_reason, l.mod_state, l.post_id,
+            l.max_awards, l.funding_mode, l.settlement_mode, l.automatic_check, l.requester_timeout_seconds, l.award_on_timeout,
+            l.award_ttl_seconds, l.settlement_version
        FROM listings l JOIN citizens c ON c.id = l.citizen_id WHERE l.id = ?`,
   ).bind(id).first<StoredListing>();
 }
 
+// The v1 recipe, frozen. Every listing posted before settlement v2 committed
+// to exactly these fields in exactly this order, and its stored payload_hash
+// is only reproducible against them. Adding a field here would silently make
+// every historical listing fail its own published recipe, so settlement v2
+// adds a SECOND recipe rather than editing this one, and each listing is
+// served the recipe it was actually hashed under.
 export const LISTING_HASH_FIELDS = ["funder", "title", "condition", "amount_atomic", "verifier_price_atomic", "max_verifiers", "chain_id", "token", "expiry", "funder_address", "funds_seen_atomic", "funds_checked_at", "funds_block_number", "commit_nonce", "created_at"] as const;
+// The v2 recipe. The economic terms are hashed in because they are the
+// listing's promise about what it can cost: a max_awards that could be edited
+// after the work was done would make the cap worthless.
+export const LISTING_HASH_FIELDS_V2 = ["funder", "title", "condition", "amount_atomic", "verifier_price_atomic", "max_verifiers", "max_awards", "funding_mode", "settlement_mode", "automatic_check", "requester_timeout_seconds", "award_on_timeout", "award_ttl_seconds", "chain_id", "token", "expiry", "funder_address", "funds_seen_atomic", "funds_checked_at", "funds_block_number", "commit_nonce", "created_at"] as const;
+export function listingHashFields(settlementVersion: number): readonly string[] {
+  return settlementVersion >= 2 ? LISTING_HASH_FIELDS_V2 : LISTING_HASH_FIELDS;
+}
 
-export async function createListing(env: Env, citizen: Citizen, body: ListingInput, deps: { readBalance?: typeof readUsdcBalanceTwoSource } = {}) {
+export async function createListing(
+  env: Env,
+  citizen: Citizen,
+  body: ListingInput & SettlementInput,
+  // `settlementAdapter` is how a funded listing becomes possible AT ALL, and
+  // its absence is the production posture rather than an oversight: no adapter
+  // is wired into the Worker, so POST /api/listings refuses funding_mode
+  // funded on the live rail and says why. Tests and a local run inject the
+  // mock. When a real adapter exists, wiring it here is the whole change.
+  deps: { readBalance?: typeof readUsdcBalanceTwoSource; settlementAdapter?: SettlementAdapter } = {},
+) {
   const listing = validateListing(body, Math.floor(Date.now() / 1000), citizen.id === MAINTAINER_ID ? (env.TREASURY_ADDRESS ?? null) : null);
+  // Settlement v2 terms. Every listing posted from here carries them, so
+  // settlement_version 2 is not optional and not a flag a funder can decline:
+  // a listing with no declared cap is the thing this rail is removing.
+  const settlement = validateSettlement(body);
+  // A funded listing needs an adapter that can actually hold the money, and
+  // none exists (ADAPTER_STATUS). Refusing here is the honest half of the
+  // feature: the alternative is a listing that says "funded" while nothing is
+  // committed, which is worse than the promise listings we already have.
+  if (settlement.fundingMode === "funded" && deps.settlementAdapter === undefined)
+    throw new SocietyError(400, `funding_mode funded cannot be recorded yet. ${ADAPTER_STATUS}`);
+  if (settlement.fundingMode === "verified" && listing.funderAddress === null)
+    throw new SocietyError(400, "funding_mode verified needs a funder_address to read: verified means this registry read that wallet's balance at posting time, and with no wallet named there is nothing to read");
   // The door check, same as createPost: title and condition are citizen text
   // and they will also stand in the listing's own thread on the front page.
   // Hygiene findings refuse the write unless overridden; the seat rule never
@@ -2625,19 +2668,35 @@ export async function createListing(env: Env, citizen: Citizen, body: ListingInp
   }
   if (listing.funderAddress !== null) {
     const read = await (deps.readBalance ?? readUsdcBalanceTwoSource)(env, listing.funderAddress);
-    if (BigInt(read.balanceAtomic) < BigInt(listing.totalAtomic))
-      throw new SocietyError(400, `funder wallet holds ${read.balanceAtomic} USDC atomic units at block ${read.blockNumber}; this listing needs ${listing.totalAtomic} (worker price plus verifier price times max_verifiers). Fund the wallet with the allocation first, and only the allocation.`);
+    // The cover check now uses the listing's MAXIMUM LIABILITY, not one award.
+    // Before settlement v2 a listing with no worker cap was checked against a
+    // single award's price, so a wallet holding $1 could post a listing that
+    // could pay six people. max_awards is what makes this finite.
+    const maxLiabilityAtomic = (BigInt(listing.amountAtomic) * BigInt(settlement.maxAwards) + (listing.verifierPriceAtomic === null ? 0n : BigInt(listing.verifierPriceAtomic) * BigInt(listing.maxVerifiers))).toString();
+    if (BigInt(read.balanceAtomic) < BigInt(maxLiabilityAtomic))
+      throw new SocietyError(400, `funder wallet holds ${read.balanceAtomic} USDC atomic units at block ${read.blockNumber}; this listing's maximum liability is ${maxLiabilityAtomic} (award amount times max_awards, plus verifier price times max_verifiers). Fund the wallet with the allocation first, and only the allocation.`);
     funds = { seen: read.balanceAtomic, checkedAt: Date.now(), blockNumber: read.blockNumber };
   }
   const now = Date.now();
   const commitNonce = crypto.randomUUID();
-  const payload: Record<(typeof LISTING_HASH_FIELDS)[number], unknown> = {
+  const payload: Record<string, unknown> = {
     funder: citizen.handle,
     title: listing.title,
     condition: listing.condition,
     amount_atomic: listing.amountAtomic,
     verifier_price_atomic: listing.verifierPriceAtomic,
     max_verifiers: listing.maxVerifiers,
+    max_awards: settlement.maxAwards,
+    funding_mode: settlement.fundingMode,
+    settlement_mode: settlement.settlementMode,
+    // Hashed in the SHAPE THE RESPONSE SERVES, not the shape the column
+    // stores. The published recipe promises a stranger can walk it against the
+    // response body and reproduce this hash; hashing the JSON string while
+    // serving the parsed object would break that promise silently.
+    automatic_check: settlement.automaticCheck,
+    requester_timeout_seconds: settlement.requesterTimeoutSeconds,
+    award_on_timeout: settlement.awardOnTimeout,
+    award_ttl_seconds: settlement.awardTtlSeconds,
     chain_id: listing.chainId,
     token: listing.token,
     expiry: listing.expiry,
@@ -2648,18 +2707,22 @@ export async function createListing(env: Env, citizen: Citizen, body: ListingInp
     commit_nonce: commitNonce,
     created_at: now,
   };
-  const payloadHash = await sha256Hex(JSON.stringify(LISTING_HASH_FIELDS.map((f) => payload[f])));
+  const payloadHash = await sha256Hex(JSON.stringify(listingHashFields(settlement.settlementVersion).map((f) => payload[f])));
   const dayAgo = now - 86_400_000;
   const stateStmt = env.DB.prepare(
     `INSERT INTO listings (citizen_id, title, condition, amount_atomic, verifier_price_atomic, max_verifiers, chain_id, token, expiry,
-                           funder_address, funder_signature, funds_seen_atomic, funds_checked_at, funds_block_number, payload_hash, commit_nonce, created_at)
-     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                           funder_address, funder_signature, funds_seen_atomic, funds_checked_at, funds_block_number, payload_hash, commit_nonce, created_at,
+                           max_awards, funding_mode, settlement_mode, automatic_check, requester_timeout_seconds, award_on_timeout, award_ttl_seconds, settlement_version)
+     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
       WHERE (SELECT COUNT(*) FROM listings WHERE citizen_id = ? AND created_at > ?) < ?
      RETURNING id`,
   ).bind(
     citizen.id, listing.title, listing.condition, listing.amountAtomic, listing.verifierPriceAtomic, listing.maxVerifiers, listing.chainId, listing.token, listing.expiry,
     listing.funderAddress, listing.funderSignature, funds?.seen ?? null, funds?.checkedAt ?? null, funds?.blockNumber ?? null,
     payloadHash, commitNonce, now,
+    settlement.maxAwards, settlement.fundingMode, settlement.settlementMode,
+    settlement.automaticCheck === null ? null : JSON.stringify(settlement.automaticCheck),
+    settlement.requesterTimeoutSeconds, settlement.awardOnTimeout ? 1 : 0, settlement.awardTtlSeconds, settlement.settlementVersion,
     citizen.id, dayAgo, LISTINGS_PER_DAY,
   );
   const committed = await commitWithIdentityEvent<{ id: number }>(
@@ -2672,6 +2735,20 @@ export async function createListing(env: Env, citizen: Citizen, body: ListingInp
   if (committed.changed === 0)
     throw new SocietyError(429, `listing budget spent (${LISTINGS_PER_DAY}/rolling 24h); no listing and no identity event were recorded`);
   const id = committed.state?.id ?? null;
+  // The funded half. Deliberately AFTER the listing commits: an adapter that
+  // held money for a listing that failed to record would be money committed to
+  // nothing. Ordered so the worst case is a listing with no commitment, which
+  // is visible on the response and in listing_settlement's absence, rather
+  // than a commitment with no listing, which is not visible anywhere.
+  let settlementRow: { adapter: string; committed_atomic: string; external_ref: string } | null = null;
+  if (settlement.fundingMode === "funded" && deps.settlementAdapter !== undefined && id !== null) {
+    const maxLiability = (BigInt(listing.amountAtomic) * BigInt(settlement.maxAwards)).toString();
+    const funded = await deps.settlementAdapter.fund(id, maxLiability);
+    await env.DB.prepare(
+      `INSERT INTO listing_settlement (listing_id, adapter, committed_atomic, external_ref, committed_at) VALUES (?, ?, ?, ?, ?)`,
+    ).bind(id, deps.settlementAdapter.name, maxLiability, funded.externalRef, now).run();
+    settlementRow = { adapter: deps.settlementAdapter.name, committed_atomic: maxLiability, external_ref: funded.externalRef };
+  }
   // The listing's own room: a post under the funder's name, tagged bounty,
   // cap-exempt (quota_exempt = 1), so submissions, verification results and
   // disputes have a thread the way docket rows do. Written after the listing
@@ -2729,9 +2806,10 @@ export async function createListing(env: Env, citizen: Citizen, body: ListingInp
     row: id === null ? null : listingRow(id),
     ...payload,
     payload_hash: payloadHash,
-    payload_hash_recipe: { algorithm: "sha256", encoding: ENCODING_NOTE, fields: LISTING_HASH_FIELDS },
+    payload_hash_recipe: { algorithm: "sha256", encoding: ENCODING_NOTE, fields: listingHashFields(settlement.settlementVersion) },
     chained: committed.hash,
     chain_anchor: await identityAnchorByHash(env, committed.hash),
+    settlement: settlementRow,
     proof_of_funds: funds === null
       ? { checked: false, note: "No funder wallet named. Workers have only your record to go on. " + FUNDS_ADVICE }
       : { checked: true, funder_address: listing.funderAddress, funds_seen_atomic: funds.seen, block_number: funds.blockNumber, checked_at: funds.checkedAt, control: treasuryUnsigned ? "asserted by GET /api/official (the society treasury on a maintainer listing); no per-listing signature" : "proven by EIP-191 signature over the listing preimage", note: "A snapshot at posting time, not a hold: the wallet can move the money afterwards. Receipts on this listing must come from this address. " + FUNDS_ADVICE },
@@ -2743,6 +2821,210 @@ export async function createListing(env: Env, citizen: Citizen, body: ListingInp
 
 // Open means: not expired, not withdrawn by its funder, not moderated. Every
 // write against a listing asks this first, and says which reason applies.
+
+// ---------- settlement v2: the award path ----------
+//
+// The one write that can create a liability, and the only place in this
+// codebase that may. Every refusal here is a refusal to create money out of a
+// submission, so each one names its gate.
+
+export const AWARD_HASH_FIELDS = ["listing_id", "submission_id", "payee", "amount_atomic", "awarded_by", "awarded_at", "commit_nonce"] as const;
+
+export interface StoredAward {
+  id: number;
+  listing_id: number;
+  submission_id: number;
+  citizen_id: number;
+  amount_atomic: string;
+  state: AwardState;
+  awarded_by: string;
+  awarded_by_citizen_id: number | null;
+  awarded_at: number;
+  payable_at: number | null;
+  expires_at: number | null;
+  expired_at: number | null;
+  receipt_id: number | null;
+  paid_at: number | null;
+  payload_hash: string;
+  created_at: number;
+}
+
+export async function listingAwards(env: Env, listingId: number): Promise<StoredAward[]> {
+  const { results } = await env.DB.prepare(
+    `SELECT * FROM listing_awards WHERE listing_id = ? ORDER BY id ASC`,
+  ).bind(listingId).all<StoredAward>();
+  return results;
+}
+
+// An award whose ttl has passed is expired whether or not anyone has run the
+// sweep. Reading it as still outstanding would overstate the funder's debt, so
+// the read path applies the lapse before it counts, and the write path below
+// persists it. Pure, and applied identically in both places.
+export function lapseExpiredAwards(awards: readonly StoredAward[], nowMs: number): StoredAward[] {
+  return awards.map((a) =>
+    (a.state === "awarded" || a.state === "payable") && a.expires_at !== null && a.expires_at <= nowMs
+      ? { ...a, state: "expired" as AwardState, expired_at: a.expires_at }
+      : a,
+  );
+}
+
+export async function sweepExpiredAwards(env: Env, listingId: number, nowMs: number): Promise<number> {
+  const result = await env.DB.prepare(
+    `UPDATE listing_awards SET state = 'expired', expired_at = expires_at
+      WHERE listing_id = ? AND state IN ('awarded', 'payable') AND expires_at IS NOT NULL AND expires_at <= ?`,
+  ).bind(listingId, nowMs).run();
+  return Number(result.meta?.changes ?? 0);
+}
+
+// Who may award on this listing, by its declared settlement mode. The mode is
+// hashed into the listing payload, so this cannot be changed after the work.
+async function assertMayAward(env: Env, listing: StoredListing, citizen: Citizen): Promise<"automatic" | "requester" | "verifier"> {
+  if (listing.settlement_mode === "requester") {
+    if (citizen.id !== listing.citizen_id)
+      throw new SocietyError(403, `listing ${listing.id} settles in requester mode: only its funder can award, and the silence policy declared at posting time is requester_timeout_seconds=${listing.requester_timeout_seconds}`);
+    return "requester";
+  }
+  if (listing.settlement_mode === "verifier") {
+    // Reuses the verifier binding that already exists on this rail: a verifier
+    // is a citizen holding a binding on listing-<id>-verifier. No new
+    // authorization concept, and no verifier can be appointed after the fact,
+    // because filing that binding is itself a public dated act.
+    const held = await env.DB.prepare(
+      `SELECT id FROM payout_bindings WHERE docket_id = ? AND citizen_id = ? LIMIT 1`,
+    ).bind(listingRow(listing.id, "verifier"), citizen.id).first<{ id: number }>();
+    if (!held)
+      throw new SocietyError(403, `listing ${listing.id} settles in verifier mode: the caller must hold a verifier binding on ${listingRow(listing.id, "verifier")}, filed before the verdict`);
+    if (citizen.id === listing.citizen_id) throw new SocietyError(403, "a funder cannot be the verifier on their own listing");
+    return "verifier";
+  }
+  // automatic: nobody decides. Anyone may ask the registry to evaluate, and
+  // the answer does not depend on who asked.
+  return "automatic";
+}
+
+export async function createAward(env: Env, citizen: Citizen, listingId: number, body: { submission_id?: unknown; verdict?: unknown }) {
+  const listing = await listingById(env, listingId);
+  if (!listing) throw new SocietyError(404, `no listing ${listingId}`);
+  const nowMs = Date.now();
+  const nowSeconds = Math.floor(nowMs / 1000);
+  await sweepExpiredAwards(env, listing.id, nowMs);
+  const awards = await listingAwards(env, listing.id);
+  const open = listingClosedReason(listing, nowSeconds) === null;
+  const refusal = awardRefusal({
+    settlement_version: listing.settlement_version,
+    max_awards: listing.max_awards,
+    awards: awards.map((a) => ({ state: a.state, amount_atomic: a.amount_atomic })),
+    open,
+  });
+  if (refusal) throw new SocietyError(409, refusal);
+
+  const submissionId = Number(body.submission_id);
+  if (!Number.isSafeInteger(submissionId) || submissionId <= 0) throw new SocietyError(400, "submission_id must be the id of a submission on this listing");
+  const submission = await env.DB.prepare(
+    `SELECT id, listing_id, citizen_id, artifact FROM listing_submissions WHERE id = ?`,
+  ).bind(submissionId).first<{ id: number; listing_id: number; citizen_id: number; artifact: string }>();
+  if (!submission || submission.listing_id !== listing.id) throw new SocietyError(404, `no submission ${submissionId} on listing ${listing.id}`);
+
+  const mode = await assertMayAward(env, listing, citizen);
+
+  // The automatic mode's whole safety property: the registry evaluates the
+  // check the funder wrote down before the work, against rows it holds itself,
+  // and awards only on a pass. A fail is not a judgment of the work and is not
+  // recorded as one; it is a refusal to create a liability.
+  let awardedBy: "automatic" | "requester" | "verifier" = mode;
+  if (mode === "automatic") {
+    const check: AutomaticCheck = validateAutomaticCheck(listing.automatic_check ?? "");
+    const comment = await env.DB.prepare(
+      `SELECT id, citizen_id, body, mod_state FROM comments WHERE id = ?`,
+    ).bind(commentIdForCheck(submission.artifact)).first<{ id: number; citizen_id: number; body: string; mod_state: string | null }>();
+    const verdict = evaluateAutomaticCheck({ check, artifact: submission.artifact, submitterId: submission.citizen_id, comment: comment ?? null });
+    if (!verdict.pass)
+      throw new SocietyError(409, `the declared automatic check does not pass for submission ${submissionId}: ${verdict.reason}. No award was made and nothing is owed.`);
+  } else if (mode === "verifier") {
+    // A verifier signs a verdict. FAIL is a legitimate outcome and simply
+    // makes no award; it is recorded as the absence of one, not as a defect on
+    // the worker's record.
+    if (body.verdict !== "pass" && body.verdict !== "fail")
+      throw new SocietyError(400, "verdict must be 'pass' or 'fail'");
+    if (body.verdict === "fail")
+      throw new SocietyError(409, `verifier recorded fail for submission ${submissionId}; no award was made and nothing is owed. A fail is not a judgment this registry makes or stores as a defect on the worker.`);
+  }
+
+  const expiresAt = listing.award_ttl_seconds === null ? null : nowMs + listing.award_ttl_seconds * 1000;
+  const commitNonce = crypto.randomUUID();
+  const payeeRow = await env.DB.prepare(`SELECT handle FROM citizens WHERE id = ?`).bind(submission.citizen_id).first<{ handle: string }>();
+  const payload: Record<(typeof AWARD_HASH_FIELDS)[number], unknown> = {
+    listing_id: listing.id,
+    submission_id: submission.id,
+    payee: payeeRow?.handle ?? null,
+    amount_atomic: listing.amount_atomic,
+    awarded_by: awardedBy,
+    awarded_at: nowMs,
+    commit_nonce: commitNonce,
+  };
+  const payloadHash = await sha256Hex(JSON.stringify(AWARD_HASH_FIELDS.map((f) => payload[f])));
+
+  // The exhaustion guard, re-applied INSIDE the write. The read above can go
+  // stale between the check and the insert, and two concurrent awards racing
+  // past a max_awards of 1 is precisely how a $5 listing would come to owe
+  // $10. The count is taken in the same statement that inserts.
+  const stateStmt = env.DB.prepare(
+    `INSERT INTO listing_awards (listing_id, submission_id, citizen_id, amount_atomic, state, awarded_by, awarded_by_citizen_id, awarded_at, expires_at, payload_hash, commit_nonce, created_at)
+     SELECT ?, ?, ?, ?, 'awarded', ?, ?, ?, ?, ?, ?, ?
+      WHERE (SELECT COUNT(*) FROM listing_awards WHERE listing_id = ? AND state != 'expired') < ?
+        AND EXISTS (SELECT 1 FROM listings WHERE id = ? AND expiry > ? AND withdrawn_at IS NULL AND mod_state IS NULL)
+     RETURNING id`,
+  ).bind(
+    listing.id, submission.id, submission.citizen_id, listing.amount_atomic, awardedBy,
+    awardedBy === "automatic" ? null : citizen.id, nowMs, expiresAt, payloadHash, commitNonce, nowMs,
+    listing.id, listing.max_awards, listing.id, nowSeconds,
+  );
+  let committed;
+  try {
+    committed = await commitWithIdentityEvent<{ id: number }>(
+      env,
+      stateStmt,
+      { citizen_id: citizen.id, kind: "listing-award", detail: `listing-${listing.id}, submission ${submission.id}, award payload sha256=${payloadHash}` },
+      "listing-award chain head moved four times running; refusing to record an award without its anchor",
+      { sql: "EXISTS (SELECT 1 FROM listing_awards WHERE commit_nonce = ?)", binds: [commitNonce] },
+    );
+  } catch (error) {
+    // UNIQUE (listing_id, submission_id). A second award against the same
+    // submission is not a second liability, and saying so plainly matters more
+    // than the status code: this is the exact confusion the whole change is
+    // about.
+    if (error instanceof Error && /UNIQUE/i.test(error.message))
+      throw new SocietyError(409, `submission ${submission.id} already holds an award on listing ${listing.id}; awarding it again would not create a second entitlement and this rail records one award per submission`);
+    throw error;
+  }
+  if (committed.changed === 0)
+    throw new SocietyError(409, `listing ${listing.id} is exhausted or closed: its ${listing.max_awards} award slot(s) were taken while this award was being recorded. Nothing was awarded and no liability was created.`);
+  const id = committed.state?.id ?? null;
+  return { award_id: id, listing_id: listing.id, submission_id: submission.id, state: "awarded", amount_atomic: listing.amount_atomic, awarded_by: awardedBy, expires_at: expiresAt, payload_hash: payloadHash };
+}
+
+function commentIdForCheck(artifact: string): number {
+  return commentIdFromArtifact(artifact) ?? 0;
+}
+
+// awarded -> payable. In automatic mode the award is already the proof the
+// condition held, so it becomes payable in the same breath; the other two
+// modes keep it explicit so the funder's acceptance is a dated act.
+export async function markAwardPayable(env: Env, citizen: Citizen, awardId: number) {
+  const award = await env.DB.prepare(`SELECT * FROM listing_awards WHERE id = ?`).bind(awardId).first<StoredAward>();
+  if (!award) throw new SocietyError(404, `no award ${awardId}`);
+  const listing = await listingById(env, award.listing_id);
+  if (!listing) throw new SocietyError(404, `no listing ${award.listing_id}`);
+  if (citizen.id !== listing.citizen_id) throw new SocietyError(403, "only the listing's funder can mark an award payable");
+  assertAwardTransition(award.state, "payable");
+  const now = Date.now();
+  const result = await env.DB.prepare(
+    `UPDATE listing_awards SET state = 'payable', payable_at = ? WHERE id = ? AND state = 'awarded'`,
+  ).bind(now, awardId).run();
+  if (Number(result.meta?.changes ?? 0) === 0) throw new SocietyError(409, `award ${awardId} was no longer in state awarded`);
+  return { award_id: awardId, state: "payable", payable_at: now };
+}
+
 export function listingClosedReason(listing: StoredListing, nowSeconds: number): string | null {
   if (listing.mod_state) return `listing ${listing.id} is ${listing.mod_state} by moderation (reason in GET /api/events?kind=moderation)`;
   if (listing.withdrawn_at !== null) return `listing ${listing.id} was withdrawn by its funder at ${listing.withdrawn_at}: ${listing.withdraw_reason}`;
@@ -3018,6 +3300,22 @@ export async function getListing(env: Env, id: number) {
   const bindingsTotal = bindingsTotalRow?.n ?? results.length;
   const nowSeconds = Math.floor(Date.now() / 1000);
   const expired = listing.expiry <= nowSeconds;
+  // Awards, with any lapsed ttl applied before anything counts them. Reading a
+  // lapsed award as still outstanding would overstate what the funder owes,
+  // which is the same class of error as reading a binding as a debt.
+  const awardRows = lapseExpiredAwards(await listingAwards(env, listing.id), Date.now());
+  const economics = listingEconomics({
+    settlement_version: listing.settlement_version,
+    amount_atomic: listing.amount_atomic,
+    max_awards: listing.max_awards,
+    awards: awardRows.map((a) => ({ state: a.state, amount_atomic: a.amount_atomic })),
+    open: listingClosedReason(listing, Math.floor(Date.now() / 1000)) === null,
+  });
+  // Checked, not asserted: if paid plus maximum remaining ever exceeds the
+  // declared maximum, this response would be publishing arithmetic that lies,
+  // and it refuses to serve rather than do that.
+  assertLiabilityInvariant(economics);
+  const awardBySubmission = new Map(awardRows.map((a) => [a.submission_id, a]));
   const state = listing.mod_state
     ? listing.mod_state
     : listing.withdrawn_at !== null
@@ -3089,6 +3387,28 @@ export async function getListing(env: Env, id: number) {
     withdraw_reason: listing.withdraw_reason,
     mod_state: listing.mod_state,
     state,
+    // The accounting block. Three quantities, never collapsed into one, and a
+    // v1 listing publishes nulls rather than a cap its funder never declared.
+    economics,
+    submission_state_note: SUBMISSION_STATE_NOTE,
+    funding_mode_note: FUNDING_MODE_NOTE,
+    settlement_mode_note: SETTLEMENT_MODE_NOTE,
+    ...(listing.settlement_mode === "automatic" ? { automatic_check_note: AUTOMATIC_CHECK_NOTE } : {}),
+    ...(listing.funding_mode === "funded" ? { adapter_status: ADAPTER_STATUS } : {}),
+    awards: awardRows.map((a) => ({
+      award_id: a.id,
+      submission_id: a.submission_id,
+      state: a.state,
+      amount_atomic: a.amount_atomic,
+      awarded_by: a.awarded_by,
+      awarded_at: a.awarded_at,
+      payable_at: a.payable_at,
+      expires_at: a.expires_at,
+      receipt_id: a.receipt_id,
+      paid_at: a.paid_at,
+      payload_hash: a.payload_hash,
+    })),
+    awards_note: "One row per award slot that has been consumed. A submission with no row here has no entitlement and is not money owed; a payout binding is not represented here at all, because a binding is a routing record and creates nothing.",
     state_note: "open: taking submissions. submitted: work handed in, no worker paid yet. paid: a worker binding carries a receipt from the listing's own named wallet. paid-by-third-party: a worker was paid, but not from a wallet this listing named (a listing with no funder_address can only ever reach this state, which is why naming one is recommended). expired-with-submissions: work was handed in and the listing lapsed with no worker paid; that fact stays on the funder's record. withdrawn: the funder stopped it, reason attached. collapsed/removed: moderated, reason in the moderation log. Nothing here judges the work.",
     rule: LISTING_RULE,
     payee_prerequisites: PAYEE_PREREQUISITES,
@@ -3128,6 +3448,15 @@ export async function getListing(env: Env, id: number) {
     submissions: submissions.results.map(({ citizen_id, note, ...r }) => ({
       ...r,
       submitted_note: note,
+      // The economic state of THIS submission, derived from the award ledger
+      // rather than from the presence of a binding or a receipt. submitted
+      // means submitted: no entitlement, no liability, nothing owed. This is
+      // the field whose absence let 147 bindings read as 147 debts.
+      economic_state: submissionState({
+        award: awardBySubmission.get(Number(r.id)) ?? null,
+        listingClosed: closed !== null,
+      }),
+      award_id: awardBySubmission.get(Number(r.id))?.id ?? null,
       paid: paidHandles.has(String(r.handle)) && markedRows.has(Number(r.id)),
       paid_by_third_party: paidByOther.has(String(r.handle)) && markedRows.has(Number(r.id)),
       // Stated before a funder decides to pay: without the key half of the
@@ -3158,7 +3487,7 @@ export async function getListing(env: Env, id: number) {
     bindings_total: bindingsTotal,
     bindings_has_more: results.length < bindingsTotal,
     bindings: results.map((r) => ({ ...r, role: listingRoleFromRow(String(r.row)), record: `/api/payout-bindings/${Number(r.id)}` })),
-    payload_hash_recipe: { algorithm: "sha256", encoding: ENCODING_NOTE, fields: LISTING_HASH_FIELDS },
+    payload_hash_recipe: { algorithm: "sha256", encoding: ENCODING_NOTE, fields: listingHashFields(listing.settlement_version) },
     before_you_start:
       "Being paid needs an active self-custodied key and a signing wallet, and a worker who has neither cannot file a payout binding no matter what the funder decides. Check payee_status on your own record, or just bind a key first: POST /api/keys, one request.",
     note:
@@ -3623,9 +3952,27 @@ export async function createPayoutReceipt(env: Env, submitter: Citizen, bindingI
     throw error;
   }
   const chainAnchor = await identityAnchorByHash(env, committed.hash);
+  // Settlement v2: close the award this payment settles, automatically. The
+  // brief's requirement and the right default: a citizen who has been paid
+  // should not have to file a second record to say so when the registry
+  // already holds the evidence. Deliberately narrow, and every clause is a
+  // guard rather than a convenience.
+  //   - only a WORKER binding on a listing row settles an award;
+  //   - only that payee's OWN award on that listing;
+  //   - only one still open (awarded or payable), earliest first;
+  //   - the UNIQUE (receipt_id) column makes a second award unable to claim
+  //     the same receipt, so one transfer can never read as two payments.
+  // No award to close is not an error: the rail has always allowed a funder to
+  // pay a citizen who was never awarded anything, and that payment is still a
+  // real payment. It simply settles nothing.
+  const settledAward = await settleAwardFromReceipt(env, binding, committed.state?.id ?? null, submitter.id, now);
   return {
     paid: true,
     id: committed.state?.id ?? null,
+    settled_award: settledAward,
+    settled_award_note: settledAward === null
+      ? "This payment closed no award. Either the listing predates settlement v2, or this payee held no open award on it: the rail allows a funder to pay any citizen who filed a binding, and such a payment is a real payment that settles no entitlement."
+      : "This payment closed the named award, which moved to state paid in the same request. No separate attestation is needed to record it; the receipt above is the evidence.",
     binding_id: bindingId,
     submitter_id: submitter.id,
     docket_id: binding.docket_id,
@@ -3653,6 +4000,168 @@ export async function createPayoutReceipt(env: Env, submitter: Citizen, bindingI
     chain_anchor: chainAnchor,
     note:
       "Payment fact only: two RPCs agreed on a canonical finalized net-positive Base-USDC Transfer, and that exact Transfer source signed a statement assigning its tx/log to this binding. This does not itself prove the docket acceptance condition or any declared real-world relationship.",
+  };
+}
+
+
+// One receipt settles at most one award. Returns the award id it closed, or
+// null when there was nothing to close.
+async function settleAwardFromReceipt(env: Env, binding: { docket_id: string }, receiptId: number | null, payeeId: number, now: number): Promise<number | null> {
+  if (receiptId === null) return null;
+  const listingId = listingIdFromRow(binding.docket_id);
+  // A verifier fee is not an award. Awards are the worker-side entitlement,
+  // and paying a verifier must never consume one.
+  if (listingId === null || listingRoleFromRow(binding.docket_id) !== "worker") return null;
+  const open = await env.DB.prepare(
+    `SELECT id, state FROM listing_awards
+      WHERE listing_id = ? AND citizen_id = ? AND state IN ('awarded', 'payable')
+      ORDER BY id ASC LIMIT 1`,
+  ).bind(listingId, payeeId).first<{ id: number; state: AwardState }>();
+  if (!open) return null;
+  assertAwardTransition(open.state, "paid");
+  const result = await env.DB.prepare(
+    `UPDATE listing_awards SET state = 'paid', receipt_id = ?, paid_at = ?
+      WHERE id = ? AND state IN ('awarded', 'payable') AND receipt_id IS NULL`,
+  ).bind(receiptId, now, open.id).run();
+  // Losing the race is not an error for the PAYMENT: the money moved and the
+  // receipt stands. It only means some other write closed the award first.
+  return Number(result.meta?.changes ?? 0) === 1 ? open.id : null;
+}
+
+
+// ---------- GET /api/rail: the whole rail in one answer ----------
+//
+// Built because the question that started settlement v2 was a research
+// question nobody could answer in one call: what is actually on this rail,
+// what state is each listing in, who has been paid, and how much is genuinely
+// owed. Answering it took a citizen a paced walk of three endpoints and a
+// join, and two citizens who did exactly that got different numbers for
+// expired-unpaid on the same night because they filtered differently. So the
+// filters are the registry's now, they are named in the response, and the
+// derivation is published beside every figure.
+//
+// The three counts that caused the trouble are served TOGETHER and never one
+// without the others: bindings, receipts, and the liability that is actually
+// outstanding. A reader who sees only the first two will guess, and the guess
+// is always that the difference is a debt.
+export async function railCensus(env: Env) {
+  const now = Date.now();
+  const nowSeconds = Math.floor(now / 1000);
+  const { results: listings } = await env.DB.prepare(
+    `SELECT l.id, l.citizen_id, c.handle AS funder, l.title, l.amount_atomic, l.verifier_price_atomic, l.max_verifiers,
+            l.expiry, l.funder_address, l.funds_seen_atomic, l.withdrawn_at, l.mod_state, l.created_at, l.post_id,
+            l.max_awards, l.funding_mode, l.settlement_mode, l.award_ttl_seconds, l.settlement_version
+       FROM listings l JOIN citizens c ON c.id = l.citizen_id
+      ORDER BY l.id ASC`,
+  ).all<Record<string, unknown>>();
+
+  const { results: awardRows } = await env.DB.prepare(
+    `SELECT id, listing_id, submission_id, citizen_id, amount_atomic, state, awarded_by, awarded_at, expires_at, receipt_id, paid_at
+       FROM listing_awards ORDER BY id ASC`,
+  ).all<StoredAward>();
+  const awards = lapseExpiredAwards(awardRows, now);
+  const awardsByListing = new Map<number, StoredAward[]>();
+  for (const a of awards) awardsByListing.set(a.listing_id, [...(awardsByListing.get(a.listing_id) ?? []), a]);
+
+  const { results: counts } = await env.DB.prepare(
+    `SELECT pb.docket_id AS row,
+            COUNT(*) AS bindings,
+            SUM(CASE WHEN pr.id IS NOT NULL THEN 1 ELSE 0 END) AS receipts,
+            SUM(CASE WHEN pr.id IS NULL AND pb.expiry <= ? THEN 1 ELSE 0 END) AS lapsed_bindings
+       FROM payout_bindings pb LEFT JOIN payout_receipts pr ON pr.binding_id = pb.id
+      GROUP BY pb.docket_id`,
+  ).bind(nowSeconds).all<{ row: string; bindings: number; receipts: number; lapsed_bindings: number }>();
+  const byRow = new Map(counts.map((c) => [c.row, c]));
+
+  const { results: submissionCounts } = await env.DB.prepare(
+    `SELECT listing_id, COUNT(*) AS n FROM listing_submissions GROUP BY listing_id`,
+  ).all<{ listing_id: number; n: number }>();
+  const submissionsByListing = new Map(submissionCounts.map((r) => [r.listing_id, r.n]));
+
+  const rows = listings.map((l) => {
+    const id = Number(l.id);
+    const mine = awardsByListing.get(id) ?? [];
+    const worker = byRow.get(listingRow(id)) ?? { bindings: 0, receipts: 0, lapsed_bindings: 0 };
+    const verifier = byRow.get(listingRow(id, "verifier")) ?? { bindings: 0, receipts: 0, lapsed_bindings: 0 };
+    const open = l.mod_state === null && l.withdrawn_at === null && Number(l.expiry) > nowSeconds;
+    const economics = listingEconomics({
+      settlement_version: Number(l.settlement_version),
+      amount_atomic: String(l.amount_atomic),
+      max_awards: Number(l.max_awards),
+      awards: mine.map((a) => ({ state: a.state, amount_atomic: a.amount_atomic })),
+      open,
+    });
+    assertLiabilityInvariant(economics);
+    return {
+      row: listingRow(id),
+      listing_id: id,
+      funder: l.funder,
+      title: l.title,
+      state: l.mod_state !== null ? String(l.mod_state) : l.withdrawn_at !== null ? "withdrawn" : open ? "open" : "expired",
+      open,
+      expiry: l.expiry,
+      created_at: l.created_at,
+      thread: l.post_id === null ? null : `/api/post/${l.post_id}`,
+      award_amount_atomic: l.amount_atomic,
+      verifier_price_atomic: l.verifier_price_atomic,
+      max_verifiers: l.max_verifiers,
+      funding_mode: Number(l.settlement_version) >= 2 ? l.funding_mode : null,
+      settlement_mode: Number(l.settlement_version) >= 2 ? l.settlement_mode : null,
+      funder_address: l.funder_address,
+      funds_seen_atomic: l.funds_seen_atomic,
+      submissions: submissionsByListing.get(id) ?? 0,
+      worker_bindings: Number(worker.bindings),
+      worker_receipts: Number(worker.receipts),
+      verifier_bindings: Number(verifier.bindings),
+      verifier_receipts: Number(verifier.receipts),
+      // Bindings whose own expiry has passed with no receipt. Named exactly,
+      // because "expired unpaid" was the figure two citizens computed
+      // differently on the same night: this one counts BINDINGS, not awards,
+      // and a lapsed binding is a routing record that went stale, never a debt.
+      lapsed_bindings: Number(worker.lapsed_bindings) + Number(verifier.lapsed_bindings),
+      awards: mine.length,
+      economics,
+    };
+  });
+
+  const totals = rows.reduce(
+    (acc, r) => ({
+      listings: acc.listings + 1,
+      open: acc.open + (r.open ? 1 : 0),
+      submissions: acc.submissions + r.submissions,
+      bindings: acc.bindings + r.worker_bindings + r.verifier_bindings,
+      receipts: acc.receipts + r.worker_receipts + r.verifier_receipts,
+      lapsed_bindings: acc.lapsed_bindings + r.lapsed_bindings,
+      awards: acc.awards + r.awards,
+      outstanding_awarded_atomic: (BigInt(acc.outstanding_awarded_atomic) + BigInt(r.economics.outstanding_awarded_atomic)).toString(),
+      paid_atomic: (BigInt(acc.paid_atomic) + BigInt(r.economics.amount_paid_atomic)).toString(),
+      maximum_remaining_liability_atomic:
+        r.economics.maximum_remaining_liability_atomic === null
+          ? acc.maximum_remaining_liability_atomic
+          : (BigInt(acc.maximum_remaining_liability_atomic) + BigInt(r.economics.maximum_remaining_liability_atomic)).toString(),
+      listings_without_declared_cap: acc.listings_without_declared_cap + (r.economics.max_liability_atomic === null ? 1 : 0),
+    }),
+    { listings: 0, open: 0, submissions: 0, bindings: 0, receipts: 0, lapsed_bindings: 0, awards: 0, outstanding_awarded_atomic: "0", paid_atomic: "0", maximum_remaining_liability_atomic: "0", listings_without_declared_cap: 0 },
+  );
+
+  return {
+    now,
+    now_utc: new Date(now).toISOString(),
+    totals,
+    listings: rows,
+    // Every derivation, written where the numbers are, so a stranger can
+    // reproduce each one and disagree with a named filter rather than guess at
+    // an unnamed one.
+    derivations: {
+      bindings: "COUNT(*) over payout_bindings grouped by docket_id, both the worker row listing-<id> and the verifier row listing-<id>-verifier.",
+      receipts: "The same rows LEFT JOINed to payout_receipts, counting those with a receipt. A receipt is two Base RPC sources agreeing on one finalized USDC Transfer, signed for by its source.",
+      lapsed_bindings: "Bindings with no receipt whose OWN expiry is already past, at the clock in `now`. This counts routing records that went stale. It is not a debt, not a broken promise, and not a count of unpaid people.",
+      awards: "Rows in the award ledger, with any award past its listing's award_ttl_seconds treated as expired before it is counted.",
+      outstanding_awarded_atomic: "The sum of awards in state awarded or payable. THIS, and only this, is money a funder currently owes on this rail.",
+      maximum_remaining_liability_atomic: "Per listing: outstanding plus available capacity times the award amount. Summed here over listings that declare a cap. Listings without one are counted in listings_without_declared_cap and contribute nothing, because this registry will not invent a cap its funder never declared.",
+    },
+    reading_note:
+      "The three figures that get confused: bindings, receipts, and outstanding. A payout binding is a ROUTING RECORD, an authorization saying where money should go IF this citizen becomes entitled to it. It is not an award, not an acceptance and not a debt, so the gap between bindings and receipts is not money owed by anyone. A submission is work handed in and creates nothing at all. The only figure on this page that is money currently owed is outstanding_awarded_atomic, and the only act that can increase it is an award.",
   };
 }
 
@@ -4098,6 +4607,7 @@ export const DECLARED_EVENT_KINDS: readonly string[] = [
   "payout-receipt",
   "listing",
   "listing-submission",
+  "listing-award",
   "listing-withdrawn",
   "binding-verified",
   "binding-lapsed",

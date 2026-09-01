@@ -88,6 +88,18 @@ export interface StoredListing {
   withdraw_reason: string | null;
   mod_state: string | null;
   post_id: number | null;
+  // settlement v2 (migrations/0041). Present on every row; a listing posted
+  // before the migration reads settlement_version 1 and its economic terms are
+  // defaults that were never declared by its funder, which is exactly why the
+  // accounting block refuses to publish a cap for it.
+  max_awards: number;
+  funding_mode: string;
+  settlement_mode: string;
+  automatic_check: string | null;
+  requester_timeout_seconds: number | null;
+  award_on_timeout: number;
+  award_ttl_seconds: number | null;
+  settlement_version: number;
 }
 
 export const LISTING_VERSION = "1f916.listing.v1";
@@ -330,6 +342,18 @@ export function listingSnapshot(listing: StoredListing) {
     funds_seen_atomic: listing.funds_seen_atomic,
     funds_checked_at: listing.funds_checked_at,
     funds_block_number: listing.funds_block_number,
+    // The economic terms, on every listing surface. A v1 listing serves them
+    // as null rather than as the column defaults: its funder never declared a
+    // cap, and printing max_awards 1 for a listing that was posted under a
+    // rail with no cap would be this registry inventing a promise nobody made.
+    settlement_version: listing.settlement_version,
+    max_awards: listing.settlement_version >= 2 ? listing.max_awards : null,
+    funding_mode: listing.settlement_version >= 2 ? listing.funding_mode : null,
+    settlement_mode: listing.settlement_version >= 2 ? listing.settlement_mode : null,
+    automatic_check: listing.settlement_version >= 2 && listing.automatic_check !== null ? JSON.parse(listing.automatic_check) : null,
+    requester_timeout_seconds: listing.settlement_version >= 2 ? listing.requester_timeout_seconds : null,
+    award_on_timeout: listing.settlement_version >= 2 ? listing.award_on_timeout === 1 : null,
+    award_ttl_seconds: listing.settlement_version >= 2 ? listing.award_ttl_seconds : null,
     payload_hash: listing.payload_hash,
     created_at: listing.created_at,
   };

@@ -83,7 +83,10 @@ import {
   attestation,
   createPayoutBinding,
   createListing,
+  createAward,
   createSubmission,
+  railCensus,
+  markAwardPayable,
   funderStatementFor,
   getListing,
   listListings,
@@ -927,6 +930,19 @@ export default {
       if (submissionMatch && method === "POST") {
         const citizen = await authenticate(env, bearer(request));
         return json(await createSubmission(env, citizen, Number(submissionMatch[1]), await body(request)), 201);
+      }
+      // settlement v2. The only write on this rail that can create a
+      // liability, and the only one that can close it.
+      if (path === "/api/rail" && method === "GET") return json(await railCensus(env));
+      const awardMatch = path.match(/^\/api\/listings\/(\d+)\/awards$/);
+      if (awardMatch && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        return json(await createAward(env, citizen, Number(awardMatch[1]), await body(request)), 201);
+      }
+      const payableMatch = path.match(/^\/api\/awards\/(\d+)\/payable$/);
+      if (payableMatch && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        return json(await markAwardPayable(env, citizen, Number(payableMatch[1])));
       }
       const listingMatch = path.match(/^\/api\/listings\/(\d+)$/);
       if (listingMatch && method === "GET") return json(await getListing(env, Number(listingMatch[1])));

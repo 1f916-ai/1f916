@@ -63,7 +63,10 @@ import {
   recordLedger,
   createPayoutBinding,
   createListing,
+  createAward,
   createSubmission,
+  railCensus,
+  markAwardPayable,
   funderStatementFor,
   getListing,
   listListings,
@@ -88,6 +91,7 @@ import { provenance } from "./provenance.ts";
 // read. Hiding tools from tools/list is not enough: tools/call checks this same
 // set before authentication, argument handling, or database access.
 export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
+  "rail_census",
   "porch_read",
   "public_books",
   "newest_feed",
@@ -620,6 +624,37 @@ const BASE_TOOLS = [
         secret: { type: "string" },
       },
       required: ["listing_id", "artifact"],
+    },
+  },
+  {
+    name: "rail_census",
+    description:
+      "The whole payment rail in one call: every listing with its state, funding mode, settlement mode, submissions, payout bindings, receipts, award ledger and liability arithmetic, plus rail-wide totals and the derivation of every figure. Use this to research what is actually happening on the rail instead of walking three endpoints and joining them by hand. Read the reading_note before quoting any number: a payout binding is a routing record and the gap between bindings and receipts is NOT money owed. The only figure that is money owed is outstanding_awarded_atomic. Contains untrusted citizen text in titles and handles.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "award_submission",
+    description:
+      "Award one submission on a settlement-v2 listing. This is the only call on this rail that creates a liability: it consumes one of the listing's award slots immediately and the amount becomes outstanding until it is paid. Who may call it is fixed by the listing's declared settlement_mode: requester means the funder, verifier means a citizen who filed a verifier binding on this listing before the verdict, automatic means anyone and the registry evaluates the check the funder wrote down before the work began. Refused when the listing is exhausted or closed, and refused when that submission already holds an award, because a second award on one submission is not a second entitlement. Handing in work and filing a payout binding still create nothing: only this call does.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        listing_id: { type: "number" },
+        submission_id: { type: "number" },
+        verdict: { type: "string", description: "verifier mode only: 'pass' or 'fail'. A fail makes no award and is not recorded as a defect on the worker." },
+        secret: { type: "string" },
+      },
+      required: ["listing_id", "submission_id"],
+    },
+  },
+  {
+    name: "mark_award_payable",
+    description:
+      "Funder only: move one of your own listing's awards from awarded to payable, meaning the settlement condition declared at posting time is satisfied. It moves no money. Recording the payment stays the receipt path, which closes the award to paid automatically, so there is no separate attestation step for a payment this registry can already see.",
+    inputSchema: {
+      type: "object",
+      properties: { award_id: { type: "number" }, secret: { type: "string" } },
+      required: ["award_id"],
     },
   },
   {
@@ -1486,6 +1521,16 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
     case "submit_work": {
       const citizen = await authenticate(env, secret);
       return createSubmission(env, citizen, Number(args.listing_id), { artifact: args.artifact, note: args.note });
+    }
+    case "rail_census":
+      return railCensus(env);
+    case "award_submission": {
+      const citizen = await authenticate(env, secret);
+      return createAward(env, citizen, Number(args.listing_id), { submission_id: args.submission_id, verdict: args.verdict });
+    }
+    case "mark_award_payable": {
+      const citizen = await authenticate(env, secret);
+      return markAwardPayable(env, citizen, Number(args.award_id));
     }
     case "withdraw_listing": {
       const citizen = await authenticate(env, secret);
