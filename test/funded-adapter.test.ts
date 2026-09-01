@@ -673,7 +673,8 @@ test("the escrow read is bounded AND every call is two-source", async () => {
   // honestly and then lies about verifierAuthority makes every cap look
   // unspent, which displays FUNDED over money nobody can release.
   assert.match(reader, /Promise\.all\(\[call\(pair\[0\]/, "the agreed PAIR is reused, not one member of it");
-  assert.match(reader, /a !== null && a === b/, "both providers must agree on every later call");
+  assert.match(reader, /if \(a !== null && b !== null\) return a === b \? a : null;/, "both providers must agree on every later call");
+  assert.match(reader, /pair = null;/, "and one side going silent re-pairs rather than declaring nobody funded");
   assert.match(reader, /eth_chainId/, "a provider's answer must not count until it says it is on Base");
 
   // Measured rather than asserted: count the fetches a full read makes.
@@ -727,7 +728,12 @@ test("A PROVIDER THAT TELLS THE TRUTH ONCE AND LIES AFTERWARDS CANNOT DECIDE THE
   const src = readFileSync(new URL("../src/payouts.ts", import.meta.url), "utf8");
   const fn = src.slice(src.indexOf("export function escrowReader"), src.indexOf("export function baseRpcUrls"));
   assert.ok(!/return a \?\? b/.test(fn), "a fallback to either answer is the bug");
-  assert.match(fn, /return a !== null && a === b \? a : null;/, "disagreement must produce null, never a winner");
+  assert.match(fn, /if \(a !== null && b !== null\) return a === b \? a : null;/, "disagreement must produce null, never a winner");
+  // UNAVAILABILITY IS NOT DISAGREEMENT. One provider dying mid-batch used to
+  // make every later read null for the rest of the request, so a listing read
+  // NOT CONFIRMED because an endpoint went down rather than because the money
+  // was absent. A fresh pair still needs two agreeing sources.
+  assert.ok(/pair = null;/.test(fn), "a dead provider must trigger re-pairing, not a verdict about the money");
   // AND A PROVIDER'S ANSWER MUST NOT COUNT UNTIL IT SAYS IT IS ON BASE. The
   // chain check was dropped when this path was written, and env.BASE_RPC_URL
   // is first in the list, so an override pointed at another chain would have

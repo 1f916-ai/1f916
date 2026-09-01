@@ -559,6 +559,13 @@ export async function readUsdcBalanceTwoSource(env: Env, address: string): Promi
 // EVERY CALL IS TWO-SOURCE, and the pair is what gets reused rather than the
 // answer.
 //
+// WHAT TWO-SOURCE IS NOT: a majority. Two providers that agree are two
+// providers that agree, and if the first two reachable endpoints in the list
+// collude they win the pair and decide the batch, with four honest providers
+// behind them never consulted. That is the same guarantee the balance read
+// has always given and it is not a regression, but nobody should read
+// "confirmed by two sources" as "confirmed by most sources".
+//
 // The first version fanned out across all nine providers for every call: 162
 // subrequests on one unauthenticated GET. The second fixed the cost by
 // establishing agreement once and then trusting ONE provider for the rest,
@@ -605,7 +612,21 @@ export function escrowReader(env: Env): EscrowReader {
     async call(to: string, data: string): Promise<string | null> {
       if (pair !== null) {
         const [a, b] = await Promise.all([call(pair[0], to, data), call(pair[1], to, data)]);
-        return a !== null && a === b ? a : null;
+        // TWO DIFFERENT FAILURES, AND ONLY ONE OF THEM IS AN ANSWER.
+        //
+        // Both answered and differed: that is DISAGREEMENT, and it stays null
+        // forever. Two sources contradicting each other about an escrow is
+        // exactly the state a reader must not resolve by choosing.
+        //
+        // One of them answered nothing: that is UNAVAILABILITY, a provider
+        // that died mid-batch, and the first version treated it as
+        // disagreement, so every later read in that batch returned null and
+        // the listing read NOT CONFIRMED for the rest of its life on that
+        // request. Re-pair instead. A fresh pair still needs two agreeing
+        // sources, so nothing is weakened; what changes is that one dead
+        // endpoint no longer decides that nobody's money is there.
+        if (a !== null && b !== null) return a === b ? a : null;
+        pair = null;
       }
       // CHAIN ID IS CHECKED PER PROVIDER, once, before its answer counts. It
       // was dropped when this path was written and env.BASE_RPC_URL sits
