@@ -109,7 +109,7 @@ const chainOk = {
   chainId: 8453, escrowAddress: ESCROW,
   onchain: terms({ verifierDeadline: 1000, claimDeadline: 2000 }),
   verifierAuthority: [{ address: V, cap: 3, used: 0 }],
-  funderAddress: null,
+  funderAddress: "0xF00D000000000000000000000000000000000000",
 };
 
 test("the read ABI cannot express a state change", () => {
@@ -124,6 +124,26 @@ test("matching terms are FUNDED and the statement says who can move the money", 
   assert.match(said, /15000000 atomic units are committed/);
   assert.match(said, /this registry cannot move any of it/);
   assert.match(said, /anyone may relay it/);
+});
+
+test("A LISTING WITH NO DECLARED FUNDER WALLET IS NEVER FUNDED", () => {
+  // Independent audit finding: with the funder guard written as
+  // `if (funderAddress && ...)`, a listing that published none could be
+  // escrowed by a stranger with exactly correct terms. Every other field
+  // agreed, the site displayed FUNDED, and the unreleased remainder refunded
+  // to the stranger rather than to the party the listing said was backing it.
+  const found = fundedDisagreements(v3Listing, { ...chainOk, funderAddress: null });
+  assert.ok(found.some((f) => /declares no funder wallet/.test(f)), JSON.stringify(found));
+  assert.match(fundingStatement(found, chainOk.onchain), /^NOT FUNDED/);
+});
+
+test("a refunded escrow is caught by BOTH exported checks, not only the wider one", () => {
+  // The narrow check is exported and used standalone, and it missed this, so
+  // a caller reaching for it would print "FUNDED, 15000000 committed" about an
+  // escrow that had already returned every atom to its funder.
+  const refunded = terms({ refunded: true });
+  assert.match(String(fundingDisagreement(listing, refunded)), /already been refunded/);
+  assert.ok(fundedDisagreements(v3Listing, { ...chainOk, onchain: refunded }).length > 0);
 });
 
 test("every way the chain can disagree with the listing is caught and stated", () => {

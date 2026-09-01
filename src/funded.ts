@@ -109,7 +109,10 @@ export interface EscrowTerms {
 export const ESCROW_READ_ABI = [
   {
     type: "function", name: "listingOf", stateMutability: "view",
-    inputs: [{ name: "listingHash", type: "bytes32" }],
+    // THE PAIR, not the hash alone. An escrow is keyed by (listingHash,
+    // funder), so a reader that asked by hash would be asking a question with
+    // more than one answer and taking whichever squatter answered first.
+    inputs: [{ name: "listingHash", type: "bytes32" }, { name: "fundedBy", type: "address" }],
     outputs: [
       { name: "funder", type: "address" }, { name: "token", type: "address" },
       { name: "amountPerAward", type: "uint256" }, { name: "maxAwards", type: "uint32" },
@@ -120,7 +123,7 @@ export const ESCROW_READ_ABI = [
   },
   {
     type: "function", name: "verifierAuthority", stateMutability: "view",
-    inputs: [{ name: "listingHash", type: "bytes32" }, { name: "who", type: "address" }],
+    inputs: [{ name: "listingHash", type: "bytes32" }, { name: "funder", type: "address" }, { name: "who", type: "address" }],
     outputs: [{ name: "cap", type: "uint32" }, { name: "used", type: "uint32" }],
   },
 ] as const;
@@ -153,6 +156,12 @@ export function fundingDisagreement(listing: {
     return `the escrow allows ${onchain.maxAwards} awards and this listing publishes ${listing.max_awards}`;
   if (onchain.token.toLowerCase() !== (listing.token || BASE_USDC).toLowerCase())
     return `the escrow holds ${onchain.token} and this listing prices in ${listing.token}`;
+  // A REFUNDED ESCROW HOLDS NOTHING, and this check belongs here rather than
+  // only in the wider one below. Both are exported; a caller who reached for
+  // the narrower would have read a fully refunded listing as agreeing with
+  // its terms and displayed it as funded.
+  if (onchain.refunded)
+    return "the escrow has already been refunded to its funder, so nothing stands behind this listing any more";
   return null;
 }
 
@@ -195,7 +204,17 @@ export function fundedDisagreements(
     out.push(`the escrow's verifier deadline is ${chain.onchain.verifierDeadline} and this listing published ${listing.escrow_verifier_deadline}`);
   if (chain.onchain.claimDeadline !== listing.escrow_claim_deadline)
     out.push(`the escrow's claim deadline is ${chain.onchain.claimDeadline} and this listing published ${listing.escrow_claim_deadline}`);
-  if (chain.funderAddress && !same(chain.onchain.funder, chain.funderAddress))
+  // THE FUNDER MUST BE DECLARED, not merely checked when present. With a
+  // nullable funder this guard was `if (funderAddress && ...)`, so a listing
+  // that published no funder wallet could be escrowed by a STRANGER with
+  // exactly correct terms: every other field agreed, the site displayed
+  // FUNDED, and the unreleased remainder refunded to the stranger rather than
+  // to the party the listing represented as backing it. Awards still paid, so
+  // this was a claim on the leftovers rather than on worker money, which is
+  // precisely the kind of finding that survives a casual read.
+  if (!chain.funderAddress)
+    out.push("this listing declares no funder wallet, so there is nothing to check the escrow's funder against and no way to tell the declared backer from a stranger who escrowed the same terms");
+  else if (!same(chain.onchain.funder, chain.funderAddress))
     out.push(`the escrow was funded by ${chain.onchain.funder} and this listing names funder wallet ${chain.funderAddress}`);
   if (chain.onchain.refunded)
     out.push("the escrow has already been refunded to its funder, so nothing stands behind this listing any more");

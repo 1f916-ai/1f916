@@ -30,7 +30,7 @@ echo "ESCROW=$ESCROW"
 SLOT=$(cast index address $FUNDER 9)
 cast rpc anvil_setStorageAt $USDC $SLOT 0x00000000000000000000000000000000000000000000000000000000000f4240 --rpc-url $RPC >/dev/null
 echo "funder USDC: $(cast call $USDC 'balanceOf(address)(uint256)' $FUNDER --rpc-url $RPC)"
-LH=0x$(python3 -c "import hashlib;print(hashlib.sha256(b'1f916-listing-sepolia-e2e-run2').hexdigest())")
+LH=0x$(python3 -c "import hashlib;print(hashlib.sha256(b'1f916-listing-sepolia-e2e-run3').hexdigest())")
 echo "LISTING_HASH=$LH"
 NOW=$(cast block latest --rpc-url $RPC --field timestamp)
 VD=$((NOW + 604800)); CD=$((NOW + 3196800))
@@ -46,8 +46,8 @@ DIGEST=$(cast keccak $(cast concat-hex 0x1901 $DS $STRUCT))
 SIG=$(cast wallet sign --no-hash --private-key $VERIFIER_KEY $DIGEST)
 echo "VERIFIER=$VERIFIER"
 echo "verifier signature: $SIG"
-cast send $ESCROW "release(bytes32,bytes32,bytes32,address,bytes32,uint64,bytes)" $LH $AWARD $SUB $PAYEE $VH $NOW $SIG --private-key $RELAYER_KEY --rpc-url $RPC --json | python3 -c "import sys,json;d=json.load(sys.stdin);print('RELEASE tx',d['transactionHash'],'status',d['status'],'gas',int(d['gasUsed'],16),'relayed by a third party')"
+cast send $ESCROW "release(bytes32,address,bytes32,bytes32,address,bytes32,uint64,bytes)" $LH $FUNDER $AWARD $SUB $PAYEE $VH $NOW $SIG --private-key $RELAYER_KEY --rpc-url $RPC --json | python3 -c "import sys,json;d=json.load(sys.stdin);print('RELEASE tx',d['transactionHash'],'status',d['status'],'gas',int(d['gasUsed'],16),'relayed by a third party')"
 echo "payee USDC: $(cast call $USDC 'balanceOf(address)(uint256)' $PAYEE --rpc-url $RPC)"
 echo "escrow USDC: $(cast call $USDC 'balanceOf(address)(uint256)' $ESCROW --rpc-url $RPC)"
-cast call $ESCROW "verifierAuthority(bytes32,address)(uint32,uint32)" $LH $VERIFIER --rpc-url $RPC | tr '\n' ' ' | sed 's/^/verifier cap,used: /'
+cast call $ESCROW "verifierAuthority(bytes32,address,address)(uint32,uint32)" $LH $FUNDER $VERIFIER --rpc-url $RPC | tr '\n' ' ' | sed 's/^/verifier cap,used: /'
 echo

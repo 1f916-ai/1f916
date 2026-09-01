@@ -97,6 +97,21 @@ contract ListingEscrow {
         bool refunded;
     }
 
+    /// @dev KEYED BY (listingHash, funder), NOT BY listingHash ALONE.
+    ///
+    /// Keying by the hash alone made fund() a free denial of service on every
+    /// listing this registry publishes. The payload hash is public BEFORE the
+    /// funder escrows against it, by design, so an attacker did not even need
+    /// to win a race: read the hash off the API, call fund() with a worthless
+    /// token and one unit of it, and the real funder's fund() reverts
+    /// AlreadyFunded forever. Nothing clears `funder`, there is no owner and
+    /// no recovery, the squatter gets his one unit back after the deadline,
+    /// and republishing does not help because the escrow terms are inside the
+    /// hash and the squatter takes the new hash too.
+    ///
+    /// With the funder in the key a squatter occupies only his own slot. The
+    /// listing publishes which funder wallet backs it and a reader looks up
+    /// exactly that pair, so a stranger's escrow is invisible, not blocking.
     mapping(bytes32 => Listing) private _listings;
     /// @dev cap of 0 means "not a verifier on this listing". Storing the cap
     ///      rather than a bool is also what keeps m-of-n reachable later: a
@@ -134,6 +149,13 @@ contract ListingEscrow {
         );
     }
 
+    /// @notice The storage key for one funder's escrow on one listing.
+    /// @dev Public and pure so an off-chain reader derives it exactly as this
+    ///      contract does rather than reimplementing the rule.
+    function escrowKey(bytes32 listingHash, address funder) public pure returns (bytes32) {
+        return keccak256(abi.encode(listingHash, funder));
+    }
+
     function domainSeparator() external view returns (bytes32) {
         return _DOMAIN_SEPARATOR;
     }
@@ -153,7 +175,8 @@ contract ListingEscrow {
         uint64 verifierDeadline,
         uint64 claimDeadline
     ) external {
-        Listing storage l = _listings[listingHash];
+        bytes32 key = escrowKey(listingHash, msg.sender);
+        Listing storage l = _listings[key];
         if (l.funder != address(0)) revert AlreadyFunded();
         if (amountPerAward == 0) revert ZeroAmount();
         if (maxAwards == 0) revert ZeroAwards();
@@ -167,7 +190,7 @@ contract ListingEscrow {
         for (uint256 i = 0; i < verifiers.length; i++) {
             address v = verifiers[i];
             if (v == address(0)) revert ZeroAddress();
-            if (_verifierCap[listingHash][v] != 0) revert DuplicateVerifier();
+            if (_verifierCap[key][v] != 0) revert DuplicateVerifier();
             // A cap of zero would name a verifier who can do nothing, which is
             // indistinguishable from not naming them and is more likely a
             // mistake than an intent. A cap ABOVE maxAwards is allowed and
@@ -175,7 +198,7 @@ contract ListingEscrow {
             // capped by capacity anyway, and refusing it would make the common
             // single-verifier case a two-value coincidence to get right.
             if (verifierCaps[i] == 0) revert ZeroCap();
-            _verifierCap[listingHash][v] = verifierCaps[i];
+            _verifierCap[key][v] = verifierCaps[i];
         }
 
         l.funder = msg.sender;
@@ -212,6 +235,7 @@ contract ListingEscrow {
     ///      rather than a surprise.
     function release(
         bytes32 listingHash,
+        address funder,
         bytes32 awardId,
         bytes32 submissionHash,
         address payee,
@@ -219,9 +243,15 @@ contract ListingEscrow {
         uint64 issuedAt,
         bytes calldata signature
     ) external {
-        Listing storage l = _listings[listingHash];
+        bytes32 esc = escrowKey(listingHash, funder);
+        Listing storage l = _listings[esc];
         if (l.funder == address(0)) revert NotFunded();
         if (payee == address(0)) revert ZeroAddress();
+        // DEFENCE IN DEPTH. The deadline windows already make this
+        // unreachable, since refund needs block.timestamp > claimDeadline and
+        // release needs <=. That argument rests on the clock never going
+        // backwards, and one SLOAD is cheaper than depending on it.
+        if (l.refunded) revert NothingToRefund();
         // THE TWO WINDOWS, both enforced. The verdict must have been issued
         // within the verifier's window, and the claim must be relayed within
         // the worker's. Because claimDeadline is strictly greater, a verifier
@@ -231,8 +261,8 @@ contract ListingEscrow {
         if (issuedAt > l.verifierDeadline) revert VerifierWindowClosed();
         if (block.timestamp > l.claimDeadline) revert ClaimWindowClosed();
 
-        bytes32 key = keccak256(abi.encode(listingHash, awardId));
-        if (paid[key]) revert AwardAlreadyPaid();
+        bytes32 awardKey = keccak256(abi.encode(esc, awardId));
+        if (paid[awardKey]) revert AwardAlreadyPaid();
         if (l.released >= l.maxAwards) revert NoCapacity();
 
         bytes32 digest = keccak256(
@@ -243,19 +273,19 @@ contract ListingEscrow {
             )
         );
         address signer = _recover(digest, signature);
-        uint32 cap = _verifierCap[listingHash][signer];
+        uint32 cap = _verifierCap[esc][signer];
         if (cap == 0) revert NotAVerifier();
         // THE BLAST RADIUS OF ONE COMPROMISED KEY. Without this, a verifier
         // could mint a distinct award id per award and walk the whole balance
         // out one fixed amount at a time.
-        if (_verifierUsed[listingHash][signer] >= cap) revert VerifierCapExceeded();
+        if (_verifierUsed[esc][signer] >= cap) revert VerifierCapExceeded();
 
         // EFFECTS BEFORE INTERACTION. Both the per-award flag and the counter
         // are written before the transfer, so a token with a callback cannot
         // re-enter and pay the same award twice or exceed maxAwards.
-        paid[key] = true;
+        paid[awardKey] = true;
         l.released += 1;
-        _verifierUsed[listingHash][signer] += 1;
+        _verifierUsed[esc][signer] += 1;
 
         // EMITTED BEFORE THE TRANSFER. A token with a callback can re-enter
         // and, although the effects above make a second payment impossible,
@@ -272,8 +302,8 @@ contract ListingEscrow {
     /// @dev There is deliberately no early cancel. A funder who could withdraw
     ///      after seeing the work would hold exactly the free option this rail
     ///      exists to remove.
-    function refund(bytes32 listingHash) external {
-        Listing storage l = _listings[listingHash];
+    function refund(bytes32 listingHash, address funder) external {
+        Listing storage l = _listings[escrowKey(listingHash, funder)];
         if (l.funder == address(0)) revert NotFunded();
         if (block.timestamp <= l.claimDeadline) revert ClaimWindowOpen();
         if (l.refunded) revert NothingToRefund();
@@ -287,7 +317,7 @@ contract ListingEscrow {
     }
 
     // ------------------------------------------------------------------ view
-    function listingOf(bytes32 listingHash)
+    function listingOf(bytes32 listingHash, address fundedBy)
         external
         view
         returns (
@@ -302,7 +332,7 @@ contract ListingEscrow {
             uint256 committed
         )
     {
-        Listing storage l = _listings[listingHash];
+        Listing storage l = _listings[escrowKey(listingHash, fundedBy)];
         return (
             l.funder,
             l.token,
@@ -312,18 +342,23 @@ contract ListingEscrow {
             l.verifierDeadline,
             l.claimDeadline,
             l.refunded,
-            uint256(l.maxAwards - l.released) * l.amountPerAward
+            // A REFUNDED LISTING HOLDS NOTHING, and this view used to say
+            // otherwise: it reported the full remainder after the money had
+            // gone back to the funder. An off-chain reader that trusted it
+            // would print "FUNDED, N committed" about an empty escrow.
+            l.refunded ? 0 : uint256(l.maxAwards - l.released) * l.amountPerAward
         );
     }
 
     /// @return cap how many awards this verifier may EVER authorize here, 0 if none
     /// @return used how many it has authorized so far
-    function verifierAuthority(bytes32 listingHash, address who) external view returns (uint32 cap, uint32 used) {
-        return (_verifierCap[listingHash][who], _verifierUsed[listingHash][who]);
+    function verifierAuthority(bytes32 listingHash, address funder, address who) external view returns (uint32 cap, uint32 used) {
+        bytes32 esc = escrowKey(listingHash, funder);
+        return (_verifierCap[esc][who], _verifierUsed[esc][who]);
     }
 
-    function isVerifier(bytes32 listingHash, address who) external view returns (bool) {
-        return _verifierCap[listingHash][who] != 0;
+    function isVerifier(bytes32 listingHash, address funder, address who) external view returns (bool) {
+        return _verifierCap[escrowKey(listingHash, funder)][who] != 0;
     }
 
     // -------------------------------------------------------------- internal

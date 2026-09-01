@@ -88,7 +88,7 @@ contract ListingEscrowTest is Test {
 
     function _releaseBy(uint256 key, uint256 id) internal {
         uint64 t = uint64(block.timestamp);
-        escrow.release(LH, bytes32(id), bytes32(0), payee, bytes32(0), t, _sig(LH, bytes32(id), bytes32(0), payee, bytes32(0), t, key));
+        escrow.release(LH, funder, bytes32(id), bytes32(0), payee, bytes32(0), t, _sig(LH, bytes32(id), bytes32(0), payee, bytes32(0), t, key));
     }
 
     function _sig(bytes32 listingHash, bytes32 awardId, bytes32 subHash, address to, bytes32 verdictHash, uint64 issuedAt, uint256 key)
@@ -108,7 +108,7 @@ contract ListingEscrowTest is Test {
     function test_fund_commits_the_maximum_liability_not_one_award() public {
         _fund(5_000_000, 3);
         assertEq(usdc.balanceOf(address(escrow)), 15_000_000, "the whole ceiling is committed at publication");
-        (,,,,,,,, uint256 committed) = escrow.listingOf(LH);
+        (,,,,,,,, uint256 committed) = escrow.listingOf(LH, funder);
         assertEq(committed, 15_000_000);
     }
 
@@ -116,7 +116,7 @@ contract ListingEscrowTest is Test {
         _fund(5_000_000, 3);
         bytes memory sig = _sig(LH, bytes32(uint256(1)), bytes32(uint256(9)), payee, bytes32(uint256(7)), uint64(block.timestamp), verifierKey);
         vm.prank(relayer); // NOT the payee, NOT the funder, NOT any registry
-        escrow.release(LH, bytes32(uint256(1)), bytes32(uint256(9)), payee, bytes32(uint256(7)), uint64(block.timestamp), sig);
+        escrow.release(LH, funder, bytes32(uint256(1)), bytes32(uint256(9)), payee, bytes32(uint256(7)), uint64(block.timestamp), sig);
         assertEq(usdc.balanceOf(payee), 5_000_000, "the signature is the authorization, not the caller");
     }
 
@@ -128,12 +128,12 @@ contract ListingEscrowTest is Test {
         // A stranger's signature.
         bytes memory bad = _sig(LH, bytes32(uint256(1)), bytes32(0), payee, bytes32(0), t, 0xBADBEEF);
         vm.expectRevert(ListingEscrow.NotAVerifier.selector);
-        escrow.release(LH, bytes32(uint256(1)), bytes32(0), payee, bytes32(0), t, bad);
+        escrow.release(LH, funder, bytes32(uint256(1)), bytes32(0), payee, bytes32(0), t, bad);
         // The FUNDER cannot self-release either: funding does not make you a verifier.
         bytes memory byFunder = _sig(LH, bytes32(uint256(1)), bytes32(0), funder, bytes32(0), t, uint256(uint160(funder)));
         vm.expectRevert(ListingEscrow.NotAVerifier.selector);
         vm.prank(funder);
-        escrow.release(LH, bytes32(uint256(1)), bytes32(0), funder, bytes32(0), t, byFunder);
+        escrow.release(LH, funder, bytes32(uint256(1)), bytes32(0), funder, bytes32(0), t, byFunder);
         assertEq(usdc.balanceOf(address(escrow)), 15_000_000, "not one atom moved");
     }
 
@@ -141,7 +141,7 @@ contract ListingEscrowTest is Test {
         _fund(5_000_000, 3);
         uint64 t = uint64(block.timestamp);
         bytes memory sig = _sig(LH, bytes32(uint256(1)), bytes32(0), payee, bytes32(0), t, verifierKey);
-        escrow.release(LH, bytes32(uint256(1)), bytes32(0), payee, bytes32(0), t, sig);
+        escrow.release(LH, funder, bytes32(uint256(1)), bytes32(0), payee, bytes32(0), t, sig);
         // The amount is not a parameter anywhere in the call. A fully
         // compromised verifier can misdirect ONE award and can never drain.
         assertEq(usdc.balanceOf(payee), 5_000_000);
@@ -165,14 +165,14 @@ contract ListingEscrowTest is Test {
         uint64 t = uint64(block.timestamp);
         for (uint256 i = 1; i <= 3; i++) {
             bytes memory sig = _sig(LH, bytes32(i), bytes32(0), attacker, bytes32(0), t, verifierKey);
-            escrow.release(LH, bytes32(i), bytes32(0), attacker, bytes32(0), t, sig);
+            escrow.release(LH, funder, bytes32(i), bytes32(0), attacker, bytes32(0), t, sig);
         }
         assertEq(usdc.balanceOf(attacker), 15_000_000, "one key, every award, the entire committed balance");
         assertEq(usdc.balanceOf(address(escrow)), 0);
         // And it stops exactly at the ceiling: capacity is still a hard limit.
         bytes memory fourth = _sig(LH, bytes32(uint256(4)), bytes32(0), attacker, bytes32(0), t, verifierKey);
         vm.expectRevert(ListingEscrow.NoCapacity.selector);
-        escrow.release(LH, bytes32(uint256(4)), bytes32(0), attacker, bytes32(0), t, fourth);
+        escrow.release(LH, funder, bytes32(uint256(4)), bytes32(0), attacker, bytes32(0), t, fourth);
     }
 
     function test_a_capped_verifier_is_bounded_to_its_declared_authority() public {
@@ -181,18 +181,18 @@ contract ListingEscrowTest is Test {
         address attacker = address(0xBAD);
         uint64 t = uint64(block.timestamp);
         bytes memory first = _sig(LH, bytes32(uint256(1)), bytes32(0), attacker, bytes32(0), t, verifierKey);
-        escrow.release(LH, bytes32(uint256(1)), bytes32(0), attacker, bytes32(0), t, first);
+        escrow.release(LH, funder, bytes32(uint256(1)), bytes32(0), attacker, bytes32(0), t, first);
         assertEq(usdc.balanceOf(attacker), 5_000_000);
 
         // Every further award, under any fresh id, is refused.
         for (uint256 i = 2; i <= 5; i++) {
             bytes memory sig = _sig(LH, bytes32(i), bytes32(0), attacker, bytes32(0), t, verifierKey);
             vm.expectRevert(ListingEscrow.VerifierCapExceeded.selector);
-            escrow.release(LH, bytes32(i), bytes32(0), attacker, bytes32(0), t, sig);
+            escrow.release(LH, funder, bytes32(i), bytes32(0), attacker, bytes32(0), t, sig);
         }
         assertEq(usdc.balanceOf(attacker), 5_000_000, "the blast radius is the declared cap and nothing more");
         assertEq(usdc.balanceOf(address(escrow)), 10_000_000, "the rest is still there for honest awards");
-        (uint32 cap, uint32 used) = escrow.verifierAuthority(LH, verifier);
+        (uint32 cap, uint32 used) = escrow.verifierAuthority(LH, funder, verifier);
         assertEq(cap, 1);
         assertEq(used, 1);
     }
@@ -213,13 +213,13 @@ contract ListingEscrowTest is Test {
         _releaseBy(verifierKey, 1);
         bytes memory over = _sig(LH, bytes32(uint256(2)), bytes32(0), payee, bytes32(0), t, verifierKey);
         vm.expectRevert(ListingEscrow.VerifierCapExceeded.selector);
-        escrow.release(LH, bytes32(uint256(2)), bytes32(0), payee, bytes32(0), t, over);
+        escrow.release(LH, funder, bytes32(uint256(2)), bytes32(0), payee, bytes32(0), t, over);
 
         // The other verifier's authority is untouched by the first's exhaustion.
         _releaseBy(keyB, 2);
         _releaseBy(keyB, 3);
         assertEq(usdc.balanceOf(payee), 15_000_000);
-        (, uint32 usedB) = escrow.verifierAuthority(LH, vb);
+        (, uint32 usedB) = escrow.verifierAuthority(LH, funder, vb);
         assertEq(usedB, 2);
     }
 
@@ -253,11 +253,75 @@ contract ListingEscrowTest is Test {
         uint256 paidOut;
         for (uint256 i = 1; i <= 12; i++) {
             bytes memory sig = _sig(LH, bytes32(i), bytes32(0), payee, bytes32(0), t, verifierKey);
-            try escrow.release(LH, bytes32(i), bytes32(0), payee, bytes32(0), t, sig) { paidOut += 5_000_000; } catch { }
+            try escrow.release(LH, funder, bytes32(i), bytes32(0), payee, bytes32(0), t, sig) { paidOut += 5_000_000; } catch { }
         }
         uint256 allowed = capA < awards ? capA : awards;
         assertEq(paidOut, uint256(5_000_000) * allowed, "released is min(cap, capacity), always");
         assertLe(paidOut, uint256(5_000_000) * awards, "and never more than the listing committed");
+    }
+
+    // ------------------------------------------- INDEPENDENT AUDIT FINDINGS
+
+    /// HIGH, from the independent review: fund() was permissionless and keyed
+    /// by listingHash alone, so anyone could read a published hash off the API
+    /// and squat it with a worthless token for the price of gas. The real
+    /// funder's fund() then reverted AlreadyFunded forever, with no owner and
+    /// no recovery, and the squatter got his dust back after the deadline.
+    function test_a_squatter_cannot_brick_a_listing() public {
+        MockUSDC junk = new MockUSDC();
+        address squatter = address(0x5EA7);
+        junk.mint(squatter, 1);
+        vm.deal(squatter, 1 ether);
+        vm.startPrank(squatter);
+        junk.approve(address(escrow), 1);
+        address[] memory vs = new address[](1);
+        uint32[] memory caps = new uint32[](1);
+        vs[0] = squatter; caps[0] = 1;
+        // The squatter escrows against the REAL listing hash, for free.
+        escrow.fund(LH, address(junk), 1, 1, vs, caps, vDeadline, cDeadline);
+        vm.stopPrank();
+
+        // The real funder is unaffected: their escrow is a different key.
+        _fund(5_000_000, 3);
+        (address who,,,,,,,, uint256 committed) = escrow.listingOf(LH, funder);
+        assertEq(who, funder, "the listing a reader looks up is the one its funder backed");
+        assertEq(committed, 15_000_000);
+        assertEq(usdc.balanceOf(address(escrow)), 15_000_000);
+
+        // And the squatter's escrow is visible only to someone who asks for
+        // it by his address, which no reader of this listing does.
+        (address sq,,,,,,,,) = escrow.listingOf(LH, squatter);
+        assertEq(sq, squatter);
+        // His verifier authority does not reach the real funder's escrow.
+        assertEq(escrow.isVerifier(LH, funder, squatter), false, "a squatter authorizes nothing on the listing that matters");
+    }
+
+    /// MEDIUM: listingOf().committed reported the full remainder after a
+    /// refund had already returned the money, so a reader would print
+    /// "FUNDED, N committed" about an empty escrow.
+    function test_committed_is_zero_once_the_money_has_gone_back() public {
+        _fund(5_000_000, 3);
+        vm.warp(cDeadline + 1);
+        escrow.refund(LH, funder);
+        (,,,,,,, bool refunded_, uint256 committed) = escrow.listingOf(LH, funder);
+        assertEq(refunded_, true);
+        assertEq(committed, 0, "a view that reports money the escrow does not hold is a lie a reader will repeat");
+        assertEq(usdc.balanceOf(address(escrow)), 0);
+    }
+
+    /// The deadline windows already make this unreachable; the check removes
+    /// a single-point dependency on the clock never going backwards.
+    function test_release_after_a_refund_is_refused_even_if_the_clock_moves_back() public {
+        _fund(5_000_000, 3);
+        uint64 t = uint64(block.timestamp);
+        bytes memory sig = _sig(LH, bytes32(uint256(1)), bytes32(0), payee, bytes32(0), t, verifierKey);
+        vm.warp(cDeadline + 1);
+        escrow.refund(LH, funder);
+        // A clock that went backwards would reopen the claim window.
+        vm.warp(cDeadline - 1);
+        vm.expectRevert(ListingEscrow.NothingToRefund.selector);
+        escrow.release(LH, funder, bytes32(uint256(1)), bytes32(0), payee, bytes32(0), t, sig);
+        assertEq(usdc.balanceOf(payee), 0);
     }
 
     // ---------------------------------------------------- double payment
@@ -266,9 +330,9 @@ contract ListingEscrowTest is Test {
         _fund(5_000_000, 3);
         uint64 t = uint64(block.timestamp);
         bytes memory sig = _sig(LH, bytes32(uint256(1)), bytes32(0), payee, bytes32(0), t, verifierKey);
-        escrow.release(LH, bytes32(uint256(1)), bytes32(0), payee, bytes32(0), t, sig);
+        escrow.release(LH, funder, bytes32(uint256(1)), bytes32(0), payee, bytes32(0), t, sig);
         vm.expectRevert(ListingEscrow.AwardAlreadyPaid.selector);
-        escrow.release(LH, bytes32(uint256(1)), bytes32(0), payee, bytes32(0), t, sig);
+        escrow.release(LH, funder, bytes32(uint256(1)), bytes32(0), payee, bytes32(0), t, sig);
     }
 
     function test_capacity_is_a_hard_ceiling() public {
@@ -276,11 +340,11 @@ contract ListingEscrowTest is Test {
         uint64 t = uint64(block.timestamp);
         for (uint256 i = 1; i <= 2; i++) {
             bytes memory s = _sig(LH, bytes32(i), bytes32(0), payee, bytes32(0), t, verifierKey);
-            escrow.release(LH, bytes32(i), bytes32(0), payee, bytes32(0), t, s);
+            escrow.release(LH, funder, bytes32(i), bytes32(0), payee, bytes32(0), t, s);
         }
         bytes memory third = _sig(LH, bytes32(uint256(3)), bytes32(0), payee, bytes32(0), t, verifierKey);
         vm.expectRevert(ListingEscrow.NoCapacity.selector);
-        escrow.release(LH, bytes32(uint256(3)), bytes32(0), payee, bytes32(0), t, third);
+        escrow.release(LH, funder, bytes32(uint256(3)), bytes32(0), payee, bytes32(0), t, third);
     }
 
     function test_a_signature_cannot_be_replayed_onto_another_listing() public {
@@ -295,7 +359,7 @@ contract ListingEscrowTest is Test {
         uint64 t = uint64(block.timestamp);
         bytes memory sig = _sig(LH, bytes32(uint256(1)), bytes32(0), payee, bytes32(0), t, verifierKey);
         vm.expectRevert(ListingEscrow.NotAVerifier.selector); // recovers a different address entirely
-        escrow.release(other, bytes32(uint256(1)), bytes32(0), payee, bytes32(0), t, sig);
+        escrow.release(other, funder, bytes32(uint256(1)), bytes32(0), payee, bytes32(0), t, sig);
     }
 
     function test_signature_is_bound_to_the_payee() public {
@@ -303,7 +367,7 @@ contract ListingEscrowTest is Test {
         uint64 t = uint64(block.timestamp);
         bytes memory sig = _sig(LH, bytes32(uint256(1)), bytes32(0), payee, bytes32(0), t, verifierKey);
         vm.expectRevert(ListingEscrow.NotAVerifier.selector);
-        escrow.release(LH, bytes32(uint256(1)), bytes32(0), address(0xDEAD), bytes32(0), t, sig);
+        escrow.release(LH, funder, bytes32(uint256(1)), bytes32(0), address(0xDEAD), bytes32(0), t, sig);
     }
 
     // ------------------------------------------------------- the two windows
@@ -315,7 +379,7 @@ contract ListingEscrowTest is Test {
         bytes memory sig = _sig(LH, bytes32(uint256(1)), bytes32(0), payee, bytes32(0), t, verifierKey);
         // The worker still has the whole grace period to collect.
         vm.warp(cDeadline);
-        escrow.release(LH, bytes32(uint256(1)), bytes32(0), payee, bytes32(0), t, sig);
+        escrow.release(LH, funder, bytes32(uint256(1)), bytes32(0), payee, bytes32(0), t, sig);
         assertEq(usdc.balanceOf(payee), 5_000_000, "the grace window belongs to the payee and no verifier can consume it");
     }
 
@@ -324,7 +388,7 @@ contract ListingEscrowTest is Test {
         uint64 late = vDeadline + 1;
         bytes memory sig = _sig(LH, bytes32(uint256(1)), bytes32(0), payee, bytes32(0), late, verifierKey);
         vm.expectRevert(ListingEscrow.VerifierWindowClosed.selector);
-        escrow.release(LH, bytes32(uint256(1)), bytes32(0), payee, bytes32(0), late, sig);
+        escrow.release(LH, funder, bytes32(uint256(1)), bytes32(0), payee, bytes32(0), late, sig);
     }
 
     function test_release_after_the_claim_deadline_is_refused() public {
@@ -333,7 +397,7 @@ contract ListingEscrowTest is Test {
         bytes memory sig = _sig(LH, bytes32(uint256(1)), bytes32(0), payee, bytes32(0), t, verifierKey);
         vm.warp(cDeadline + 1);
         vm.expectRevert(ListingEscrow.ClaimWindowClosed.selector);
-        escrow.release(LH, bytes32(uint256(1)), bytes32(0), payee, bytes32(0), t, sig);
+        escrow.release(LH, funder, bytes32(uint256(1)), bytes32(0), payee, bytes32(0), t, sig);
     }
 
     /// SURVIVOR from the first mutation sweep: deleting the ordering check
@@ -358,7 +422,7 @@ contract ListingEscrowTest is Test {
         vm.expectRevert(ListingEscrow.DeadlineOrder.selector);
         escrow.fund(LH, address(usdc), 5_000_000, 3, vs, caps, uint64(block.timestamp), cDeadline);
         vm.stopPrank();
-        (address f,,,,,,,,) = escrow.listingOf(LH);
+        (address f,,,,,,,,) = escrow.listingOf(LH, funder);
         assertEq(f, address(0), "none of those listings exist");
     }
 
@@ -375,7 +439,7 @@ contract ListingEscrowTest is Test {
             escrow.fund(LH, address(usdc), 1_000_000, 1, vs, caps, v, c);
         } else {
             escrow.fund(LH, address(usdc), 1_000_000, 1, vs, caps, v, c);
-            (,,,,, uint64 vd, uint64 cd,,) = escrow.listingOf(LH);
+            (,,,,, uint64 vd, uint64 cd,,) = escrow.listingOf(LH, funder);
             assertGt(cd, vd, "every funded listing has a grace window that belongs to the payee");
         }
     }
@@ -386,18 +450,18 @@ contract ListingEscrowTest is Test {
         _fund(5_000_000, 3);
         vm.prank(funder);
         vm.expectRevert(ListingEscrow.ClaimWindowOpen.selector);
-        escrow.refund(LH);
+        escrow.refund(LH, funder);
     }
 
     function test_refund_returns_only_the_unreleased_remainder_and_only_to_the_funder() public {
         _fund(5_000_000, 3);
         uint64 t = uint64(block.timestamp);
         bytes memory sig = _sig(LH, bytes32(uint256(1)), bytes32(0), payee, bytes32(0), t, verifierKey);
-        escrow.release(LH, bytes32(uint256(1)), bytes32(0), payee, bytes32(0), t, sig);
+        escrow.release(LH, funder, bytes32(uint256(1)), bytes32(0), payee, bytes32(0), t, sig);
         vm.warp(cDeadline + 1);
         uint256 before = usdc.balanceOf(funder);
         vm.prank(relayer); // anyone may call it; the destination is not a parameter
-        escrow.refund(LH);
+        escrow.refund(LH, funder);
         assertEq(usdc.balanceOf(funder) - before, 10_000_000, "two unused awards return, the paid one does not");
         assertEq(usdc.balanceOf(relayer), 0, "and the caller gets nothing");
     }
@@ -405,9 +469,9 @@ contract ListingEscrowTest is Test {
     function test_refund_cannot_be_taken_twice() public {
         _fund(5_000_000, 1);
         vm.warp(cDeadline + 1);
-        escrow.refund(LH);
+        escrow.refund(LH, funder);
         vm.expectRevert(ListingEscrow.NothingToRefund.selector);
-        escrow.refund(LH);
+        escrow.refund(LH, funder);
     }
 
     // ------------------------------------------------------ hostile tokens
@@ -441,10 +505,10 @@ contract ListingEscrowTest is Test {
         uint64 ts = uint64(block.timestamp);
         bytes memory sig = _sig(LH, bytes32(uint256(1)), bytes32(0), payee, bytes32(0), ts, verifierKey);
         bytes memory reentry = abi.encodeCall(
-            ListingEscrow.release, (LH, bytes32(uint256(1)), bytes32(0), payee, bytes32(0), ts, sig)
+            ListingEscrow.release, (LH, funder, bytes32(uint256(1)), bytes32(0), payee, bytes32(0), ts, sig)
         );
         t.arm(escrow, reentry);
-        escrow.release(LH, bytes32(uint256(1)), bytes32(0), payee, bytes32(0), ts, sig);
+        escrow.release(LH, funder, bytes32(uint256(1)), bytes32(0), payee, bytes32(0), ts, sig);
         assertEq(t.balanceOf(payee), 5_000_000, "paid exactly once despite the callback");
     }
 
@@ -459,7 +523,7 @@ contract ListingEscrowTest is Test {
         uint256 flipped = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141 - uint256(s);
         bytes memory malleable = abi.encodePacked(r, bytes32(flipped), v == 27 ? uint8(28) : uint8(27));
         vm.expectRevert(ListingEscrow.BadSignature.selector);
-        escrow.release(LH, bytes32(uint256(1)), bytes32(0), payee, bytes32(0), t, malleable);
+        escrow.release(LH, funder, bytes32(uint256(1)), bytes32(0), payee, bytes32(0), t, malleable);
     }
 
     // ----------------------------------------------------------------- fuzz
@@ -475,9 +539,9 @@ contract ListingEscrowTest is Test {
         uint64 t = uint64(block.timestamp);
         for (uint256 i = 1; i <= toRelease; i++) {
             bytes memory s = _sig(LH, bytes32(i), bytes32(0), payee, bytes32(0), t, verifierKey);
-            escrow.release(LH, bytes32(i), bytes32(0), payee, bytes32(0), t, s);
+            escrow.release(LH, funder, bytes32(i), bytes32(0), payee, bytes32(0), t, s);
         }
-        (,,,,,,,, uint256 committed) = escrow.listingOf(LH);
+        (,,,,,,,, uint256 committed) = escrow.listingOf(LH, funder);
         assertEq(usdc.balanceOf(address(escrow)), committed, "held == owed, always");
         assertEq(usdc.balanceOf(payee), uint256(per) * toRelease);
     }
@@ -490,7 +554,7 @@ contract ListingEscrowTest is Test {
         uint64 t = uint64(block.timestamp);
         bytes memory sig = _sig(LH, awardId, bytes32(0), payee, bytes32(0), t, key);
         vm.expectRevert(ListingEscrow.NotAVerifier.selector);
-        escrow.release(LH, awardId, bytes32(0), payee, bytes32(0), t, sig);
+        escrow.release(LH, funder, awardId, bytes32(0), payee, bytes32(0), t, sig);
         assertEq(usdc.balanceOf(address(escrow)), 15_000_000);
     }
 }

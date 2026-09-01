@@ -30,6 +30,8 @@ contract SepoliaE2ETest is Test {
     bytes32 listingHash = keccak256("1f916-listing-21-payload-hash");
     uint64 vDeadline;
     uint64 cDeadline;
+    uint256 payeeBefore;
+    uint256 relayerBefore;
 
     /// This suite is meaningless without a Base Sepolia fork, so it says so
     /// and skips rather than passing vacuously on the default chain. A suite
@@ -55,11 +57,13 @@ contract SepoliaE2ETest is Test {
         // States, whose top bit is the blacklist flag and whose low bits are
         // the balance. Writing 10 USDC leaves that flag clear.
         vm.store(address(usdc), keccak256(abi.encode(funder, uint256(9))), bytes32(uint256(10_000_000)));
-        // These addresses are unused on Base Sepolia, asserted rather than assumed:
-        // 0xBEEF and friends are vanity addresses with real testnet balances,
-        // and absolute-balance assertions against them are meaningless.
-        assertEq(usdc.balanceOf(payee), 0, "the payee fixture must start empty");
-        assertEq(usdc.balanceOf(relayer), 0, "the relayer fixture must start empty");
+        // DELTAS, NOT ABSOLUTES. Asserting these start empty was true until
+        // the runbook script paid this same payee on this same fork, and then
+        // the whole suite went red for a reason that had nothing to do with
+        // the contract. On a shared chain the only stable statement is how
+        // much a balance MOVED.
+        payeeBefore = usdc.balanceOf(payee);
+        relayerBefore = usdc.balanceOf(relayer);
         assertEq(usdc.balanceOf(funder), 10_000_000, "the fixture must fund the funder or every test below is vacuous");
         // EVERY PRANKED SENDER NEEDS GAS ON A FORK. Without it the call is
         // made with zero gas and reverts with no reason, which cost an hour
@@ -91,7 +95,7 @@ contract SepoliaE2ETest is Test {
     }
 
     function _release(bytes32 lh, bytes32 awardId, address to, uint64 issuedAt, uint256 key) internal {
-        escrow.release(lh, awardId, keccak256("submission-1"), to, keccak256("verdict-payload-hash"), issuedAt, _sig(lh, awardId, to, issuedAt, key));
+        escrow.release(lh, funder, awardId, keccak256("submission-1"), to, keccak256("verdict-payload-hash"), issuedAt, _sig(lh, awardId, to, issuedAt, key));
     }
 
     /// FUND -> SUBMIT -> VERIFIER PASS -> ANYONE RELAYS -> PAID, with real USDC.
@@ -107,10 +111,10 @@ contract SepoliaE2ETest is Test {
         vm.prank(relayer);
         _release(listingHash, bytes32(uint256(1)), payee, issued);
 
-        assertEq(usdc.balanceOf(payee), PER, "the payee holds exactly the declared amount");
+        assertEq(usdc.balanceOf(payee) - payeeBefore, PER, "the payee received exactly the declared amount");
         assertEq(usdc.balanceOf(address(escrow)), 0);
-        assertEq(usdc.balanceOf(relayer), 0, "and the relayer got nothing for relaying");
-        (uint32 cap, uint32 used) = escrow.verifierAuthority(listingHash, verifier);
+        assertEq(usdc.balanceOf(relayer) - relayerBefore, 0, "and the relayer got nothing for relaying");
+        (uint32 cap, uint32 used) = escrow.verifierAuthority(listingHash, funder, verifier);
         assertEq(cap, 1);
         assertEq(used, 1);
     }
@@ -127,7 +131,7 @@ contract SepoliaE2ETest is Test {
         // release. There is no on-chain "fail" to submit, and that is the
         // point. Without a signature the escrow cannot be touched by anyone.
         vm.expectRevert(ListingEscrow.BadSignature.selector);
-        escrow.release(listingHash, bytes32(uint256(1)), keccak256("submission-1"), payee, keccak256("v"), uint64(block.timestamp), hex"00");
+        escrow.release(listingHash, funder, bytes32(uint256(1)), keccak256("submission-1"), payee, keccak256("v"), uint64(block.timestamp), hex"00");
         assertEq(usdc.balanceOf(address(escrow)), PER * MAX, "a rejected submission moves nothing");
     }
 
@@ -136,7 +140,7 @@ contract SepoliaE2ETest is Test {
         uint64 t = uint64(block.timestamp);
         bytes memory sig = _sig(listingHash, bytes32(uint256(1)), payee, t, verifierKey);
         vm.expectRevert(ListingEscrow.NotAVerifier.selector);
-        escrow.release(listingHash, bytes32(uint256(1)), keccak256("submission-1"), address(0xDEAD), keccak256("verdict-payload-hash"), t, sig);
+        escrow.release(listingHash, funder, bytes32(uint256(1)), keccak256("submission-1"), address(0xDEAD), keccak256("verdict-payload-hash"), t, sig);
     }
 
     function test_wrong_listing_hash_is_refused() public onSepolia {
@@ -148,7 +152,7 @@ contract SepoliaE2ETest is Test {
         // against that staticcall instead of the release.
         bytes memory sig = _sig(other, bytes32(uint256(1)), payee, t, verifierKey);
         vm.expectRevert(ListingEscrow.NotFunded.selector);
-        escrow.release(other, bytes32(uint256(1)), keccak256("submission-1"), payee, keccak256("verdict-payload-hash"), t, sig);
+        escrow.release(other, funder, bytes32(uint256(1)), keccak256("submission-1"), payee, keccak256("verdict-payload-hash"), t, sig);
     }
 
     function test_a_signature_for_another_contract_is_refused() public onSepolia {
@@ -162,7 +166,7 @@ contract SepoliaE2ETest is Test {
         ));
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(verifierKey, keccak256(abi.encodePacked("\x19\x01", other.domainSeparator(), structHash)));
         vm.expectRevert(ListingEscrow.NotAVerifier.selector);
-        escrow.release(listingHash, bytes32(uint256(1)), keccak256("submission-1"), payee, keccak256("verdict-payload-hash"), uint64(block.timestamp), abi.encodePacked(r, s, v));
+        escrow.release(listingHash, funder, bytes32(uint256(1)), keccak256("submission-1"), payee, keccak256("verdict-payload-hash"), uint64(block.timestamp), abi.encodePacked(r, s, v));
     }
 
     function test_a_stale_verdict_is_refused() public onSepolia {
@@ -170,7 +174,7 @@ contract SepoliaE2ETest is Test {
         uint64 stale = vDeadline + 1;
         bytes memory sig = _sig(listingHash, bytes32(uint256(1)), payee, stale, verifierKey);
         vm.expectRevert(ListingEscrow.VerifierWindowClosed.selector);
-        escrow.release(listingHash, bytes32(uint256(1)), keccak256("submission-1"), payee, keccak256("verdict-payload-hash"), stale, sig);
+        escrow.release(listingHash, funder, bytes32(uint256(1)), keccak256("submission-1"), payee, keccak256("verdict-payload-hash"), stale, sig);
     }
 
     function test_replaying_a_paid_award_is_refused() public onSepolia {
@@ -179,7 +183,7 @@ contract SepoliaE2ETest is Test {
         _release(listingHash, bytes32(uint256(1)), payee, t);
         bytes memory sig = _sig(listingHash, bytes32(uint256(1)), payee, t, verifierKey);
         vm.expectRevert(ListingEscrow.AwardAlreadyPaid.selector);
-        escrow.release(listingHash, bytes32(uint256(1)), keccak256("submission-1"), payee, keccak256("verdict-payload-hash"), t, sig);
+        escrow.release(listingHash, funder, bytes32(uint256(1)), keccak256("submission-1"), payee, keccak256("verdict-payload-hash"), t, sig);
     }
 
     function test_max_awards_exhaustion() public onSepolia {
@@ -190,21 +194,21 @@ contract SepoliaE2ETest is Test {
         // The verifier cap and the capacity ceiling both bite here; whichever
         // fires first, no second award is possible on a one-award listing.
         vm.expectRevert();
-        escrow.release(listingHash, bytes32(uint256(2)), keccak256("submission-1"), payee, keccak256("verdict-payload-hash"), t, sig);
-        assertEq(usdc.balanceOf(payee), PER);
+        escrow.release(listingHash, funder, bytes32(uint256(2)), keccak256("submission-1"), payee, keccak256("verdict-payload-hash"), t, sig);
+        assertEq(usdc.balanceOf(payee) - payeeBefore, PER);
     }
 
     function test_refund_before_the_deadline_is_refused_and_after_it_goes_only_to_the_funder() public onSepolia {
         _fund(MAX);
         vm.expectRevert(ListingEscrow.ClaimWindowOpen.selector);
-        escrow.refund(listingHash);
+        escrow.refund(listingHash, funder);
 
         vm.warp(cDeadline + 1);
         uint256 before = usdc.balanceOf(funder);
         vm.prank(relayer);
-        escrow.refund(listingHash);
+        escrow.refund(listingHash, funder);
         assertEq(usdc.balanceOf(funder) - before, PER * MAX, "unused money returns to whoever committed it");
-        assertEq(usdc.balanceOf(relayer), 0, "and never to whoever called");
+        assertEq(usdc.balanceOf(relayer) - relayerBefore, 0, "and never to whoever called");
     }
 
     function test_a_verdict_signed_at_the_last_valid_moment_still_gets_the_full_grace() public onSepolia {
@@ -212,7 +216,7 @@ contract SepoliaE2ETest is Test {
         uint64 t = vDeadline; // the last instant the verifier may decide
         vm.warp(cDeadline);   // the last instant the worker may collect
         _release(listingHash, bytes32(uint256(1)), payee, t);
-        assertEq(usdc.balanceOf(payee), PER, "30 days of grace that no verifier delay can consume");
+        assertEq(usdc.balanceOf(payee) - payeeBefore, PER, "30 days of grace that no verifier delay can consume");
     }
 
     function test_a_stranger_cannot_authorize_anything() public onSepolia {
@@ -220,7 +224,7 @@ contract SepoliaE2ETest is Test {
         uint64 t = uint64(block.timestamp);
         bytes memory sig = _sig(listingHash, bytes32(uint256(1)), payee, t, strangerKey);
         vm.expectRevert(ListingEscrow.NotAVerifier.selector);
-        escrow.release(listingHash, bytes32(uint256(1)), keccak256("submission-1"), payee, keccak256("verdict-payload-hash"), t, sig);
+        escrow.release(listingHash, funder, bytes32(uint256(1)), keccak256("submission-1"), payee, keccak256("verdict-payload-hash"), t, sig);
     }
 
     /// A MALICIOUS VERIFIER, PUSHED PAST ITS ECONOMIC AUTHORITY. On a listing
@@ -241,7 +245,7 @@ contract SepoliaE2ETest is Test {
         for (uint256 i = 2; i <= 6; i++) {
             bytes memory sig = _sig(lh, bytes32(i), attacker, t, verifierKey);
             vm.expectRevert(ListingEscrow.VerifierCapExceeded.selector);
-            escrow.release(lh, bytes32(i), keccak256("submission-1"), attacker, keccak256("verdict-payload-hash"), t, sig);
+            escrow.release(lh, funder, bytes32(i), keccak256("submission-1"), attacker, keccak256("verdict-payload-hash"), t, sig);
         }
         assertEq(usdc.balanceOf(attacker), PER, "one award, the declared cap, and not one more");
         assertEq(usdc.balanceOf(address(escrow)), PER * 2, "the other two awards are still there for honest work");
