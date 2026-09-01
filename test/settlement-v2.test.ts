@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "node:fs";
 import {
+  AWARD_STATES,
   MockSettlementAdapter,
   assertAwardTransition,
   assertLiabilityInvariant,
@@ -25,6 +26,7 @@ import {
   validateSettlement,
   wasEverPayable,
 } from "../src/settlement.ts";
+import { lapseExpiredAwards } from "../src/society.ts";
 
 const DOLLAR = "1000000";
 
@@ -350,4 +352,79 @@ test("the lapse decision asks who could have acted, in both directions", () => {
   // And the two outcomes differ in the only way that matters economically.
   assert.equal(isOutstanding("overdue_unpaid"), true, "still owed");
   assert.equal(isOutstanding("expired_unclaimed"), false);
+});
+
+// ---------- the derivations are claims, and are checked like claims ----------
+//
+// The completeness guard in settlement-e2e proves every served figure HAS a
+// derivation. It cannot prove the derivation is TRUE, and a present-but-wrong
+// derivation is worse than a missing one: it is a number a stranger will
+// reproduce and get a different answer from. Round one of the pre-deploy audit
+// found exactly that. v2_outstanding_awarded_atomic's derivation said "awarded
+// or payable" while isOutstanding() also returns overdue_unpaid, so a citizen
+// recomputing from the published recipe would have UNDER-reported what is
+// owed, which is the direction this whole change exists to prevent.
+//
+// So the recipe is derived from the same predicate the arithmetic uses.
+test("the published derivation of outstanding liability names every state that predicate actually sums", async () => {
+  const { railCensus } = await import("../src/society.ts");
+  const { DatabaseSync } = await import("node:sqlite");
+  const { readFileSync } = await import("node:fs");
+  const db = new DatabaseSync(":memory:");
+  const schema = readFileSync(new URL("../schema.sql", import.meta.url), "utf8");
+  db.exec(`CREATE TABLE citizens (id INTEGER PRIMARY KEY, handle TEXT UNIQUE, model TEXT, secret_hash TEXT, karma INTEGER, created_at INTEGER, last_seen_at INTEGER);
+    CREATE TABLE payout_bindings (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, docket_id TEXT, amount_atomic TEXT, payout_address TEXT, expiry INTEGER, created_at INTEGER);
+    CREATE TABLE payout_receipts (id INTEGER PRIMARY KEY AUTOINCREMENT, binding_id INTEGER UNIQUE, submitter_id INTEGER, tx_hash TEXT, source_address TEXT, created_at INTEGER);
+    ${schema.slice(schema.indexOf("CREATE TABLE IF NOT EXISTS listings"), schema.indexOf("CREATE INDEX IF NOT EXISTS idx_listings_expiry"))}
+    ${schema.slice(schema.indexOf("CREATE TABLE IF NOT EXISTS listing_submissions"), schema.indexOf("CREATE INDEX IF NOT EXISTS idx_listing_submissions_listing"))}
+    ${schema.slice(schema.indexOf("CREATE TABLE IF NOT EXISTS listing_awards"), schema.indexOf("CREATE INDEX IF NOT EXISTS idx_listing_awards_listing"))}
+    ${schema.slice(schema.indexOf("CREATE TABLE IF NOT EXISTS listing_settlement"))}
+    INSERT INTO citizens VALUES (1, 'funder', 'test', 's1', 0, 0, 0);`);
+  const env = {
+    DB: {
+      prepare: (sql: string) => ({
+        bind: (...a: unknown[]) => ({
+          async first() { return db.prepare(sql).get(...(a as never[])) ?? null; },
+          async all() { return { results: db.prepare(sql).all(...(a as never[])) }; },
+        }),
+        async first() { return db.prepare(sql).get() ?? null; },
+        async all() { return { results: db.prepare(sql).all() }; },
+      }),
+    },
+  } as never;
+  const census = await railCensus(env) as Record<string, any>;
+  const recipe = String(census.derivations.v2_outstanding_awarded_atomic);
+  for (const state of AWARD_STATES) {
+    if (!isOutstanding(state)) continue;
+    assert.ok(recipe.includes(state), `outstanding sums ${state}, so its published derivation must name ${state}`);
+  }
+  // And it must not name a state it does not sum, which would over-report.
+  for (const state of AWARD_STATES) {
+    if (isOutstanding(state)) continue;
+    assert.ok(!new RegExp(`state ${state}\\b`).test(recipe), `${state} is not summed into outstanding and must not be named as if it were`);
+  }
+});
+
+// SURVIVOR from the pre-deploy audit: `a.ready_at != null` in lapseExpiredAwards
+// carries a comment naming a defect that reached the census query for one run
+// (a column nobody SELECTed arrives as undefined, `!== null` reads every award
+// as ready, and the rail invents overdue debts). Every current caller SELECTs
+// the column, so tightening it to `!==` broke nothing and survived 1232 tests.
+// A named recurrence with no guard is an invitation, so here is the guard: the
+// function is handed the exact shape a forgetful caller produces.
+test("an award whose ready_at was never SELECTed is treated as UNLATCHED, not as ready", () => {
+  const nowMs = 1_000_000;
+  const unSelected = {
+    id: 1, listing_id: 1, submission_id: 1, citizen_id: 2, amount_atomic: DOLLAR,
+    state: "payable", awarded_by: "requester", awarded_at: 0, payable_at: 0,
+    expires_at: nowMs - 1, expired_at: null, overdue_at: null,
+    ready_binding_id: null, ready_payout_address: null, receipt_id: null, paid_at: null,
+    // ready_at deliberately ABSENT, exactly as a SELECT that omits it returns.
+  } as never;
+  const [lapsed] = lapseExpiredAwards([unSelected], nowMs, new Set<number>());
+  assert.equal(
+    (lapsed as { state: string }).state,
+    "expired_unclaimed",
+    "a missing column must never be read as the payee having been ready, or the rail invents an overdue debt for every award it did not ask about",
+  );
 });

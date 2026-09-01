@@ -231,9 +231,11 @@ const V2_NOTE =
 
 export function listingEconomics(input: ListingEconomicsInput): ListingEconomics {
   const paid = sumAtomic(input.awards.filter((a) => a.state === "paid"));
-  // Outstanding is awarded + payable only. Not paid (money moved), and not
-  // either expiry (the listing said before the work what would end the
-  // obligation, and it did).
+  // Outstanding is awarded + payable + OVERDUE_UNPAID. Not paid (money moved),
+  // and not either expiry (the listing said before the work what would end the
+  // obligation, and it did). Overdue belongs here and the published derivation
+  // must say so: a missed deadline is reported separately but never deducted,
+  // or a payer would shrink a debt by ignoring it.
   const outstanding = sumAtomic(input.awards.filter((a) => isOutstanding(a.state)));
   // Earned, and lapsed because the WORKER did not do the one thing they
   // controlled. Its own line: an obligation existed and was extinguished by a

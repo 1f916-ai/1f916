@@ -25,7 +25,7 @@ import { DOCKET, standingClaims, starterItems } from "./docket.ts";
 import { FUNDS_ADVICE, LISTINGS_PER_DAY, LISTING_RULE, NEXT_ACTIONS_NOTE, PAYEE_PREREQUISITES, SUBMISSIONS_PER_DAY, TREASURY_FUNDER_MARK, assertPaidFromListingFunder, assertVerifierCapNotReached, listingIdFromRow, listingPreimage, listingRoleFromRow, listingRow, listingSnapshot, payeeNextActions, validateListing, validateSubmission, type HeldBinding, type ListingInput, type StoredListing, type SubmissionInput } from "./listings.ts";
 import {
   ADAPTER_STATUS, AUTOMATIC_CHECK_NOTE, FUNDING_MODE_NOTE, SETTLEMENT_MODE_NOTE, SUBMISSION_STATE_NOTE,
-  assertAwardTransition, assertLiabilityInvariant, awardRefusal, commentIdFromArtifact, consumesSlot, evaluateAutomaticCheck, isOutstanding, lapseStateFor, listingEconomics,
+  AWARD_STATES, assertAwardTransition, assertLiabilityInvariant, awardRefusal, commentIdFromArtifact, consumesSlot, evaluateAutomaticCheck, isOutstanding, lapseStateFor, listingEconomics,
   settlementBlock, submissionState, validateAutomaticCheck, validateSettlement, wasEverPayable,
   SETTLEMENT_BLOCK_NOTE,
   type AutomaticCheck, type AwardRow, type AwardState, type SettlementAdapter, type SettlementInput,
@@ -4502,8 +4502,14 @@ export async function railCensus(env: Env) {
       bindings: "COUNT(*) over payout_bindings grouped by docket_id, both the worker row listing-<id> and the verifier row listing-<id>-verifier.",
       receipts: "The same rows LEFT JOINed to payout_receipts, counting those with a receipt. A receipt is two Base RPC sources agreeing on one finalized USDC Transfer, signed for by its source.",
       lapsed_bindings: "Bindings with no receipt whose OWN expiry is already past, at the clock in `now`. This counts routing records that went stale. It is not a debt, not a broken promise, and not a count of unpaid people.",
-      awards: "Rows in the award ledger, with any award past its listing's award_ttl_seconds treated as expired before it is counted.",
-      v2_outstanding_awarded_atomic: "The sum of awards in state awarded or payable, over settlement_version 2 listings, which are the only listings that can hold awards. THIS, and only this, is money a funder is RECORDED as currently owing on this rail. It is a floor on what is owed and never a ceiling, because pre-v2 listings carry no ledger to sum.",
+      awards: "Every row in the award ledger for this listing, in any state, counted without a filter of any kind: a lapse never deletes a row, so this figure is the same before and after the clocks are applied. Which clock governs a row depends on how it was born: a seat reserved before the work runs award_ttl_seconds and lapses to expired_unmet, while an award born payable runs payable_ttl_seconds and lapses to overdue_unpaid or expired_unclaimed depending on whether the payee had supplied a payout destination. See award_states on each listing for the split.",
+      // EMITTED FROM THE PREDICATE THE ARITHMETIC USES, not hand-written
+      // beside it. The audit found this sentence saying "awarded or payable"
+      // while isOutstanding also returns overdue_unpaid, so a citizen
+      // reproducing the figure from its own published recipe would have
+      // UNDER-reported what is owed. A hand-written list of a branching value
+      // is the defect class; a list the branch produces cannot drift from it.
+      v2_outstanding_awarded_atomic: `The sum of awards in state ${AWARD_STATES.filter(isOutstanding).join(", ")}, over settlement_version 2 listings, which are the only listings that can hold awards. Overdue is INCLUDED in this total and is never deducted from it: a payer does not reduce a debt by missing its deadline, and v2_overdue_unpaid_atomic below says how much of this total is already late rather than naming a separate amount beside it. THIS, and only this, is money a funder is RECORDED as currently owing on this rail. It is a floor on what is owed and never a ceiling, because pre-v2 listings carry no ledger to sum. This list of states is emitted from the same predicate the sum uses, so it cannot drift from it.`,
       v2_currently_due_atomic: "Owed and not yet past a promised payment deadline. Part of v2_outstanding_awarded_atomic.",
       v2_overdue_unpaid_atomic: "Owed, AND the worker had already supplied a payout destination, AND the payer did not settle by the deadline. Still part of v2_outstanding_awarded_atomic and never deducted from it: missing a deadline does not reduce a debt. The missed deadline belongs to the payer and appears in funders below, never on the worker's record.",
       v2_expired_unclaimed_atomic: "The sum of awards that BECAME PAYABLE and then lapsed unclaimed past the claim window their listing declared before the work began. This money was genuinely earned and is no longer owed, and both halves of that are true at once. It is served on its own line so it can be read as neither 'still owed' nor 'never earned', and the award rows keep the timestamp at which each became payable.",
