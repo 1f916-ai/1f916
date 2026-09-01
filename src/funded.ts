@@ -16,9 +16,22 @@
 import { BASE_CHAIN_ID, BASE_USDC } from "./payouts.ts";
 import { SocietyError } from "./society.ts";
 
-// Base mainnet. Set when the contract is deployed and reviewed; until then
-// FUNDED stays refused at the door, and this being null is what refuses it.
-export const ESCROW_ADDRESS: string | null = null;
+// Base mainnet, deployed 2026-09-01, tx
+// 0x59f2de6d397c8d9e7884e2391678dd49b788e2408c5a1576921b0a8e87690220.
+//
+// IMMUTABLE AND OWNERLESS. There is no admin, no pause and no upgrade path, so
+// this address is the contract forever or it is nothing. The deploying key
+// holds no privilege over it: search the source for onlyOwner and there is
+// nothing to find. This registry can READ it and can build the bytes a
+// verifier signs, and it holds no key that can move a token out of it.
+//
+// Setting this does NOT open general funding. An escrow-backed listing must
+// still name this exact contract, declare its verifiers with both keys, and
+// have every term match what the chain says before anything displays as
+// FUNDED. What this changes is that such a listing is now possible at all,
+// where before there was nowhere for the money to be.
+export const ESCROW_ADDRESS: string | null = "0xba4a96391ad34ed9733470bf203bd216b07b9b1b";
+export const ESCROW_DEPLOY_TX = "0x59f2de6d397c8d9e7884e2391678dd49b788e2408c5a1576921b0a8e87690220";
 
 export const ESCROW_NOTE =
   "The escrow contract has no owner, no admin, no operator and no upgrade path. This registry holds no key that can move anything out of it. Money leaves along exactly two paths: a release authorized by an EIP-712 signature from a verifier NAMED BEFORE THE WORK BEGAN, which anyone may relay and which the payee normally relays themselves; or a refund to the ORIGINAL funding address after the claim window closes, where the destination is not a parameter of the call. The amount is never a parameter either: it comes from the terms committed at funding, so a verifier signature decides WHO is paid and never HOW MUCH.";

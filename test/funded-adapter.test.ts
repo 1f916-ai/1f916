@@ -29,11 +29,19 @@ const terms = (over: Partial<EscrowTerms> = {}): EscrowTerms => ({
 
 const listing = { payload_hash: HASH, amount_atomic: "5000000", max_awards: 3, token: USDC };
 
-test("FUNDED is not reachable in production until a reviewed contract address exists", () => {
-  // The flag that keeps the door shut is this one, and it is data rather than
-  // a branch someone can forget: with no escrow address there is no contract
-  // to read, so nothing can be displayed as funded.
-  assert.equal(ESCROW_ADDRESS, null);
+test("the escrow this registry reads is the immutable one that was deployed, and it grants nobody anything", () => {
+  // Deployed to Base mainnet 2026-09-01. Setting this did NOT open general
+  // funding: an escrow-backed listing must still name this exact contract,
+  // declare its verifiers with both keys, and match the chain on every term
+  // before anything reads as FUNDED. What changed is that there is now
+  // somewhere for the money to be.
+  assert.equal(ESCROW_ADDRESS, "0xba4a96391ad34ed9733470bf203bd216b07b9b1b");
+  assert.match(ESCROW_ADDRESS!, /^0x[0-9a-f]{40}$/, "lowercase, the form every comparison here uses");
+  // A listing naming any OTHER contract is still refused, so pointing the
+  // registry at an escrow is not the same as trusting one.
+  const found = fundedDisagreements(v3Listing, { ...chainOk, escrowAddress: ESCROW_ADDRESS! });
+  assert.ok(found.some((f) => /commits to escrow .* and the reader queried/.test(f)),
+    "the listing names its own escrow and a reader querying a different one disagrees");
 });
 
 test("the escrow note states the custody property in the terms a reader can check", () => {
@@ -371,8 +379,10 @@ test("an escrow-backed listing is refused unless this registry can read the escr
     createListing(env, citizen, { ...body, verifiers: [{ handle: "verifier-one", key_thumbprint: "AAAAAAAAAAAAAAAA", evm_address: "0x7777777777777777777777777777777777777777", cap: 1 }] } as never),
     /no live payout binding proving control of 0x7777/,
   );
-  // Production: no contract is deployed, so nothing escrow-backed can exist.
-  await assert.rejects(createListing(env, citizen, body as never), /no settlement contract is deployed/);
+  // Production now reads a deployed contract, so a listing naming a DIFFERENT
+  // one is the refusal that matters: an escrow this registry cannot read is a
+  // FUNDED claim nobody here could ever check.
+  await assert.rejects(createListing(env, citizen, body as never), /this registry can only read 0xba4a/);
   // AND NAMING A CONTRACT THIS REGISTRY CANNOT READ IS ALSO REFUSED. A listing
   // whose escrow nobody here can query is one whose FUNDED claim could never
   // be checked, which is worse than an unfunded listing because it looks
