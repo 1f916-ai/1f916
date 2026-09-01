@@ -120,6 +120,7 @@ const chainOk = {
   verifierAuthority: [{ address: V, cap: 3, used: 0 }],
   funderAddress: "0xF00D000000000000000000000000000000000000",
   expectedVerifierSet: SET_HASH,
+  nowSeconds: 500,
 };
 
 test("the read ABI cannot express a state change, and DECODES what the contract returns", () => {
@@ -267,22 +268,22 @@ import { MAX_ESCROW_VERIFIERS, MIN_CLAIM_GRACE_SECONDS, validateSettlement } fro
 
 const NOW_S = Math.floor(Date.now() / 1000);
 const v3Terms = (over: Record<string, unknown> = {}) => ({
-  max_awards: 3, funding_mode: "funded", settlement_mode: "verifier",
+  max_awards: 3, funding_mode: "funded", settlement_mode: "verifier", verifier_price_atomic: "1000000", max_verifiers: 1,
   escrow_chain_id: 8453, escrow_address: ESCROW, escrow_token: USDC,
   escrow_verifier_deadline: NOW_S + 7 * 86400,
   escrow_claim_deadline: NOW_S + 37 * 86400,
-  verifiers: [{ handle: "verifier-one", key_thumbprint: "AAAAAAAAAAAAAAAA", evm_address: V, cap: 1 }],
+  verifiers: [{ handle: "verifier-one", key_thumbprint: "AAAAAAAAAAAAAAAA", evm_address: V, cap: 3 }],
   ...over,
 });
 
 test("an escrow-backed listing declares both of a verifier's keys, and neither is optional", () => {
   const ok = validateSettlement(v3Terms() as never, NOW_S + 5 * 86400, NOW_S);
   assert.equal(ok.settlementVersion, 3);
-  assert.deepEqual(ok.verifiers, [{ handle: "verifier-one", keyThumbprint: "AAAAAAAAAAAAAAAA", evmAddress: V.toLowerCase(), cap: 1 }]);
+  assert.deepEqual(ok.verifiers, [{ handle: "verifier-one", keyThumbprint: "AAAAAAAAAAAAAAAA", evmAddress: V.toLowerCase(), cap: 3 }]);
 
-  assert.throws(() => validateSettlement(v3Terms({ verifiers: [{ handle: "verifier-one", evm_address: V, cap: 1 }] }) as never, NOW_S + 5 * 86400, NOW_S),
+  assert.throws(() => validateSettlement(v3Terms({ verifiers: [{ handle: "verifier-one", evm_address: V, cap: 3 }] }) as never, NOW_S + 5 * 86400, NOW_S),
     /needs key_thumbprint/, "without it the document and the authorization could be two different people");
-  assert.throws(() => validateSettlement(v3Terms({ verifiers: [{ handle: "verifier-one", key_thumbprint: "AAAAAAAAAAAAAAAA", cap: 1 }] }) as never, NOW_S + 5 * 86400, NOW_S),
+  assert.throws(() => validateSettlement(v3Terms({ verifiers: [{ handle: "verifier-one", key_thumbprint: "AAAAAAAAAAAAAAAA", cap: 3 }] }) as never, NOW_S + 5 * 86400, NOW_S),
     /needs evm_address/, "the EVM cannot check Ed25519, so the same decision is signed twice");
   assert.throws(() => validateSettlement(v3Terms({ verifiers: [] }) as never, NOW_S + 5 * 86400, NOW_S),
     /must declare its verifiers/);
@@ -350,7 +351,7 @@ test("an escrow-backed listing is refused unless this registry can read the escr
     title: "Independent reproduction test",
     condition: "Re-run the walk against GET /api/payouts and publish the total you got in a comment on this listing's thread.",
     amount_atomic: "1000000", expiry: NOW_S + 3 * 86400, max_awards: 1,
-    funding_mode: "funded", settlement_mode: "verifier",
+    funding_mode: "funded", settlement_mode: "verifier", verifier_price_atomic: "1000000", max_verifiers: 1,
     escrow_chain_id: 8453, escrow_address: ESCROW, escrow_token: USDC,
     escrow_verifier_deadline: NOW_S + 7 * 86400, escrow_claim_deadline: NOW_S + 37 * 86400,
     verifiers: [{ handle: "verifier-one", key_thumbprint: "AAAAAAAAAAAAAAAA", evm_address: V, cap: 1 }],
@@ -368,7 +369,7 @@ test("an escrow-backed listing is refused unless this registry can read the escr
   // next to their own wallet is the whole attack.
   await assert.rejects(
     createListing(env, citizen, { ...body, verifiers: [{ handle: "verifier-one", key_thumbprint: "AAAAAAAAAAAAAAAA", evm_address: "0x7777777777777777777777777777777777777777", cap: 1 }] } as never),
-    /never proved control of 0x7777/,
+    /no live payout binding proving control of 0x7777/,
   );
   // Production: no contract is deployed, so nothing escrow-backed can exist.
   await assert.rejects(createListing(env, citizen, body as never), /no settlement contract is deployed/);
@@ -469,7 +470,7 @@ test("A FUNDER CANNOT BE THEIR OWN VERIFIER", async () => {
     title: "Independent reproduction test",
     condition: "Re-run the walk against GET /api/payouts and publish the total you got in a comment on this listing's thread.",
     amount_atomic: "1000000", expiry: NOW_S + 3 * 86400, max_awards: 1,
-    funding_mode: "funded", settlement_mode: "verifier",
+    funding_mode: "funded", settlement_mode: "verifier", verifier_price_atomic: "1000000", max_verifiers: 1,
     escrow_chain_id: 8453, escrow_address: ESCROW, escrow_token: USDC,
     escrow_verifier_deadline: NOW_S + 7 * 86400, escrow_claim_deadline: NOW_S + 37 * 86400,
     // The funder's own handle, own key, own proven wallet.
@@ -515,4 +516,62 @@ test("every active-key lookup resolves deterministically, and both sites agree",
   assert.ok(lookups.length >= 2, `expected the posting-time and verdict-time lookups, found ${lookups.length}`);
   for (const q of lookups)
     assert.match(q, /ORDER BY id ASC/, `an unordered active-key lookup lets two sites disagree about which key is yours: ${q.slice(0, 90)}`);
+});
+
+// ---------- fourth review ----------
+
+test("SPENT VERIFIER AUTHORITY IS NOT FUNDING, however well the terms match", () => {
+  // The reader fetched `used` and never read it. So once the named verifiers
+  // had spent their caps, the escrow still held money, every field still
+  // matched, the set hash still matched, and this page still said
+  // "FUNDED. 15000000 atomic units are committed" about an amount no
+  // signature from any named verifier could move. A worker reads that, works,
+  // and is unpayable; the funder takes it back at the claim deadline. That is
+  // the free option this whole rail exists to remove.
+  const spent = fundedDisagreements(v3Listing, {
+    ...chainOk,
+    verifierAuthority: [{ address: V, cap: 3, used: 3 }],
+  });
+  assert.ok(spent.some((f) => /spent their authority/.test(f)), JSON.stringify(spent));
+  assert.match(fundingStatement(spent, chainOk.onchain), /^NOT FUNDED/);
+
+  // Partially spent is reported too, with the exact shortfall.
+  const partial = fundedDisagreements(v3Listing, {
+    ...chainOk,
+    verifierAuthority: [{ address: V, cap: 3, used: 1 }],
+  });
+  assert.ok(partial.some((f) => /may only authorize 2 more/.test(f)), JSON.stringify(partial));
+
+  // And the honest case is still funded: authority covers what is left.
+  assert.deepEqual(fundedDisagreements(v3Listing, { ...chainOk, verifierAuthority: [{ address: V, cap: 3, used: 0 }] }), []);
+});
+
+test("the reader knows what time it is, and both windows are read against the clock", () => {
+  // fundedDisagreements took no time argument at all: it compared the
+  // deadlines with the listing for equality and stopped. Past the verifier
+  // window nothing could ever be authorized again, and it still said FUNDED.
+  const afterVerifier = fundedDisagreements(v3Listing, { ...chainOk, nowSeconds: 1500 });
+  assert.ok(afterVerifier.some((f) => /verifier window has closed/.test(f)), JSON.stringify(afterVerifier));
+
+  const afterClaim = fundedDisagreements(v3Listing, { ...chainOk, nowSeconds: 2500 });
+  assert.ok(afterClaim.some((f) => /claim window has closed/.test(f)), JSON.stringify(afterClaim));
+  // The two are distinct facts and are not collapsed into one sentence.
+  assert.ok(!afterClaim.some((f) => /verifier window has closed/.test(f)), "past the claim window the earlier one is not the useful thing to say");
+});
+
+test("terms that could never be funded are refused at the door, not published and left unsatisfied", () => {
+  // An escrow holding something other than what the listing prices in can
+  // never match, so the listing would be unfundable from the moment it posted.
+  assert.throws(() => validateSettlement(v3Terms({ escrow_token: "0x3333333333333333333333333333333333333333" }) as never, NOW_S + 5 * 86400, NOW_S),
+    /must be the asset this listing prices in/);
+  // Caps that cannot spend the committed capacity strand money a worker earns.
+  assert.throws(() => validateSettlement(v3Terms({ max_awards: 5, verifiers: [{ handle: "verifier-one", key_thumbprint: "AAAAAAAAAAAAAAAA", evm_address: V, cap: 2 }] }) as never, NOW_S + 5 * 86400, NOW_S),
+    /could never be released by anyone it named/);
+  // And an escrow listing that pays its verifiers nothing can never have a
+  // verdict at all: the verdict path needs a verifier binding, and that
+  // binding is refused on a listing with no verifier price.
+  const { verifier_price_atomic, ...noPrice } = v3Terms() as Record<string, unknown>;
+  void verifier_price_atomic;
+  assert.throws(() => validateSettlement(noPrice as never, NOW_S + 5 * 86400, NOW_S),
+    /must declare verifier_price_atomic/);
 });

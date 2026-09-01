@@ -177,7 +177,17 @@ contract ListingEscrowTest is Test {
 
     function test_a_capped_verifier_is_bounded_to_its_declared_authority() public {
         // The same attack, against a verifier capped at one award of three.
-        _fundCapped(5_000_000, 3, 1);
+        // A second verifier covers the other two, because caps must now be
+        // able to spend everything the listing committed: an escrow whose
+        // named verifiers cannot release all of it is money a worker can
+        // earn and never collect.
+        uint256 keyB = 0xB0B2;
+        address[] memory vs = new address[](2);
+        uint32[] memory caps = new uint32[](2);
+        vs[0] = verifier;      caps[0] = 1;
+        vs[1] = vm.addr(keyB); caps[1] = 2;
+        vm.prank(funder);
+        escrow.fund(LH, address(usdc), 5_000_000, 3, vs, caps, vDeadline, cDeadline);
         address attacker = address(0xBAD);
         uint64 t = uint64(block.timestamp);
         bytes memory first = _sig(LH, bytes32(uint256(1)), bytes32(0), attacker, bytes32(0), t, verifierKey);
@@ -246,7 +256,9 @@ contract ListingEscrowTest is Test {
     /// much the listing can cost.
     function testFuzz_caps_never_let_a_listing_exceed_its_ceiling(uint32 capA, uint8 awards) public {
         awards = uint8(bound(awards, 1, 8));
-        capA = uint32(bound(capA, 1, 100));
+        // At least enough to cover the listing: caps below capacity are now
+        // refused at funding, because they strand money a worker can earn.
+        capA = uint32(bound(capA, awards, 100));
         usdc.mint(funder, uint256(5_000_000) * awards);
         _fundCapped(5_000_000, awards, capA);
         uint64 t = uint64(block.timestamp);
@@ -383,6 +395,52 @@ contract ListingEscrowTest is Test {
         vm.expectEmit(true, true, true, true, address(escrow));
         emit ListingEscrow.Released(LH, funder, bytes32(uint256(1)), payee, verifier, 5_000_000);
         escrow.release(LH, funder, bytes32(uint256(1)), bytes32(0), payee, bytes32(0), t, sig);
+    }
+
+    /// FOURTH REVIEW, HIGH. Each cap was bounded above by maxAwards and below
+    /// by one, and nothing checked the SUM. A funder could commit five awards
+    /// to one verifier capped at one: four awards' worth of money in an escrow
+    /// no named verifier can move, displayed as funded, refunded to the funder
+    /// at the claim deadline, with a worker who did the work and cannot be
+    /// paid. Two individually correct bounds rebuilding the free option this
+    /// rail exists to remove.
+    function test_caps_must_be_able_to_spend_what_the_listing_commits() public {
+        address[] memory vs = new address[](1);
+        uint32[] memory caps = new uint32[](1);
+        vs[0] = verifier; caps[0] = 1;
+        vm.prank(funder);
+        vm.expectRevert(ListingEscrow.CapsBelowCapacity.selector);
+        escrow.fund(LH, address(usdc), 5_000_000, 5, vs, caps, vDeadline, cDeadline);
+
+        // Several verifiers may share the capacity between them.
+        address[] memory two = new address[](2);
+        uint32[] memory twoCaps = new uint32[](2);
+        two[0] = verifier;            twoCaps[0] = 2;
+        two[1] = vm.addr(0xB0B3);     twoCaps[1] = 3;
+        vm.prank(funder);
+        escrow.fund(LH, address(usdc), 5_000_000, 5, two, twoCaps, vDeadline, cDeadline);
+        (,,,, uint32 released,,,,,) = escrow.listingOf(LH, funder);
+        assertEq(released, 0);
+        // And a single verifier carrying the whole listing is still allowed:
+        // that is the funder choosing one party to hold the balance.
+        address[] memory one = new address[](1);
+        uint32[] memory oneCap = new uint32[](1);
+        one[0] = verifier; oneCap[0] = 5;
+        vm.prank(funder);
+        escrow.fund(keccak256("second"), address(usdc), 5_000_000, 5, one, oneCap, vDeadline, cDeadline);
+    }
+
+    /// FOURTH REVIEW, LOW: deleting this guard left every test green, so it
+    /// was asserted only in prose. Two entries for one address is two caps for
+    /// one key, which is the cap rule quietly doubled.
+    function test_a_verifier_cannot_be_named_twice() public {
+        address[] memory vs = new address[](2);
+        uint32[] memory caps = new uint32[](2);
+        vs[0] = verifier; caps[0] = 2;
+        vs[1] = verifier; caps[1] = 2;
+        vm.prank(funder);
+        vm.expectRevert(ListingEscrow.DuplicateVerifier.selector);
+        escrow.fund(LH, address(usdc), 5_000_000, 3, vs, caps, vDeadline, cDeadline);
     }
 
     // ---------------------------------------------------- double payment

@@ -2722,10 +2722,15 @@ export async function createListing(
       if (who.id === citizen.id)
         throw new SocietyError(400, "a listing cannot name its own funder as a verifier. The verifier is the party who can release this money, and a funder who can release their own escrow has committed nothing: they would take it back the moment the work was done. Name someone else, and expect a worker to check who that someone is.");
       const proven = await env.DB.prepare(
-        `SELECT 1 AS ok FROM payout_bindings WHERE citizen_id = ? AND lower(payout_address) = ? LIMIT 1`,
-      ).bind(who.id, v.evmAddress).first<{ ok: number }>();
+        // A LAPSED PROOF IS STILL A LOOSE ONE. Control once proved is
+        // arguably proved forever, but a binding filed against an unrelated
+        // row and expired two years ago is a thin thing to hang a payout on,
+        // and requiring a live one costs a verifier nothing they were not
+        // going to do anyway.
+        `SELECT 1 AS ok FROM payout_bindings WHERE citizen_id = ? AND lower(payout_address) = ? AND expiry > ? LIMIT 1`,
+      ).bind(who.id, v.evmAddress, Math.floor(Date.now() / 1000)).first<{ ok: number }>();
       if (!proven)
-        throw new SocietyError(400, `${v.handle} has never proved control of ${v.evmAddress}. A verifier's wallet is what the money obeys, so naming one they did not sign for would let a funder print a trusted handle beside an address of their own choosing and take the escrow back through it. ${v.handle} must file a payout binding for that address first: it is an EIP-191 signature by the wallet AND their citizen key over one preimage, which is the proof this check wants.`);
+        throw new SocietyError(400, `${v.handle} holds no live payout binding proving control of ${v.evmAddress}. A verifier's wallet is what the money obeys, so naming one they did not sign for would let a funder print a trusted handle beside an address of their own choosing and take the escrow back through it. ${v.handle} must file a payout binding for that address first: it is an EIP-191 signature by the wallet AND their citizen key over one preimage, which is the proof this check wants.`);
       // ONE ACTIVE KEY, OR THE LISTING DOES NOT POST.
       //
       // Nothing stops a citizen holding several active self-custodied keys,

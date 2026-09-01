@@ -41,6 +41,7 @@ contract ListingEscrow {
     error DuplicateVerifier();
     error CapMismatch();
     error ZeroCap();
+    error CapsBelowCapacity();
     error VerifierCapExceeded();
     error ZeroAddress();
     error DeadlineOrder();
@@ -242,6 +243,7 @@ contract ListingEscrow {
         if (verifierDeadline <= block.timestamp) revert DeadlineOrder();
 
         if (verifierCaps.length != verifiers.length) revert CapMismatch();
+        uint64 capSum = 0;
         for (uint256 i = 0; i < verifiers.length; i++) {
             address v = verifiers[i];
             if (v == address(0)) revert ZeroAddress();
@@ -254,7 +256,19 @@ contract ListingEscrow {
             // single-verifier case a two-value coincidence to get right.
             if (verifierCaps[i] == 0) revert ZeroCap();
             _verifierCap[key][v] = verifierCaps[i];
+            capSum += uint64(verifierCaps[i]);
         }
+        // THE CAPS MUST BE ABLE TO SPEND WHAT WAS COMMITTED.
+        //
+        // Each cap was bounded above by maxAwards and below by one, and
+        // nothing checked the SUM. So a funder could commit five awards to a
+        // single verifier capped at one: four awards' worth of money sitting
+        // in an escrow that no signature from any named verifier can move,
+        // displayed as funded, refunded to the funder at the claim deadline.
+        // A worker reads "five awards available", does the work, and cannot be
+        // paid. That is the free option this rail exists to remove, rebuilt
+        // out of two bounds that were individually correct.
+        if (capSum < maxAwards) revert CapsBelowCapacity();
 
         l.funder = msg.sender;
         l.verifierSetHash = verifierSetHash(verifiers, verifierCaps);

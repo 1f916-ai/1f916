@@ -101,7 +101,7 @@ async function escrowListing(env: Env, db: DatabaseSync, verifierHandle: string,
     escrow_token: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
     escrow_verifier_deadline: NOW + 7 * 86400,
     escrow_claim_deadline: NOW + 37 * 86400,
-    verifiers: [{ handle: verifierHandle, key_thumbprint: thumbprint, evm_address: "0x1111111111111111111111111111111111111111", cap: 1 }],
+    verifiers: [{ handle: verifierHandle, key_thumbprint: thumbprint, evm_address: "0x1111111111111111111111111111111111111111", cap: 2 }],
   }, { escrowAddress: "0x2222222222222222222222222222222222222222" }) as Record<string, unknown>;
   const listingId = Number((listing.row as string).replace("listing-", ""));
   db.prepare("INSERT INTO payout_bindings (citizen_id, docket_id, amount_atomic, payout_address, expiry, created_at) VALUES (?, ?, ?, '0xv', ?, 0)")
@@ -674,7 +674,7 @@ test("an escrow-backed listing serves its escrow terms and both of each verifier
   assert.equal(served.settlement_version, 3);
   assert.equal(served.escrow_address, "0x2222222222222222222222222222222222222222");
   assert.equal(served.escrow_chain_id, 8453);
-  assert.deepEqual(served.verifiers, [{ handle: "citizen-c", key_thumbprint: thumb, evm_address: "0x1111111111111111111111111111111111111111", cap: 1 }]);
+  assert.deepEqual(served.verifiers, [{ handle: "citizen-c", key_thumbprint: thumb, evm_address: "0x1111111111111111111111111111111111111111", cap: 2 }]);
   assert.match(served.escrow_note, /named by BOTH keys/);
   // And every field the v3 recipe names is on the body a reader recomputes from.
   for (const f of served.payload_hash_recipe.fields as string[])

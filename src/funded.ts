@@ -212,6 +212,11 @@ export function fundedDisagreements(
     onchain: EscrowTerms | null;
     verifierAuthority: { address: string; cap: number; used: number }[];
     funderAddress: string | null;
+    // THE READER NEEDS A CLOCK. The contract enforces both deadlines; this
+    // function compared them for equality with the listing and stopped, so
+    // past the verifier window it still said FUNDED about money no verdict
+    // could ever authorize.
+    nowSeconds: number;
     // keccak256(abi.encode(verifiers, caps)) recomputed from the listing's own
     // published verifier list, in the order the listing published them. Absent
     // means the reader did not compute it, which is itself a disagreement:
@@ -298,6 +303,28 @@ export function fundedDisagreements(
   // deciding whether to start.
   if (onchainRemaining(chain.onchain) === 0n)
     out.push("every award on this listing has already been released or refunded, so the escrow holds nothing and no further work on it can be paid from here");
+
+  // CAPACITY NOBODY CAN SPEND IS NOT FUNDING. The reader fetched `used` and
+  // never read it, so once the named verifiers had spent their caps the
+  // escrow still held money, every field still matched, and this page still
+  // said FUNDED about an amount no signature from any named verifier could
+  // move. A worker reads that, works, and is unpayable; the funder takes it
+  // back at the claim deadline. Releasable is the SMALLER of what the escrow
+  // still holds and what the named verifiers may still authorize.
+  const authorityLeft = chain.verifierAuthority.reduce((n, v) => n + Math.max(0, v.cap - v.used), 0);
+  const awardsLeft = chain.onchain.maxAwards - chain.onchain.released;
+  if (authorityLeft === 0 && awardsLeft > 0)
+    out.push(`the escrow still holds ${awardsLeft} award${awardsLeft === 1 ? "" : "s"} and every verifier this listing named has spent their authority, so nothing here can be released to anyone and the money returns to the funder when the claim window closes`);
+  else if (authorityLeft < awardsLeft)
+    out.push(`the escrow holds ${awardsLeft} awards but the named verifiers may only authorize ${authorityLeft} more, so ${awardsLeft - authorityLeft} of them cannot be paid to anyone`);
+
+  // THE TWO WINDOWS, READ AGAINST THE CLOCK rather than only against the
+  // listing. Past the verifier deadline no new verdict can authorize anything;
+  // past the claim deadline nothing can be collected at all.
+  if (chain.nowSeconds > chain.onchain.claimDeadline)
+    out.push("the claim window has closed: nothing in this escrow can be released now, and the unreleased remainder returns to the funder");
+  else if (chain.nowSeconds > chain.onchain.verifierDeadline)
+    out.push("the verifier window has closed: no verdict signed from here on can authorize a release, so only awards already verified can still be collected");
 
   return out;
 }

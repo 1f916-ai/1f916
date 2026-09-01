@@ -19,6 +19,7 @@
 // into one number without the third being served beside them.
 
 import { SocietyError } from "./society.ts";
+import { BASE_CHAIN_ID, BASE_USDC } from "./payouts.ts";
 
 // ---------- modes ----------
 
@@ -448,6 +449,9 @@ export interface SettlementInput {
   verifiers?: unknown;
   escrow_verifier_deadline?: unknown;
   escrow_claim_deadline?: unknown;
+  // Read only to refuse an escrow listing that pays its verifiers nothing:
+  // the verdict path needs a verifier binding and that binding needs a price.
+  verifier_price_atomic?: unknown;
 }
 
 // ONE VERIFIER, TWO KEYS, ONE PERSON. A verifier signs the protocol verdict
@@ -502,6 +506,12 @@ export function validateEscrowTerms(body: SettlementInput, maxAwards: number, li
   const token = String(body.escrow_token ?? "").toLowerCase();
   if (!/^0x[0-9a-f]{40}$/.test(token))
     throw new SocietyError(400, "a funded listing must declare escrow_token: the asset committed, named rather than assumed");
+  // THE ESCROW MUST HOLD WHAT THE LISTING PRICES IN. Accepting any token here
+  // let a listing post terms that could never display as funded, because the
+  // reader compares the two: a listing that is unfundable by construction
+  // should be refused at the door rather than published and never satisfied.
+  if (token !== BASE_USDC || chainId !== BASE_CHAIN_ID)
+    throw new SocietyError(400, `escrow_token must be the asset this listing prices in, ${BASE_USDC} on chain ${BASE_CHAIN_ID}. An escrow holding something else can never match the terms published here, so the listing would be unfundable from the moment it was posted.`);
 
   const verifierDeadline = Number(body.escrow_verifier_deadline);
   const claimDeadline = Number(body.escrow_claim_deadline);
@@ -523,6 +533,17 @@ export function validateEscrowTerms(body: SettlementInput, maxAwards: number, li
     throw new SocietyError(400, "escrow_claim_deadline must be strictly after escrow_verifier_deadline: the gap between them is the window the PAYEE has to collect, and a listing that leaves none hands a slow verifier the power to run out the clock on work it already approved");
   if (listingExpiry !== undefined && verifierDeadline < listingExpiry)
     throw new SocietyError(400, "escrow_verifier_deadline must not fall before the listing's own expiry, or work handed in on the last day could never be verified");
+
+  // A VERIFIER MUST BE ABLE TO BE PAID, or no verdict can ever exist. The
+  // verdict path requires the verifier to hold a listing-<id>-verifier payout
+  // binding, and that binding is refused when the listing declares no verifier
+  // price. Without this, a funder could post an escrow listing on which no
+  // named verifier could ever bind, so no protocol verdict could exist, so the
+  // Ed25519 record the on-chain release is supposed to point at would be
+  // unobtainable, exactly where the two-signatures-one-decision guarantee is
+  // meant to hold.
+  if (body.verifier_price_atomic === undefined || body.verifier_price_atomic === null)
+    throw new SocietyError(400, "an escrow-backed listing must declare verifier_price_atomic: a verifier files a payout binding on this listing before they may sign a verdict, and that binding is refused on a listing that pays verifiers nothing. Without it no verdict could ever be recorded and the protocol record the on-chain release points at could not exist.");
 
   const raw = Array.isArray(body.verifiers) ? body.verifiers : null;
   if (raw === null || raw.length === 0)
@@ -551,6 +572,13 @@ export function validateEscrowTerms(body: SettlementInput, maxAwards: number, li
     seenHandles.add(handle);
     verifiers.push({ handle, keyThumbprint, evmAddress, cap });
   }
+  // The same rule the contract enforces at funding, checked here so a funder
+  // learns it at posting time rather than from a revert: caps that cannot
+  // spend the committed capacity strand money a worker can earn.
+  const capSum = verifiers.reduce((n, v) => n + v.cap, 0);
+  if (capSum < maxAwards)
+    throw new SocietyError(400, `the verifier caps sum to ${capSum} and this listing commits ${maxAwards} awards, so ${maxAwards - capSum} of them could never be released by anyone it named. Money nobody can authorize is not an offer: raise a cap, add a verifier, or lower max_awards.`);
+
   return { chainId, address, token, verifiers, verifierDeadline, claimDeadline };
 }
 
