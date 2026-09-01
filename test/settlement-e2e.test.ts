@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "node:fs";
 import { MockSettlementAdapter } from "../src/settlement.ts";
-import { createAward, createListing, createSubmission, getListing, markAwardPayable, railCensus, settleAwardFromReceipt, sweepExpiredAwards, type Env } from "../src/society.ts";
+import { createAward, createListing, createSubmission, getListing, latchReadiness, markAwardPayable, railCensus, settleAwardFromReceipt, sweepExpiredAwards, type Env } from "../src/society.ts";
 
 const DOLLAR = "1000000";
 const NOW = Math.floor(Date.now() / 1000);
@@ -910,4 +910,137 @@ test("the receipt path settles an overdue debt, and settles each award at most o
     "there is no open award left to close, and the paid one cannot be paid twice");
   // A verifier fee is not an award and must never consume one.
   assert.equal(await settleAwardFromReceipt(env, { docket_id: `listing-${listingId}-verifier` }, second, 2, Date.now()), null);
+});
+
+// LATCHED READINESS: live-once, then permanent for that award.
+//
+// Neither "ever bound" nor "must stay live forever". Ever-bound would
+// authorize payment to a wallet the payee abandoned. Stay-live-forever makes
+// the payee babysit administrative state and hands the payer an escape: let
+// the payee's binding lapse and the payer stops being late for a debt they
+// already owed.
+
+test("latch 1: an old expired binding alone does not establish current readiness", async () => {
+  const { env, db } = makeEnv();
+  const { listingId, awardId } = await payableListing(env, db, 2, "citizen-a");
+  // A binding that has already lapsed: a destination nobody can pay to.
+  bindPayout(db, 2, listingId, NOW - 10);
+  assert.equal(await latchReadiness(env, listingId, Date.now()), 0, "a lapsed route latches nothing");
+  const row = db.prepare("SELECT ready_at AS r FROM listing_awards WHERE id = ?").get(awardId) as { r: number | null };
+  assert.equal(row.r, null);
+
+  const served = await getListing(env, listingId) as Record<string, any>;
+  assert.equal(served.awards[0].settlement_block, "waiting_for_payee", "settlement is waiting on the payee, and the payer's clock has not started");
+  assert.equal(served.awards[0].ready_at, null);
+});
+
+test("latch 2: a valid live binding establishes ready_at and snapshots the route it authorized", async () => {
+  const { env, db } = makeEnv();
+  const { listingId, awardId } = await payableListing(env, db, 2, "citizen-a");
+  bindPayout(db, 2, listingId, NOW + 86400);
+  assert.equal(await latchReadiness(env, listingId, Date.now()), 1);
+
+  const row = db.prepare("SELECT ready_at, ready_binding_id, ready_payout_address FROM listing_awards WHERE id = ?").get(awardId) as Record<string, unknown>;
+  assert.ok(row.ready_at, "readiness is latched");
+  assert.ok(row.ready_binding_id, "against the binding that established it");
+  assert.equal(row.ready_payout_address, "0xw", "and the route it named is snapshotted for this award");
+
+  const served = await getListing(env, listingId) as Record<string, any>;
+  assert.equal(served.awards[0].settlement_block, "ready_to_pay", "the payer's deadline is now running");
+  assert.equal(served.awards[0].ready_payout_address, "0xw");
+
+  // Latching twice changes nothing.
+  const firstReadyAt = row.ready_at;
+  assert.equal(await latchReadiness(env, listingId, Date.now() + 5000), 0);
+  assert.equal((db.prepare("SELECT ready_at AS r FROM listing_awards WHERE id = ?").get(awardId) as { r: number }).r, firstReadyAt);
+});
+
+test("latch 3: a later binding expiry does not erase readiness, remove the liability, or save the payer", async () => {
+  const { env, db } = makeEnv();
+  const { listingId, awardId } = await payableListing(env, db, 2, "citizen-a");
+  bindPayout(db, 2, listingId, NOW + 86400);
+  await latchReadiness(env, listingId, Date.now());
+  const latchedAt = (db.prepare("SELECT ready_at AS r FROM listing_awards WHERE id = ?").get(awardId) as { r: number }).r;
+
+  // Their global binding later lapses. This is the funder's escape hatch under
+  // a stay-live-forever rule, and it must not work.
+  db.prepare("UPDATE payout_bindings SET expiry = ? WHERE citizen_id = 2").run(NOW - 10);
+  db.prepare("UPDATE listing_awards SET expires_at = ? WHERE id = ?").run(Date.now() - 1000, awardId);
+
+  const served = await getListing(env, listingId) as Record<string, any>;
+  assert.equal(served.awards[0].ready_at, latchedAt, "readiness is not erased by a later expiry");
+  assert.equal(served.awards[0].state, "overdue_unpaid", "the payer is late, not the payee");
+  assert.equal(served.economics.outstanding_awarded_atomic, "25000000", "the liability remains");
+  assert.equal(served.economics.expired_unclaimed_atomic, "0");
+  // The route is stale, which is reported and changes nothing else.
+  assert.equal(served.awards[0].settlement_block, "payer_late");
+
+  await sweepExpiredAwards(env, listingId, Date.now());
+  const row = db.prepare("SELECT state, ready_at FROM listing_awards WHERE id = ?").get(awardId) as Record<string, unknown>;
+  assert.equal(row.state, "overdue_unpaid", "and the persisted sweep agrees");
+  assert.equal(row.ready_at, latchedAt);
+});
+
+test("latch 4: replacing the payout route does not restart the payer's deadline", async () => {
+  const { env, db } = makeEnv();
+  const { listingId, awardId } = await payableListing(env, db, 2, "citizen-a");
+  bindPayout(db, 2, listingId, NOW + 86400);
+  await latchReadiness(env, listingId, Date.now());
+  const before = db.prepare("SELECT ready_at, expires_at, ready_payout_address FROM listing_awards WHERE id = ?").get(awardId) as Record<string, unknown>;
+
+  // The payee signs a replacement destination before payment.
+  db.prepare("INSERT INTO payout_bindings (citizen_id, docket_id, amount_atomic, payout_address, expiry, created_at) VALUES (2, ?, '25000000', '0xnew', ?, 0)")
+    .run(`listing-${listingId}`, NOW + 172800);
+  assert.equal(await latchReadiness(env, listingId, Date.now() + 60000), 0, "a replacement finds readiness already latched");
+
+  const after = db.prepare("SELECT ready_at, expires_at, ready_payout_address FROM listing_awards WHERE id = ?").get(awardId) as Record<string, unknown>;
+  assert.equal(after.ready_at, before.ready_at, "readiness is not re-latched");
+  assert.equal(after.expires_at, before.expires_at, "AND THE PAYER'S DEADLINE DOES NOT MOVE: replacing a route is not a new start");
+  assert.equal(after.ready_payout_address, before.ready_payout_address, "the award keeps the route authorized when readiness latched");
+});
+
+test("latch 5: funder silence after ready_at becomes overdue, and the liability stays with them", async () => {
+  const { env, db } = makeEnv();
+  const { listingId, awardId } = await payableListing(env, db, 2, "citizen-a");
+  bindPayout(db, 2, listingId, NOW + 86400);
+  await latchReadiness(env, listingId, Date.now());
+  db.prepare("UPDATE listing_awards SET expires_at = ? WHERE id = ?").run(Date.now() - 1000, awardId);
+  assert.equal(await sweepExpiredAwards(env, listingId, Date.now()), 1);
+
+  const served = await getListing(env, listingId) as Record<string, any>;
+  assert.equal(served.awards[0].state, "overdue_unpaid");
+  assert.equal(served.economics.outstanding_awarded_atomic, "25000000");
+  assert.equal(served.economics.currently_due_atomic, "0");
+  assert.equal(served.economics.overdue_unpaid_atomic, "25000000");
+
+  const census = await railCensus(env) as Record<string, any>;
+  const funder = census.funders.find((f: Record<string, unknown>) => f.funder === "funder");
+  assert.equal(funder.overdue_unpaid_atomic, "25000000", "the debt is on the funder's settlement history");
+  assert.equal(funder.expired_unclaimed_atomic, "0", "and none of it is charged to the worker");
+  assert.equal(census.listings[0].accountability.overdue_unpaid_atomic, "25000000");
+});
+
+test("latch 6: filing a payout binding latches readiness through the ordinary rail path", async () => {
+  const { env, db } = makeEnv();
+  const { listingId, awardId } = await payableListing(env, db, 2, "citizen-a");
+  assert.equal((db.prepare("SELECT ready_at AS r FROM listing_awards WHERE id = ?").get(awardId) as { r: number | null }).r, null);
+  // The write path a payee actually uses ends in latchReadiness for the
+  // listing they bound against.
+  bindPayout(db, 2, listingId, NOW + 86400);
+  assert.equal(await latchReadiness(env, listingId, Date.now()), 1);
+  // And an award created AFTER a route already exists latches at award time.
+  const second = await payableListing(env, db, 3, "citizen-b");
+  bindPayout(db, 3, second.listingId, NOW + 86400);
+  const third = await createSubmission(env, AS(4, "citizen-c"), second.listingId, { artifact: reproduce(db, 4, `late entry ${EXPECT}`) }) as Record<string, unknown>;
+  bindPayout(db, 4, second.listingId, NOW + 86400);
+  // A read arriving before the latching write reports the same thing a write
+  // would, and the latch then persists it.
+  const beforeLatch = await getListing(env, second.listingId) as Record<string, any>;
+  assert.equal(beforeLatch.awards[0].settlement_block, "ready_to_pay", "a live route is readiness whether or not it is written down yet");
+  assert.equal(beforeLatch.awards[0].ready_at, null, "and it is not yet latched");
+  assert.equal(await latchReadiness(env, second.listingId, Date.now()), 1);
+  const afterLatch = await getListing(env, second.listingId) as Record<string, any>;
+  assert.ok(afterLatch.awards[0].ready_at, "the latch makes it permanent");
+  assert.equal(afterLatch.awards[0].settlement_block, "ready_to_pay");
+  assert.ok(third.id);
 });

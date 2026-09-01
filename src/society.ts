@@ -26,7 +26,8 @@ import { FUNDS_ADVICE, LISTINGS_PER_DAY, LISTING_RULE, NEXT_ACTIONS_NOTE, PAYEE_
 import {
   ADAPTER_STATUS, AUTOMATIC_CHECK_NOTE, FUNDING_MODE_NOTE, SETTLEMENT_MODE_NOTE, SUBMISSION_STATE_NOTE,
   assertAwardTransition, assertLiabilityInvariant, awardRefusal, commentIdFromArtifact, consumesSlot, evaluateAutomaticCheck, isOutstanding, lapseStateFor, listingEconomics,
-  submissionState, validateAutomaticCheck, validateSettlement, wasEverPayable,
+  settlementBlock, submissionState, validateAutomaticCheck, validateSettlement, wasEverPayable,
+  SETTLEMENT_BLOCK_NOTE,
   type AutomaticCheck, type AwardRow, type AwardState, type SettlementAdapter, type SettlementInput,
 } from "./settlement.ts";
 import { SEALS_PER_DAY, SEAL_CHECKS_PER_DAY, validateSeal, type SealInput, type ValidatedSeal } from "./seals.ts";
@@ -2540,6 +2541,15 @@ export async function createPayoutBinding(env: Env, citizen: Citizen, body: Payo
       throw new SocietyError(409, "the citizen signing key stopped being active before this binding could be recorded; no binding and no identity event were written");
     throw new SocietyError(429, `payout-binding budget spent (${PAYOUT_BINDINGS_PER_DAY}/rolling 24h); no binding and no identity event were recorded`);
   }
+  // Settlement v2: filing a destination is the payee's half of settlement, so
+  // it latches readiness against any entitlement they already hold on this
+  // listing and starts the payer's clock running against a route on the
+  // record. Idempotent: a replacement destination filed later finds ready_at
+  // already set, changes nothing, and does not restart the payer's deadline.
+  const latchListing = listingIdFromRow(binding.row);
+  let readinessLatched = 0;
+  if (latchListing !== null && listingRoleFromRow(binding.row) === "worker")
+    readinessLatched = await latchReadiness(env, latchListing, Date.now());
   const chainAnchor = await identityAnchorByHash(env, committed.hash);
   return {
     bound: true,
@@ -2848,6 +2858,9 @@ export interface StoredAward {
   expires_at: number | null;
   expired_at: number | null;
   overdue_at: number | null;
+  ready_at: number | null;
+  ready_binding_id: number | null;
+  ready_payout_address: string | null;
   receipt_id: number | null;
   paid_at: number | null;
   payload_hash: string;
@@ -2870,14 +2883,21 @@ export async function listingAwards(env: Env, listingId: number): Promise<Stored
 // decides which way a lapsing clock falls, so it is a required argument rather
 // than an option, and a caller that does not know cannot accidentally default
 // every worker into losing their entitlement.
-export function lapseExpiredAwards(awards: readonly StoredAward[], nowMs: number, readyPayees: ReadonlySet<number>): StoredAward[] {
+// `liveRoutes` is only the fallback for an award whose readiness is true but
+// not yet written down, so a read arriving before the latching write reaches
+// the same verdict. ready_at, once set, is the answer on its own.
+export function lapseExpiredAwards(awards: readonly StoredAward[], nowMs: number, liveRoutes: ReadonlySet<number>): StoredAward[] {
   return awards.map((a) => {
     // Only a clock that is still running can fire. An award already resolved
     // to overdue_unpaid keeps its expires_at as the record of the deadline it
     // missed, and must not be re-lapsed by it: the deadline already had its
     // effect, and that effect was not an expiry.
     if ((a.state !== "awarded" && a.state !== "payable") || a.expires_at === null || a.expires_at > nowMs) return a;
-    const to = lapseStateFor(a.state, readyPayees.has(a.citizen_id));
+    // Loose null check ON PURPOSE: a column a caller forgot to SELECT arrives
+    // as undefined, and `!== null` would then read every award as ready and
+    // invent overdue debts rail-wide. This exact defect shipped into the
+    // census query for one run.
+    const to = lapseStateFor(a.state, a.ready_at != null || liveRoutes.has(a.citizen_id));
     if (to === a.state) return a;
     // payable_at is untouched in every branch, so the record of having earned
     // it survives whatever the clock does. An overdue debt records WHEN it went
@@ -2888,10 +2908,41 @@ export function lapseExpiredAwards(awards: readonly StoredAward[], nowMs: number
   });
 }
 
-// Who holds a live payout destination on this listing's worker row. A binding
-// whose own expiry has passed does not count: keeping a current one is also
-// the worker's action and nobody else can take it for them.
-export async function readyPayeesFor(env: Env, listingId: number, nowSeconds: number): Promise<Set<number>> {
+// LATCH READINESS. The first time a payee holds a live payout destination on a
+// listing where they have an entitlement, record it against that award along
+// with the route it named, permanently.
+//
+// Set once and never cleared. `ready_at IS NULL` in the WHERE clause is what
+// makes this idempotent and makes a replacement route a no-op: a payee who
+// signs a new destination before payment does NOT restart the payer's clock,
+// because nothing here touches expires_at and the latch is already set.
+//
+// Called wherever a route can first appear or first matter: when a binding is
+// filed, when an award is created for a payee who already had one, and at the
+// top of the sweep so no clock can fire on an award whose readiness was true
+// but unrecorded.
+export async function latchReadiness(env: Env, listingId: number, nowMs: number): Promise<number> {
+  const nowSeconds = Math.floor(nowMs / 1000);
+  const result = await env.DB.prepare(
+    `UPDATE listing_awards
+        SET ready_at = ?,
+            ready_binding_id = (SELECT pb.id FROM payout_bindings pb
+                                 WHERE pb.docket_id = ? AND pb.citizen_id = listing_awards.citizen_id AND pb.expiry > ?
+                                 ORDER BY pb.id DESC LIMIT 1),
+            ready_payout_address = (SELECT pb.payout_address FROM payout_bindings pb
+                                     WHERE pb.docket_id = ? AND pb.citizen_id = listing_awards.citizen_id AND pb.expiry > ?
+                                     ORDER BY pb.id DESC LIMIT 1)
+      WHERE listing_id = ? AND ready_at IS NULL AND payable_at IS NOT NULL
+        AND EXISTS (SELECT 1 FROM payout_bindings pb
+                     WHERE pb.docket_id = ? AND pb.citizen_id = listing_awards.citizen_id AND pb.expiry > ?)`,
+  ).bind(nowMs, listingRow(listingId), nowSeconds, listingRow(listingId), nowSeconds, listingId, listingRow(listingId), nowSeconds).run();
+  return Number(result.meta?.changes ?? 0);
+}
+
+// Which payees currently hold a LIVE destination on this listing. Used for the
+// reported settlement block, and for the read model's in-memory latch so a GET
+// arriving before any write reaches the same verdict a write would.
+export async function liveRoutesFor(env: Env, listingId: number, nowSeconds: number): Promise<Set<number>> {
   const { results } = await env.DB.prepare(
     `SELECT DISTINCT citizen_id FROM payout_bindings WHERE docket_id = ? AND expiry > ?`,
   ).bind(listingRow(listingId), nowSeconds).all<{ citizen_id: number }>();
@@ -2900,6 +2951,11 @@ export async function readyPayeesFor(env: Env, listingId: number, nowSeconds: nu
 
 export async function sweepExpiredAwards(env: Env, listingId: number, nowMs: number): Promise<number> {
   const nowSeconds = Math.floor(nowMs / 1000);
+  // Latch first, always. A clock that fired on an award whose payee WAS ready
+  // but whose readiness had not been written down yet would blame the payee
+  // for the payer's silence, which is the defect this whole layer exists to
+  // prevent, re-entering through a race.
+  await latchReadiness(env, listingId, nowMs);
   // Three statements, because a lapsing clock has three outcomes and they are
   // decided by two different questions: which clock was running, and whether
   // the worker had done their part. A single UPDATE would have to pick one
@@ -2913,15 +2969,15 @@ export async function sweepExpiredAwards(env: Env, listingId: number, nowMs: num
   const unclaimed = await env.DB.prepare(
     `UPDATE listing_awards SET state = 'expired_unclaimed', expired_at = expires_at
       WHERE listing_id = ? AND state = 'payable' AND expires_at IS NOT NULL AND expires_at <= ?
-        AND NOT EXISTS (SELECT 1 FROM payout_bindings pb WHERE pb.docket_id = ? AND pb.citizen_id = listing_awards.citizen_id AND pb.expiry > ?)`,
-  ).bind(listingId, nowMs, listingRow(listingId), nowSeconds).run();
+        AND ready_at IS NULL`,
+  ).bind(listingId, nowMs).run();
   // The worker DID supply one. Nothing expires: the debt goes late, stays
   // owed, and the missed deadline attaches to the payer.
   const overdue = await env.DB.prepare(
     `UPDATE listing_awards SET state = 'overdue_unpaid', overdue_at = expires_at
       WHERE listing_id = ? AND state = 'payable' AND expires_at IS NOT NULL AND expires_at <= ?
-        AND EXISTS (SELECT 1 FROM payout_bindings pb WHERE pb.docket_id = ? AND pb.citizen_id = listing_awards.citizen_id AND pb.expiry > ?)`,
-  ).bind(listingId, nowMs, listingRow(listingId), nowSeconds).run();
+        AND ready_at IS NOT NULL`,
+  ).bind(listingId, nowMs).run();
   return Number(unmet.meta?.changes ?? 0) + Number(unclaimed.meta?.changes ?? 0) + Number(overdue.meta?.changes ?? 0);
 }
 
@@ -3088,6 +3144,9 @@ export async function createAward(
   if (committed.changed === 0)
     throw new SocietyError(409, `listing ${listing.id} is exhausted or closed: its ${listing.max_awards} award slot(s) were taken while this award was being recorded. Nothing was awarded and no liability was created.`);
   const id = committed.state?.id ?? null;
+  // If this payee already holds a live destination, readiness latches now: the
+  // payer's clock starts against a route that is on the record.
+  if (bornState === "payable") await latchReadiness(env, listing.id, nowMs);
   const settled = bornState === "payable" && id !== null ? await releaseIfAutomatic(env, listing, id, submission.citizen_id, nowMs, deps.settlementAdapter) : null;
   return {
     award_id: id,
@@ -3473,7 +3532,8 @@ export async function getListing(env: Env, id: number) {
   // Awards, with any lapsed ttl applied before anything counts them. Reading a
   // lapsed award as still outstanding would overstate what the funder owes,
   // which is the same class of error as reading a binding as a debt.
-  const awardRows = lapseExpiredAwards(await listingAwards(env, listing.id), Date.now(), await readyPayeesFor(env, listing.id, Math.floor(Date.now() / 1000)));
+  const liveRoutes = await liveRoutesFor(env, listing.id, Math.floor(Date.now() / 1000));
+  const awardRows = lapseExpiredAwards(await listingAwards(env, listing.id), Date.now(), liveRoutes);
   const economics = listingEconomics({
     settlement_version: listing.settlement_version,
     amount_atomic: listing.amount_atomic,
@@ -3561,6 +3621,7 @@ export async function getListing(env: Env, id: number) {
     // v1 listing publishes nulls rather than a cap its funder never declared.
     economics,
     submission_state_note: SUBMISSION_STATE_NOTE,
+    settlement_block_note: SETTLEMENT_BLOCK_NOTE,
     funding_mode_note: FUNDING_MODE_NOTE,
     settlement_mode_note: SETTLEMENT_MODE_NOTE,
     ...(listing.settlement_mode === "automatic" ? { automatic_check_note: AUTOMATIC_CHECK_NOTE } : {}),
@@ -3574,6 +3635,13 @@ export async function getListing(env: Env, id: number) {
       awarded_at: a.awarded_at,
       payable_at: a.payable_at,
       expires_at: a.expires_at,
+      overdue_at: a.overdue_at,
+      // The latch and the route it authorized, so the ledger answers which
+      // destination was authorized for this award and when, even after the
+      // payee signs a replacement.
+      ready_at: a.ready_at,
+      ready_payout_address: a.ready_payout_address,
+      settlement_block: settlementBlock({ state: a.state, ready_at: a.ready_at, live_route: liveRoutes.has(a.citizen_id) }),
       receipt_id: a.receipt_id,
       paid_at: a.paid_at,
       payload_hash: a.payload_hash,
@@ -4230,7 +4298,8 @@ export async function railCensus(env: Env) {
   ).all<Record<string, unknown>>();
 
   const { results: awardRows } = await env.DB.prepare(
-    `SELECT id, listing_id, submission_id, citizen_id, amount_atomic, state, awarded_by, awarded_at, payable_at, expires_at, expired_at, overdue_at, receipt_id, paid_at
+    `SELECT id, listing_id, submission_id, citizen_id, amount_atomic, state, awarded_by, awarded_at, payable_at, expires_at, expired_at, overdue_at,
+            ready_at, ready_binding_id, ready_payout_address, receipt_id, paid_at
        FROM listing_awards ORDER BY id ASC`,
   ).all<StoredAward>();
   // Readiness rail-wide, in one query: which citizens hold a live payout

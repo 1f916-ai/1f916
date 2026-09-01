@@ -104,6 +104,11 @@ const AWARD_TRANSITIONS: Record<AwardState, readonly AwardState[]> = {
 // Without this, payable_ttl_seconds hands every promise-listing funder a way
 // to make an earned obligation disappear by doing nothing, which is the free
 // option this rail exists to remove, wearing a clock.
+// `workerReadyToBePaid` is LATCHED readiness, not a live lookup: once the
+// payee has supplied a valid destination for this award it stays true even if
+// that binding later expires or is replaced. A payer does not get the clock
+// turned back because the payee changed their global payout settings after
+// doing everything asked of them.
 export function lapseStateFor(from: AwardState, workerReadyToBePaid: boolean): AwardState {
   if (from === "awarded") return "expired_unmet";
   if (from === "payable") return workerReadyToBePaid ? "overdue_unpaid" : "expired_unclaimed";
@@ -151,6 +156,32 @@ export function submissionState(input: {
   if (input.award === null) return input.listingClosed ? "not_selected" : "submitted";
   return input.award.state;
 }
+
+// WHO IS HOLDING UP SETTLEMENT, answerable from the ledger for any award that
+// is owed. Derived, never stored, so it cannot drift from the rows it reads.
+export type SettlementBlock = "waiting_for_payee" | "ready_to_pay" | "payer_late" | "payee_route_lapsed" | null;
+
+export function settlementBlock(award: {
+  state: AwardState;
+  ready_at: number | null;
+  live_route: boolean;
+}): SettlementBlock {
+  if (award.state === "overdue_unpaid") return "payer_late";
+  if (award.state !== "payable") return null;
+  // EFFECTIVE readiness, the same definition the lapse rule uses: latched, or
+  // a live route that has not been written down yet. Two definitions of ready
+  // in one codebase is how a read and a write come to disagree about whose
+  // fault a missed deadline was.
+  if (award.ready_at == null && !award.live_route) return "waiting_for_payee";
+  // Latched ready, but the destination they gave has since lapsed or been
+  // withdrawn without replacement. The debt and the readiness both stand; this
+  // says only that a payer trying to send right now has nowhere to send it.
+  // It is reported, never used to rewrite history or reduce a liability.
+  return award.live_route ? "ready_to_pay" : "payee_route_lapsed";
+}
+
+export const SETTLEMENT_BLOCK_NOTE =
+  "Who settlement is waiting on, for an award that is owed. waiting_for_payee: the entitlement exists and the payee has not yet supplied a payout destination, which is the one act only they can take; the payer's clock has not started. ready_to_pay: the payee supplied a valid destination, readiness is latched against this award with the route it named, and the payer's payment deadline is running. payer_late: the deadline passed with the payee ready, so the amount is still owed and the lateness is the payer's. payee_route_lapsed: readiness is latched and the debt stands, and the destination the payee gave has since expired or been replaced, so a payer sending right now has nowhere to send it; this NEVER un-latches readiness, reduces the liability, or saves a payer from becoming overdue. null: nothing is owed on this award.";
 
 export const SUBMISSION_STATE_NOTE =
   "submitted: handed in, no award, no entitlement, no liability of any kind. awarded: a slot is reserved for this citizen and the amount is outstanding, but the declared condition is not satisfied yet. payable: the declared condition IS satisfied and this citizen is entitled to the amount. paid: a payout receipt is joined to the award. not_selected: NO AWARD WAS EVER MADE against this submission and the listing closed, which is not a judgment of the work. expired_unmet: a reserved seat lapsed under the listing's declared award_ttl_seconds without the condition ever being met, so nothing was earned and the seat returned to the market. expired_unclaimed: this citizen WAS entitled to the amount and did not do the one thing only they could do, supply a payout destination, before the claim deadline the listing declared; the entitlement lapsed because of an action they controlled. overdue_unpaid: this citizen WAS entitled to the amount AND supplied a payout destination, so they had done everything available to them, and the payer did not settle by the deadline; THE AMOUNT IS STILL OWED, it stays in outstanding liability, and the missed deadline is on the payer's settlement history rather than the worker's. The three non-paid outcomes are different economic facts about different parties and none of them is ever reported as not_selected. A submission is never money owed; only an award in state awarded or payable is.";

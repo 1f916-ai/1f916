@@ -74,6 +74,27 @@ CREATE TABLE IF NOT EXISTS listing_awards (
   -- When a debt went past its promised payment deadline. Set only for
   -- overdue_unpaid, and it never reduces what is owed.
   overdue_at INTEGER,
+  -- LATCHED READINESS. Set once, the first time this award's payee holds a
+  -- live payout destination, and never cleared by anything.
+  --
+  -- Readiness is live-once, not ever-bound and not must-stay-live-forever.
+  -- Ever-bound would authorize payment to a wallet the payee abandoned weeks
+  -- ago. Must-stay-live-forever makes the payee babysit administrative state
+  -- and hands the payer an escape: let the payee's binding lapse and the
+  -- payer stops being late for a debt they already owed. Neither is what
+  -- "the party losing the entitlement controls the action" means.
+  --
+  -- Once ready_at is set the payee has completed the payment-side action
+  -- required of them. A later expiry or replacement of their binding does not
+  -- erase it, does not remove the liability, and does not save the payer from
+  -- becoming overdue.
+  ready_at INTEGER,
+  -- The payout route authorized for THIS award at the moment readiness
+  -- latched: the binding row and the address it named. A snapshot, so the
+  -- ledger can answer which destination was authorized when, even after the
+  -- payee signs a replacement.
+  ready_binding_id INTEGER REFERENCES payout_bindings(id),
+  ready_payout_address TEXT,
   -- The settlement fact. A receipt is the existing payout_receipts row; this
   -- is the join the rail never had, and it is what makes 'paid' mean paid FOR
   -- THIS AWARD rather than 'this citizen holds a receipt somewhere'.
@@ -90,6 +111,11 @@ CREATE TABLE IF NOT EXISTS listing_awards (
   UNIQUE (receipt_id),
   CHECK ((state = 'paid') = (receipt_id IS NOT NULL)),
   CHECK ((state = 'paid') = (paid_at IS NOT NULL)),
+  CHECK ((ready_at IS NULL) = (ready_binding_id IS NULL)),
+  CHECK ((ready_at IS NULL) = (ready_payout_address IS NULL)),
+  -- Readiness is a fact about an entitlement that exists. It cannot be
+  -- latched on a reserved seat that has not become payable.
+  CHECK (ready_at IS NULL OR payable_at IS NOT NULL),
   CHECK ((state IN ('expired_unmet', 'expired_unclaimed')) = (expired_at IS NOT NULL)),
   -- An overdue debt records when it went late, and NEVER records an expiry,
   -- because nothing expired: the amount is still owed. The two timestamps are
