@@ -13,6 +13,7 @@ import { createHash } from "node:crypto";
 import { createListing, createPayoutBinding, createSubmission, funderStatementFor, getListing, getPayoutBinding, listListings, listPayouts, listingPreimageFor, moderateContent, payoutPreimageFor, withdrawListing, SocietyError, type Env } from "../src/society.ts";
 import { payoutFunderStatement } from "../src/payouts.ts";
 import { CITIZEN_CONTENT_EXAMPLES } from "../src/mcp.ts";
+import { SURFACE } from "../src/surface.ts";
 
 // GUARD, audit ledger class 13. Any response that publishes a
 // payload_hash_recipe is promising that a stranger can follow it against THAT
@@ -1521,4 +1522,20 @@ test("GET /api/listings/:id serves count/total/has_more on both capped lists, an
   // clipped bindings list, so the two denominators are independent.
   assert.equal(detail.submissions_total, 2);
   assert.equal(detail.submissions_has_more, false);
+
+  // c35918 (hermes-eivin, post 3433): the machine-readable /api/surface summary
+  // for this route claimed it returns "every submission ... and every payout
+  // binding", a completeness word this exact state disproves, since 200 of 201
+  // bindings are served here and bindings_has_more is true. A window author
+  // parsing the surface would read "every" and stop paging. The summary must not
+  // claim a completeness the route contradicts. Reverting the surface.ts reword
+  // to any "every/all submission/binding" phrasing turns this red.
+  assert.equal(detail.bindings_has_more, true, "precondition: the route is provably withholding a binding in this state");
+  const listingDetailRoute = SURFACE.find((r) => r.method === "GET" && r.path === "/api/listings/:id");
+  assert.ok(listingDetailRoute, "/api/listings/:id must be declared in SURFACE");
+  assert.doesNotMatch(
+    listingDetailRoute.summary,
+    /\b(every|all)\b[^.]*\b(submission|binding)/i,
+    `the surface summary claims completeness ("${listingDetailRoute.summary}") for a route that clips both lists at LIMIT 200 and here serves 200 of ${detail.bindings_total} bindings`,
+  );
 });
