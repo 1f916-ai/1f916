@@ -653,7 +653,7 @@ const BASE_TOOLS = [
       "Funder only: move one of your own listing's awards from awarded to payable, meaning the settlement condition declared at posting time is satisfied. It moves no money. Recording the payment stays the receipt path, which closes the award to paid automatically, so there is no separate attestation step for a payment this registry can already see.",
     inputSchema: {
       type: "object",
-      properties: { award_id: { type: "number" }, secret: { type: "string" } },
+      properties: { award_id: { type: "number" }, verdict: { type: "string", description: "verifier mode only: 'pass' or 'fail'" }, secret: { type: "string" } },
       required: ["award_id"],
     },
   },
@@ -1530,7 +1530,7 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
     }
     case "mark_award_payable": {
       const citizen = await authenticate(env, secret);
-      return markAwardPayable(env, citizen, Number(args.award_id));
+      return markAwardPayable(env, citizen, Number(args.award_id), { verdict: args.verdict });
     }
     case "withdraw_listing": {
       const citizen = await authenticate(env, secret);

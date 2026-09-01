@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "node:fs";
 import { MockSettlementAdapter } from "../src/settlement.ts";
-import { createAward, createListing, createSubmission, getListing, railCensus, type Env } from "../src/society.ts";
+import { createAward, createListing, createSubmission, getListing, markAwardPayable, railCensus, sweepExpiredAwards, type Env } from "../src/society.ts";
 
 const DOLLAR = "1000000";
 const NOW = Math.floor(Date.now() / 1000);
@@ -126,7 +126,10 @@ test("the fixture: $1 x 3 funded, three reproductions paid, the fourth cannot cr
     // Automatic mode: nobody judges. The registry evaluates the declared check
     // against its own rows, and the worker can trigger it themselves.
     const award = await createAward(env, AS(worker.id, worker.handle), listingId, { submission_id: submission.id }) as Record<string, unknown>;
-    assert.equal(award.state, "awarded");
+    // The check passed, so the entitlement is real in the same act. Nobody has
+    // to come back and agree with the check afterwards.
+    assert.equal(award.state, "payable");
+    assert.ok(award.payable_at, "and the moment it became payable is stamped, permanently");
     assert.equal(award.amount_atomic, DOLLAR);
     awardIds.push(Number(award.award_id));
 
@@ -204,7 +207,7 @@ test("a promise listing awards without any adapter, and the money is never calle
   // Requester mode: only the funder awards.
   await assert.rejects(createAward(env, AS(2, "citizen-a"), listingId, { submission_id: submission.id }), /only its funder can award/);
   const award = await createAward(env, AS(1, "funder"), listingId, { submission_id: submission.id }) as Record<string, unknown>;
-  assert.equal(award.state, "awarded");
+  assert.equal(award.state, "payable", "the funder accepting IS the settlement decision; there is no second act");
 
   const served = await getListing(env, listingId) as Record<string, any>;
   assert.equal(served.economics.outstanding_awarded_atomic, DOLLAR, "an award on a promise listing is owed");
@@ -373,4 +376,289 @@ test("the exhaustion guard inside the award write refuses a race the read-side c
   assert.equal(census.totals.awards, 1, "the race created no second award");
   assert.equal(census.listings[0].economics.awarded_slots_used, 1);
   assert.equal(census.listings[0].economics.maximum_remaining_liability_atomic, DOLLAR, "and no second dollar of liability");
+});
+
+// THE VERIFIER PATH, exactly as asked: a verifier's pass makes the entitlement
+// real by itself. The funder is never consulted, because a listing that
+// declared a verifier and then required the funder to agree would have made
+// the verifier advisory and handed the funder an undeclared veto.
+test("verifier PASS makes the award payable with no funder action, and FAIL creates nothing", async () => {
+  const { env, db } = makeEnv();
+  const listing = await createListing(env, AS(1, "funder"), {
+    title: "Independent reproduction test", condition: CONDITION, amount_atomic: "25000000", expiry: NOW + 86400,
+    max_awards: 1, funding_mode: "promise", settlement_mode: "verifier",
+    verifier_price_atomic: DOLLAR, max_verifiers: 1,
+  }) as Record<string, unknown>;
+  const listingId = Number((listing.row as string).replace("listing-", ""));
+
+  const artifact = reproduce(db, 2, `walked it ${EXPECT}`);
+  const submission = await createSubmission(env, AS(2, "citizen-a"), listingId, { artifact }) as Record<string, unknown>;
+
+  // The verifier is a citizen holding a verifier binding filed BEFORE the
+  // verdict: the existing verifier-binding infrastructure, reused as is.
+  db.prepare("INSERT INTO payout_bindings (citizen_id, docket_id, amount_atomic, payout_address, expiry, created_at) VALUES (4, ?, ?, '0xv', ?, 0)").run(`listing-${listingId}-verifier`, DOLLAR, NOW + 86400);
+
+  // Nobody else can decide, including the funder: the listing named a verifier.
+  await assert.rejects(createAward(env, AS(1, "funder"), listingId, { submission_id: submission.id, verdict: "pass" }), /must hold a verifier binding/);
+  await assert.rejects(createAward(env, AS(3, "citizen-b"), listingId, { submission_id: submission.id, verdict: "pass" }), /must hold a verifier binding/);
+
+  // A fail creates nothing, and is not recorded as a defect on the worker.
+  await assert.rejects(createAward(env, AS(4, "citizen-c"), listingId, { submission_id: submission.id, verdict: "fail" }), /no award was made and nothing is owed/);
+  const afterFail = await getListing(env, listingId) as Record<string, any>;
+  assert.equal(afterFail.economics.outstanding_awarded_atomic, "0");
+  assert.equal(afterFail.submissions[0].economic_state, "submitted", "a fail leaves the work submitted, not judged");
+
+  // PASS. One call by the verifier, and the entitlement exists.
+  const award = await createAward(env, AS(4, "citizen-c"), listingId, { submission_id: submission.id, verdict: "pass" }) as Record<string, unknown>;
+  assert.equal(award.state, "payable", "VERIFIER PASS -> PAYABLE, in one act");
+  assert.equal(award.awarded_by, "verifier");
+  assert.ok(award.payable_at);
+
+  const served = await getListing(env, listingId) as Record<string, any>;
+  assert.equal(served.economics.outstanding_awarded_atomic, "25000000", "$25 is owed the moment the verifier passed it");
+  assert.equal(served.submissions[0].economic_state, "payable");
+});
+
+// The lifecycle from the brief: $25, submit by a deadline, verifier decides,
+// then a 30-day claim window. AWARDED is not even in this path; the shape is
+// PAYABLE -> EXPIRED_UNCLAIMED, and the record keeps the earning forever.
+test("a claim window that lapses records EXPIRED_UNCLAIMED, never not-selected, and keeps the earning", async () => {
+  const { env, db } = makeEnv();
+  const listing = await createListing(env, AS(1, "funder"), {
+    title: "Independent reproduction test", condition: CONDITION, amount_atomic: "25000000", expiry: NOW + 86400,
+    max_awards: 1, funding_mode: "promise", settlement_mode: "requester",
+    submission_deadline: NOW + 3600,
+    requester_timeout_seconds: 48 * 3600,
+    payable_ttl_seconds: 60,
+  }) as Record<string, unknown>;
+  const listingId = Number((listing.row as string).replace("listing-", ""));
+  const served0 = await getListing(env, listingId) as Record<string, any>;
+  // All four clocks are published, distinct, and hashed into the listing.
+  assert.equal(served0.submission_deadline, NOW + 3600);
+  assert.equal(served0.requester_timeout_seconds, 48 * 3600);
+  assert.equal(served0.payable_ttl_seconds, 60);
+  assert.equal(served0.award_ttl_seconds, null, "no seat is being reserved on this listing");
+
+  const artifact = reproduce(db, 2, `walked it ${EXPECT}`);
+  const submission = await createSubmission(env, AS(2, "citizen-a"), listingId, { artifact }) as Record<string, unknown>;
+  const award = await createAward(env, AS(1, "funder"), listingId, { submission_id: submission.id }) as Record<string, unknown>;
+  assert.equal(award.state, "payable");
+  const earnedAt = Number(award.payable_at);
+
+  const owed = await getListing(env, listingId) as Record<string, any>;
+  assert.equal(owed.economics.outstanding_awarded_atomic, "25000000");
+  assert.equal(owed.economics.expired_unclaimed_atomic, "0");
+
+  // The claim window passes with no receipt.
+  db.prepare("UPDATE listing_awards SET expires_at = ? WHERE id = ?").run(Date.now() - 1000, Number(award.award_id));
+
+  const lapsed = await getListing(env, listingId) as Record<string, any>;
+  const row = lapsed.awards[0];
+  assert.equal(row.state, "expired_unclaimed", "not 'expired', and above all not not_selected");
+  assert.equal(row.payable_at, earnedAt, "the moment it was earned is untouched by the expiry");
+  assert.equal(lapsed.submissions[0].economic_state, "expired_unclaimed");
+  assert.notEqual(lapsed.submissions[0].economic_state, "not_selected");
+
+  // The economics say all three things at once: no longer owed, definitely
+  // earned, and the seat is spent.
+  assert.equal(lapsed.economics.outstanding_awarded_atomic, "0", "past the declared window it is not still owed");
+  assert.equal(lapsed.economics.expired_unclaimed_atomic, "25000000", "and it is on its own line, never invisible");
+  assert.equal(lapsed.economics.amount_paid_atomic, "0", "nobody was paid");
+  assert.equal(lapsed.economics.available_award_capacity, 0, "the seat stays spent: the work was accepted");
+
+  // And the census carries the same fact rail-wide.
+  const census = await railCensus(env) as Record<string, any>;
+  assert.equal(census.totals.expired_unclaimed_atomic, "25000000", "earned and unclaimed, rail-wide, on its own line");
+  assert.equal(census.totals.outstanding_awarded_atomic, "0", "and not counted as still owed");
+  assert.equal(census.listings[0].ever_payable, 1, "the census still says an entitlement existed here");
+  assert.deepEqual(census.listings[0].award_states, { expired_unclaimed: 1 });
+});
+
+// The other clock, on the other kind of award: a seat reserved before the work.
+test("a reserved seat that lapses is EXPIRED_UNMET, returns to the market, and never claims anyone earned anything", async () => {
+  const { env, db } = makeEnv();
+  const listing = await createListing(env, AS(1, "funder"), {
+    title: "Independent reproduction test", condition: CONDITION, amount_atomic: DOLLAR, expiry: NOW + 86400,
+    max_awards: 1, funding_mode: "promise", settlement_mode: "requester",
+    award_ttl_seconds: 6 * 3600,
+  }) as Record<string, unknown>;
+  const listingId = Number((listing.row as string).replace("listing-", ""));
+  const artifact = reproduce(db, 2, "starting on it now");
+  const submission = await createSubmission(env, AS(2, "citizen-a"), listingId, { artifact }) as Record<string, unknown>;
+
+  const seat = await createAward(env, AS(1, "funder"), listingId, { submission_id: submission.id, reserve: true }) as Record<string, unknown>;
+  assert.equal(seat.state, "awarded", "a reserved seat is not an entitlement yet");
+  assert.equal(seat.payable_at, null, "nothing has been earned");
+  assert.match(String(seat.expires_meaning), /returns to the market/);
+
+  const held = await getListing(env, listingId) as Record<string, any>;
+  assert.equal(held.economics.available_award_capacity, 0, "the seat is held while its clock runs");
+  assert.equal(held.economics.outstanding_awarded_atomic, DOLLAR, "and the funder is on the hook for it meanwhile");
+
+  db.prepare("UPDATE listing_awards SET expires_at = ? WHERE id = ?").run(Date.now() - 1000, Number(seat.award_id));
+
+  const back = await getListing(env, listingId) as Record<string, any>;
+  assert.equal(back.awards[0].state, "expired_unmet");
+  assert.equal(back.submissions[0].economic_state, "expired_unmet");
+  assert.equal(back.economics.available_award_capacity, 1, "the seat is back on the market");
+  assert.equal(back.economics.outstanding_awarded_atomic, "0", "and nothing is owed, because nothing was earned");
+  assert.equal(back.economics.expired_unclaimed_atomic, "0", "and nobody may read this as an unclaimed entitlement");
+});
+
+// THE ANTI-RETROACTIVITY INVARIANT, tested rather than asserted in prose.
+// Every clock is a term of the listing, hashed into a payload the listing
+// publishes and cannot edit. A funder who wants a shorter window after seeing
+// the work would have to change a hash that is already chained.
+test("no clock can be attached or shortened after the work: every one is inside the published listing hash", async () => {
+  const { env, db } = makeEnv();
+  const listing = await createListing(env, AS(1, "funder"), {
+    title: "Independent reproduction test", condition: CONDITION, amount_atomic: "25000000", expiry: NOW + 86400,
+    max_awards: 1, funding_mode: "promise", settlement_mode: "requester",
+    submission_deadline: NOW + 3600, requester_timeout_seconds: 48 * 3600, payable_ttl_seconds: 30 * 24 * 3600,
+  }) as Record<string, any>;
+  const listingId = Number((listing.row as string).replace("listing-", ""));
+
+  // The recipe this listing publishes names all four clocks.
+  const fields: string[] = listing.payload_hash_recipe.fields;
+  for (const term of ["max_awards", "funding_mode", "settlement_mode", "submission_deadline", "requester_timeout_seconds", "award_ttl_seconds", "payable_ttl_seconds"]) {
+    assert.ok(fields.includes(term), `${term} must be inside the published listing hash, or it could be changed after the work`);
+  }
+  // And following that recipe against the served response reproduces the hash,
+  // so a stranger can check that these exact terms are what was committed.
+  const { createHash } = await import("node:crypto");
+  const served = await getListing(env, listingId) as Record<string, any>;
+  const recomputed = createHash("sha256").update(JSON.stringify(fields.map((f) => (f === "funder" ? served.funder : served[f]))), "utf8").digest("hex");
+  assert.equal(recomputed, served.payload_hash, "the published recipe must reproduce the published hash over the served terms");
+
+  // A funder editing the claim window in the database is immediately visible:
+  // the listing no longer reproduces its own published hash.
+  db.prepare("UPDATE listings SET payable_ttl_seconds = 60 WHERE id = ?").run(listingId);
+  const tampered = await getListing(env, listingId) as Record<string, any>;
+  const rehashed = createHash("sha256").update(JSON.stringify(fields.map((f) => (f === "funder" ? tampered.funder : tampered[f]))), "utf8").digest("hex");
+  assert.notEqual(rehashed, tampered.payload_hash, "a shortened window must break the listing's own published hash");
+});
+
+// The DATABASE sweep, not the read model. The read path applies a lapse in
+// memory; this is the write that persists it, and it is the one that could
+// quietly drop the evidence. A guarantee that only holds in the read model is
+// not a guarantee: the row is what survives.
+test("the persisted sweep records the right terminal state and never erases payable_at", async () => {
+  const { env, db } = makeEnv();
+  const listing = await createListing(env, AS(1, "funder"), {
+    title: "Independent reproduction test", condition: CONDITION, amount_atomic: "25000000", expiry: NOW + 86400,
+    max_awards: 2, funding_mode: "promise", settlement_mode: "requester",
+    award_ttl_seconds: 3600, payable_ttl_seconds: 3600,
+  }) as Record<string, unknown>;
+  const listingId = Number((listing.row as string).replace("listing-", ""));
+
+  // One entitlement that was earned, and one seat that never was.
+  const earned = await createSubmission(env, AS(2, "citizen-a"), listingId, { artifact: reproduce(db, 2, `done ${EXPECT}`) }) as Record<string, unknown>;
+  const entitlement = await createAward(env, AS(1, "funder"), listingId, { submission_id: earned.id }) as Record<string, unknown>;
+  const seatSub = await createSubmission(env, AS(3, "citizen-b"), listingId, { artifact: reproduce(db, 3, "starting") }) as Record<string, unknown>;
+  const seat = await createAward(env, AS(1, "funder"), listingId, { submission_id: seatSub.id, reserve: true }) as Record<string, unknown>;
+
+  const earnedAt = Number((db.prepare("SELECT payable_at AS p FROM listing_awards WHERE id = ?").get(Number(entitlement.award_id)) as { p: number }).p);
+  assert.ok(earnedAt > 0, "the entitlement carries the moment it was earned");
+  assert.equal((db.prepare("SELECT payable_at AS p FROM listing_awards WHERE id = ?").get(Number(seat.award_id)) as { p: number | null }).p, null);
+
+  // Both clocks run out, and the sweep persists both lapses.
+  db.prepare("UPDATE listing_awards SET expires_at = ?").run(Date.now() - 1000);
+  const swept = await sweepExpiredAwards(env, listingId, Date.now());
+  assert.equal(swept, 2, "both awards lapsed");
+
+  const rows = db.prepare("SELECT id, state, payable_at, expired_at FROM listing_awards ORDER BY id").all() as Array<Record<string, unknown>>;
+  const entitlementRow = rows.find((r) => r.id === Number(entitlement.award_id))!;
+  const seatRow = rows.find((r) => r.id === Number(seat.award_id))!;
+
+  assert.equal(entitlementRow.state, "expired_unclaimed", "an earned entitlement lapses unclaimed");
+  assert.equal(entitlementRow.payable_at, earnedAt, "AND THE ROW STILL SAYS IT WAS EARNED, at the same instant it always said");
+  assert.ok(entitlementRow.expired_at, "with the moment the declared window ran out");
+
+  assert.equal(seatRow.state, "expired_unmet", "a seat nobody delivered on lapses unmet");
+  assert.equal(seatRow.payable_at, null, "and it never claims anything was earned");
+
+  // The served history says the same, permanently.
+  const served = await getListing(env, listingId) as Record<string, any>;
+  const servedEntitlement = served.awards.find((a: Record<string, unknown>) => a.award_id === Number(entitlement.award_id));
+  assert.equal(servedEntitlement.state, "expired_unclaimed");
+  assert.equal(servedEntitlement.payable_at, earnedAt, "the read model publishes the earning it can no longer pay");
+  assert.equal(served.economics.expired_unclaimed_atomic, "25000000");
+  assert.equal(served.economics.available_award_capacity, 1, "only the unmet seat came back");
+});
+
+// SURVIVOR 1 of the mutation sweep: deleting the submission_deadline check
+// left the whole suite green, because nothing ever handed work in late. A
+// declared clock that is never enforced is worse than an absent one.
+test("work handed in after the declared submission_deadline is refused, and the listing still runs so decisions can be made", async () => {
+  const { env, db } = makeEnv();
+  const listing = await createListing(env, AS(1, "funder"), {
+    title: "Independent reproduction test", condition: CONDITION, amount_atomic: "25000000", expiry: NOW + 86400,
+    max_awards: 1, funding_mode: "promise", settlement_mode: "requester",
+    submission_deadline: NOW + 3600, requester_timeout_seconds: 48 * 3600,
+  }) as Record<string, unknown>;
+  const listingId = Number((listing.row as string).replace("listing-", ""));
+
+  // In time: accepted.
+  const inTime = await createSubmission(env, AS(2, "citizen-a"), listingId, { artifact: reproduce(db, 2, `early ${EXPECT}`) }) as Record<string, unknown>;
+  assert.ok(inTime.id);
+
+  // The submission window closes. The LISTING does not: it runs another day so
+  // the decision already owed on the work above can still be made, which is
+  // exactly why these are two clocks and not one.
+  db.prepare("UPDATE listings SET submission_deadline = ? WHERE id = ?").run(NOW - 10, listingId);
+  await assert.rejects(
+    createSubmission(env, AS(3, "citizen-b"), listingId, { artifact: reproduce(db, 3, `late ${EXPECT}`) }),
+    /stopped taking work at its declared submission_deadline/,
+  );
+
+  // And the listing is still open for the decision on the work handed in on time.
+  const award = await createAward(env, AS(1, "funder"), listingId, { submission_id: inTime.id }) as Record<string, unknown>;
+  assert.equal(award.state, "payable", "the deadline closed submissions, not the listing");
+  const served = await getListing(env, listingId) as Record<string, any>;
+  assert.equal(served.state, "submitted");
+  assert.equal(served.economics.outstanding_awarded_atomic, "25000000");
+});
+
+// SURVIVOR 2: nothing asserted that the CLAIM WINDOW IS ACTUALLY ATTACHED when
+// an entitlement is born. The lapse tests all set expires_at by hand, so
+// dropping payable_ttl at award time left them green and every real
+// entitlement would have been immortal.
+test("an entitlement is born carrying the listing's declared claim window, and a reserved seat carries the other clock", async () => {
+  const { env, db } = makeEnv();
+  const listing = await createListing(env, AS(1, "funder"), {
+    title: "Independent reproduction test", condition: CONDITION, amount_atomic: "25000000", expiry: NOW + 90 * 86400,
+    max_awards: 2, funding_mode: "promise", settlement_mode: "requester",
+    award_ttl_seconds: 6 * 3600, payable_ttl_seconds: 30 * 24 * 3600,
+  }) as Record<string, unknown>;
+  const listingId = Number((listing.row as string).replace("listing-", ""));
+
+  const earned = await createSubmission(env, AS(2, "citizen-a"), listingId, { artifact: reproduce(db, 2, `done ${EXPECT}`) }) as Record<string, unknown>;
+  const before = Date.now();
+  const entitlement = await createAward(env, AS(1, "funder"), listingId, { submission_id: earned.id }) as Record<string, unknown>;
+  const after = Date.now();
+
+  // The claim window is real, attached at the moment the entitlement was born,
+  // and is the listing's declared 30 days rather than any other number.
+  const expires = Number(entitlement.expires_at);
+  assert.ok(expires >= before + 30 * 24 * 3600 * 1000 && expires <= after + 30 * 24 * 3600 * 1000,
+    `an entitlement must carry the declared 30-day claim window; got expires_at ${expires}`);
+  assert.match(String(entitlement.expires_meaning), /payable_ttl_seconds/);
+  assert.match(String(entitlement.expires_meaning), /expired_unclaimed/);
+  const stored = db.prepare("SELECT expires_at AS e FROM listing_awards WHERE id = ?").get(Number(entitlement.award_id)) as { e: number };
+  assert.equal(stored.e, expires, "and it is persisted, not just reported");
+
+  // A reserved seat carries the OTHER clock, from the same listing.
+  const seatSub = await createSubmission(env, AS(3, "citizen-b"), listingId, { artifact: reproduce(db, 3, "starting") }) as Record<string, unknown>;
+  const seat = await createAward(env, AS(1, "funder"), listingId, { submission_id: seatSub.id, reserve: true }) as Record<string, unknown>;
+  const seatExpires = Number(seat.expires_at);
+  assert.ok(seatExpires <= Date.now() + 6 * 3600 * 1000 + 1000 && seatExpires > Date.now(),
+    "a reserved seat carries award_ttl_seconds, not the claim window");
+  assert.ok(seatExpires < expires, "the two clocks are different terms and produce different deadlines");
+  assert.match(String(seat.expires_meaning), /award_ttl_seconds/);
+
+  // And the claim window on a seat starts when the seat becomes an
+  // entitlement, not when the seat was reserved.
+  const closed = await markAwardPayable(env, AS(1, "funder"), Number(seat.award_id)) as Record<string, unknown>;
+  assert.equal(closed.state, "payable");
+  assert.ok(Number(closed.expires_at) > seatExpires, "the claim window starts at the earning, not at the reservation");
 });

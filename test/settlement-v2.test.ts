@@ -17,9 +17,13 @@ import {
   commentIdFromArtifact,
   evaluateAutomaticCheck,
   listingEconomics,
+  consumesSlot,
+  isOutstanding,
+  lapseStateFor,
   submissionState,
   validateAutomaticCheck,
   validateSettlement,
+  wasEverPayable,
 } from "../src/settlement.ts";
 
 const DOLLAR = "1000000";
@@ -73,14 +77,30 @@ test("a $5 x 1 listing can never exceed $5 of liability no matter how many submi
   assert.equal(e.amount_paid_atomic, "0");
 });
 
-test("an expired award returns its slot and stops being owed; a closed listing offers no capacity", () => {
-  const lapsed = listingEconomics({
+test("the two expirations are different economic facts, and only one returns a slot", () => {
+  // A reserved seat nobody delivered on: nothing was earned, seat comes back.
+  const unmet = listingEconomics({
     settlement_version: 2, amount_atomic: DOLLAR, max_awards: 2,
-    awards: [{ state: "expired", amount_atomic: DOLLAR }], open: true,
+    awards: [{ state: "expired_unmet", amount_atomic: DOLLAR }], open: true,
   });
-  assert.equal(lapsed.awarded_slots_used, 0, "an expired award consumes no slot");
-  assert.equal(lapsed.outstanding_awarded_atomic, "0", "an expired award is not owed");
-  assert.equal(lapsed.available_award_capacity, 2);
+  assert.equal(unmet.awarded_slots_used, 0, "an unmet seat consumes no slot");
+  assert.equal(unmet.outstanding_awarded_atomic, "0", "nothing was earned, so nothing is owed");
+  assert.equal(unmet.expired_unclaimed_atomic, "0", "and nothing was earned-then-unclaimed");
+  assert.equal(unmet.available_award_capacity, 2, "the seat is back on the market");
+
+  // An entitlement that WAS earned and went unclaimed: the money stops being
+  // owed, the slot stays spent, and the fact is reported on its own line.
+  const unclaimed = listingEconomics({
+    settlement_version: 2, amount_atomic: DOLLAR, max_awards: 2,
+    awards: [{ state: "expired_unclaimed", amount_atomic: DOLLAR }], open: true,
+  });
+  assert.equal(unclaimed.awarded_slots_used, 1, "an earned entitlement keeps its slot; the work was accepted");
+  assert.equal(unclaimed.available_award_capacity, 1);
+  assert.equal(unclaimed.outstanding_awarded_atomic, "0", "past its declared claim window it is no longer owed");
+  assert.equal(unclaimed.expired_unclaimed_atomic, DOLLAR, "and it is never invisible: it has its own line");
+  assert.notEqual(unclaimed.expired_unclaimed_atomic, unmet.expired_unclaimed_atomic, "the two expiries can never be read as the same fact");
+
+  const lapsed = unmet;
 
   const closed = listingEconomics({
     settlement_version: 2, amount_atomic: DOLLAR, max_awards: 3,
@@ -118,13 +138,60 @@ test("the award state machine refuses to pay the same award twice", () => {
   assertAwardTransition("payable", "paid");
   assert.throws(() => assertAwardTransition("paid", "paid"), /cannot be paid twice/);
   assert.throws(() => assertAwardTransition("paid", "payable"), /cannot become payable/);
-  assert.throws(() => assertAwardTransition("expired", "paid"), /cannot become paid/);
+  assert.throws(() => assertAwardTransition("expired_unclaimed", "paid"), /cannot become paid/);
+  assert.throws(() => assertAwardTransition("expired_unmet", "payable"), /cannot become payable/);
+  // A reserved seat can only ever lapse unmet; an entitlement can only ever
+  // lapse unclaimed. No caller gets to choose the flattering one.
+  assert.equal(lapseStateFor("awarded"), "expired_unmet");
+  assert.equal(lapseStateFor("payable"), "expired_unclaimed");
+  assert.throws(() => lapseStateFor("paid"), /does not lapse/);
+});
+
+test("an expired entitlement is never reported as not-selected, and its earning is permanent", () => {
+  // The failure this exists to prevent: an expiry rewriting history into
+  // "they were never chosen".
+  assert.equal(submissionState({ award: { state: "expired_unclaimed" }, listingClosed: true }), "expired_unclaimed");
+  assert.equal(submissionState({ award: { state: "expired_unmet" }, listingClosed: true }), "expired_unmet");
+  assert.notEqual(submissionState({ award: { state: "expired_unclaimed" }, listingClosed: true }), "not_selected");
+  // not_selected means one thing: no award was ever made.
+  assert.equal(submissionState({ award: null, listingClosed: true }), "not_selected");
+  // And the entitlement is readable off the row forever, in either direction.
+  assert.equal(wasEverPayable({ state: "expired_unclaimed", payable_at: 1 }), true);
+  assert.equal(wasEverPayable({ state: "paid", payable_at: 1 }), true);
+  assert.equal(wasEverPayable({ state: "expired_unmet", payable_at: null }), false, "a seat that lapsed unmet never earned anything");
+  assert.equal(consumesSlot("expired_unclaimed"), true);
+  assert.equal(consumesSlot("expired_unmet"), false);
+  assert.equal(isOutstanding("expired_unclaimed"), false, "past the declared window it is not still owed");
+});
+
+test("the four clocks are separate terms, and a claim window is refused where nothing can wait", () => {
+  const full = validateSettlement({
+    max_awards: 1, settlement_mode: "requester", submission_deadline: Math.floor(Date.now() / 1000) + 3600,
+    award_ttl_seconds: 6 * 3600, payable_ttl_seconds: 30 * 24 * 3600, requester_timeout_seconds: 48 * 3600,
+  });
+  assert.equal(full.awardTtlSeconds, 6 * 3600, "how long a reserved seat may sit unmet");
+  assert.equal(full.payableTtlSeconds, 30 * 24 * 3600, "how long an earned entitlement stays claimable");
+  assert.equal(full.requesterTimeoutSeconds, 48 * 3600, "how long the requester has to decide");
+  assert.ok(full.submissionDeadline, "and by when work may be handed in");
+  // A claim window on a listing that pays the instant the check passes is a
+  // clock on an instant: refused rather than stored and ignored.
+  assert.throws(
+    () => validateSettlement({ funding_mode: "funded", settlement_mode: "automatic", automatic_check: { kind: "comment_artifact_contains", expect: "REPRODUCED-7f3a" }, payable_ttl_seconds: 3600 }),
+    /does not apply to a funded automatic listing/,
+  );
+  // A submission deadline cannot outlive the listing it is on.
+  const now = Math.floor(Date.now() / 1000);
+  assert.throws(() => validateSettlement({ submission_deadline: now + 7200 }, now + 3600, now), /after the listing's own expiry/);
 });
 
 // ---------- exhaustion ----------
 
 test("exhaustion refuses a further award and says so in money terms", () => {
   const full = { settlement_version: 2, max_awards: 3, awards: [{ state: "paid" as const, amount_atomic: DOLLAR }, { state: "paid" as const, amount_atomic: DOLLAR }, { state: "awarded" as const, amount_atomic: DOLLAR }], open: true };
+  // An exhausted listing stays exhausted when one of its awards was earned and
+  // went unclaimed: that seat is spent, and re-selling it would pay twice for
+  // one accepted piece of work.
+  assert.match(awardRefusal({ ...full, awards: [{ state: "expired_unclaimed" as const, amount_atomic: DOLLAR }, { state: "paid" as const, amount_atomic: DOLLAR }, { state: "paid" as const, amount_atomic: DOLLAR }] }) ?? "", /exhausted/);
   assert.match(awardRefusal(full) ?? "", /exhausted/);
   assert.equal(awardRefusal({ ...full, awards: full.awards.slice(0, 2) }), null);
   assert.match(awardRefusal({ ...full, awards: [], open: false }) ?? "", /closed/);
@@ -209,9 +276,9 @@ test("the award ledger cannot record two awards for one submission or two awards
   db.exec(schema.slice(schema.indexOf("CREATE TABLE IF NOT EXISTS listing_awards"), schema.indexOf("CREATE INDEX IF NOT EXISTS idx_listing_awards_listing")));
   const insert = (submissionId: number, receiptId: number | null, nonce: string) =>
     db.prepare(
-      `INSERT INTO listing_awards (listing_id, submission_id, citizen_id, amount_atomic, state, awarded_by, awarded_at, receipt_id, paid_at, payload_hash, commit_nonce, created_at)
-       VALUES (1, ?, 2, '1000000', ?, 'requester', 0, ?, ?, ?, ?, 0)`,
-    ).run(submissionId, receiptId === null ? "awarded" : "paid", receiptId, receiptId === null ? null : 1, "h" + nonce, nonce);
+      `INSERT INTO listing_awards (listing_id, submission_id, citizen_id, amount_atomic, state, awarded_by, awarded_at, payable_at, receipt_id, paid_at, payload_hash, commit_nonce, created_at)
+       VALUES (1, ?, 2, '1000000', ?, 'requester', 0, ?, ?, ?, ?, ?, 0)`,
+    ).run(submissionId, receiptId === null ? "awarded" : "paid", receiptId === null ? null : 1, receiptId, receiptId === null ? null : 1, "h" + nonce, nonce);
   insert(1, null, "n1");
   assert.throws(() => insert(1, null, "n2"), /UNIQUE/, "one award per submission");
   insert(2, 500, "n3");
@@ -227,10 +294,35 @@ test("the paid state cannot exist without a receipt, and a receipt cannot exist 
   db.exec(schema.slice(schema.indexOf("CREATE TABLE IF NOT EXISTS listing_awards"), schema.indexOf("CREATE INDEX IF NOT EXISTS idx_listing_awards_listing")));
   const row = (state: string, receiptId: number | null, paidAt: number | null, nonce: string) =>
     db.prepare(
-      `INSERT INTO listing_awards (listing_id, submission_id, citizen_id, amount_atomic, state, awarded_by, awarded_at, receipt_id, paid_at, payload_hash, commit_nonce, created_at)
-       VALUES (1, ?, 2, '1000000', ?, 'requester', 0, ?, ?, ?, ?, 0)`,
+      `INSERT INTO listing_awards (listing_id, submission_id, citizen_id, amount_atomic, state, awarded_by, awarded_at, payable_at, receipt_id, paid_at, payload_hash, commit_nonce, created_at)
+       VALUES (1, ?, 2, '1000000', ?, 'requester', 0, 1, ?, ?, ?, ?, 0)`,
     ).run(Math.floor(Math.random() * 1e9), state, receiptId, paidAt, "h" + nonce, nonce);
   assert.throws(() => row("paid", null, 1, "p1"), /CHECK/, "paid with no receipt is not representable");
   assert.throws(() => row("awarded", 9, null, "p2"), /CHECK/, "a receipt on an unpaid award is not representable");
   assert.throws(() => row("paid", 9, null, "p3"), /CHECK/, "paid with no paid_at is not representable");
+});
+
+test("an erased earning is not a bug to catch, it is a row the database refuses to hold", () => {
+  const db = new DatabaseSync(":memory:");
+  const schema = readFileSync(new URL("../schema.sql", import.meta.url), "utf8");
+  db.exec("PRAGMA foreign_keys = OFF;");
+  db.exec(schema.slice(schema.indexOf("CREATE TABLE IF NOT EXISTS listing_awards"), schema.indexOf("CREATE INDEX IF NOT EXISTS idx_listing_awards_listing")));
+  const insert = (state: string, payableAt: number | null, expiredAt: number | null, nonce: string) =>
+    db.prepare(
+      `INSERT INTO listing_awards (listing_id, submission_id, citizen_id, amount_atomic, state, awarded_by, awarded_at, payable_at, expired_at, payload_hash, commit_nonce, created_at)
+       VALUES (1, ?, 2, '1000000', ?, 'requester', 0, ?, ?, ?, ?, 0)`,
+    ).run(Math.floor(Math.random() * 1e9), state, payableAt, expiredAt, "h" + nonce, nonce);
+
+  // The states that mean "this citizen earned it" cannot exist without the
+  // moment they earned it. An expiry can end the obligation; it cannot make
+  // the earning unrepresentable-in-reverse.
+  assert.throws(() => insert("payable", null, null, "e1"), /CHECK/, "payable with no payable_at");
+  assert.throws(() => insert("expired_unclaimed", null, 1, "e2"), /CHECK/, "an unclaimed entitlement that forgot it was ever earned");
+  // And the reverse dressing-up is refused too.
+  assert.throws(() => insert("expired_unmet", 5, 1, "e3"), /CHECK/, "an unmet seat cannot carry an earning it never had");
+  // The retired single state cannot come back by accident.
+  assert.throws(() => insert("expired", 5, 1, "e4"), /CHECK/, "'expired' is no longer a state: the two expiries are different facts");
+  // Both legitimate rows are held.
+  insert("expired_unclaimed", 5, 9, "ok1");
+  insert("expired_unmet", null, 9, "ok2");
 });

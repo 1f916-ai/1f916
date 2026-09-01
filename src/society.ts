@@ -25,8 +25,8 @@ import { DOCKET, standingClaims, starterItems } from "./docket.ts";
 import { FUNDS_ADVICE, LISTINGS_PER_DAY, LISTING_RULE, NEXT_ACTIONS_NOTE, PAYEE_PREREQUISITES, SUBMISSIONS_PER_DAY, TREASURY_FUNDER_MARK, assertPaidFromListingFunder, assertVerifierCapNotReached, listingIdFromRow, listingPreimage, listingRoleFromRow, listingRow, listingSnapshot, payeeNextActions, validateListing, validateSubmission, type HeldBinding, type ListingInput, type StoredListing, type SubmissionInput } from "./listings.ts";
 import {
   ADAPTER_STATUS, AUTOMATIC_CHECK_NOTE, FUNDING_MODE_NOTE, SETTLEMENT_MODE_NOTE, SUBMISSION_STATE_NOTE,
-  assertAwardTransition, assertLiabilityInvariant, awardRefusal, commentIdFromArtifact, evaluateAutomaticCheck, listingEconomics,
-  submissionState, validateAutomaticCheck, validateSettlement,
+  assertAwardTransition, assertLiabilityInvariant, awardRefusal, commentIdFromArtifact, consumesSlot, evaluateAutomaticCheck, isOutstanding, lapseStateFor, listingEconomics,
+  submissionState, validateAutomaticCheck, validateSettlement, wasEverPayable,
   type AutomaticCheck, type AwardRow, type AwardState, type SettlementAdapter, type SettlementInput,
 } from "./settlement.ts";
 import { SEALS_PER_DAY, SEAL_CHECKS_PER_DAY, validateSeal, type SealInput, type ValidatedSeal } from "./seals.ts";
@@ -2592,7 +2592,7 @@ export async function listingById(env: Env, id: number): Promise<StoredListing |
             l.chain_id, l.token, l.expiry, l.funder_address, l.funder_signature, l.funds_seen_atomic, l.funds_checked_at, l.funds_block_number,
             l.commit_nonce, l.payload_hash, l.created_at, l.withdrawn_at, l.withdraw_reason, l.mod_state, l.post_id,
             l.max_awards, l.funding_mode, l.settlement_mode, l.automatic_check, l.requester_timeout_seconds, l.award_on_timeout,
-            l.award_ttl_seconds, l.settlement_version
+            l.award_ttl_seconds, l.settlement_version, l.submission_deadline, l.payable_ttl_seconds
        FROM listings l JOIN citizens c ON c.id = l.citizen_id WHERE l.id = ?`,
   ).bind(id).first<StoredListing>();
 }
@@ -2607,7 +2607,7 @@ export const LISTING_HASH_FIELDS = ["funder", "title", "condition", "amount_atom
 // The v2 recipe. The economic terms are hashed in because they are the
 // listing's promise about what it can cost: a max_awards that could be edited
 // after the work was done would make the cap worthless.
-export const LISTING_HASH_FIELDS_V2 = ["funder", "title", "condition", "amount_atomic", "verifier_price_atomic", "max_verifiers", "max_awards", "funding_mode", "settlement_mode", "automatic_check", "requester_timeout_seconds", "award_on_timeout", "award_ttl_seconds", "chain_id", "token", "expiry", "funder_address", "funds_seen_atomic", "funds_checked_at", "funds_block_number", "commit_nonce", "created_at"] as const;
+export const LISTING_HASH_FIELDS_V2 = ["funder", "title", "condition", "amount_atomic", "verifier_price_atomic", "max_verifiers", "max_awards", "funding_mode", "settlement_mode", "automatic_check", "submission_deadline", "requester_timeout_seconds", "award_on_timeout", "award_ttl_seconds", "payable_ttl_seconds", "chain_id", "token", "expiry", "funder_address", "funds_seen_atomic", "funds_checked_at", "funds_block_number", "commit_nonce", "created_at"] as const;
 export function listingHashFields(settlementVersion: number): readonly string[] {
   return settlementVersion >= 2 ? LISTING_HASH_FIELDS_V2 : LISTING_HASH_FIELDS;
 }
@@ -2627,7 +2627,7 @@ export async function createListing(
   // Settlement v2 terms. Every listing posted from here carries them, so
   // settlement_version 2 is not optional and not a flag a funder can decline:
   // a listing with no declared cap is the thing this rail is removing.
-  const settlement = validateSettlement(body);
+  const settlement = validateSettlement(body, listing.expiry);
   // A funded listing needs an adapter that can actually hold the money, and
   // none exists (ADAPTER_STATUS). Refusing here is the honest half of the
   // feature: the alternative is a listing that says "funded" while nothing is
@@ -2694,8 +2694,10 @@ export async function createListing(
     // response body and reproduce this hash; hashing the JSON string while
     // serving the parsed object would break that promise silently.
     automatic_check: settlement.automaticCheck,
+    submission_deadline: settlement.submissionDeadline,
     requester_timeout_seconds: settlement.requesterTimeoutSeconds,
     award_on_timeout: settlement.awardOnTimeout,
+    payable_ttl_seconds: settlement.payableTtlSeconds,
     award_ttl_seconds: settlement.awardTtlSeconds,
     chain_id: listing.chainId,
     token: listing.token,
@@ -2712,8 +2714,9 @@ export async function createListing(
   const stateStmt = env.DB.prepare(
     `INSERT INTO listings (citizen_id, title, condition, amount_atomic, verifier_price_atomic, max_verifiers, chain_id, token, expiry,
                            funder_address, funder_signature, funds_seen_atomic, funds_checked_at, funds_block_number, payload_hash, commit_nonce, created_at,
-                           max_awards, funding_mode, settlement_mode, automatic_check, requester_timeout_seconds, award_on_timeout, award_ttl_seconds, settlement_version)
-     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                           max_awards, funding_mode, settlement_mode, automatic_check, requester_timeout_seconds, award_on_timeout, award_ttl_seconds, settlement_version,
+                           submission_deadline, payable_ttl_seconds)
+     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
       WHERE (SELECT COUNT(*) FROM listings WHERE citizen_id = ? AND created_at > ?) < ?
      RETURNING id`,
   ).bind(
@@ -2723,6 +2726,7 @@ export async function createListing(
     settlement.maxAwards, settlement.fundingMode, settlement.settlementMode,
     settlement.automaticCheck === null ? null : JSON.stringify(settlement.automaticCheck),
     settlement.requesterTimeoutSeconds, settlement.awardOnTimeout ? 1 : 0, settlement.awardTtlSeconds, settlement.settlementVersion,
+    settlement.submissionDeadline, settlement.payableTtlSeconds,
     citizen.id, dayAgo, LISTINGS_PER_DAY,
   );
   const committed = await commitWithIdentityEvent<{ id: number }>(
@@ -2828,7 +2832,7 @@ export async function createListing(
 // codebase that may. Every refusal here is a refusal to create money out of a
 // submission, so each one names its gate.
 
-export const AWARD_HASH_FIELDS = ["listing_id", "submission_id", "payee", "amount_atomic", "awarded_by", "awarded_at", "commit_nonce"] as const;
+export const AWARD_HASH_FIELDS = ["listing_id", "submission_id", "payee", "amount_atomic", "awarded_by", "awarded_at", "state", "expires_at", "commit_nonce"] as const;
 
 export interface StoredAward {
   id: number;
@@ -2862,18 +2866,28 @@ export async function listingAwards(env: Env, listingId: number): Promise<Stored
 // persists it. Pure, and applied identically in both places.
 export function lapseExpiredAwards(awards: readonly StoredAward[], nowMs: number): StoredAward[] {
   return awards.map((a) =>
-    (a.state === "awarded" || a.state === "payable") && a.expires_at !== null && a.expires_at <= nowMs
-      ? { ...a, state: "expired" as AwardState, expired_at: a.expires_at }
+    isOutstanding(a.state) && a.expires_at !== null && a.expires_at <= nowMs
+      // lapseStateFor picks by WHICH CLOCK WAS RUNNING: a reserved seat lapses
+      // unmet, an earned entitlement lapses unclaimed. payable_at is untouched
+      // either way, so the record of having earned it survives the expiry.
+      ? { ...a, state: lapseStateFor(a.state), expired_at: a.expires_at }
       : a,
   );
 }
 
 export async function sweepExpiredAwards(env: Env, listingId: number, nowMs: number): Promise<number> {
-  const result = await env.DB.prepare(
-    `UPDATE listing_awards SET state = 'expired', expired_at = expires_at
-      WHERE listing_id = ? AND state IN ('awarded', 'payable') AND expires_at IS NOT NULL AND expires_at <= ?`,
+  // Two statements, not one, because the terminal state is decided by the
+  // clock that was running and a single UPDATE would have to pick one of them
+  // for both. payable_at is never cleared: the entitlement existed.
+  const unmet = await env.DB.prepare(
+    `UPDATE listing_awards SET state = 'expired_unmet', expired_at = expires_at
+      WHERE listing_id = ? AND state = 'awarded' AND expires_at IS NOT NULL AND expires_at <= ?`,
   ).bind(listingId, nowMs).run();
-  return Number(result.meta?.changes ?? 0);
+  const unclaimed = await env.DB.prepare(
+    `UPDATE listing_awards SET state = 'expired_unclaimed', expired_at = expires_at
+      WHERE listing_id = ? AND state = 'payable' AND expires_at IS NOT NULL AND expires_at <= ?`,
+  ).bind(listingId, nowMs).run();
+  return Number(unmet.meta?.changes ?? 0) + Number(unclaimed.meta?.changes ?? 0);
 }
 
 // Who may award on this listing, by its declared settlement mode. The mode is
@@ -2902,7 +2916,13 @@ async function assertMayAward(env: Env, listing: StoredListing, citizen: Citizen
   return "automatic";
 }
 
-export async function createAward(env: Env, citizen: Citizen, listingId: number, body: { submission_id?: unknown; verdict?: unknown }) {
+export async function createAward(
+  env: Env,
+  citizen: Citizen,
+  listingId: number,
+  body: { submission_id?: unknown; verdict?: unknown; reserve?: unknown },
+  deps: { settlementAdapter?: SettlementAdapter } = {},
+) {
   const listing = await listingById(env, listingId);
   if (!listing) throw new SocietyError(404, `no listing ${listingId}`);
   const nowMs = Date.now();
@@ -2950,7 +2970,33 @@ export async function createAward(env: Env, citizen: Citizen, listingId: number,
       throw new SocietyError(409, `verifier recorded fail for submission ${submissionId}; no award was made and nothing is owed. A fail is not a judgment this registry makes or stores as a defect on the worker.`);
   }
 
-  const expiresAt = listing.award_ttl_seconds === null ? null : nowMs + listing.award_ttl_seconds * 1000;
+  // WHICH STATE THIS AWARD IS BORN IN, and it is the correction that removes a
+  // pointless second act from every settled listing.
+  //
+  // An award records a DECISION that has already been made: the declared check
+  // passed, the verifier signed pass, or the funder accepted. In all three the
+  // condition is satisfied at the moment of the award, so the award is born
+  // PAYABLE and the entitlement is real immediately. A verifier's pass does
+  // not wait on the funder to agree with it, which would make the verifier
+  // advisory and hand the funder a veto the listing never declared.
+  //
+  // `reserve` is the other case, and the only one that produces `awarded`: a
+  // funder reserving a seat for a citizen BEFORE the work is done ("you have
+  // six hours or the seat goes back on the market"). Nothing is earned yet,
+  // and award_ttl_seconds is the clock on it.
+  const reserving = body.reserve === true;
+  if (reserving) {
+    if (mode !== "requester")
+      throw new SocietyError(400, `only a requester-settled listing can reserve a seat before the work; listing ${listing.id} settles in ${listing.settlement_mode} mode, where an award records a condition that has already been satisfied`);
+    if (listing.award_ttl_seconds === null)
+      throw new SocietyError(400, "reserving a seat needs the listing to have declared award_ttl_seconds before the work began, so the seat's clock is a term of the listing and not a decision made afterwards");
+  }
+  const bornState: AwardState = reserving ? "awarded" : "payable";
+  // The clock that runs on this award is the clock for the state it is in: a
+  // reserved seat runs award_ttl, an entitlement runs the claim window. Null
+  // means no clock, and no clock can be attached later.
+  const ttlSeconds = reserving ? listing.award_ttl_seconds : listing.payable_ttl_seconds;
+  const expiresAt = ttlSeconds === null ? null : nowMs + ttlSeconds * 1000;
   const commitNonce = crypto.randomUUID();
   const payeeRow = await env.DB.prepare(`SELECT handle FROM citizens WHERE id = ?`).bind(submission.citizen_id).first<{ handle: string }>();
   const payload: Record<(typeof AWARD_HASH_FIELDS)[number], unknown> = {
@@ -2960,6 +3006,8 @@ export async function createAward(env: Env, citizen: Citizen, listingId: number,
     amount_atomic: listing.amount_atomic,
     awarded_by: awardedBy,
     awarded_at: nowMs,
+    state: bornState,
+    expires_at: expiresAt,
     commit_nonce: commitNonce,
   };
   const payloadHash = await sha256Hex(JSON.stringify(AWARD_HASH_FIELDS.map((f) => payload[f])));
@@ -2969,14 +3017,19 @@ export async function createAward(env: Env, citizen: Citizen, listingId: number,
   // past a max_awards of 1 is precisely how a $5 listing would come to owe
   // $10. The count is taken in the same statement that inserts.
   const stateStmt = env.DB.prepare(
-    `INSERT INTO listing_awards (listing_id, submission_id, citizen_id, amount_atomic, state, awarded_by, awarded_by_citizen_id, awarded_at, expires_at, payload_hash, commit_nonce, created_at)
-     SELECT ?, ?, ?, ?, 'awarded', ?, ?, ?, ?, ?, ?, ?
-      WHERE (SELECT COUNT(*) FROM listing_awards WHERE listing_id = ? AND state != 'expired') < ?
+    `INSERT INTO listing_awards (listing_id, submission_id, citizen_id, amount_atomic, state, awarded_by, awarded_by_citizen_id, awarded_at, payable_at, expires_at, payload_hash, commit_nonce, created_at)
+     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+      WHERE (SELECT COUNT(*) FROM listing_awards WHERE listing_id = ? AND state != 'expired_unmet') < ?
         AND EXISTS (SELECT 1 FROM listings WHERE id = ? AND expiry > ? AND withdrawn_at IS NULL AND mod_state IS NULL)
      RETURNING id`,
   ).bind(
-    listing.id, submission.id, submission.citizen_id, listing.amount_atomic, awardedBy,
-    awardedBy === "automatic" ? null : citizen.id, nowMs, expiresAt, payloadHash, commitNonce, nowMs,
+    listing.id, submission.id, submission.citizen_id, listing.amount_atomic, bornState, awardedBy,
+    awardedBy === "automatic" ? null : citizen.id, nowMs,
+    // payable_at is stamped in the same write for an award born payable. It is
+    // never cleared afterwards, by any path, which is what makes "this citizen
+    // earned it" survive an expiry.
+    bornState === "payable" ? nowMs : null,
+    expiresAt, payloadHash, commitNonce, nowMs,
     listing.id, listing.max_awards, listing.id, nowSeconds,
   );
   let committed;
@@ -3000,7 +3053,51 @@ export async function createAward(env: Env, citizen: Citizen, listingId: number,
   if (committed.changed === 0)
     throw new SocietyError(409, `listing ${listing.id} is exhausted or closed: its ${listing.max_awards} award slot(s) were taken while this award was being recorded. Nothing was awarded and no liability was created.`);
   const id = committed.state?.id ?? null;
-  return { award_id: id, listing_id: listing.id, submission_id: submission.id, state: "awarded", amount_atomic: listing.amount_atomic, awarded_by: awardedBy, expires_at: expiresAt, payload_hash: payloadHash };
+  const settled = bornState === "payable" && id !== null ? await releaseIfAutomatic(env, listing, id, submission.citizen_id, nowMs, deps.settlementAdapter) : null;
+  return {
+    award_id: id,
+    listing_id: listing.id,
+    submission_id: submission.id,
+    state: settled?.state ?? bornState,
+    amount_atomic: listing.amount_atomic,
+    awarded_by: awardedBy,
+    payable_at: bornState === "payable" ? nowMs : null,
+    expires_at: expiresAt,
+    expires_meaning: expiresAt === null
+      ? "no clock runs on this award"
+      : bornState === "awarded"
+        ? "award_ttl_seconds: if the declared condition is not met by then, this reserved seat becomes expired_unmet, nothing was earned, and the seat returns to the market"
+        : "payable_ttl_seconds: if this entitlement is not claimed by then it becomes expired_unclaimed, which permanently records that the amount WAS earned and went unclaimed, and is never reported as not-selected",
+    released: settled?.released ?? null,
+    payload_hash: payloadHash,
+  };
+}
+
+// Funded plus automatic means nobody has to act twice: the check passed, so
+// the money is released in the same request and the award is paid. This is the
+// FUND -> SUBMIT -> PAID path, and there is no claim window on it because
+// there is no interval in which the entitlement sits waiting for anyone.
+async function releaseIfAutomatic(
+  env: Env,
+  listing: StoredListing,
+  awardId: number,
+  payeeId: number,
+  nowMs: number,
+  adapter: SettlementAdapter | undefined,
+): Promise<{ state: string; released: { adapter: string; external_ref: string; already_released: boolean } } | null> {
+  if (adapter === undefined || listing.funding_mode !== "funded" || listing.settlement_mode !== "automatic") return null;
+  const destination = await env.DB.prepare(
+    `SELECT payout_address FROM payout_bindings WHERE docket_id = ? AND citizen_id = ? ORDER BY id DESC LIMIT 1`,
+  ).bind(listingRow(listing.id), payeeId).first<{ payout_address: string }>();
+  // No binding, no destination, and this is not an error: the entitlement is
+  // real and stays payable until the payee files one. The rail has always
+  // required a payout binding before money can move.
+  if (!destination) return null;
+  const released = await adapter.release(listing.id, awardId, listing.amount_atomic, destination.payout_address);
+  await env.DB.prepare(
+    `UPDATE listing_settlement SET released_atomic = CAST(CAST(released_atomic AS INTEGER) + CAST(? AS INTEGER) AS TEXT) WHERE listing_id = ?`,
+  ).bind(listing.amount_atomic, listing.id).run();
+  return { state: "payable", released: { adapter: adapter.name, external_ref: released.externalRef, already_released: released.alreadyReleased } };
 }
 
 function commentIdForCheck(artifact: string): number {
@@ -3010,19 +3107,51 @@ function commentIdForCheck(artifact: string): number {
 // awarded -> payable. In automatic mode the award is already the proof the
 // condition held, so it becomes payable in the same breath; the other two
 // modes keep it explicit so the funder's acceptance is a dated act.
-export async function markAwardPayable(env: Env, citizen: Citizen, awardId: number) {
+// A RESERVED SEAT whose condition has now been met. Authorization is the
+// listing's declared settlement mode, exactly as for an award: in verifier
+// mode the VERIFIER closes it and the funder is not consulted, because a
+// verifier whose pass needed the funder's agreement would be advisory, and the
+// listing declared a verifier.
+//
+// Awards created from a settlement decision are already payable and never come
+// through here; this exists only for the reserve-a-seat path.
+export async function markAwardPayable(env: Env, citizen: Citizen, awardId: number, body: { verdict?: unknown } = {}) {
   const award = await env.DB.prepare(`SELECT * FROM listing_awards WHERE id = ?`).bind(awardId).first<StoredAward>();
   if (!award) throw new SocietyError(404, `no award ${awardId}`);
   const listing = await listingById(env, award.listing_id);
   if (!listing) throw new SocietyError(404, `no listing ${award.listing_id}`);
-  if (citizen.id !== listing.citizen_id) throw new SocietyError(403, "only the listing's funder can mark an award payable");
-  assertAwardTransition(award.state, "payable");
-  const now = Date.now();
+  const nowMs = Date.now();
+  // Apply the seat's own clock first: a seat that already lapsed cannot be
+  // quietly revived by a late decision.
+  await sweepExpiredAwards(env, listing.id, nowMs);
+  const current = await env.DB.prepare(`SELECT state FROM listing_awards WHERE id = ?`).bind(awardId).first<{ state: AwardState }>();
+  assertAwardTransition(current?.state ?? award.state, "payable");
+  const mode = await assertMayAward(env, listing, citizen);
+  if (mode === "verifier") {
+    if (body.verdict !== "pass" && body.verdict !== "fail") throw new SocietyError(400, "verdict must be 'pass' or 'fail'");
+    if (body.verdict === "fail")
+      throw new SocietyError(409, `verifier recorded fail on award ${awardId}; it stays a reserved seat and lapses under the listing's declared award_ttl_seconds. Nothing was earned and nothing is owed.`);
+  }
+  if (mode === "automatic")
+    throw new SocietyError(400, `listing ${listing.id} settles automatically: an award is created payable when the declared check passes, so there is nothing to mark`);
+  // The claim window starts now, when the entitlement starts existing, not
+  // when the seat was reserved.
+  const expiresAt = listing.payable_ttl_seconds === null ? null : nowMs + listing.payable_ttl_seconds * 1000;
   const result = await env.DB.prepare(
-    `UPDATE listing_awards SET state = 'payable', payable_at = ? WHERE id = ? AND state = 'awarded'`,
-  ).bind(now, awardId).run();
-  if (Number(result.meta?.changes ?? 0) === 0) throw new SocietyError(409, `award ${awardId} was no longer in state awarded`);
-  return { award_id: awardId, state: "payable", payable_at: now };
+    `UPDATE listing_awards SET state = 'payable', payable_at = ?, expires_at = ? WHERE id = ? AND state = 'awarded'`,
+  ).bind(nowMs, expiresAt, awardId).run();
+  if (Number(result.meta?.changes ?? 0) === 0)
+    throw new SocietyError(409, `award ${awardId} is no longer a reserved seat; its clock may have run out, in which case it is expired_unmet and the seat has returned to the market`);
+  return {
+    award_id: awardId,
+    state: "payable",
+    payable_at: nowMs,
+    decided_by: mode,
+    expires_at: expiresAt,
+    expires_meaning: expiresAt === null
+      ? "no claim window: this entitlement does not lapse"
+      : "payable_ttl_seconds: unclaimed past this it becomes expired_unclaimed, which permanently records that the amount was earned and went unclaimed",
+  };
 }
 
 export function listingClosedReason(listing: StoredListing, nowSeconds: number): string | null {
@@ -3081,6 +3210,12 @@ export async function createSubmission(env: Env, citizen: Citizen, listingId: nu
   const nowSeconds = Math.floor(Date.now() / 1000);
   const closed = listingClosedReason(listing, nowSeconds);
   if (closed) throw new SocietyError(409, `${closed}; it takes no more submissions`);
+  // The submission clock, which is separate from the listing's own life: a
+  // listing routinely outlives its submission window on purpose, so a verifier
+  // has time to decide inside it ("submit by the 5th, verifier decides within
+  // 48 hours"). Declared before any work and hashed into the listing.
+  if (listing.submission_deadline !== null && listing.submission_deadline <= nowSeconds)
+    throw new SocietyError(409, `listing ${listing.id} stopped taking work at its declared submission_deadline ${listing.submission_deadline}; the listing itself runs until ${listing.expiry} so that decisions already owed can still be made`);
   const sub = validateSubmission(body);
   const now = Date.now();
   const commitNonce = crypto.randomUUID();
@@ -4120,6 +4255,10 @@ export async function railCensus(env: Env) {
       // and a lapsed binding is a routing record that went stale, never a debt.
       lapsed_bindings: Number(worker.lapsed_bindings) + Number(verifier.lapsed_bindings),
       awards: mine.length,
+      // The award ledger's own history, so a reader can see that an
+      // entitlement existed even where it has since lapsed.
+      award_states: mine.reduce<Record<string, number>>((acc, a) => ({ ...acc, [a.state]: (acc[a.state] ?? 0) + 1 }), {}),
+      ever_payable: mine.filter((a) => wasEverPayable(a)).length,
       economics,
     };
   });
@@ -4135,13 +4274,14 @@ export async function railCensus(env: Env) {
       awards: acc.awards + r.awards,
       outstanding_awarded_atomic: (BigInt(acc.outstanding_awarded_atomic) + BigInt(r.economics.outstanding_awarded_atomic)).toString(),
       paid_atomic: (BigInt(acc.paid_atomic) + BigInt(r.economics.amount_paid_atomic)).toString(),
+      expired_unclaimed_atomic: (BigInt(acc.expired_unclaimed_atomic) + BigInt(r.economics.expired_unclaimed_atomic)).toString(),
       maximum_remaining_liability_atomic:
         r.economics.maximum_remaining_liability_atomic === null
           ? acc.maximum_remaining_liability_atomic
           : (BigInt(acc.maximum_remaining_liability_atomic) + BigInt(r.economics.maximum_remaining_liability_atomic)).toString(),
       listings_without_declared_cap: acc.listings_without_declared_cap + (r.economics.max_liability_atomic === null ? 1 : 0),
     }),
-    { listings: 0, open: 0, submissions: 0, bindings: 0, receipts: 0, lapsed_bindings: 0, awards: 0, outstanding_awarded_atomic: "0", paid_atomic: "0", maximum_remaining_liability_atomic: "0", listings_without_declared_cap: 0 },
+    { listings: 0, open: 0, submissions: 0, bindings: 0, receipts: 0, lapsed_bindings: 0, awards: 0, outstanding_awarded_atomic: "0", paid_atomic: "0", expired_unclaimed_atomic: "0", maximum_remaining_liability_atomic: "0", listings_without_declared_cap: 0 },
   );
 
   return {
@@ -4158,6 +4298,7 @@ export async function railCensus(env: Env) {
       lapsed_bindings: "Bindings with no receipt whose OWN expiry is already past, at the clock in `now`. This counts routing records that went stale. It is not a debt, not a broken promise, and not a count of unpaid people.",
       awards: "Rows in the award ledger, with any award past its listing's award_ttl_seconds treated as expired before it is counted.",
       outstanding_awarded_atomic: "The sum of awards in state awarded or payable. THIS, and only this, is money a funder currently owes on this rail.",
+      expired_unclaimed_atomic: "The sum of awards that BECAME PAYABLE and then lapsed unclaimed past the claim window their listing declared before the work began. This money was genuinely earned and is no longer owed, and both halves of that are true at once. It is served on its own line so it can be read as neither 'still owed' nor 'never earned', and the award rows keep the timestamp at which each became payable.",
       maximum_remaining_liability_atomic: "Per listing: outstanding plus available capacity times the award amount. Summed here over listings that declare a cap. Listings without one are counted in listings_without_declared_cap and contribute nothing, because this registry will not invent a cap its funder never declared.",
     },
     reading_note:

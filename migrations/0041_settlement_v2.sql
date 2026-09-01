@@ -55,9 +55,15 @@ CREATE TABLE IF NOT EXISTS listing_awards (
   -- awarded: the slot is consumed and the money is outstanding.
   -- payable: the settlement condition is satisfied; release may be called.
   -- paid: a payout receipt is joined to this award.
-  -- expired: the award lapsed unpaid under award_ttl_seconds and RELEASED its
-  --   slot back. It is no longer outstanding and no longer consuming capacity.
-  state TEXT NOT NULL CHECK (state IN ('awarded', 'payable', 'paid', 'expired')),
+  -- expired_unmet: a RESERVED SEAT lapsed under award_ttl_seconds without the
+  --   condition ever being met. Nothing was earned, and the seat returns to
+  --   the market. payable_at is null and the CHECK below keeps it that way.
+  -- expired_unclaimed: the condition WAS met and this citizen WAS entitled to
+  --   the amount, and it went unclaimed past the claim window the listing
+  --   declared before the work began. No longer outstanding, the slot stays
+  --   spent, and payable_at is REQUIRED, so the record that they earned it
+  --   cannot be erased by the expiry that stopped the obligation.
+  state TEXT NOT NULL CHECK (state IN ('awarded', 'payable', 'paid', 'expired_unmet', 'expired_unclaimed')),
   awarded_by TEXT NOT NULL CHECK (awarded_by IN ('automatic', 'requester', 'verifier')),
   -- The citizen who made the award. NULL for automatic: no one decided.
   awarded_by_citizen_id INTEGER REFERENCES citizens(id),
@@ -81,7 +87,16 @@ CREATE TABLE IF NOT EXISTS listing_awards (
   UNIQUE (receipt_id),
   CHECK ((state = 'paid') = (receipt_id IS NOT NULL)),
   CHECK ((state = 'paid') = (paid_at IS NOT NULL)),
-  CHECK ((state = 'expired') = (expired_at IS NOT NULL))
+  CHECK ((state IN ('expired_unmet', 'expired_unclaimed')) = (expired_at IS NOT NULL)),
+  -- THE EARNING IS PERMANENT, and this is a constraint rather than a promise.
+  -- Any state that means the condition was satisfied must carry the moment it
+  -- was satisfied. So an expiry that tried to erase the evidence that a
+  -- citizen earned this amount is not a bug to be caught by review, it is a
+  -- row the database will not hold.
+  CHECK (state NOT IN ('payable', 'paid', 'expired_unclaimed') OR payable_at IS NOT NULL),
+  -- And the converse: a seat that lapsed with nothing earned must not carry a
+  -- payable_at, so expired_unmet can never be dressed up as an entitlement.
+  CHECK (state != 'expired_unmet' OR payable_at IS NULL)
 );
 CREATE INDEX IF NOT EXISTS idx_listing_awards_listing ON listing_awards(listing_id, id);
 CREATE INDEX IF NOT EXISTS idx_listing_awards_citizen ON listing_awards(citizen_id, id);
@@ -101,3 +116,12 @@ CREATE TABLE IF NOT EXISTS listing_settlement (
   committed_at INTEGER NOT NULL,
   refunded_at INTEGER
 );
+
+-- The remaining two clocks, added while settlement v2 was still unreleased.
+-- Four clocks answering four questions, all declared before work begins:
+--   submission_deadline        by when work may be handed in
+--   award_ttl_seconds          how long a reserved seat may sit unmet
+--   requester_timeout_seconds  how long the requester has to decide
+--   payable_ttl_seconds        how long an entitlement stays claimable
+ALTER TABLE listings ADD COLUMN submission_deadline INTEGER;
+ALTER TABLE listings ADD COLUMN payable_ttl_seconds INTEGER;

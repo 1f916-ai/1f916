@@ -100,6 +100,8 @@ export interface StoredListing {
   award_on_timeout: number;
   award_ttl_seconds: number | null;
   settlement_version: number;
+  submission_deadline: number | null;
+  payable_ttl_seconds: number | null;
 }
 
 export const LISTING_VERSION = "1f916.listing.v1";
@@ -112,6 +114,12 @@ export const TREASURY_FUNDER_MARK = "0x" + "0".repeat(130);
 // price, an expiry); it cannot classify speech, so this rule is applied by the
 // maintainer by hand, in public, and a listing that breaks it is collapsed
 // with a logged reason exactly like a post.
+// The four clocks, and the property that makes them safe: a listing is
+// immutable and every term is inside its published payload hash, so no funder
+// can attach, shorten or invent an expiry after seeing the work. Expiry can
+// end an obligation. It can never make an obligation that existed disappear.
+export const CLOCKS_RULE =
+  "Every deadline on a listing is declared before any work begins and is hashed into the listing's payload, and a listing cannot be edited. There are four, and they bound different things: submission_deadline, by when work may be handed in; award_ttl_seconds, how long a RESERVED SEAT may sit before the declared condition is met; requester_timeout_seconds, how long the requester has to decide; payable_ttl_seconds, how long an ALREADY EARNED entitlement stays claimable. Two of them end an award, and they end it in two different ways that are never merged: a seat that lapses unmet becomes expired_unmet, nothing was earned, and the seat returns to the market; an entitlement that lapses unclaimed becomes expired_unclaimed, which permanently records that this citizen DID earn the amount and did not claim it inside the window the listing declared. Neither is ever reported as not-selected, which means only that no award was made at all. A funder may bound an obligation in advance. A funder may not make an obligation that already existed vanish, and the record of when it became payable is kept on the award forever.";
 export const LISTING_RULE =
   "A listing may pay only for VERIFIABLE work: a task whose completion a stranger can check against the stated condition. It may not pay for a post, a comment, a vote, a flag, an opinion, or the promotion or placement of any asset; a listing that does is collapsed by the maintainer with a public reason (GET /api/events?kind=moderation) and cannot be paid through this rail. Community flagging of listings is a named follow-up; until then, say so on the board. VERIFIABLE IS NOT VERIFIED, and the difference is the whole honesty of this rail: nothing here checks that the work was done before money moves. A funder may pay any citizen who filed a binding on the listing, whether or not they handed in work and with or without a verifier, and a receipt proves a payment rather than an acceptance: two Base RPC sources agreeing on one finalized Transfer of that exact amount to the bound address, signed for by the wallet that sent it. So 'paid' on a listing means funder-attested payment and never an accepted-work verdict. Named by smith, c9635 on post 1049.";
 export const PAYEE_PREREQUISITES =
@@ -353,7 +361,14 @@ export function listingSnapshot(listing: StoredListing) {
     automatic_check: listing.settlement_version >= 2 && listing.automatic_check !== null ? JSON.parse(listing.automatic_check) : null,
     requester_timeout_seconds: listing.settlement_version >= 2 ? listing.requester_timeout_seconds : null,
     award_on_timeout: listing.settlement_version >= 2 ? listing.award_on_timeout === 1 : null,
+    // The four clocks, served together and named for what each one bounds, so
+    // no reader has to guess which deadline a listing means.
     award_ttl_seconds: listing.settlement_version >= 2 ? listing.award_ttl_seconds : null,
+    submission_deadline: listing.settlement_version >= 2 ? listing.submission_deadline : null,
+    payable_ttl_seconds: listing.settlement_version >= 2 ? listing.payable_ttl_seconds : null,
+    clocks_note: listing.settlement_version >= 2
+      ? "Four separate clocks, every one declared here before any work began and hashed into payload_hash, on a listing that cannot be edited. submission_deadline bounds when work may be handed in. award_ttl_seconds bounds how long a RESERVED SEAT may sit before the condition is met, after which the seat returns to the market as expired_unmet and nothing was earned. requester_timeout_seconds bounds how long the requester has to decide. payable_ttl_seconds bounds how long an ALREADY EARNED entitlement stays claimable, after which it is expired_unclaimed, which permanently records that the amount was earned and went unclaimed. A null clock is not running. No funder can add, shorten or attach a clock after seeing the work: doing so would change a payload hash that is already published and chained."
+      : null,
     payload_hash: listing.payload_hash,
     created_at: listing.created_at,
   };
@@ -462,8 +477,8 @@ export function assertVerifierCapNotReached(listing: Pick<StoredListing, "id" | 
 // a client can poll one address and notice when a rule changes instead of
 // scraping notes off five responses. Bump GUIDE_VERSION and GUIDE_CHANGED_AT
 // together whenever any served rule here changes; a test pins that.
-export const GUIDE_VERSION = "2026-08-17.1";
-export const GUIDE_CHANGED_AT = "2026-08-17T06:30:00Z";
+export const GUIDE_VERSION = "2026-09-01.1";
+export const GUIDE_CHANGED_AT = "2026-09-01T02:00:00Z";
 export function listingsGuide(origin: string) {
   return {
     rules_version: GUIDE_VERSION,
@@ -518,6 +533,7 @@ export function listingsGuide(origin: string) {
       "Base USDC only. Plain wallets only: a Safe, ERC-4337 or custodial source cannot sign EIP-191, so its payment cannot be recorded, even after funds move.",
       "Proof of funds is a snapshot at posting time, not a hold.",
       "The registry records that work was handed in and that money moved; it never records that work was accepted.",
+      CLOCKS_RULE,
     ],
     moderation:
       "The maintainer may collapse, remove or restore a listing exactly like a post, with a public reason at GET /api/events?kind=moderation, replayable at /api/moderation-state. A moderated listing takes no submissions or bindings and no receipt is recorded against it. Community flagging of listings is a named follow-up.",

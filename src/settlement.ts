@@ -39,7 +39,7 @@ export const FUNDING_MODE_NOTE =
   "promise: the funder has committed nothing; their settlement history is the only thing standing behind it. verified: this registry read the named wallet's balance at a point in time and it covered the listing's maximum liability at that instant; the funds are NOT reserved, NOT locked and NOT escrowed, and the wallet may move them the next second. funded: the listing's maximum liability is committed through a settlement adapter, and committed_atomic below says how much and which adapter holds it.";
 
 export const SETTLEMENT_MODE_NOTE =
-  "automatic: this registry evaluates a narrow declared check against state it can read itself, and no one judges the work. requester: the funder accepts a submission, under the silence policy declared at posting time. verifier: a citizen who holds a verifier binding on this listing signs a pass or fail. The registry is not a judge in any mode: in automatic it runs a check the funder wrote down before the work, and in the other two it records a named party's decision.";
+  "Who decides that a submission is entitled to the amount. automatic: this registry evaluates a narrow declared check against state it can read itself, and no one judges the work; on a funded listing the money is released in the same request, which is the FUND -> SUBMIT -> PAID path. requester: the funder accepts, under the silence policy declared at posting time. verifier: a citizen holding a verifier binding filed on this listing before the verdict signs a pass or fail. IN ALL THREE, THE DECISION ITSELF MAKES THE AWARD PAYABLE: a verifier's pass is not a recommendation the funder then confirms, because a listing that declared a verifier and still required the funder to agree would have handed the funder a veto it never declared. The one award that is not born payable is a seat RESERVED before the work, which only a requester-settled listing can do and only when it declared award_ttl_seconds beforehand. The registry is not a judge in any mode: in automatic it runs a check the funder wrote down before the work, and in the other two it records a named party's decision.";
 
 // ---------- the award state machine ----------
 //
@@ -55,15 +55,61 @@ export const SETTLEMENT_MODE_NOTE =
 // under award_ttl_seconds, which the funder declares before any work is done.
 // A listing that closes does not reopen slots: closing ends the listing, and
 // an outstanding award stays outstanding.
-export const AWARD_STATES = ["awarded", "payable", "paid", "expired"] as const;
+export const AWARD_STATES = ["awarded", "payable", "paid", "expired_unmet", "expired_unclaimed"] as const;
 export type AwardState = (typeof AWARD_STATES)[number];
 
+// The two expirations are DIFFERENT ECONOMIC FACTS and are never one state.
+//
+//   expired_unmet       a seat was reserved and the condition was never met
+//                       within award_ttl_seconds. Nothing was ever earned. The
+//                       seat returns to the market, which is the whole point
+//                       of reserving one with a clock on it.
+//
+//   expired_unclaimed   the condition WAS met, the entitlement existed, and it
+//                       went unclaimed past the declared claim window. The
+//                       money stops being outstanding because the listing said
+//                       before the work that it would. The fact that this
+//                       citizen earned it does not stop being true, and the
+//                       slot does NOT return to the market, because the work
+//                       was done and paying someone else for it would be a
+//                       second liability for one piece of accepted work.
+//
+// This distinction is the difference between "they never earned it" and "they
+// earned it and did not claim in time", and a rail that cannot tell those
+// apart can make an earned obligation disappear by calling it not-selected.
 const AWARD_TRANSITIONS: Record<AwardState, readonly AwardState[]> = {
-  awarded: ["payable", "expired"],
-  payable: ["paid", "expired"],
+  awarded: ["payable", "expired_unmet"],
+  payable: ["paid", "expired_unclaimed"],
   paid: [],
-  expired: [],
+  expired_unmet: [],
+  expired_unclaimed: [],
 };
+
+// An awarded seat can only ever lapse as unmet; a payable entitlement can only
+// ever lapse as unclaimed. Encoding it here means no caller can pick the
+// flattering one.
+export function lapseStateFor(from: AwardState): AwardState {
+  if (from === "awarded") return "expired_unmet";
+  if (from === "payable") return "expired_unclaimed";
+  throw new SocietyError(500, `an award in state ${from} does not lapse`);
+}
+
+// States that consume an award slot. expired_unclaimed KEEPS its slot: the
+// work was accepted and the entitlement existed, so the seat is spent.
+export function consumesSlot(state: AwardState): boolean {
+  return state !== "expired_unmet";
+}
+
+// States that are money a funder currently owes.
+export function isOutstanding(state: AwardState): boolean {
+  return state === "awarded" || state === "payable";
+}
+
+// Was this entitlement ever real? Permanent, and read off the state alone, so
+// no read path can lose it.
+export function wasEverPayable(award: { state: AwardState; payable_at: number | null }): boolean {
+  return award.state === "paid" || award.state === "payable" || award.state === "expired_unclaimed" || award.payable_at !== null;
+}
 
 export function assertAwardTransition(from: AwardState, to: AwardState): void {
   if (!AWARD_TRANSITIONS[from].includes(to))
@@ -72,21 +118,23 @@ export function assertAwardTransition(from: AwardState, to: AwardState): void {
 
 // The state of one SUBMISSION, which is what a reader actually asks about.
 // Derived, never stored: storing it would let it disagree with the award rows.
-export type SubmissionState = "submitted" | "awarded" | "payable" | "paid" | "not_selected" | "expired";
+export type SubmissionState = "submitted" | "awarded" | "payable" | "paid" | "not_selected" | "expired_unmet" | "expired_unclaimed";
 
+// NOT_SELECTED means one thing only: no award was ever made against this
+// submission. A submission that was awarded and lapsed NEVER reads as
+// not_selected, in either lapse. Collapsing those would let an expiry rewrite
+// history into "they were never chosen", which is the failure this whole
+// distinction exists to prevent.
 export function submissionState(input: {
   award: { state: AwardState } | null;
   listingClosed: boolean;
 }): SubmissionState {
   if (input.award === null) return input.listingClosed ? "not_selected" : "submitted";
-  // An expired award returned its slot; the submission is back to being work
-  // nobody selected, and saying "expired" tells the reader which of the two
-  // happened. Never "paid" and never "awarded": both would be false.
-  return input.award.state === "expired" ? "expired" : input.award.state;
+  return input.award.state;
 }
 
 export const SUBMISSION_STATE_NOTE =
-  "submitted: handed in, no award, no entitlement, and no liability of any kind. awarded: an award slot is consumed and this amount is outstanding. payable: the declared settlement condition is satisfied and release may be called. paid: a payout receipt is joined to this award. not_selected: the listing closed without awarding this submission, which is not a judgment of the work. expired: an award was made and lapsed unpaid under the listing's declared award_ttl_seconds, returning its slot. A submission is never money owed; only an award in state awarded or payable is.";
+  "submitted: handed in, no award, no entitlement, no liability of any kind. awarded: a slot is reserved for this citizen and the amount is outstanding, but the declared condition is not satisfied yet. payable: the declared condition IS satisfied and this citizen is entitled to the amount. paid: a payout receipt is joined to the award. not_selected: NO AWARD WAS EVER MADE against this submission and the listing closed, which is not a judgment of the work. expired_unmet: a reserved seat lapsed under the listing's declared award_ttl_seconds without the condition ever being met, so nothing was earned and the seat returned to the market. expired_unclaimed: the condition WAS met and this citizen WAS entitled to the amount, and the entitlement went unclaimed past the claim window the listing declared before the work began; the money stopped being outstanding, and the fact that it was earned is permanent and stays on this row with the timestamp it became payable. expired_unmet and expired_unclaimed are different economic facts and neither is ever reported as not_selected. A submission is never money owed; only an award in state awarded or payable is.";
 
 // ---------- the arithmetic ----------
 
@@ -113,6 +161,10 @@ export interface ListingEconomics {
   available_award_capacity: number | null;
   amount_paid_atomic: string;
   outstanding_awarded_atomic: string;
+  // Earned, became payable, and lapsed unclaimed under the listing's declared
+  // claim window. Never money still owed, and never evidence nothing was
+  // earned. Its own line so it can be neither.
+  expired_unclaimed_atomic: string;
   maximum_remaining_liability_atomic: string | null;
   note: string;
 }
@@ -121,13 +173,18 @@ const V1_NOTE =
   "This listing was posted before settlement v2 and carries no award ledger and no declared award cap, so this registry does not know what its maximum liability was and will not invent one: max_liability_atomic, max_awards and available_award_capacity are null rather than guessed. amount_paid_atomic counts receipts joined to awards, and a v1 listing has no awards, so it is 0 here even where money moved; the payment record for these listings is the bindings and receipts below, exactly where it always was. Nothing about a v1 listing is a debt.";
 
 const V2_NOTE =
-  "Three separate quantities, and the separation is the point. available_award_capacity is how many awards this listing may still make. outstanding_awarded_atomic is money already awarded and not yet paid. maximum_remaining_liability_atomic is the sum of the two: outstanding plus capacity times the award amount. Do NOT compute remaining liability as available_award_capacity times award_amount: that omits awards already made, which is how an awarded-but-unpaid slot disappears from the books. Submissions and payout bindings appear in NEITHER: a submission is work handed in and a binding is a routing record, and no number of either changes what this listing can cost.";
+  "Four separate quantities, and the separation is the point. expired_unclaimed_atomic is money that WAS earned and became payable and then lapsed unclaimed under the claim window this listing declared before the work began: it is not still owed, and it is not evidence that nobody earned it. It is reported on its own line so that neither reading is available. available_award_capacity is how many awards this listing may still make. outstanding_awarded_atomic is money already awarded and not yet paid. maximum_remaining_liability_atomic is the sum of the two: outstanding plus capacity times the award amount. Do NOT compute remaining liability as available_award_capacity times award_amount: that omits awards already made, which is how an awarded-but-unpaid slot disappears from the books. Submissions and payout bindings appear in NEITHER: a submission is work handed in and a binding is a routing record, and no number of either changes what this listing can cost.";
 
 export function listingEconomics(input: ListingEconomicsInput): ListingEconomics {
   const paid = sumAtomic(input.awards.filter((a) => a.state === "paid"));
-  // Outstanding is awarded + payable. Not paid (money moved), not expired
-  // (the award lapsed and the slot came back).
-  const outstanding = sumAtomic(input.awards.filter((a) => a.state === "awarded" || a.state === "payable"));
+  // Outstanding is awarded + payable only. Not paid (money moved), and not
+  // either expiry (the listing said before the work what would end the
+  // obligation, and it did).
+  const outstanding = sumAtomic(input.awards.filter((a) => isOutstanding(a.state)));
+  // Earned but never paid, in money. Served as its own figure rather than
+  // folded into anything: it is the number that says an obligation existed and
+  // was extinguished by a declared clock, and it must never be invisible.
+  const expiredUnclaimed = sumAtomic(input.awards.filter((a) => a.state === "expired_unclaimed"));
   // Anything that is not literally 2 or more is treated as v1 and publishes
   // nulls. A missing or malformed version must fail SAFE, because the unsafe
   // direction here is inventing a cap and a liability for a listing whose
@@ -142,15 +199,18 @@ export function listingEconomics(input: ListingEconomicsInput): ListingEconomics
       available_award_capacity: null,
       amount_paid_atomic: paid.toString(),
       outstanding_awarded_atomic: outstanding.toString(),
+      expired_unclaimed_atomic: expiredUnclaimed.toString(),
       maximum_remaining_liability_atomic: null,
       note: V1_NOTE,
     };
   }
   const award = BigInt(input.amount_atomic);
   const maxLiability = award * BigInt(input.max_awards);
-  // A slot is consumed by any award that has not expired. expired is the only
-  // state that gives one back.
-  const slotsUsed = input.awards.filter((a) => a.state !== "expired").length;
+  // expired_unmet is the ONLY state that returns a slot: nothing was earned
+  // there. An unclaimed entitlement keeps its slot, because the work was
+  // accepted and re-selling that seat would pay twice for one accepted piece
+  // of work.
+  const slotsUsed = input.awards.filter((a) => consumesSlot(a.state)).length;
   // A closed listing offers no capacity. Its outstanding awards remain
   // outstanding: closing the listing does not cancel what was already awarded.
   const capacity = input.open ? Math.max(0, input.max_awards - slotsUsed) : 0;
@@ -164,6 +224,7 @@ export function listingEconomics(input: ListingEconomicsInput): ListingEconomics
     available_award_capacity: capacity,
     amount_paid_atomic: paid.toString(),
     outstanding_awarded_atomic: outstanding.toString(),
+    expired_unclaimed_atomic: expiredUnclaimed.toString(),
     maximum_remaining_liability_atomic: remaining.toString(),
     note: V2_NOTE,
   };
@@ -200,7 +261,7 @@ export function awardRefusal(input: ExhaustionInput): string | null {
   if (!(Number(input.settlement_version) >= 2))
     return "this listing was posted before settlement v2 and has no award ledger; awards cannot be made against it and nothing about it is a debt";
   if (!input.open) return "the listing is closed (expired, withdrawn or moderated) and closed listings make no new awards";
-  const slotsUsed = input.awards.filter((a) => a.state !== "expired").length;
+  const slotsUsed = input.awards.filter((a) => consumesSlot(a.state)).length;
   if (slotsUsed >= input.max_awards)
     return `the listing is exhausted: all ${input.max_awards} award slots are consumed, so a further submission cannot become payable and cannot create another ${input.max_awards === 0 ? "" : "award of "}liability`;
   return null;
@@ -215,14 +276,32 @@ export const MAX_AWARDS_CAP = 100;
 // stays visible on the funder's record.
 export const DEFAULT_REQUESTER_TIMEOUT_SECONDS = 7 * 24 * 3600;
 
+// THE FOUR CLOCKS, and they are four because they answer four different
+// questions. Every one of them is declared in the listing before any work
+// begins and is hashed into the listing payload, and a listing is immutable.
+// That is the whole anti-retroactivity property: a funder cannot invent,
+// shorten or attach an expiry after seeing the work, because doing so would
+// have to change a payload hash that is already published and chained.
+//
+//   submission_deadline        by when work may be handed in
+//   award_ttl_seconds          how long a RESERVED SEAT may sit before the
+//                              condition is met, after which the seat returns
+//                              to the market as expired_unmet
+//   requester_timeout_seconds  how long the requester has to decide, then the
+//                              predeclared silence rule applies
+//   payable_ttl_seconds        how long an already-PAYABLE entitlement stays
+//                              claimable, after which it is expired_unclaimed
+//                              and the entitlement stays on the record forever
 export interface SettlementInput {
   max_awards?: unknown;
   funding_mode?: unknown;
   settlement_mode?: unknown;
   automatic_check?: unknown;
+  submission_deadline?: unknown;
   requester_timeout_seconds?: unknown;
   award_on_timeout?: unknown;
   award_ttl_seconds?: unknown;
+  payable_ttl_seconds?: unknown;
 }
 
 export interface ValidatedSettlement {
@@ -230,13 +309,15 @@ export interface ValidatedSettlement {
   fundingMode: FundingMode;
   settlementMode: SettlementMode;
   automaticCheck: AutomaticCheck | null;
+  submissionDeadline: number | null;
   requesterTimeoutSeconds: number | null;
   awardOnTimeout: boolean;
   awardTtlSeconds: number | null;
+  payableTtlSeconds: number | null;
   settlementVersion: 2;
 }
 
-export function validateSettlement(body: SettlementInput): ValidatedSettlement {
+export function validateSettlement(body: SettlementInput, listingExpiry?: number, nowSeconds = Math.floor(Date.now() / 1000)): ValidatedSettlement {
   const maxAwards = body.max_awards === undefined ? 1 : Number(body.max_awards);
   if (!Number.isSafeInteger(maxAwards) || maxAwards < 1 || maxAwards > MAX_AWARDS_CAP)
     throw new SocietyError(400, `max_awards must be a whole number from 1 to ${MAX_AWARDS_CAP}: how many times this listing may ever pay its award amount. It is the cap on what the listing can cost, so it is required to be finite.`);
@@ -283,13 +364,37 @@ export function validateSettlement(body: SettlementInput): ValidatedSettlement {
     throw new SocietyError(400, "requester_timeout_seconds is only meaningful with settlement_mode requester");
   }
 
-  let awardTtlSeconds: number | null = null;
-  if (body.award_ttl_seconds !== undefined && body.award_ttl_seconds !== null) {
-    awardTtlSeconds = Number(body.award_ttl_seconds);
-    if (!Number.isSafeInteger(awardTtlSeconds) || awardTtlSeconds < 3600 || awardTtlSeconds > 30 * 24 * 3600)
-      throw new SocietyError(400, "award_ttl_seconds, when given, must be a whole number of seconds from 3600 (one hour) to 2592000 (30 days): how long an award may sit unpaid before its slot reopens");
+  // A reserved seat's clock. Short by design: "you have six hours to do this
+  // or the seat goes back on the market" is the case this exists for, so the
+  // floor is minutes rather than an hour.
+  const awardTtlSeconds = optionalWindow(body.award_ttl_seconds, "award_ttl_seconds", 60, 30 * 24 * 3600,
+    "how long a RESERVED SEAT may sit before the declared condition is met. When it lapses the award becomes expired_unmet, nothing was earned, and the seat returns to the market.");
+  // The claim window on an entitlement that already exists. When it lapses the
+  // award becomes expired_unclaimed: the money stops being outstanding and the
+  // record permanently keeps the fact that this citizen earned it.
+  const payableTtlSeconds = optionalWindow(body.payable_ttl_seconds, "payable_ttl_seconds", 60, 365 * 24 * 3600,
+    "how long an already-payable entitlement stays claimable. When it lapses the award becomes expired_unclaimed, which is a record that the amount WAS earned and went unclaimed, and is never reported as not_selected.");
+  // A claim window on a listing that releases payment the moment it becomes
+  // payable would be a clock on an instant. Refused rather than stored and
+  // ignored, because a stored term that does nothing is a term a reader will
+  // eventually rely on.
+  if (payableTtlSeconds !== null && fundingMode === "funded" && settlementMode === "automatic")
+    throw new SocietyError(400, "payable_ttl_seconds does not apply to a funded automatic listing: payment releases as soon as the declared check passes, so there is no window in which an entitlement sits unclaimed. Drop it, or use a settlement mode where someone has to act.");
+
+  let submissionDeadline: number | null = null;
+  if (body.submission_deadline !== undefined && body.submission_deadline !== null) {
+    submissionDeadline = Number(body.submission_deadline);
+    if (!Number.isSafeInteger(submissionDeadline) || submissionDeadline <= 0)
+      throw new SocietyError(400, "submission_deadline must be a unix timestamp in seconds: the moment work stops being accepted, which is separate from the listing's own expiry");
+    if (submissionDeadline <= nowSeconds)
+      throw new SocietyError(400, "submission_deadline must be in the future when the listing is posted");
+    // It may be EARLIER than the listing expiry, and usually is: "submit by
+    // Sept 5, verifier decides within 48 hours" needs the listing to outlive
+    // its own submission window so the deciding can happen inside it.
+    if (listingExpiry !== undefined && submissionDeadline > listingExpiry)
+      throw new SocietyError(400, `submission_deadline ${submissionDeadline} is after the listing's own expiry ${listingExpiry}; work cannot be handed in to a listing that has ended. Extend expiry, or bring the deadline in.`);
   }
-  return { maxAwards, fundingMode: fundingMode as FundingMode, settlementMode: settlementMode as SettlementMode, automaticCheck, requesterTimeoutSeconds, awardOnTimeout, awardTtlSeconds, settlementVersion: 2 };
+  return { maxAwards, fundingMode: fundingMode as FundingMode, settlementMode: settlementMode as SettlementMode, automaticCheck, submissionDeadline, requesterTimeoutSeconds, awardOnTimeout, awardTtlSeconds, payableTtlSeconds, settlementVersion: 2 };
 }
 
 // ---------- the automatic check, kept deliberately tiny ----------
@@ -324,6 +429,14 @@ export function validateAutomaticCheck(value: unknown): AutomaticCheck {
   if (typeof expect !== "string" || expect.trim().length < 8 || expect.length > 200)
     throw new SocietyError(400, "automatic_check.expect must be 8 to 200 characters: the exact string a re-runner must publish, chosen so that publishing it means the work was actually done");
   return { kind: kind as AutomaticCheckKind, expect };
+}
+
+function optionalWindow(value: unknown, name: string, min: number, max: number, meaning: string): number | null {
+  if (value === undefined || value === null) return null;
+  const n = Number(value);
+  if (!Number.isSafeInteger(n) || n < min || n > max)
+    throw new SocietyError(400, `${name}, when given, must be a whole number of seconds from ${min} to ${max}: ${meaning}`);
+  return n;
 }
 
 function safeJson(text: string): unknown {

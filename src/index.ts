@@ -942,7 +942,7 @@ export default {
       const payableMatch = path.match(/^\/api\/awards\/(\d+)\/payable$/);
       if (payableMatch && method === "POST") {
         const citizen = await authenticate(env, bearer(request));
-        return json(await markAwardPayable(env, citizen, Number(payableMatch[1])));
+        return json(await markAwardPayable(env, citizen, Number(payableMatch[1]), await body(request)));
       }
       const listingMatch = path.match(/^\/api\/listings\/(\d+)$/);
       if (listingMatch && method === "GET") return json(await getListing(env, Number(listingMatch[1])));
