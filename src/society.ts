@@ -3783,11 +3783,11 @@ export async function getListing(env: Env, id: number) {
   const liveRoutes = await liveRoutesFor(env, listing.id, Math.floor(Date.now() / 1000));
   const awardRows = lapseExpiredAwards(await listingAwards(env, listing.id), Date.now(), liveRoutes);
   const { results: verdictRows } = await env.DB.prepare(
-    `SELECT v.id, v.submission_id, c.handle AS verifier, v.binding_id, v.verdict, v.signature, v.key_thumbprint,
-            v.payload_hash, v.commit_nonce, v.issued_at
+    `SELECT v.id, v.listing_id, v.submission_id, v.verifier_id, c.handle AS verifier, v.binding_id, v.verdict,
+            v.signature, v.key_thumbprint, v.payload_hash, v.commit_nonce, v.issued_at
        FROM listing_verdicts v JOIN citizens c ON c.id = v.verifier_id
       WHERE v.listing_id = ? ORDER BY v.id ASC`,
-  ).bind(listing.id).all<{ id: number; submission_id: number; verifier: string; binding_id: number; verdict: string; signature: string; key_thumbprint: string; payload_hash: string; commit_nonce: string; issued_at: number }>();
+  ).bind(listing.id).all<{ id: number; listing_id: number; submission_id: number; verifier_id: number; verifier: string; binding_id: number; verdict: string; signature: string; key_thumbprint: string; payload_hash: string; commit_nonce: string; issued_at: number }>();
   const economics = listingEconomics({
     settlement_version: listing.settlement_version,
     amount_atomic: listing.amount_atomic,
@@ -3892,6 +3892,11 @@ export async function getListing(env: Env, id: number) {
     // not be used to check the ones that did not.
     verdicts: verdictRows.map((v) => ({
       verdict_id: v.id,
+      // Carried on the row because the recipe's first field is listing_id and
+      // a reader recomputing the hash from this object needs every field IN
+      // this object. Without it the published recipe could not be followed
+      // against the thing it describes.
+      listing_id: v.listing_id,
       submission_id: v.submission_id,
       verifier: v.verifier,
       verdict: v.verdict,
@@ -3909,10 +3914,10 @@ export async function getListing(env: Env, id: number) {
         bindingId: v.binding_id,
         issuedAt: v.issued_at,
       }),
-      payload_hash_recipe: { algorithm: "sha256", encoding: ENCODING_NOTE, fields: VERDICT_HASH_FIELDS },
+      payload_hash_recipe: { algorithm: "sha256", encoding: ENCODING_NOTE, fields: VERDICT_HASH_FIELDS, values_from: "this verdict object", values_from_note: "Every field the recipe names is a key of THIS object, listing_id included." },
     })),
     verdicts_note:
-      "A verifier's signed judgment on one submission, PASS or FAIL, served with the exact bytes that were signed. Check it without trusting this registry: verify `signature` as Ed25519 over `preimage` under the verifier's active key (GET /api/citizens/<verifier> lists their keys and `key_thumbprint` names the one used), then recompute `payload_hash` by sha256 over the JSON array of the fields named in payload_hash_recipe, in that order. On a verifier-settled listing a PASS is what CREATES the award, with no further act by the funder; a FAIL creates no award, no liability and consumes no award slot, and is recorded here anyway, because a judgment written down only when it is favourable is not a judgment.",
+      "A verifier's signed judgment on one submission, PASS or FAIL, served with the exact bytes that were signed. Check it without trusting this registry: verify `signature` as Ed25519 over `preimage` under the verifier's active key (GET /api/keys/<verifier> lists their bound keys with custody and status, and `key_thumbprint` names the one this verdict was signed with), then recompute `payload_hash` by sha256 over the JSON array of the fields named in payload_hash_recipe, in that order. On a verifier-settled listing a PASS is what CREATES the award, with no further act by the funder; a FAIL creates no award, no liability and consumes no award slot, and is recorded here anyway, because a judgment written down only when it is favourable is not a judgment.",
     awards: awardRows.map((a) => ({
       award_id: a.id,
       submission_id: a.submission_id,
@@ -3931,13 +3936,17 @@ export async function getListing(env: Env, id: number) {
       settlement_block: settlementBlock({ state: a.state, ready_at: a.ready_at, live_route: liveRoutes.has(a.citizen_id) }),
       receipt_id: a.receipt_id,
       paid_at: a.paid_at,
-      // DERIVED, not stored. The verdict_id COLUMN is constrained by the
-      // schema to the reserved verification_failed state, so writing a PASS
-      // verdict into it would violate that CHECK; and adding a third migration
-      // to loosen a constraint that is doing its job would be the wrong trade.
-      // The join a reader needs is exact anyway: one verdict per verifier per
-      // submission, and this award names its submission.
-      verdict_id: verdictRows.find((v) => v.submission_id === a.submission_id)?.id ?? null,
+      // DERIVED, not stored: the verdict_id COLUMN is constrained by the
+      // schema to the reserved verification_failed state, and loosening a
+      // working CHECK with a third migration is the wrong trade.
+      //
+      // MATCHED ON BOTH SUBMISSION AND VERIFIER. Matching the submission alone
+      // returned the LOWEST verdict on it, so on a submission that one
+      // verifier failed and another later passed, the live entitlement pointed
+      // at the FAIL, by a verifier who did not award it, under a note
+      // promising this named the verdict that created it. One verdict per
+      // verifier per submission is a UNIQUE constraint, so this pair is exact.
+      verdict_id: verdictRows.find((v) => v.submission_id === a.submission_id && v.verifier_id === a.awarded_by_citizen_id)?.id ?? null,
       payload_hash: a.payload_hash,
       payload_hash_recipe: { algorithm: "sha256", encoding: ENCODING_NOTE, fields: AWARD_HASH_FIELDS },
     })),

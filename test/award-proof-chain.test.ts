@@ -95,6 +95,10 @@ function bindSigningKey(db: DatabaseSync, citizenId: number) {
   return { privateKey, raw };
 }
 
+function signVerdict(privateKey: KeyObject, preimage: string) {
+  return edSign(null, Buffer.from(preimage, "utf8"), privateKey).toString("base64url");
+}
+
 function signed(db: DatabaseSync, key: { privateKey: KeyObject }, listingId: number, submissionId: number, verifier: string, verdict: "pass" | "fail") {
   const binding = db.prepare("SELECT id FROM payout_bindings WHERE docket_id = ? ORDER BY id ASC LIMIT 1").get(`listing-${listingId}-verifier`) as { id: number };
   const issued_at = NOW * 1000;
@@ -545,4 +549,79 @@ test("signing a second verdict on one submission is a 409, not a crash", async (
   assert.equal((again as { status?: number }).status, 409, "a repeat verdict is refused, not an internal error");
   assert.match(String((again as Error).message), /already signed a verdict/);
   assert.equal((db.prepare("SELECT COUNT(*) AS n FROM listing_verdicts").get() as { n: number }).n, 1, "and the first verdict stands unmodified");
+});
+
+// AUDIT FINDING: the award->verdict link matched on submission alone, so it
+// returned the LOWEST verdict on that submission. On a submission one verifier
+// failed and another later passed, the live entitlement pointed at the FAIL,
+// by a verifier who did not award it, under a note promising the opposite.
+// The earlier test could not catch it: with one verdict, any join looks right.
+test("the award names the verdict that CREATED it, even when an earlier verifier failed the same work", async () => {
+  const { env, db } = makeEnv();
+  const { listingId, submissionId } = await verifierListing(env, db);
+  // Two authorized verifiers on one listing.
+  const keyC = bindSigningKey(db, 4);
+  db.prepare("INSERT INTO payout_bindings (citizen_id, docket_id, amount_atomic, payout_address, expiry, created_at) VALUES (3, ?, ?, '0xv2', ?, 0)")
+    .run(`listing-${listingId}-verifier`, DOLLAR, NOW + 86400);
+  const keyB = bindSigningKey(db, 3);
+
+  // citizen-c fails it first; citizen-b passes it second.
+  await assert.rejects(createAward(env, AS(4, "citizen-c"), listingId, { submission_id: submissionId, ...signed(db, keyC, listingId, submissionId, "citizen-c", "fail") }), /signed FAIL/);
+  const bindingB = (db.prepare("SELECT id FROM payout_bindings WHERE docket_id = ? AND citizen_id = 3").get(`listing-${listingId}-verifier`) as { id: number }).id;
+  const issued = NOW * 1000;
+  const award = await createAward(env, AS(3, "citizen-b"), listingId, {
+    submission_id: submissionId, verdict: "pass", issued_at: issued,
+    signature: signVerdict(keyB.privateKey, verdictPreimage({ listingId, submissionId, verifier: "citizen-b", verdict: "pass", bindingId: bindingB, issuedAt: issued })),
+  }) as Record<string, any>;
+
+  const served = await getListing(env, listingId) as Record<string, any>;
+  assert.equal(served.verdicts.length, 2, "both judgments stand");
+  const fail = served.verdicts.find((v: Record<string, unknown>) => v.verdict === "fail");
+  const pass = served.verdicts.find((v: Record<string, unknown>) => v.verdict === "pass");
+  assert.ok(fail.verdict_id < pass.verdict_id, "the FAIL is the lower id, which is what the broken join returned");
+  assert.equal(served.awards.length, 1);
+  assert.equal(served.awards[0].verdict_id, pass.verdict_id, "the entitlement names the PASS that created it");
+  assert.notEqual(served.awards[0].verdict_id, fail.verdict_id, "and never a rejection by a verifier who did not award it");
+  assert.equal(pass.verifier, "citizen-b");
+});
+
+// AUDIT FINDING: verdicts_note told readers to fetch a route that does not
+// exist, and the recipe's first field was not a key of the object it
+// described, so a reader following the instructions literally got a 404 and
+// then a hash mismatch. Instructions that cannot be followed are not
+// instructions.
+test("the verdict's own instructions can be followed literally", async () => {
+  const { env, db } = makeEnv();
+  const { listingId, submissionId } = await verifierListing(env, db);
+  const key = bindSigningKey(db, 4);
+  await createAward(env, AS(4, "citizen-c"), listingId, { submission_id: submissionId, ...signed(db, key, listingId, submissionId, "citizen-c", "pass") });
+  const served = await getListing(env, listingId) as Record<string, any>;
+  const v = served.verdicts[0];
+
+  // Every field the recipe names is a key of the object it is served on.
+  for (const f of v.payload_hash_recipe.fields as string[])
+    assert.ok(f in v, `recipe names ${f}, so the verdict object must carry ${f}`);
+  const values = (v.payload_hash_recipe.fields as string[]).map((f) => v[f]);
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(values)));
+  assert.equal(
+    [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join(""),
+    v.payload_hash,
+    "recomputing straight off the served object reproduces the published hash",
+  );
+
+  // Every route the note names is a route this registry actually serves.
+  // EXACT ROUTES, INCLUDING THE PARAMETER SEGMENT. A prefix check passed the
+  // broken version, because /api/citizens exists as the census while the note
+  // meant /api/citizens/<handle>, which does not exist and 404s. A guard that
+  // its own defect walks through is not a guard.
+  const { SURFACE } = await import("../src/surface.ts");
+  const named = String(served.verdicts_note).match(/GET \/api\/[a-z0-9\-\/]*<[a-z_]+>/gi) ?? [];
+  assert.ok(named.length > 0, "the note tells readers where to fetch the key, so there is a route to check");
+  for (const one of named) {
+    const declared = one.replace("GET ", "").replace(/<[a-z_]+>/i, ":");
+    assert.ok(
+      SURFACE.some((r: { method: string; path: string }) => r.method === "GET" && r.path.replace(/:[a-z_]+/i, ":") === declared),
+      `verdicts_note sends readers to ${one.replace("GET ", "")}, which is not a route this registry serves`,
+    );
+  }
 });
