@@ -4494,6 +4494,11 @@ export async function railCensus(env: Env) {
     // reproduce each one and disagree with a named filter rather than guess at
     // an unnamed one.
     derivations: {
+      listings: "Every row in the listings table, with no filter of any kind: withdrawn, expired and moderated listings are all counted here, because a census that quietly dropped them would let a closed obligation vanish from the page.",
+      open: "Listings with no moderation state, no withdrawal, and an expiry still in the future at the clock in `now`. Only these can take new submissions or make new awards.",
+      submissions: "COUNT(*) over listing_submissions grouped by listing. A submission is work handed in; it is not an award and creates no liability.",
+      v2_listings: "Listings at settlement_version 2 or above, which are the only ones that can hold an award ledger. Every v2_ figure on this page is derived from these and from nothing else.",
+      legacy_listings_without_declared_cap: "Listings serving a null max_liability_atomic, which is exactly the pre-v2 set: their funders declared no cap and this registry will not invent one. They contribute nothing to v2_maximum_remaining_liability_atomic.",
       bindings: "COUNT(*) over payout_bindings grouped by docket_id, both the worker row listing-<id> and the verifier row listing-<id>-verifier.",
       receipts: "The same rows LEFT JOINed to payout_receipts, counting those with a receipt. A receipt is two Base RPC sources agreeing on one finalized USDC Transfer, signed for by its source.",
       lapsed_bindings: "Bindings with no receipt whose OWN expiry is already past, at the clock in `now`. This counts routing records that went stale. It is not a debt, not a broken promise, and not a count of unpaid people.",

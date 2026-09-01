@@ -1157,3 +1157,57 @@ test("legacy D: a v2 listing with a payable award and an overdue one reports the
   assert.equal(funder.v2_outstanding_awarded_atomic ?? funder.v2_currently_due_atomic, "25000000");
   assert.equal(funder.v2_overdue_unpaid_atomic, "25000000", "and the lateness is on the payer's record");
 });
+
+// GET /api/rail's own summary in /api/surface promises "every figure carries
+// the derivation that produced it". That is a served claim about this
+// endpoint, so it is checked mechanically rather than believed: a figure added
+// to totals without a derivation makes the promise false the moment it ships,
+// and no test that asserts particular keys would notice a NEW one.
+test("every figure served in the census totals carries a published derivation", async () => {
+  const { env, db } = makeEnv();
+  legacyListing(db, 3);
+  await createListing(env, AS(1, "funder"), {
+    title: "Independent reproduction test", condition: CONDITION, amount_atomic: DOLLAR, expiry: NOW + 86400,
+    max_awards: 2, funding_mode: "promise", settlement_mode: "requester",
+  });
+
+  const census = await railCensus(env) as Record<string, any>;
+  const undocumented = Object.keys(census.totals).filter((k) => !(k in census.derivations));
+  assert.deepEqual(undocumented, [], "a figure with no derivation is a number a stranger cannot check");
+  for (const [key, text] of Object.entries(census.derivations))
+    assert.ok(String(text).length > 40, `${key}'s derivation is too short to be one`);
+});
+
+// /api/surface and the MCP tool both tell citizens that marking an award
+// payable is "funder only, and requester-settled listings only". That is a
+// served claim about who holds a power on this rail, so it is pinned here.
+// The reachability half matters as much as the permission half: if a verifier
+// listing could hold an `awarded` row, the claim would be false no matter what
+// the permission check said.
+test("only a requester-settled listing can reserve a seat, which is what makes marking payable funder-only", async () => {
+  const { env, db } = makeEnv();
+  const listing = await createListing(env, AS(1, "funder"), {
+    title: "Independent reproduction test", condition: CONDITION, amount_atomic: DOLLAR, expiry: NOW + 86400,
+    max_awards: 1, funding_mode: "promise", settlement_mode: "verifier", award_ttl_seconds: 6 * 3600,
+  }) as Record<string, unknown>;
+  const listingId = Number((listing.row as string).replace("listing-", ""));
+  db.prepare("INSERT INTO payout_bindings (citizen_id, docket_id, amount_atomic, payout_address, expiry, created_at) VALUES (3, ?, ?, '0xv', ?, 0)")
+    .run(`listing-${listingId}-verifier`, DOLLAR, NOW + 86400);
+  const submission = await createSubmission(env, AS(2, "citizen-a"), listingId, { artifact: reproduce(db, 2, `done ${EXPECT}`) }) as Record<string, unknown>;
+
+  await assert.rejects(
+    () => createAward(env, AS(3, "citizen-b"), listingId, { submission_id: submission.id, verdict: "pass", reserve: true }),
+    /only a requester-settled listing can reserve a seat/,
+    "a verifier listing cannot park an award in `awarded`, so nothing here is ever left to mark payable",
+  );
+
+  // And the ordinary verifier path lands PAYABLE directly, with no second act
+  // by the funder: the pass IS the decision, not a recommendation.
+  const award = await createAward(env, AS(3, "citizen-b"), listingId, { submission_id: submission.id, verdict: "pass" }) as Record<string, unknown>;
+  assert.equal(String(award.state), "payable");
+  await assert.rejects(
+    () => markAwardPayable(env, AS(1, "funder"), Number(award.award_id)),
+    /an award in state payable cannot become payable/,
+    "and the funder has no confirm step to withhold: the state machine refuses before any permission check is reached",
+  );
+});

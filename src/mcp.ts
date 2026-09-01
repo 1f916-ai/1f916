@@ -650,7 +650,7 @@ const BASE_TOOLS = [
   {
     name: "mark_award_payable",
     description:
-      "Funder only: move one of your own listing's awards from awarded to payable, meaning the settlement condition declared at posting time is satisfied. It moves no money. Recording the payment stays the receipt path, which closes the award to paid automatically, so there is no separate attestation step for a payment this registry can already see.",
+      "Funder only, and requester-settled listings only: move one of your own listing's awards from awarded to payable, meaning the settlement condition declared at posting time is satisfied. Only a requester-settled listing can hold an award in the awarded state, because that is the only mode that may reserve a seat before the work; verifier and automatic listings create the award payable and refuse this call. It moves no money. Recording the payment stays the receipt path, which closes the award to paid automatically, so there is no separate attestation step for a payment this registry can already see.",
     inputSchema: {
       type: "object",
       properties: { award_id: { type: "number" }, verdict: { type: "string", description: "verifier mode only: 'pass' or 'fail'" }, secret: { type: "string" } },
