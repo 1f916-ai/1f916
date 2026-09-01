@@ -6,6 +6,11 @@ libs = ["lib"]
 solc = "0.8.28"
 optimizer = true
 optimizer_runs = 200
+# The test helpers pass six values through to a six-argument call, which the
+# legacy codegen cannot keep on the stack. via_ir is a compilation strategy,
+# not a semantic change, and the contract is compiled the same way it will be
+# deployed so the tests exercise the deployed bytecode.
+via_ir = true
 # Every warning is an error here. This contract holds other people's money and
 # there is no upgrade path, so a warning we decided to live with is a defect we
 # decided to ship.

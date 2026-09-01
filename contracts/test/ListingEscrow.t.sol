@@ -67,10 +67,23 @@ contract ListingEscrowTest is Test {
     }
 
     function _fund(uint256 per, uint32 max) internal {
+        _fundCapped(per, max, max);
+    }
+
+    /// The single-verifier case with an explicit cap, which is the shape the
+    /// first real listing will use.
+    function _fundCapped(uint256 per, uint32 max, uint32 cap) internal {
         address[] memory vs = new address[](1);
+        uint32[] memory caps = new uint32[](1);
         vs[0] = verifier;
+        caps[0] = cap;
         vm.prank(funder);
-        escrow.fund(LH, address(usdc), per, max, vs, vDeadline, cDeadline);
+        escrow.fund(LH, address(usdc), per, max, vs, caps, vDeadline, cDeadline);
+    }
+
+    function _releaseBy(uint256 key, uint256 id) internal {
+        uint64 t = uint64(block.timestamp);
+        escrow.release(LH, bytes32(id), bytes32(0), payee, bytes32(0), t, _sig(LH, bytes32(id), bytes32(0), payee, bytes32(0), t, key));
     }
 
     function _sig(bytes32 listingHash, bytes32 awardId, bytes32 subHash, address to, bytes32 verdictHash, uint64 issuedAt, uint256 key)
@@ -130,6 +143,118 @@ contract ListingEscrowTest is Test {
         assertEq(usdc.balanceOf(address(escrow)), 10_000_000);
     }
 
+    // ------------------------------------------------ THE TRUST BOUNDARY
+    //
+    // The claim "a compromised verifier can misdirect one award and can never
+    // drain the escrow" was FALSE and these tests exist because of it. Award
+    // ids are chosen by the signer, so a verifier holding a key can mint a
+    // fresh id per award and walk out the entire balance one fixed amount at a
+    // time. What bounds it is the per-verifier cap, and nothing else.
+
+    function test_UNCAPPED_VERIFIER_CAN_DRAIN_THE_WHOLE_LISTING() public {
+        // A funder who gives one verifier the full cap is choosing this. The
+        // test exists so the choice is documented and measured rather than
+        // discovered later by someone it happened to.
+        _fundCapped(5_000_000, 3, 3);
+        address attacker = address(0xBAD);
+        uint64 t = uint64(block.timestamp);
+        for (uint256 i = 1; i <= 3; i++) {
+            bytes memory sig = _sig(LH, bytes32(i), bytes32(0), attacker, bytes32(0), t, verifierKey);
+            escrow.release(LH, bytes32(i), bytes32(0), attacker, bytes32(0), t, sig);
+        }
+        assertEq(usdc.balanceOf(attacker), 15_000_000, "one key, every award, the entire committed balance");
+        assertEq(usdc.balanceOf(address(escrow)), 0);
+        // And it stops exactly at the ceiling: capacity is still a hard limit.
+        bytes memory fourth = _sig(LH, bytes32(uint256(4)), bytes32(0), attacker, bytes32(0), t, verifierKey);
+        vm.expectRevert(ListingEscrow.NoCapacity.selector);
+        escrow.release(LH, bytes32(uint256(4)), bytes32(0), attacker, bytes32(0), t, fourth);
+    }
+
+    function test_a_capped_verifier_is_bounded_to_its_declared_authority() public {
+        // The same attack, against a verifier capped at one award of three.
+        _fundCapped(5_000_000, 3, 1);
+        address attacker = address(0xBAD);
+        uint64 t = uint64(block.timestamp);
+        bytes memory first = _sig(LH, bytes32(uint256(1)), bytes32(0), attacker, bytes32(0), t, verifierKey);
+        escrow.release(LH, bytes32(uint256(1)), bytes32(0), attacker, bytes32(0), t, first);
+        assertEq(usdc.balanceOf(attacker), 5_000_000);
+
+        // Every further award, under any fresh id, is refused.
+        for (uint256 i = 2; i <= 5; i++) {
+            bytes memory sig = _sig(LH, bytes32(i), bytes32(0), attacker, bytes32(0), t, verifierKey);
+            vm.expectRevert(ListingEscrow.VerifierCapExceeded.selector);
+            escrow.release(LH, bytes32(i), bytes32(0), attacker, bytes32(0), t, sig);
+        }
+        assertEq(usdc.balanceOf(attacker), 5_000_000, "the blast radius is the declared cap and nothing more");
+        assertEq(usdc.balanceOf(address(escrow)), 10_000_000, "the rest is still there for honest awards");
+        (uint32 cap, uint32 used) = escrow.verifierAuthority(LH, verifier);
+        assertEq(cap, 1);
+        assertEq(used, 1);
+    }
+
+    function test_two_verifiers_each_bounded_separately() public {
+        // Storage is per verifier, which is also what makes m-of-n reachable
+        // later without moving anything.
+        uint256 keyB = 0xB0B;
+        address vb = vm.addr(keyB);
+        address[] memory vs = new address[](2);
+        uint32[] memory caps = new uint32[](2);
+        vs[0] = verifier; caps[0] = 1;
+        vs[1] = vb;       caps[1] = 2;
+        vm.prank(funder);
+        escrow.fund(LH, address(usdc), 5_000_000, 3, vs, caps, vDeadline, cDeadline);
+        uint64 t = uint64(block.timestamp);
+
+        _releaseBy(verifierKey, 1);
+        bytes memory over = _sig(LH, bytes32(uint256(2)), bytes32(0), payee, bytes32(0), t, verifierKey);
+        vm.expectRevert(ListingEscrow.VerifierCapExceeded.selector);
+        escrow.release(LH, bytes32(uint256(2)), bytes32(0), payee, bytes32(0), t, over);
+
+        // The other verifier's authority is untouched by the first's exhaustion.
+        _releaseBy(keyB, 2);
+        _releaseBy(keyB, 3);
+        assertEq(usdc.balanceOf(payee), 15_000_000);
+        (, uint32 usedB) = escrow.verifierAuthority(LH, vb);
+        assertEq(usedB, 2);
+    }
+
+    function test_a_zero_cap_verifier_cannot_be_named() public {
+        address[] memory vs = new address[](1);
+        uint32[] memory caps = new uint32[](1);
+        vs[0] = verifier; caps[0] = 0;
+        vm.prank(funder);
+        vm.expectRevert(ListingEscrow.ZeroCap.selector);
+        escrow.fund(LH, address(usdc), 5_000_000, 3, vs, caps, vDeadline, cDeadline);
+    }
+
+    function test_caps_must_be_supplied_for_every_verifier() public {
+        address[] memory vs = new address[](2);
+        uint32[] memory caps = new uint32[](1);
+        vs[0] = verifier; vs[1] = address(0xB0B); caps[0] = 1;
+        vm.prank(funder);
+        vm.expectRevert(ListingEscrow.CapMismatch.selector);
+        escrow.fund(LH, address(usdc), 5_000_000, 3, vs, caps, vDeadline, cDeadline);
+    }
+
+    /// Whatever the caps are, the sum of what all verifiers can authorize is
+    /// still bounded by capacity: caps limit WHO can do how much, never how
+    /// much the listing can cost.
+    function testFuzz_caps_never_let_a_listing_exceed_its_ceiling(uint32 capA, uint8 awards) public {
+        awards = uint8(bound(awards, 1, 8));
+        capA = uint32(bound(capA, 1, 100));
+        usdc.mint(funder, uint256(5_000_000) * awards);
+        _fundCapped(5_000_000, awards, capA);
+        uint64 t = uint64(block.timestamp);
+        uint256 paidOut;
+        for (uint256 i = 1; i <= 12; i++) {
+            bytes memory sig = _sig(LH, bytes32(i), bytes32(0), payee, bytes32(0), t, verifierKey);
+            try escrow.release(LH, bytes32(i), bytes32(0), payee, bytes32(0), t, sig) { paidOut += 5_000_000; } catch { }
+        }
+        uint256 allowed = capA < awards ? capA : awards;
+        assertEq(paidOut, uint256(5_000_000) * allowed, "released is min(cap, capacity), always");
+        assertLe(paidOut, uint256(5_000_000) * awards, "and never more than the listing committed");
+    }
+
     // ---------------------------------------------------- double payment
 
     function test_one_award_cannot_be_paid_twice() public {
@@ -157,9 +282,11 @@ contract ListingEscrowTest is Test {
         _fund(5_000_000, 3);
         bytes32 other = keccak256("a different listing");
         address[] memory vs = new address[](1);
+        uint32[] memory caps = new uint32[](1);
         vs[0] = verifier;
+        caps[0] = 1;
         vm.prank(funder);
-        escrow.fund(other, address(usdc), 5_000_000, 1, vs, vDeadline, cDeadline);
+        escrow.fund(other, address(usdc), 5_000_000, 1, vs, caps, vDeadline, cDeadline);
         uint64 t = uint64(block.timestamp);
         bytes memory sig = _sig(LH, bytes32(uint256(1)), bytes32(0), payee, bytes32(0), t, verifierKey);
         vm.expectRevert(ListingEscrow.NotAVerifier.selector); // recovers a different address entirely
@@ -212,17 +339,19 @@ contract ListingEscrowTest is Test {
     /// zero seconds to collect, with the refund opening immediately.
     function test_a_listing_MUST_leave_the_worker_a_claim_grace() public {
         address[] memory vs = new address[](1);
+        uint32[] memory caps = new uint32[](1);
         vs[0] = verifier;
+        caps[0] = 3;
         vm.startPrank(funder);
         // Same instant: no grace at all.
         vm.expectRevert(ListingEscrow.DeadlineOrder.selector);
-        escrow.fund(LH, address(usdc), 5_000_000, 3, vs, vDeadline, vDeadline);
+        escrow.fund(LH, address(usdc), 5_000_000, 3, vs, caps, vDeadline, vDeadline);
         // Claim window closing BEFORE the verifier window is worse still.
         vm.expectRevert(ListingEscrow.DeadlineOrder.selector);
-        escrow.fund(LH, address(usdc), 5_000_000, 3, vs, vDeadline, vDeadline - 1);
+        escrow.fund(LH, address(usdc), 5_000_000, 3, vs, caps, vDeadline, vDeadline - 1);
         // A verifier deadline already in the past cannot be funded either.
         vm.expectRevert(ListingEscrow.DeadlineOrder.selector);
-        escrow.fund(LH, address(usdc), 5_000_000, 3, vs, uint64(block.timestamp), cDeadline);
+        escrow.fund(LH, address(usdc), 5_000_000, 3, vs, caps, uint64(block.timestamp), cDeadline);
         vm.stopPrank();
         (address f,,,,,,,,) = escrow.listingOf(LH);
         assertEq(f, address(0), "none of those listings exist");
@@ -232,13 +361,15 @@ contract ListingEscrowTest is Test {
         v = uint64(bound(v, block.timestamp + 1, block.timestamp + 3650 days));
         c = uint64(bound(c, block.timestamp, block.timestamp + 7300 days));
         address[] memory vs = new address[](1);
+        uint32[] memory caps = new uint32[](1);
         vs[0] = verifier;
+        caps[0] = 1;
         vm.prank(funder);
         if (c <= v) {
             vm.expectRevert(ListingEscrow.DeadlineOrder.selector);
-            escrow.fund(LH, address(usdc), 1_000_000, 1, vs, v, c);
+            escrow.fund(LH, address(usdc), 1_000_000, 1, vs, caps, v, c);
         } else {
-            escrow.fund(LH, address(usdc), 1_000_000, 1, vs, v, c);
+            escrow.fund(LH, address(usdc), 1_000_000, 1, vs, caps, v, c);
             (,,,,, uint64 vd, uint64 cd,,) = escrow.listingOf(LH);
             assertGt(cd, vd, "every funded listing has a grace window that belongs to the payee");
         }
@@ -282,10 +413,12 @@ contract ListingEscrowTest is Test {
         vm.prank(funder);
         fee.approve(address(escrow), type(uint256).max);
         address[] memory vs = new address[](1);
+        uint32[] memory caps = new uint32[](1);
         vs[0] = verifier;
+        caps[0] = 3;
         vm.prank(funder);
         vm.expectRevert(ListingEscrow.TokenNotExact.selector);
-        escrow.fund(LH, address(fee), 5_000_000, 3, vs, vDeadline, cDeadline);
+        escrow.fund(LH, address(fee), 5_000_000, 3, vs, caps, vDeadline, cDeadline);
     }
 
     function test_reentrancy_during_payout_cannot_pay_the_same_award_twice() public {
@@ -294,9 +427,11 @@ contract ListingEscrowTest is Test {
         vm.prank(funder);
         t.approve(address(escrow), type(uint256).max);
         address[] memory vs = new address[](1);
+        uint32[] memory caps = new uint32[](1);
         vs[0] = verifier;
+        caps[0] = 3;
         vm.prank(funder);
-        escrow.fund(LH, address(t), 5_000_000, 3, vs, vDeadline, cDeadline);
+        escrow.fund(LH, address(t), 5_000_000, 3, vs, caps, vDeadline, cDeadline);
 
         uint64 ts = uint64(block.timestamp);
         bytes memory sig = _sig(LH, bytes32(uint256(1)), bytes32(0), payee, bytes32(0), ts, verifierKey);

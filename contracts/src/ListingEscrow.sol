@@ -39,6 +39,9 @@ contract ListingEscrow {
     error ZeroAwards();
     error NoVerifiers();
     error DuplicateVerifier();
+    error CapMismatch();
+    error ZeroCap();
+    error VerifierCapExceeded();
     error ZeroAddress();
     error DeadlineOrder();
     error VerifierWindowClosed();
@@ -59,6 +62,7 @@ contract ListingEscrow {
         uint256 amountPerAward,
         uint32 maxAwards,
         address[] verifiers,
+        uint32[] verifierCaps,
         uint64 verifierDeadline,
         uint64 claimDeadline
     );
@@ -94,7 +98,12 @@ contract ListingEscrow {
     }
 
     mapping(bytes32 => Listing) private _listings;
-    mapping(bytes32 => mapping(address => bool)) private _isVerifier;
+    /// @dev cap of 0 means "not a verifier on this listing". Storing the cap
+    ///      rather than a bool is also what keeps m-of-n reachable later: a
+    ///      threshold scheme needs per-verifier state, and this is that state,
+    ///      already indexed the right way.
+    mapping(bytes32 => mapping(address => uint32)) private _verifierCap;
+    mapping(bytes32 => mapping(address => uint32)) private _verifierUsed;
     /// @dev keyed by keccak(listingHash, awardId). The award id comes from the
     ///      registry's own award ledger, so one on-chain payment corresponds to
     ///      exactly one off-chain entitlement.
@@ -140,6 +149,7 @@ contract ListingEscrow {
         uint256 amountPerAward,
         uint32 maxAwards,
         address[] calldata verifiers,
+        uint32[] calldata verifierCaps,
         uint64 verifierDeadline,
         uint64 claimDeadline
     ) external {
@@ -153,11 +163,19 @@ contract ListingEscrow {
         if (claimDeadline <= verifierDeadline) revert DeadlineOrder();
         if (verifierDeadline <= block.timestamp) revert DeadlineOrder();
 
+        if (verifierCaps.length != verifiers.length) revert CapMismatch();
         for (uint256 i = 0; i < verifiers.length; i++) {
             address v = verifiers[i];
             if (v == address(0)) revert ZeroAddress();
-            if (_isVerifier[listingHash][v]) revert DuplicateVerifier();
-            _isVerifier[listingHash][v] = true;
+            if (_verifierCap[listingHash][v] != 0) revert DuplicateVerifier();
+            // A cap of zero would name a verifier who can do nothing, which is
+            // indistinguishable from not naming them and is more likely a
+            // mistake than an intent. A cap ABOVE maxAwards is allowed and
+            // simply means "this verifier may authorize all of them": it is
+            // capped by capacity anyway, and refusing it would make the common
+            // single-verifier case a two-value coincidence to get right.
+            if (verifierCaps[i] == 0) revert ZeroCap();
+            _verifierCap[listingHash][v] = verifierCaps[i];
         }
 
         l.funder = msg.sender;
@@ -168,17 +186,30 @@ contract ListingEscrow {
         l.claimDeadline = claimDeadline;
 
         uint256 total = amountPerAward * uint256(maxAwards);
-        emit Funded(listingHash, msg.sender, token, amountPerAward, maxAwards, verifiers, verifierDeadline, claimDeadline);
+        emit Funded(listingHash, msg.sender, token, amountPerAward, maxAwards, verifiers, verifierCaps, verifierDeadline, claimDeadline);
         _pullExact(token, msg.sender, total);
     }
 
     // --------------------------------------------------------------- release
     /// @notice Pay one award. Anyone may call this; the signature is the
     ///         authorization, not the caller.
-    /// @dev The AMOUNT IS NOT A PARAMETER. It comes from the immutable terms,
-    ///      so a verifier signature can decide WHO is paid and never HOW MUCH.
-    ///      A compromised verifier can misdirect one award; it can never drain
-    ///      the escrow.
+    /// @dev THE TRUST BOUNDARY, STATED PLAINLY. The amount is not a parameter:
+    ///      it comes from the immutable terms, so a verifier signature decides
+    ///      WHO is paid and never HOW MUCH.
+    ///
+    ///      It does NOT follow that a compromised verifier can misdirect only
+    ///      one award. Award ids are chosen by the signer, so a verifier
+    ///      holding a key can sign a distinct id per award and authorize every
+    ///      award it is allowed, one fixed amount at a time. A verifier whose
+    ///      cap equals maxAwards can therefore direct the ENTIRE committed
+    ///      balance to an address of its choosing.
+    ///
+    ///      That is what `verifierCap` bounds: each verifier is fixed at
+    ///      funding time to a maximum number of awards it may ever authorize
+    ///      on this listing. A funder who names one verifier with the full cap
+    ///      is choosing to let that verifier control the whole balance, which
+    ///      is a legitimate choice for a small listing and must be a choice
+    ///      rather than a surprise.
     function release(
         bytes32 listingHash,
         bytes32 awardId,
@@ -212,13 +243,19 @@ contract ListingEscrow {
             )
         );
         address signer = _recover(digest, signature);
-        if (!_isVerifier[listingHash][signer]) revert NotAVerifier();
+        uint32 cap = _verifierCap[listingHash][signer];
+        if (cap == 0) revert NotAVerifier();
+        // THE BLAST RADIUS OF ONE COMPROMISED KEY. Without this, a verifier
+        // could mint a distinct award id per award and walk the whole balance
+        // out one fixed amount at a time.
+        if (_verifierUsed[listingHash][signer] >= cap) revert VerifierCapExceeded();
 
         // EFFECTS BEFORE INTERACTION. Both the per-award flag and the counter
         // are written before the transfer, so a token with a callback cannot
         // re-enter and pay the same award twice or exceed maxAwards.
         paid[key] = true;
         l.released += 1;
+        _verifierUsed[listingHash][signer] += 1;
 
         // EMITTED BEFORE THE TRANSFER. A token with a callback can re-enter
         // and, although the effects above make a second payment impossible,
@@ -279,8 +316,14 @@ contract ListingEscrow {
         );
     }
 
+    /// @return cap how many awards this verifier may EVER authorize here, 0 if none
+    /// @return used how many it has authorized so far
+    function verifierAuthority(bytes32 listingHash, address who) external view returns (uint32 cap, uint32 used) {
+        return (_verifierCap[listingHash][who], _verifierUsed[listingHash][who]);
+    }
+
     function isVerifier(bytes32 listingHash, address who) external view returns (bool) {
-        return _isVerifier[listingHash][who];
+        return _verifierCap[listingHash][who] != 0;
     }
 
     // -------------------------------------------------------------- internal
