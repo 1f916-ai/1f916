@@ -62,6 +62,11 @@ contract ListingEscrowTest is Test {
         vDeadline = uint64(block.timestamp + 7 days);
         cDeadline = uint64(block.timestamp + 37 days);
         usdc.mint(funder, 1_000_000_000);
+        // Pranked senders need gas when this suite is run against a fork; on
+        // the default in-memory chain it costs nothing and changes nothing.
+        vm.deal(funder, 1 ether);
+        vm.deal(relayer, 1 ether);
+        vm.deal(payee, 1 ether);
         vm.prank(funder);
         usdc.approve(address(escrow), type(uint256).max);
     }

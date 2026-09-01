@@ -90,3 +90,83 @@ test("the release domain is bound to Base and to one contract", () => {
   assert.equal(d.verifyingContract, "0x1111111111111111111111111111111111111111");
   assert.equal(d.name, "1F916 ListingEscrow");
 });
+
+// ---------- what may be displayed as FUNDED ----------
+
+import { ESCROW_READ_ABI, fundedDisagreements, fundingStatement } from "../src/funded.ts";
+
+const V = "0x1111111111111111111111111111111111111111";
+const ESCROW = "0x2222222222222222222222222222222222222222";
+
+const v3Listing = {
+  payload_hash: HASH, amount_atomic: "5000000", max_awards: 3, token: USDC, chain_id: 8453,
+  escrow_chain_id: 8453, escrow_address: ESCROW, escrow_token: USDC,
+  verifier_evm_addresses: [V], verifier_caps: [3],
+  verifier_key_thumbprints: ["thumb"], escrow_verifier_deadline: 1000, escrow_claim_deadline: 2000,
+};
+
+const chainOk = {
+  chainId: 8453, escrowAddress: ESCROW,
+  onchain: terms({ verifierDeadline: 1000, claimDeadline: 2000 }),
+  verifierAuthority: [{ address: V, cap: 3, used: 0 }],
+  funderAddress: null,
+};
+
+test("the read ABI cannot express a state change", () => {
+  assert.deepEqual(ESCROW_READ_ABI.map((e) => e.name).sort(), ["listingOf", "verifierAuthority"]);
+  for (const entry of ESCROW_READ_ABI) assert.equal(entry.stateMutability, "view");
+});
+
+test("matching terms are FUNDED and the statement says who can move the money", () => {
+  assert.deepEqual(fundedDisagreements(v3Listing, chainOk), []);
+  const said = fundingStatement([], chainOk.onchain);
+  assert.match(said, /^FUNDED\./);
+  assert.match(said, /15000000 atomic units are committed/);
+  assert.match(said, /this registry cannot move any of it/);
+  assert.match(said, /anyone may relay it/);
+});
+
+test("every way the chain can disagree with the listing is caught and stated", () => {
+  const cases: [string, typeof chainOk, RegExp][] = [
+    ["wrong chain", { ...chainOk, chainId: 1 }, /commits to chain 8453 and the reader is on chain 1/],
+    ["wrong contract", { ...chainOk, escrowAddress: "0x9999999999999999999999999999999999999999" }, /commits to escrow .* and the reader queried/],
+    ["not funded at all", { ...chainOk, onchain: null }, /no escrow entry exists/],
+    ["wrong amount", { ...chainOk, onchain: terms({ amountPerAward: 1n, verifierDeadline: 1000, claimDeadline: 2000 }) }, /does not stand behind the terms/],
+    ["wrong token", { ...chainOk, onchain: terms({ token: "0x3333333333333333333333333333333333333333", verifierDeadline: 1000, claimDeadline: 2000 }) }, /prices in|commits to/],
+    ["verifier deadline moved", { ...chainOk, onchain: terms({ verifierDeadline: 999, claimDeadline: 2000 }) }, /verifier deadline is 999/],
+    ["claim deadline moved", { ...chainOk, onchain: terms({ verifierDeadline: 1000, claimDeadline: 1999 }) }, /claim deadline is 1999/],
+    ["already refunded", { ...chainOk, onchain: terms({ verifierDeadline: 1000, claimDeadline: 2000, refunded: true }) }, /already been refunded/],
+    ["named verifier has no authority", { ...chainOk, verifierAuthority: [] }, /no authority at all/],
+    ["cap disagrees", { ...chainOk, verifierAuthority: [{ address: V, cap: 1, used: 0 }] }, /cap of 3 and the escrow gives it 1/],
+    ["funder wallet disagrees", { ...chainOk, funderAddress: "0x4444444444444444444444444444444444444444" }, /funded by .* and this listing names funder wallet/],
+  ];
+  for (const [name, chain, expected] of cases) {
+    const found = fundedDisagreements(v3Listing, chain);
+    assert.ok(found.length > 0, `${name}: must not read as funded`);
+    assert.ok(found.some((f) => expected.test(f)), `${name}: got ${JSON.stringify(found)}`);
+    assert.match(fundingStatement(found, chain.onchain), /^NOT FUNDED/);
+  }
+});
+
+test("AN UNNAMED VERIFIER WITH AUTHORITY IS THE DANGEROUS DIRECTION, and it is caught", () => {
+  // Someone who can release this listing's money without appearing in the
+  // document the work was done against. Every other mismatch shortchanges the
+  // funder; this one shortchanges the worker.
+  const stranger = "0x5555555555555555555555555555555555555555";
+  const found = fundedDisagreements(v3Listing, {
+    ...chainOk,
+    verifierAuthority: [{ address: V, cap: 3, used: 0 }, { address: stranger, cap: 3, used: 0 }],
+  });
+  assert.ok(found.some((f) => /authorizes 0x5555.*and this listing never named them/i.test(f)), JSON.stringify(found));
+});
+
+test("a v3 listing hashes every term the escrow is checked against", async () => {
+  const { listingHashFields } = await import("../src/society.ts");
+  const v3 = listingHashFields(3);
+  for (const term of ["escrow_chain_id", "escrow_address", "escrow_token", "verifier_evm_addresses", "verifier_caps", "verifier_key_thumbprints", "escrow_verifier_deadline", "escrow_claim_deadline"])
+    assert.ok(v3.includes(term), `${term} decides whether money matches terms, so it must be inside the hash`);
+  // AND V1/V2 REMAIN REPRODUCIBLE. A v2 listing is never re-read under v3.
+  assert.deepEqual([...listingHashFields(2)], [...(await import("../src/society.ts")).LISTING_HASH_FIELDS_V2]);
+  assert.deepEqual([...listingHashFields(1)], [...(await import("../src/society.ts")).LISTING_HASH_FIELDS]);
+  assert.deepEqual(v3.slice(0, 22), listingHashFields(2).slice(0, 22), "v3 extends v2 rather than reordering it");
+});

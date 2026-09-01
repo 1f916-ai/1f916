@@ -100,6 +100,41 @@ export interface EscrowTerms {
 // Anything else is a listing whose on-chain money does not stand behind its
 // own terms, and calling that FUNDED would be the same lie as calling a
 // binding a debt.
+// ---------- reading the escrow ----------
+
+// The ABI slice this registry uses. READ-ONLY BY CONSTRUCTION: `listingOf` and
+// `verifierAuthority` are the only entries, so this module cannot encode a
+// call that changes anything even by mistake. fund(), release() and refund()
+// are deliberately absent.
+export const ESCROW_READ_ABI = [
+  {
+    type: "function", name: "listingOf", stateMutability: "view",
+    inputs: [{ name: "listingHash", type: "bytes32" }],
+    outputs: [
+      { name: "funder", type: "address" }, { name: "token", type: "address" },
+      { name: "amountPerAward", type: "uint256" }, { name: "maxAwards", type: "uint32" },
+      { name: "released", type: "uint32" }, { name: "verifierDeadline", type: "uint64" },
+      { name: "claimDeadline", type: "uint64" }, { name: "refunded", type: "bool" },
+      { name: "committed", type: "uint256" },
+    ],
+  },
+  {
+    type: "function", name: "verifierAuthority", stateMutability: "view",
+    inputs: [{ name: "listingHash", type: "bytes32" }, { name: "who", type: "address" }],
+    outputs: [{ name: "cap", type: "uint32" }, { name: "used", type: "uint32" }],
+  },
+] as const;
+
+export interface FundedTerms {
+  escrow_chain_id: number;
+  escrow_address: string;
+  escrow_token: string;
+  verifier_evm_addresses: string[];
+  verifier_caps: number[];
+  escrow_verifier_deadline: number;
+  escrow_claim_deadline: number;
+}
+
 export function fundingDisagreement(listing: {
   payload_hash: string;
   amount_atomic: string;
@@ -119,4 +154,79 @@ export function fundingDisagreement(listing: {
   if (onchain.token.toLowerCase() !== (listing.token || BASE_USDC).toLowerCase())
     return `the escrow holds ${onchain.token} and this listing prices in ${listing.token}`;
   return null;
+}
+
+// THE FULL CHECK, over everything a v3 listing hashes.
+//
+// The site may display FUNDED only when every one of these agrees. The rule is
+// not "a transaction exists" or "the funder sent something": it is that the
+// on-chain commitment matches the immutable terms this registry published,
+// field for field. A listing whose escrow disagrees with its own terms is a
+// listing whose money does not stand behind what it says, and calling that
+// FUNDED would be the same lie as calling a payout binding a debt.
+//
+// Every disagreement is RETURNED AS A SENTENCE, not a boolean, because the
+// reader who needs this most is the worker deciding whether to do the work.
+export function fundedDisagreements(
+  listing: { payload_hash: string; amount_atomic: string; max_awards: number; token: string; chain_id: number } & FundedTerms,
+  chain: {
+    chainId: number;
+    escrowAddress: string;
+    onchain: EscrowTerms | null;
+    verifierAuthority: { address: string; cap: number; used: number }[];
+    funderAddress: string | null;
+  },
+): string[] {
+  const out: string[] = [];
+  const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+
+  if (chain.chainId !== listing.escrow_chain_id)
+    out.push(`this listing commits to chain ${listing.escrow_chain_id} and the reader is on chain ${chain.chainId}`);
+  if (!same(chain.escrowAddress, listing.escrow_address))
+    out.push(`this listing commits to escrow ${listing.escrow_address} and the reader queried ${chain.escrowAddress}`);
+
+  const base = fundingDisagreement(listing, chain.onchain);
+  if (base) out.push(base);
+  if (chain.onchain === null) return out;
+
+  if (!same(chain.onchain.token, listing.escrow_token))
+    out.push(`the escrow holds ${chain.onchain.token} and this listing commits to ${listing.escrow_token}`);
+  if (chain.onchain.verifierDeadline !== listing.escrow_verifier_deadline)
+    out.push(`the escrow's verifier deadline is ${chain.onchain.verifierDeadline} and this listing published ${listing.escrow_verifier_deadline}`);
+  if (chain.onchain.claimDeadline !== listing.escrow_claim_deadline)
+    out.push(`the escrow's claim deadline is ${chain.onchain.claimDeadline} and this listing published ${listing.escrow_claim_deadline}`);
+  if (chain.funderAddress && !same(chain.onchain.funder, chain.funderAddress))
+    out.push(`the escrow was funded by ${chain.onchain.funder} and this listing names funder wallet ${chain.funderAddress}`);
+  if (chain.onchain.refunded)
+    out.push("the escrow has already been refunded to its funder, so nothing stands behind this listing any more");
+
+  // EVERY NAMED VERIFIER, AND NO OTHERS. A verifier the listing did not name
+  // but the escrow authorized is the more dangerous direction: it is a party
+  // who can release this listing's money without appearing in the document the
+  // work was done against.
+  const named = new Set(listing.verifier_evm_addresses.map((a) => a.toLowerCase()));
+  for (let i = 0; i < listing.verifier_evm_addresses.length; i++) {
+    const addr = listing.verifier_evm_addresses[i];
+    const onchainAuth = chain.verifierAuthority.find((v) => same(v.address, addr));
+    if (!onchainAuth || onchainAuth.cap === 0) {
+      out.push(`this listing names verifier ${addr} and the escrow gives that address no authority at all`);
+      continue;
+    }
+    if (onchainAuth.cap !== listing.verifier_caps[i])
+      out.push(`this listing gives verifier ${addr} a cap of ${listing.verifier_caps[i]} and the escrow gives it ${onchainAuth.cap}`);
+  }
+  for (const auth of chain.verifierAuthority)
+    if (auth.cap > 0 && !named.has(auth.address.toLowerCase()))
+      out.push(`the escrow authorizes ${auth.address} to release this listing's money and this listing never named them`);
+
+  return out;
+}
+
+// What a worker is entitled to be told before doing the work, in one sentence
+// emitted from the same check that decides it.
+export function fundingStatement(disagreements: string[], onchain: EscrowTerms | null): string {
+  if (disagreements.length > 0)
+    return `NOT FUNDED, and this is not a delay: the money on chain does not match this listing's published terms. ${disagreements.join("; ")}. Treat this listing as a promise and nothing more until it agrees with itself.`;
+  const remaining = onchain ? BigInt(onchain.maxAwards - onchain.released) * onchain.amountPerAward : 0n;
+  return `FUNDED. ${remaining} atomic units are committed in the escrow named in this listing's own hashed terms, and this registry cannot move any of it. Release needs a signature from a verifier this listing named before the work began, and anyone may relay it.`;
 }

@@ -2631,7 +2631,28 @@ export const LISTING_HASH_FIELDS = ["funder", "title", "condition", "amount_atom
 // listing's promise about what it can cost: a max_awards that could be edited
 // after the work was done would make the cap worthless.
 export const LISTING_HASH_FIELDS_V2 = ["funder", "title", "condition", "amount_atomic", "verifier_price_atomic", "max_verifiers", "max_awards", "funding_mode", "settlement_mode", "automatic_check", "submission_deadline", "requester_timeout_seconds", "award_on_timeout", "award_ttl_seconds", "payable_ttl_seconds", "chain_id", "token", "expiry", "funder_address", "funds_seen_atomic", "funds_checked_at", "funds_block_number", "commit_nonce", "created_at"] as const;
+// SETTLEMENT V3: the terms a FUNDED listing must commit before any money is
+// escrowed against it.
+//
+// These are not decoration. The escrow contract binds its money to this
+// listing's payload_hash, so anything a reader needs in order to check that
+// the on-chain commitment matches the published terms has to be INSIDE the
+// hash. If escrow_address were not hashed, a funder could publish terms, fund
+// a different contract, and the hash would still verify. If the verifier's EVM
+// address were not hashed, the party who can release the money would not be
+// part of the document the money is committed against, and "named before the
+// work began" would be a claim rather than a fact.
+//
+// V1 and V2 recipes are untouched and still reproduce every hash ever written.
+// A v2 listing is never re-read under v3 rules: listingHashFields dispatches on
+// the row's own settlement_version, which is immutable.
+export const LISTING_HASH_FIELDS_V3 = [...LISTING_HASH_FIELDS_V2.slice(0, -2),
+  "escrow_chain_id", "escrow_address", "escrow_token", "verifier_evm_addresses", "verifier_caps",
+  "verifier_key_thumbprints", "escrow_verifier_deadline", "escrow_claim_deadline",
+  ...LISTING_HASH_FIELDS_V2.slice(-2)] as const;
+
 export function listingHashFields(settlementVersion: number): readonly string[] {
+  if (settlementVersion >= 3) return LISTING_HASH_FIELDS_V3;
   return settlementVersion >= 2 ? LISTING_HASH_FIELDS_V2 : LISTING_HASH_FIELDS;
 }
 
