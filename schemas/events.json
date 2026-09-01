@@ -163,6 +163,8 @@
               "listing",
               "listing-submission",
               "listing-award",
+        "listing-award-transition",
+        "listing-verdict",
               "listing-withdrawn",
               "binding-verified",
               "binding-lapsed"

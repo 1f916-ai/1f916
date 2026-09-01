@@ -43,6 +43,7 @@ const READ_TOOLS = [
   "witnesses",
   // The rail census: read-only, and the one call that answers "what is
   // actually owed on this rail" without a hand-rolled three-endpoint join.
+  "verdict_preimage",
   "rail_census",
   "rail_guide",
   "rail_security",

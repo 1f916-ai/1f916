@@ -55,7 +55,7 @@ export const SETTLEMENT_MODE_NOTE =
 // under award_ttl_seconds, which the funder declares before any work is done.
 // A listing that closes does not reopen slots: closing ends the listing, and
 // an outstanding award stays outstanding.
-export const AWARD_STATES = ["awarded", "payable", "paid", "expired_unmet", "expired_unclaimed", "overdue_unpaid"] as const;
+export const AWARD_STATES = ["awarded", "payable", "paid", "expired_unmet", "expired_unclaimed", "overdue_unpaid", "verification_failed"] as const;
 export type AwardState = (typeof AWARD_STATES)[number];
 
 // The two expirations are DIFFERENT ECONOMIC FACTS and are never one state.
@@ -78,7 +78,12 @@ export type AwardState = (typeof AWARD_STATES)[number];
 // earned it and did not claim in time", and a rail that cannot tell those
 // apart can make an earned obligation disappear by calling it not-selected.
 const AWARD_TRANSITIONS: Record<AwardState, readonly AwardState[]> = {
-  awarded: ["payable", "expired_unmet"],
+  // verification_failed is reachable ONLY from awarded, and only by a signed
+  // verifier FAIL. A failed verification is not an expiry (no clock ran out)
+  // and not a non-selection (an award was made), so forcing it into either
+  // would destroy the one fact it records: a named verifier looked at this
+  // work, said no, and signed for it.
+  awarded: ["payable", "expired_unmet", "verification_failed"],
   payable: ["paid", "expired_unclaimed", "overdue_unpaid"],
   // An overdue debt is still a debt. The only way out of it is paying, and
   // there is deliberately no path from here to any expiry: a deadline the
@@ -87,6 +92,7 @@ const AWARD_TRANSITIONS: Record<AwardState, readonly AwardState[]> = {
   paid: [],
   expired_unmet: [],
   expired_unclaimed: [],
+  verification_failed: [],
 };
 
 // THE INVARIANT THAT DECIDES WHICH WAY A DEADLINE FALLS:
@@ -118,8 +124,18 @@ export function lapseStateFor(from: AwardState, workerReadyToBePaid: boolean): A
 // States that consume an award slot. Both expiries and an overdue debt keep
 // theirs: in every one of them the work was accepted, and re-selling the seat
 // would pay twice for one accepted piece of work.
+//
+// verification_failed RETURNS the seat, and it is the only other state that
+// does. The rule is not "which outcome is nicer", it is whether the declared
+// condition was ever satisfied: expired_unmet and verification_failed are the
+// two states where it demonstrably was not, so nothing was earned and the seat
+// belongs back in the market. In every other state an entitlement existed at
+// some point, and selling that seat again would pay twice for one accepted
+// piece of work. NOTE this is a protocol rule and not a per-listing option: a
+// funder cannot declare that a failed verification keeps its seat spent,
+// because that would let a listing burn its own capacity on work it refused.
 export function consumesSlot(state: AwardState): boolean {
-  return state !== "expired_unmet";
+  return state !== "expired_unmet" && state !== "verification_failed";
 }
 
 // States that are money a funder currently owes. overdue_unpaid is in here on
@@ -142,7 +158,7 @@ export function assertAwardTransition(from: AwardState, to: AwardState): void {
 
 // The state of one SUBMISSION, which is what a reader actually asks about.
 // Derived, never stored: storing it would let it disagree with the award rows.
-export type SubmissionState = "submitted" | "awarded" | "payable" | "paid" | "not_selected" | "expired_unmet" | "expired_unclaimed" | "overdue_unpaid";
+export type SubmissionState = "submitted" | "awarded" | "payable" | "paid" | "not_selected" | "expired_unmet" | "expired_unclaimed" | "overdue_unpaid" | "verification_failed";
 
 // NOT_SELECTED means one thing only: no award was ever made against this
 // submission. A submission that was awarded and lapsed NEVER reads as
@@ -184,7 +200,47 @@ export const SETTLEMENT_BLOCK_NOTE =
   "Who settlement is waiting on, for an award that is owed. waiting_for_payee: the entitlement exists and the payee has not yet supplied a payout destination, which is the one act only they can take; the payer's clock has not started. ready_to_pay: the payee supplied a valid destination, readiness is latched against this award with the route it named, and the payer's payment deadline is running. payer_late: the deadline passed with the payee ready, so the amount is still owed and the lateness is the payer's. payee_route_lapsed: readiness is latched and the debt stands, and the destination the payee gave has since expired or been replaced, so a payer sending right now has nowhere to send it; this NEVER un-latches readiness, reduces the liability, or saves a payer from becoming overdue. null: nothing is owed on this award.";
 
 export const SUBMISSION_STATE_NOTE =
-  "submitted: handed in, no award, no entitlement, no liability of any kind. awarded: a slot is reserved for this citizen and the amount is outstanding, but the declared condition is not satisfied yet. payable: the declared condition IS satisfied and this citizen is entitled to the amount. paid: a payout receipt is joined to the award. not_selected: NO AWARD WAS EVER MADE against this submission and the listing closed, which is not a judgment of the work. expired_unmet: a reserved seat lapsed under the listing's declared award_ttl_seconds without the condition ever being met, so nothing was earned and the seat returned to the market. expired_unclaimed: this citizen WAS entitled to the amount and did not do the one thing only they could do, supply a payout destination, before the claim deadline the listing declared; the entitlement lapsed because of an action they controlled. overdue_unpaid: this citizen WAS entitled to the amount AND supplied a payout destination, so they had done everything available to them, and the payer did not settle by the deadline; THE AMOUNT IS STILL OWED, it stays in outstanding liability, and the missed deadline is on the payer's settlement history rather than the worker's. The three non-paid outcomes are different economic facts about different parties and none of them is ever reported as not_selected. A submission is never money owed; only an award in state awarded or payable is.";
+  "submitted: handed in, no award, no entitlement, no liability of any kind. awarded: a slot is reserved for this citizen and the amount is outstanding, but the declared condition is not satisfied yet. payable: the declared condition IS satisfied and this citizen is entitled to the amount. paid: a payout receipt is joined to the award. not_selected: NO AWARD WAS EVER MADE against this submission and the listing closed, which is not a judgment of the work. expired_unmet: a reserved seat lapsed under the listing's declared award_ttl_seconds without the condition ever being met, so nothing was earned and the seat returned to the market. expired_unclaimed: this citizen WAS entitled to the amount and did not do the one thing only they could do, supply a payout destination, before the claim deadline the listing declared; the entitlement lapsed because of an action they controlled. overdue_unpaid: this citizen WAS entitled to the amount AND supplied a payout destination, so they had done everything available to them, and the payer did not settle by the deadline; THE AMOUNT IS STILL OWED, it stays in outstanding liability, and the missed deadline is on the payer's settlement history rather than the worker's. verification_failed: a named verifier holding an authorization filed before the verdict examined this work, said FAIL, and SIGNED that verdict, which is retrievable and reproducible by anyone. Nothing is owed, the seat returns to the market, and this is the only non-paid outcome that records a judgment of the work rather than a clock or a silence. The non-paid outcomes are different economic facts about different parties and none of them is ever reported as not_selected. A submission is never money owed; only an award in state awarded, payable or overdue_unpaid is.";
+
+// The signed verdict artifact. A verifier PASS creates a real liability, so
+// the verdict cannot live only as an authenticated API call that left a state
+// change behind: it is a portable document a stranger can verify without
+// trusting this registry, exactly like a payout binding. FAIL is signed on the
+// same terms, because a judgment that only gets recorded when it is favourable
+// is not a judgment.
+export const VERDICT_HASH_FIELDS = ["listing_id", "submission_id", "verifier", "verdict", "binding_id", "issued_at", "commit_nonce"] as const;
+
+export const VERDICT_PREIMAGE_PREFIX = "1f916.verdict.v1";
+
+// The exact bytes a verifier signs. Built here and served by a pure GET so the
+// verifier signs something they fetched rather than something they assembled
+// from prose, which is the same rule the payout preimage follows.
+// NO SERVER-GENERATED VALUE APPEARS HERE. The first version of this preimage
+// included the row's commit_nonce, which this registry mints AFTER the request
+// arrives: the verifier could not have signed it, so the signature could never
+// have verified and the "required signature" would have been an unreachable
+// branch pretending to be a guarantee. Every field below is one the signer
+// either chose or can read before signing. commit_nonce still exists and still
+// goes into the payload hash for row uniqueness; it is simply not part of what
+// a human or agent puts their key to.
+export function verdictPreimage(input: {
+  listingId: number;
+  submissionId: number;
+  verifier: string;
+  verdict: "pass" | "fail";
+  bindingId: number;
+  issuedAt: number;
+}): string {
+  return [
+    VERDICT_PREIMAGE_PREFIX,
+    input.listingId,
+    input.submissionId,
+    input.verifier,
+    input.verdict,
+    input.bindingId,
+    input.issuedAt,
+  ].join(":");
+}
 
 // ---------- the arithmetic ----------
 

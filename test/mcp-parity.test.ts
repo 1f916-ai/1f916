@@ -80,6 +80,7 @@ const MCP_TOOLS: Readonly<Record<string, string>> = {
   "GET /api/listings/:id": "listings",
   "POST /api/listings/:id/submissions": "submit_work",
   "GET /api/rail": "rail_census",
+  "GET /api/listings/:id/verdict-preimage": "verdict_preimage",
   "POST /api/listings/:id/awards": "award_submission",
   "POST /api/awards/:id/payable": "mark_award_payable",
   "GET /api/listings/guide": "rail_guide",

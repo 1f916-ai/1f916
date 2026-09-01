@@ -279,7 +279,7 @@ test("the award ledger cannot record two awards for one submission or two awards
   // The real DDL, with only the referenced tables stubbed so the CHECKs and
   // UNIQUEs under test are the ones production actually has.
   db.exec("PRAGMA foreign_keys = OFF;");
-  db.exec(schema.slice(schema.indexOf("CREATE TABLE IF NOT EXISTS listing_awards"), schema.indexOf("CREATE INDEX IF NOT EXISTS idx_listing_awards_listing")));
+  db.exec(schema.slice(schema.indexOf("CREATE TABLE IF NOT EXISTS listing_verdicts"), schema.indexOf("CREATE INDEX IF NOT EXISTS idx_listing_verdicts_listing")) + schema.slice(schema.indexOf("CREATE TABLE IF NOT EXISTS listing_awards"), schema.indexOf("CREATE INDEX IF NOT EXISTS idx_listing_awards_listing")));
   const insert = (submissionId: number, receiptId: number | null, nonce: string) =>
     db.prepare(
       `INSERT INTO listing_awards (listing_id, submission_id, citizen_id, amount_atomic, state, awarded_by, awarded_at, payable_at, receipt_id, paid_at, payload_hash, commit_nonce, created_at)
@@ -297,7 +297,7 @@ test("the paid state cannot exist without a receipt, and a receipt cannot exist 
   // The real DDL, with only the referenced tables stubbed so the CHECKs and
   // UNIQUEs under test are the ones production actually has.
   db.exec("PRAGMA foreign_keys = OFF;");
-  db.exec(schema.slice(schema.indexOf("CREATE TABLE IF NOT EXISTS listing_awards"), schema.indexOf("CREATE INDEX IF NOT EXISTS idx_listing_awards_listing")));
+  db.exec(schema.slice(schema.indexOf("CREATE TABLE IF NOT EXISTS listing_verdicts"), schema.indexOf("CREATE INDEX IF NOT EXISTS idx_listing_verdicts_listing")) + schema.slice(schema.indexOf("CREATE TABLE IF NOT EXISTS listing_awards"), schema.indexOf("CREATE INDEX IF NOT EXISTS idx_listing_awards_listing")));
   const row = (state: string, receiptId: number | null, paidAt: number | null, nonce: string) =>
     db.prepare(
       `INSERT INTO listing_awards (listing_id, submission_id, citizen_id, amount_atomic, state, awarded_by, awarded_at, payable_at, receipt_id, paid_at, payload_hash, commit_nonce, created_at)
@@ -312,7 +312,7 @@ test("an erased earning is not a bug to catch, it is a row the database refuses 
   const db = new DatabaseSync(":memory:");
   const schema = readFileSync(new URL("../schema.sql", import.meta.url), "utf8");
   db.exec("PRAGMA foreign_keys = OFF;");
-  db.exec(schema.slice(schema.indexOf("CREATE TABLE IF NOT EXISTS listing_awards"), schema.indexOf("CREATE INDEX IF NOT EXISTS idx_listing_awards_listing")));
+  db.exec(schema.slice(schema.indexOf("CREATE TABLE IF NOT EXISTS listing_verdicts"), schema.indexOf("CREATE INDEX IF NOT EXISTS idx_listing_verdicts_listing")) + schema.slice(schema.indexOf("CREATE TABLE IF NOT EXISTS listing_awards"), schema.indexOf("CREATE INDEX IF NOT EXISTS idx_listing_awards_listing")));
   const insert = (state: string, payableAt: number | null, expiredAt: number | null, nonce: string) =>
     db.prepare(
       `INSERT INTO listing_awards (listing_id, submission_id, citizen_id, amount_atomic, state, awarded_by, awarded_at, payable_at, expired_at, payload_hash, commit_nonce, created_at)
@@ -377,7 +377,7 @@ test("the published derivation of outstanding liability names every state that p
     CREATE TABLE payout_receipts (id INTEGER PRIMARY KEY AUTOINCREMENT, binding_id INTEGER UNIQUE, submitter_id INTEGER, tx_hash TEXT, source_address TEXT, created_at INTEGER);
     ${schema.slice(schema.indexOf("CREATE TABLE IF NOT EXISTS listings"), schema.indexOf("CREATE INDEX IF NOT EXISTS idx_listings_expiry"))}
     ${schema.slice(schema.indexOf("CREATE TABLE IF NOT EXISTS listing_submissions"), schema.indexOf("CREATE INDEX IF NOT EXISTS idx_listing_submissions_listing"))}
-    ${schema.slice(schema.indexOf("CREATE TABLE IF NOT EXISTS listing_awards"), schema.indexOf("CREATE INDEX IF NOT EXISTS idx_listing_awards_listing"))}
+    ${schema.slice(schema.indexOf("CREATE TABLE IF NOT EXISTS listing_verdicts"), schema.indexOf("CREATE INDEX IF NOT EXISTS idx_listing_verdicts_listing")) + schema.slice(schema.indexOf("CREATE TABLE IF NOT EXISTS listing_awards"), schema.indexOf("CREATE INDEX IF NOT EXISTS idx_listing_awards_listing"))}
     ${schema.slice(schema.indexOf("CREATE TABLE IF NOT EXISTS listing_settlement"))}
     INSERT INTO citizens VALUES (1, 'funder', 'test', 's1', 0, 0, 0);`);
   const env = {

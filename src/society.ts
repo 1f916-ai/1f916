@@ -28,6 +28,7 @@ import {
   AWARD_STATES, assertAwardTransition, assertLiabilityInvariant, awardRefusal, commentIdFromArtifact, consumesSlot, evaluateAutomaticCheck, isOutstanding, lapseStateFor, listingEconomics,
   settlementBlock, submissionState, validateAutomaticCheck, validateSettlement, wasEverPayable,
   SETTLEMENT_BLOCK_NOTE,
+  VERDICT_HASH_FIELDS, verdictPreimage,
   type AutomaticCheck, type AwardRow, type AwardState, type SettlementAdapter, type SettlementInput,
 } from "./settlement.ts";
 import { SEALS_PER_DAY, SEAL_CHECKS_PER_DAY, validateSeal, type SealInput, type ValidatedSeal } from "./seals.ts";
@@ -2961,36 +2962,213 @@ export async function liveRoutesFor(env: Env, listingId: number, nowSeconds: num
   return new Set(results.map((r) => Number(r.citizen_id)));
 }
 
+// ONE CANONICAL EVENT FOR EVERY AWARD STATE CHANGE, emitted from inside the
+// same batch as the UPDATE that causes it.
+//
+// The atomicity is the point and not a nicety. commitWithIdentityEvent puts
+// the state statement and the chained log insert into one D1 batch under the
+// same guard, so there is no ordering in which the column moves and the
+// evidence does not, or the reverse. A transition recorded separately would be
+// a second write that can fail on its own, and the failure mode is exactly the
+// one this exists to remove: a database that says a funder is overdue with
+// nothing in the log that a stranger can check.
+//
+// The detail line carries the whole transition rather than a reference to it,
+// because identity_events is what gets Merkle-anchored and witnessed, and an
+// event that only points at a mutable row inherits that row's mutability.
+export const AWARD_TRANSITION_HASH_FIELDS = ["award_id", "listing_id", "submission_id", "payee", "amount_atomic", "from_state", "to_state", "reason", "source", "deadline", "occurred_at"] as const;
+
+export async function awardTransitionPayload(input: {
+  awardId: number; listingId: number; submissionId: number; payee: string; amountAtomic: string;
+  fromState: AwardState; toState: AwardState; reason: string; source: string; deadline: number | null; occurredAt: number;
+}) {
+  const payload: Record<(typeof AWARD_TRANSITION_HASH_FIELDS)[number], unknown> = {
+    award_id: input.awardId, listing_id: input.listingId, submission_id: input.submissionId,
+    payee: input.payee, amount_atomic: input.amountAtomic, from_state: input.fromState, to_state: input.toState,
+    reason: input.reason, source: input.source, deadline: input.deadline, occurred_at: input.occurredAt,
+  };
+  const hash = await sha256Hex(JSON.stringify(AWARD_TRANSITION_HASH_FIELDS.map((f) => payload[f])));
+  return { payload, hash };
+}
+
+// The detail string that lands in the chained log. Every field a reader needs
+// to reproduce the payload hash is IN it, so verification needs the log alone.
+export async function awardTransitionDetail(input: Parameters<typeof awardTransitionPayload>[0]) {
+  const { payload, hash } = await awardTransitionPayload(input);
+  return `${JSON.stringify(payload)} transition payload sha256=${hash}`;
+}
+
 export async function sweepExpiredAwards(env: Env, listingId: number, nowMs: number): Promise<number> {
-  const nowSeconds = Math.floor(nowMs / 1000);
   // Latch first, always. A clock that fired on an award whose payee WAS ready
   // but whose readiness had not been written down yet would blame the payee
   // for the payer's silence, which is the defect this whole layer exists to
   // prevent, re-entering through a race.
   await latchReadiness(env, listingId, nowMs);
-  // Three statements, because a lapsing clock has three outcomes and they are
-  // decided by two different questions: which clock was running, and whether
-  // the worker had done their part. A single UPDATE would have to pick one
-  // answer for all of them. payable_at is never cleared in any branch.
-  const unmet = await env.DB.prepare(
-    `UPDATE listing_awards SET state = 'expired_unmet', expired_at = expires_at
-      WHERE listing_id = ? AND state = 'awarded' AND expires_at IS NOT NULL AND expires_at <= ?`,
-  ).bind(listingId, nowMs).run();
-  // The worker never supplied a payout destination by the deadline: the one
-  // action only they could take. Their entitlement expires.
-  const unclaimed = await env.DB.prepare(
-    `UPDATE listing_awards SET state = 'expired_unclaimed', expired_at = expires_at
-      WHERE listing_id = ? AND state = 'payable' AND expires_at IS NOT NULL AND expires_at <= ?
-        AND ready_at IS NULL`,
-  ).bind(listingId, nowMs).run();
-  // The worker DID supply one. Nothing expires: the debt goes late, stays
-  // owed, and the missed deadline attaches to the payer.
-  const overdue = await env.DB.prepare(
-    `UPDATE listing_awards SET state = 'overdue_unpaid', overdue_at = expires_at
-      WHERE listing_id = ? AND state = 'payable' AND expires_at IS NOT NULL AND expires_at <= ?
-        AND ready_at IS NOT NULL`,
-  ).bind(listingId, nowMs).run();
-  return Number(unmet.meta?.changes ?? 0) + Number(unclaimed.meta?.changes ?? 0) + Number(overdue.meta?.changes ?? 0);
+  // ROW BY ROW, not three bulk UPDATEs. The bulk form was faster and could not
+  // emit evidence: one statement moving nine awards cannot carry nine chained
+  // events, and a single event summarising them would name no award in
+  // particular. Each lapse is now its own guarded state change batched with
+  // its own log entry, so the cost is one round trip per lapsing award and the
+  // gain is that every one of them is independently checkable.
+  const { results: due } = await env.DB.prepare(
+    `SELECT id, listing_id, submission_id, citizen_id, amount_atomic, state, expires_at, ready_at
+       FROM listing_awards
+      WHERE listing_id = ? AND state IN ('awarded', 'payable') AND expires_at IS NOT NULL AND expires_at <= ?
+      ORDER BY id ASC`,
+  ).bind(listingId, nowMs).all<StoredAward>();
+  let lapsed = 0;
+  for (const award of due) {
+    const to = lapseStateFor(award.state, award.ready_at != null);
+    const handle = await handleOf(env, award.citizen_id);
+    // The reason is emitted from the SAME branch that chose the state, so the
+    // sentence in the log cannot describe a different outcome than the one
+    // written. Prose hand-written beside a branching value is the defect class
+    // this codebase keeps rediscovering.
+    const reason =
+      to === "expired_unmet"
+        ? "a reserved seat reached the listing's declared award_ttl_seconds without the condition being met; nothing was earned and the seat returns to the market"
+        : to === "expired_unclaimed"
+          ? "the entitlement reached the listing's declared claim window with no payout destination ever supplied by the payee, the one act only they could take; the amount was earned and is no longer owed"
+          : "the payer did not settle by the declared deadline although the payee had already supplied a payout destination; THE AMOUNT IS STILL OWED and this is the payer's default, not an expiry";
+    const stateStmt = env.DB.prepare(
+      to === "overdue_unpaid"
+        ? `UPDATE listing_awards SET state = 'overdue_unpaid', overdue_at = expires_at WHERE id = ? AND state = ? RETURNING id`
+        : `UPDATE listing_awards SET state = '${to}', expired_at = expires_at WHERE id = ? AND state = ? RETURNING id`,
+    ).bind(award.id, award.state);
+    const committed = await commitWithIdentityEvent<{ id: number }>(
+      env,
+      stateStmt,
+      {
+        citizen_id: award.citizen_id,
+        kind: "listing-award-transition",
+        detail: await awardTransitionDetail({
+          awardId: award.id, listingId: award.listing_id, submissionId: award.submission_id,
+          payee: handle, amountAtomic: award.amount_atomic, fromState: award.state, toState: to,
+          reason, source: "system:clock", deadline: award.expires_at, occurredAt: nowMs,
+        }),
+      },
+      `listing-award-transition chain head moved four times running; refusing to lapse award ${award.id} without its anchor`,
+      // THE GUARD DESCRIBES THE STATE AFTER THE UPDATE, not before it. Both
+      // statements run in one batch with the UPDATE first, so a guard written
+      // against the old state is false by the time the log insert evaluates
+      // it, and the row would move with no event recorded: precisely the
+      // failure this whole change exists to remove, reintroduced by the code
+      // meant to fix it.
+      { sql: "EXISTS (SELECT 1 FROM listing_awards WHERE id = ? AND state = ?)", binds: [award.id, to] },
+    );
+    if (committed.changed > 0) lapsed += 1;
+  }
+  return lapsed;
+}
+
+// ---------- the signed verifier verdict ----------
+//
+// WHY THIS IS A DOCUMENT AND NOT A FUNCTION CALL. On a verifier-settled
+// listing the verifier's PASS is the act that creates a real liability: no
+// funder confirms it afterwards, by design. An act with that much economic
+// weight cannot rest on "the API call was authenticated", because
+// authentication is a fact about a TLS session that nobody outside this
+// registry can ever check again. A signature over a published preimage is a
+// fact anyone can check forever, including after this registry is gone, and
+// including against this registry.
+//
+// FAIL is signed on exactly the same terms. A judgment that is only recorded
+// when it happens to be favourable is not a judgment, and before this a FAIL
+// was an HTTP 409 that left nothing behind at all.
+export async function recordVerdict(
+  env: Env,
+  citizen: Citizen,
+  listing: StoredListing,
+  submission: { id: number; citizen_id: number },
+  input: { verdict: "pass" | "fail"; signature?: unknown; issued_at?: unknown },
+): Promise<{ id: number; payload_hash: string; hash: string }> {
+  if (input.verdict !== "pass" && input.verdict !== "fail")
+    throw new SocietyError(400, "verdict must be 'pass' or 'fail'");
+  // The authorization the verdict rests on, recorded rather than re-derived
+  // later: a verifier's authority is a dated public act, and this verdict must
+  // name the binding it stood on even after that binding lapses.
+  const binding = await env.DB.prepare(
+    `SELECT id FROM payout_bindings WHERE docket_id = ? AND citizen_id = ? ORDER BY id ASC LIMIT 1`,
+  ).bind(listingRow(listing.id, "verifier"), citizen.id).first<{ id: number }>();
+  if (!binding)
+    throw new SocietyError(403, `you hold no verifier authorization on listing ${listing.id}: a verifier is a citizen who filed a binding on ${listingRow(listing.id, "verifier")} BEFORE the verdict, which is what makes the appointment a dated public act rather than a claim made afterwards`);
+
+  const key = await env.DB.prepare(
+    `SELECT public_key, thumbprint FROM keys WHERE citizen_id = ? AND status = 'active' AND custody = 'self' LIMIT 1`,
+  ).bind(citizen.id).first<{ public_key: string; thumbprint: string }>();
+  // NOT OPTIONAL. A verifier who cannot sign cannot pass judgment that moves
+  // money on this rail; they can still submit, comment and verify in public
+  // like anyone else. Accepting an unsigned verdict "just this once" is how
+  // the portable artifact quietly becomes an API log line again.
+  if (!key)
+    throw new SocietyError(409, "a verdict must be SIGNED, and you hold no active self-custodied key to sign it with. Bind one at POST /api/keys. This registry will not record an unsigned verdict, because a verdict nobody outside this registry can verify is not evidence, it is a claim.");
+
+  const issuedAt = Number.isSafeInteger(Number(input.issued_at)) && Number(input.issued_at) > 0 ? Number(input.issued_at) : Date.now();
+  const commitNonce = crypto.randomUUID();
+  const preimage = verdictPreimage({
+    listingId: listing.id, submissionId: submission.id, verifier: citizen.handle,
+    verdict: input.verdict, bindingId: binding.id, issuedAt,
+  });
+  const { b64urlDecode, verifyEd25519 } = await import("./keys.ts");
+  const sig = String(input.signature ?? "");
+  if (!sig)
+    throw new SocietyError(400, `a verdict must carry a signature over its exact preimage. Fetch the bytes at GET /api/listings/${listing.id}/verdict-preimage?submission_id=${submission.id}&verdict=${input.verdict} and sign THOSE, rather than assembling them from this message.`);
+  let ok = false;
+  try {
+    ok = await verifyEd25519(b64urlDecode(key.public_key), new TextEncoder().encode(preimage), b64urlDecode(sig));
+  } catch {
+    ok = false;
+  }
+  if (!ok)
+    throw new SocietyError(400, `that signature does not verify against the verdict preimage under your active key. The exact bytes are served at GET /api/listings/${listing.id}/verdict-preimage; a signature over anything else is refused rather than stored, because a stored signature that does not verify is worse than none.`);
+
+  const payload: Record<(typeof VERDICT_HASH_FIELDS)[number], unknown> = {
+    listing_id: listing.id, submission_id: submission.id, verifier: citizen.handle,
+    verdict: input.verdict, binding_id: binding.id, issued_at: issuedAt, commit_nonce: commitNonce,
+  };
+  const payloadHash = await sha256Hex(JSON.stringify(VERDICT_HASH_FIELDS.map((f) => payload[f])));
+  const stateStmt = env.DB.prepare(
+    `INSERT INTO listing_verdicts (listing_id, submission_id, verifier_id, binding_id, verdict, signature, key_thumbprint, payload_hash, commit_nonce, issued_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+  ).bind(listing.id, submission.id, citizen.id, binding.id, input.verdict, sig, key.thumbprint, payloadHash, commitNonce, issuedAt);
+  const committed = await commitWithIdentityEvent<{ id: number }>(
+    env,
+    stateStmt,
+    {
+      citizen_id: citizen.id,
+      kind: "listing-verdict",
+      detail: `listing-${listing.id}, submission ${submission.id}, verdict=${input.verdict}, binding ${binding.id}, key ${key.thumbprint}, verdict payload sha256=${payloadHash}`,
+    },
+    "listing-verdict chain head moved four times running; refusing to record a verdict without its anchor",
+  );
+  if (!committed.state?.id)
+    throw new SocietyError(409, `you have already signed a verdict on submission ${submission.id}. A verifier who changes their mind does not overwrite what they signed; the record stands and the disagreement belongs in public.`);
+  return { id: Number(committed.state.id), payload_hash: payloadHash, hash: committed.hash };
+}
+
+// The pure string builder behind GET /api/listings/:id/verdict-preimage. A
+// verifier signs bytes they FETCHED, never bytes they assembled from prose.
+export async function verdictPreimageDoor(env: Env, citizen: Citizen, listingId: number, submissionId: number, verdict: "pass" | "fail", issuedAt: number) {
+  const binding = await env.DB.prepare(
+    `SELECT id FROM payout_bindings WHERE docket_id = ? AND citizen_id = ? ORDER BY id ASC LIMIT 1`,
+  ).bind(listingRow(listingId, "verifier"), citizen.id).first<{ id: number }>();
+  if (!binding)
+    throw new SocietyError(403, `you hold no verifier authorization on listing ${listingId}, so there is nothing for you to sign here`);
+  return {
+    preimage: verdictPreimage({ listingId, submissionId, verifier: citizen.handle, verdict, bindingId: binding.id, issuedAt }),
+    issued_at: issuedAt,
+    issued_at_note: "Send this exact issued_at back with the signature. It is part of the signed bytes, so a different one produces a different preimage and the signature will not verify.",
+    binding_id: binding.id,
+    algorithm: "Ed25519 over the UTF-8 bytes, signature base64url, by your active self-custodied citizen key",
+    post_to: `POST /api/awards/:id/payable or POST /api/listings/${listingId}/awards with {verdict, signature, issued_at}`,
+    payload_hash_recipe: { algorithm: "sha256", encoding: ENCODING_NOTE, fields: VERDICT_HASH_FIELDS },
+    note: "A verdict is a portable document, not an API side effect. PASS on a verifier-settled listing creates a real liability with no further act by the funder, so it is signed; FAIL is signed on identical terms, because a judgment recorded only when it is favourable is not a judgment.",
+  };
+}
+
+async function handleOf(env: Env, citizenId: number): Promise<string> {
+  const row = await env.DB.prepare("SELECT handle FROM citizens WHERE id = ?").bind(citizenId).first<{ handle: string }>();
+  return row?.handle ?? `citizen-${citizenId}`;
 }
 
 // Who may award on this listing, by its declared settlement mode. The mode is
@@ -3023,7 +3201,7 @@ export async function createAward(
   env: Env,
   citizen: Citizen,
   listingId: number,
-  body: { submission_id?: unknown; verdict?: unknown; reserve?: unknown },
+  body: { submission_id?: unknown; verdict?: unknown; reserve?: unknown; signature?: unknown; issued_at?: unknown },
   deps: { settlementAdapter?: SettlementAdapter } = {},
 ) {
   const listing = await listingById(env, listingId);
@@ -3055,6 +3233,22 @@ export async function createAward(
   // and awards only on a pass. A fail is not a judgment of the work and is not
   // recorded as one; it is a refusal to create a liability.
   let awardedBy: "automatic" | "requester" | "verifier" = mode;
+  let verdict: { id: number; payload_hash: string; hash: string } | null = null;
+
+  // REFUSALS BEFORE RECORDS. This validation used to sit below the decision
+  // branch, which meant a verifier's signed verdict was written to the ledger
+  // and only then did the request fail on a rule that had nothing to do with
+  // the verdict. Evidence of a judgment that the registry then refused to act
+  // on is worse than no evidence: it is a permanent signed document about a
+  // decision that never took effect.
+  const reserving = body.reserve === true;
+  if (reserving) {
+    if (mode !== "requester")
+      throw new SocietyError(400, `only a requester-settled listing can reserve a seat before the work; listing ${listing.id} settles in ${listing.settlement_mode} mode, where an award records a condition that has already been satisfied`);
+    if (listing.award_ttl_seconds === null)
+      throw new SocietyError(400, "reserving a seat needs the listing to have declared award_ttl_seconds before the work began, so the seat's clock is a term of the listing and not a decision made afterwards");
+  }
+
   if (mode === "automatic") {
     const check: AutomaticCheck = validateAutomaticCheck(listing.automatic_check ?? "");
     const comment = await env.DB.prepare(
@@ -3064,13 +3258,16 @@ export async function createAward(
     if (!verdict.pass)
       throw new SocietyError(409, `the declared automatic check does not pass for submission ${submissionId}: ${verdict.reason}. No award was made and nothing is owed.`);
   } else if (mode === "verifier") {
-    // A verifier signs a verdict. FAIL is a legitimate outcome and simply
-    // makes no award; it is recorded as the absence of one, not as a defect on
-    // the worker's record.
+    // The verdict is RECORDED FIRST, as a signed artifact, and the award (or
+    // the absence of one) follows from it. Order matters: a PASS that created
+    // the liability before the signature was checked would make the signature
+    // decorative, and a FAIL that threw before recording would leave the
+    // society unable to tell "a verifier said no" from "nobody looked".
     if (body.verdict !== "pass" && body.verdict !== "fail")
       throw new SocietyError(400, "verdict must be 'pass' or 'fail'");
+    verdict = await recordVerdict(env, citizen, listing, submission, { verdict: body.verdict, signature: body.signature, issued_at: body.issued_at });
     if (body.verdict === "fail")
-      throw new SocietyError(409, `verifier recorded fail for submission ${submissionId}; no award was made and nothing is owed. A fail is not a judgment this registry makes or stores as a defect on the worker.`);
+      throw new SocietyError(409, `verifier ${citizen.handle} signed FAIL on submission ${submissionId} (verdict ${verdict.id}, payload sha256=${verdict.payload_hash}). No award was made and nothing is owed. The signed verdict is durable and retrievable: this is a recorded judgment by a named verifier, and it is NOT a mark this registry makes about the worker.`);
   }
 
   // WHICH STATE THIS AWARD IS BORN IN, and it is the correction that removes a
@@ -3087,13 +3284,6 @@ export async function createAward(
   // funder reserving a seat for a citizen BEFORE the work is done ("you have
   // six hours or the seat goes back on the market"). Nothing is earned yet,
   // and award_ttl_seconds is the clock on it.
-  const reserving = body.reserve === true;
-  if (reserving) {
-    if (mode !== "requester")
-      throw new SocietyError(400, `only a requester-settled listing can reserve a seat before the work; listing ${listing.id} settles in ${listing.settlement_mode} mode, where an award records a condition that has already been satisfied`);
-    if (listing.award_ttl_seconds === null)
-      throw new SocietyError(400, "reserving a seat needs the listing to have declared award_ttl_seconds before the work began, so the seat's clock is a term of the listing and not a decision made afterwards");
-  }
   const bornState: AwardState = reserving ? "awarded" : "payable";
   // The clock that runs on this award is the clock for the state it is in: a
   // reserved seat runs award_ttl, an entitlement runs the claim window. Null
@@ -3175,7 +3365,14 @@ export async function createAward(
         ? "award_ttl_seconds: if the declared condition is not met by then, this reserved seat becomes expired_unmet, nothing was earned, and the seat returns to the market"
         : "payable_ttl_seconds: if this entitlement is not claimed by then it becomes expired_unclaimed, which permanently records that the amount WAS earned and went unclaimed, and is never reported as not-selected",
     released: settled?.released ?? null,
+    ...(verdict ? { verdict: { id: verdict.id, verdict: "pass", payload_hash: verdict.payload_hash, event_hash: verdict.hash, recipe: { algorithm: "sha256", encoding: ENCODING_NOTE, fields: VERDICT_HASH_FIELDS } } } : {}),
     payload_hash: payloadHash,
+    // GAP 4. Listings, submissions, bindings and receipts all published the
+    // field list behind their hash; awards published the hash alone, so an
+    // outside verifier could read it and had no way to recompute it. A hash
+    // nobody else can reproduce is a checksum for this registry's own benefit,
+    // not evidence for anyone else's.
+    payload_hash_recipe: { algorithm: "sha256", encoding: ENCODING_NOTE, fields: AWARD_HASH_FIELDS },
   };
 }
 
@@ -3221,7 +3418,7 @@ function commentIdForCheck(artifact: string): number {
 //
 // Awards created from a settlement decision are already payable and never come
 // through here; this exists only for the reserve-a-seat path.
-export async function markAwardPayable(env: Env, citizen: Citizen, awardId: number, body: { verdict?: unknown } = {}) {
+export async function markAwardPayable(env: Env, citizen: Citizen, awardId: number, body: { verdict?: unknown; signature?: unknown; issued_at?: unknown } = {}) {
   const award = await env.DB.prepare(`SELECT * FROM listing_awards WHERE id = ?`).bind(awardId).first<StoredAward>();
   if (!award) throw new SocietyError(404, `no award ${awardId}`);
   const listing = await listingById(env, award.listing_id);
@@ -3233,24 +3430,80 @@ export async function markAwardPayable(env: Env, citizen: Citizen, awardId: numb
   const current = await env.DB.prepare(`SELECT state FROM listing_awards WHERE id = ?`).bind(awardId).first<{ state: AwardState }>();
   assertAwardTransition(current?.state ?? award.state, "payable");
   const mode = await assertMayAward(env, listing, citizen);
-  if (mode === "verifier") {
-    if (body.verdict !== "pass" && body.verdict !== "fail") throw new SocietyError(400, "verdict must be 'pass' or 'fail'");
-    if (body.verdict === "fail")
-      throw new SocietyError(409, `verifier recorded fail on award ${awardId}; it stays a reserved seat and lapses under the listing's declared award_ttl_seconds. Nothing was earned and nothing is owed.`);
-  }
   if (mode === "automatic")
     throw new SocietyError(400, `listing ${listing.id} settles automatically: an award is created payable when the declared check passes, so there is nothing to mark`);
+  const payee = await handleOf(env, award.citizen_id);
+  let verdict: { id: number; payload_hash: string; hash: string } | null = null;
+  if (mode === "verifier") {
+    if (body.verdict !== "pass" && body.verdict !== "fail") throw new SocietyError(400, "verdict must be 'pass' or 'fail'");
+    verdict = await recordVerdict(env, citizen, listing, { id: award.submission_id, citizen_id: award.citizen_id }, { verdict: body.verdict, signature: body.signature, issued_at: body.issued_at });
+    // A SIGNED FAIL IS A TERMINAL OUTCOME, not a silence to be waited out.
+    // This used to throw and leave the seat sitting until award_ttl_seconds
+    // ran down, so the ledger recorded "a clock expired" for something that
+    // was actually "a named verifier examined this and rejected it". Those are
+    // different facts about different parties, and the second one is the more
+    // useful thing to know about a piece of work.
+    if (body.verdict === "fail") {
+      const failed = await commitWithIdentityEvent<{ id: number }>(
+        env,
+        env.DB.prepare(
+          `UPDATE listing_awards SET state = 'verification_failed', expires_at = NULL, verdict_id = ? WHERE id = ? AND state = 'awarded' RETURNING id`,
+        ).bind(verdict.id, awardId),
+        {
+          citizen_id: award.citizen_id,
+          kind: "listing-award-transition",
+          detail: await awardTransitionDetail({
+            awardId, listingId: listing.id, submissionId: award.submission_id, payee,
+            amountAtomic: award.amount_atomic, fromState: "awarded", toState: "verification_failed",
+            reason: `verifier ${citizen.handle} signed FAIL (verdict ${verdict.id}, payload sha256=${verdict.payload_hash}); the declared condition was not satisfied, so nothing was earned and the seat returns to the market`,
+            source: `verifier:${citizen.handle}`, deadline: award.expires_at, occurredAt: nowMs,
+          }),
+        },
+        `listing-award-transition chain head moved four times running; refusing to record a failed verification on award ${awardId} without its anchor`,
+        { sql: "EXISTS (SELECT 1 FROM listing_awards WHERE id = ? AND state = 'verification_failed')", binds: [awardId] },
+      );
+      if (!failed.state?.id)
+        throw new SocietyError(409, `award ${awardId} is no longer a reserved seat, so the verdict was recorded but no state change followed it`);
+      return {
+        award_id: awardId,
+        state: "verification_failed",
+        decided_by: mode,
+        verdict: { id: verdict.id, verdict: "fail", payload_hash: verdict.payload_hash, event_hash: verdict.hash },
+        capacity_returned: true,
+        note: "A named verifier examined this work and signed a FAIL. Nothing was earned and nothing is owed, the award slot returns to the listing, and this is NOT recorded as an expiry or as not_selected: the record says a judgment was made, by whom, and that it is reproducible from the signature. The worker may hand in new work while the listing is open.",
+      };
+    }
+  }
   // The claim window starts now, when the entitlement starts existing, not
   // when the seat was reserved.
   const expiresAt = listing.payable_ttl_seconds === null ? null : nowMs + listing.payable_ttl_seconds * 1000;
-  const result = await env.DB.prepare(
-    `UPDATE listing_awards SET state = 'payable', payable_at = ?, expires_at = ? WHERE id = ? AND state = 'awarded'`,
-  ).bind(nowMs, expiresAt, awardId).run();
-  if (Number(result.meta?.changes ?? 0) === 0)
+  const committed = await commitWithIdentityEvent<{ id: number }>(
+    env,
+    env.DB.prepare(
+      `UPDATE listing_awards SET state = 'payable', payable_at = ?, expires_at = ?, verdict_id = ? WHERE id = ? AND state = 'awarded' RETURNING id`,
+    ).bind(nowMs, expiresAt, verdict?.id ?? null, awardId),
+    {
+      citizen_id: award.citizen_id,
+      kind: "listing-award-transition",
+      detail: await awardTransitionDetail({
+        awardId, listingId: listing.id, submissionId: award.submission_id, payee,
+        amountAtomic: award.amount_atomic, fromState: "awarded", toState: "payable",
+        reason: verdict
+          ? `verifier ${citizen.handle} signed PASS (verdict ${verdict.id}, payload sha256=${verdict.payload_hash}); the declared settlement condition is satisfied and the amount is now owed`
+          : `the funder accepted under the listing's declared requester settlement; the declared condition is satisfied and the amount is now owed`,
+        source: verdict ? `verifier:${citizen.handle}` : `requester:${citizen.handle}`,
+        deadline: expiresAt, occurredAt: nowMs,
+      }),
+    },
+    `listing-award-transition chain head moved four times running; refusing to make award ${awardId} payable without its anchor`,
+    { sql: "EXISTS (SELECT 1 FROM listing_awards WHERE id = ? AND state = 'payable')", binds: [awardId] },
+  );
+  if (!committed.state?.id)
     throw new SocietyError(409, `award ${awardId} is no longer a reserved seat; its clock may have run out, in which case it is expired_unmet and the seat has returned to the market`);
   return {
     award_id: awardId,
     state: "payable",
+    ...(verdict ? { verdict: { id: verdict.id, verdict: "pass", payload_hash: verdict.payload_hash, event_hash: verdict.hash } } : {}),
     payable_at: nowMs,
     decided_by: mode,
     expires_at: expiresAt,
@@ -4269,17 +4522,36 @@ export async function settleAwardFromReceipt(env: Env, binding: { docket_id: str
   ).bind(listingId, payeeId).first<{ id: number; state: AwardState }>();
   if (!open) return null;
   assertAwardTransition(open.state, "paid");
-  const result = await env.DB.prepare(
-    // overdue_at is cleared on payment: the row can no longer be overdue once
-    // it is paid, and the schema refuses to hold one that claims both. The
-    // lateness does not vanish from the record, it is in the identity event
-    // chain and in the receipt's own timestamp against payable_at.
-    `UPDATE listing_awards SET state = 'paid', receipt_id = ?, paid_at = ?, overdue_at = NULL
-      WHERE id = ? AND state IN ('awarded', 'payable', 'overdue_unpaid') AND receipt_id IS NULL`,
-  ).bind(receiptId, now, open.id).run();
+  const full = await env.DB.prepare(
+    `SELECT id, listing_id, submission_id, citizen_id, amount_atomic, expires_at FROM listing_awards WHERE id = ?`,
+  ).bind(open.id).first<StoredAward>();
+  const committed = await commitWithIdentityEvent<{ id: number }>(
+    env,
+    env.DB.prepare(
+      // overdue_at is cleared on payment: the row can no longer be overdue once
+      // it is paid, and the schema refuses to hold one that claims both. The
+      // lateness does not vanish from the record, it is in the identity event
+      // chain and in the receipt's own timestamp against payable_at.
+      `UPDATE listing_awards SET state = 'paid', receipt_id = ?, paid_at = ?, overdue_at = NULL
+        WHERE id = ? AND state IN ('awarded', 'payable', 'overdue_unpaid') AND receipt_id IS NULL RETURNING id`,
+    ).bind(receiptId, now, open.id),
+    {
+      citizen_id: payeeId,
+      kind: "listing-award-transition",
+      detail: await awardTransitionDetail({
+        awardId: open.id, listingId: listingId, submissionId: Number(full?.submission_id ?? 0),
+        payee: await handleOf(env, payeeId), amountAtomic: String(full?.amount_atomic ?? "0"),
+        fromState: open.state, toState: "paid",
+        reason: `payout receipt ${receiptId} settles this award: a finalized Base USDC transfer to the bound address, agreed by two RPC sources and signed for by the wallet that sent it${open.state === "overdue_unpaid" ? ". The debt was already LATE when it was paid, and that lateness stays on the payer's record here even though the amount is now settled" : ""}`,
+        source: "system:receipt", deadline: full?.expires_at ?? null, occurredAt: now,
+      }),
+    },
+    `listing-award-transition chain head moved four times running; refusing to settle award ${open.id} without its anchor`,
+    { sql: "EXISTS (SELECT 1 FROM listing_awards WHERE id = ? AND state = 'paid')", binds: [open.id] },
+  );
   // Losing the race is not an error for the PAYMENT: the money moved and the
   // receipt stands. It only means some other write closed the award first.
-  return Number(result.meta?.changes ?? 0) === 1 ? open.id : null;
+  return committed.state?.id ? open.id : null;
 }
 
 
@@ -4968,6 +5240,15 @@ export const DECLARED_EVENT_KINDS: readonly string[] = [
   "listing",
   "listing-submission",
   "listing-award",
+  // Every award state change after creation. Before this, "this citizen became
+  // entitled to money" and "this funder went overdue" existed only as mutable
+  // columns: no hash, no chain, no checkpoint, no witness. An accusation with
+  // no evidence behind it is the one thing this rail must not serve.
+  "listing-award-transition",
+  // A verifier's signed judgment, PASS or FAIL. Both, because a rail that only
+  // writes down the verdicts that led to money cannot tell "nobody looked"
+  // from "someone looked and said no".
+  "listing-verdict",
   "listing-withdrawn",
   "binding-verified",
   "binding-lapsed",

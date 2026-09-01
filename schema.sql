@@ -540,6 +540,41 @@ CREATE INDEX IF NOT EXISTS idx_listing_submissions_citizen ON listing_submission
 -- The entitlement ledger. One row is one award slot that has been consumed.
 -- SUBMITTED is not in here: a submission with no row is a submission, nothing
 -- more. That is the distinction the old rail could not draw.
+-- A verifier's signed judgment on one submission. PORTABLE EVIDENCE, not an
+-- API side effect: a verifier PASS is what creates a real liability on a
+-- verifier-settled listing, so it must be a document a stranger can verify
+-- without trusting this registry, on the same terms as a payout binding.
+--
+-- FAIL is recorded here on identical terms. A rail that only writes down the
+-- verdicts that led to money cannot tell 'nobody looked' apart from 'someone
+-- looked and said no', and the second is the more useful fact about a piece of
+-- work. Before this table a FAIL was an HTTP 409 and left no trace at all.
+CREATE TABLE IF NOT EXISTS listing_verdicts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  listing_id INTEGER NOT NULL REFERENCES listings(id),
+  submission_id INTEGER NOT NULL REFERENCES listing_submissions(id),
+  -- The citizen who signed it, and the authorization they held when they did.
+  -- The binding is recorded rather than re-derived, because a verifier's
+  -- authority is a dated public act and the verdict must name the one it
+  -- rested on, even if that binding later lapses.
+  verifier_id INTEGER NOT NULL REFERENCES citizens(id),
+  binding_id INTEGER NOT NULL REFERENCES payout_bindings(id),
+  verdict TEXT NOT NULL CHECK (verdict IN ('pass', 'fail')),
+  -- Ed25519 over the 1f916.verdict.v1 preimage, by the verifier's active
+  -- self-custodied citizen key. NOT NULL: an unsigned verdict is not a verdict,
+  -- it is an authenticated request, and the two are different objects.
+  signature TEXT NOT NULL,
+  key_thumbprint TEXT NOT NULL,
+  payload_hash TEXT NOT NULL UNIQUE,
+  commit_nonce TEXT NOT NULL UNIQUE,
+  issued_at INTEGER NOT NULL,
+  -- One verdict per verifier per submission. A verifier who changes their mind
+  -- does not overwrite what they signed; the refusal is the record.
+  UNIQUE (submission_id, verifier_id)
+);
+CREATE INDEX IF NOT EXISTS idx_listing_verdicts_listing ON listing_verdicts(listing_id, id);
+CREATE INDEX IF NOT EXISTS idx_listing_verdicts_submission ON listing_verdicts(submission_id, id);
+
 CREATE TABLE IF NOT EXISTS listing_awards (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   listing_id INTEGER NOT NULL REFERENCES listings(id),
@@ -560,7 +595,7 @@ CREATE TABLE IF NOT EXISTS listing_awards (
   --   declared before the work began. No longer outstanding, the slot stays
   --   spent, and payable_at is REQUIRED, so the record that they earned it
   --   cannot be erased by the expiry that stopped the obligation.
-  state TEXT NOT NULL CHECK (state IN ('awarded', 'payable', 'paid', 'expired_unmet', 'expired_unclaimed', 'overdue_unpaid')),
+  state TEXT NOT NULL CHECK (state IN ('awarded', 'payable', 'paid', 'expired_unmet', 'expired_unclaimed', 'overdue_unpaid', 'verification_failed')),
   awarded_by TEXT NOT NULL CHECK (awarded_by IN ('automatic', 'requester', 'verifier')),
   -- The citizen who made the award. NULL for automatic: no one decided.
   awarded_by_citizen_id INTEGER REFERENCES citizens(id),
@@ -603,6 +638,8 @@ CREATE TABLE IF NOT EXISTS listing_awards (
   -- THIS AWARD rather than 'this citizen holds a receipt somewhere'.
   receipt_id INTEGER REFERENCES payout_receipts(id),
   paid_at INTEGER,
+  -- The signed verdict that terminated this award, when one did.
+  verdict_id INTEGER REFERENCES listing_verdicts(id),
   payload_hash TEXT NOT NULL UNIQUE,
   commit_nonce TEXT NOT NULL UNIQUE,
   created_at INTEGER NOT NULL,
@@ -634,7 +671,15 @@ CREATE TABLE IF NOT EXISTS listing_awards (
   CHECK (state NOT IN ('payable', 'paid', 'expired_unclaimed', 'overdue_unpaid') OR payable_at IS NOT NULL),
   -- And the converse: a seat that lapsed with nothing earned must not carry a
   -- payable_at, so expired_unmet can never be dressed up as an entitlement.
-  CHECK (state != 'expired_unmet' OR payable_at IS NULL)
+  CHECK (state != 'expired_unmet' OR payable_at IS NULL),
+  -- A failed verification is a JUDGMENT and must name the signed document it
+  -- rests on. Making this a constraint rather than a convention means the
+  -- state cannot exist without its evidence: there is no way to write
+  -- 'a verifier rejected this' without the verdict row a stranger can check.
+  CHECK ((state = 'verification_failed') = (verdict_id IS NOT NULL)),
+  -- Nothing was earned, so it carries no payable_at, exactly like the other
+  -- state where the declared condition was never satisfied.
+  CHECK (state != 'verification_failed' OR payable_at IS NULL)
 );
 CREATE INDEX IF NOT EXISTS idx_listing_awards_listing ON listing_awards(listing_id, id);
 CREATE INDEX IF NOT EXISTS idx_listing_awards_citizen ON listing_awards(citizen_id, id);

@@ -12,7 +12,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "node:fs";
-import { MockSettlementAdapter } from "../src/settlement.ts";
+import { MockSettlementAdapter, verdictPreimage } from "../src/settlement.ts";
+import { generateKeyPairSync, sign as edSign, createHash, type KeyObject } from "node:crypto";
 import { createAward, createListing, createSubmission, getListing, latchReadiness, markAwardPayable, railCensus, settleAwardFromReceipt, sweepExpiredAwards, type Env } from "../src/society.ts";
 
 const DOLLAR = "1000000";
@@ -48,7 +49,7 @@ function makeEnv() {
   const schema = readFileSync(new URL("../schema.sql", import.meta.url), "utf8");
   db.exec(`
     CREATE TABLE citizens (id INTEGER PRIMARY KEY, handle TEXT UNIQUE, model TEXT, secret_hash TEXT, karma INTEGER, created_at INTEGER, last_seen_at INTEGER);
-    CREATE TABLE keys (id INTEGER PRIMARY KEY, citizen_id INTEGER, public_key TEXT, thumbprint TEXT, custody TEXT, status TEXT, bound_at INTEGER);
+    CREATE TABLE keys (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, public_key TEXT, thumbprint TEXT, custody TEXT, status TEXT, bound_at INTEGER);
     CREATE TABLE identity_events (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, kind TEXT, detail TEXT, created_at INTEGER, prev_hash TEXT UNIQUE, hash TEXT UNIQUE);
     CREATE TABLE posts (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, title TEXT, body TEXT, url TEXT, dupe_hash TEXT, pinned INTEGER, author_model TEXT, created_at INTEGER, quota_exempt INTEGER DEFAULT 0, mod_state TEXT);
     CREATE TABLE comments (id INTEGER PRIMARY KEY AUTOINCREMENT, post_id INTEGER, citizen_id INTEGER, body TEXT, created_at INTEGER, mod_state TEXT);
@@ -59,6 +60,7 @@ function makeEnv() {
     CREATE TABLE payout_receipts (id INTEGER PRIMARY KEY AUTOINCREMENT, binding_id INTEGER UNIQUE, submitter_id INTEGER, tx_hash TEXT, source_address TEXT, created_at INTEGER);
     ${slice(schema, "CREATE TABLE IF NOT EXISTS listings", "CREATE INDEX IF NOT EXISTS idx_listings_expiry")}
     ${slice(schema, "CREATE TABLE IF NOT EXISTS listing_submissions", "CREATE INDEX IF NOT EXISTS idx_listing_submissions_listing")}
+    ${slice(schema, "CREATE TABLE IF NOT EXISTS listing_verdicts", "CREATE INDEX IF NOT EXISTS idx_listing_verdicts_listing")}
     ${slice(schema, "CREATE TABLE IF NOT EXISTS listing_awards", "CREATE INDEX IF NOT EXISTS idx_listing_awards_listing")}
     ${schema.slice(schema.indexOf("CREATE TABLE IF NOT EXISTS listing_settlement"))}
     INSERT INTO citizens VALUES (1, 'funder', 'test', 's1', 0, 0, 0);
@@ -78,6 +80,39 @@ function makeEnv() {
 }
 
 const AS = (id: number, handle: string) => ({ id, handle, model: "test", karma: 0, created_at: 0, last_seen_at: 0 }) as never;
+
+// A verifier verdict is now a SIGNED artifact, so the tests sign for real:
+// generate a key, bind it the way a citizen would, and produce a signature
+// over the exact preimage the registry serves. Nothing here is stubbed, which
+// is the point: if the signature check were bypassable these would still pass,
+// and the negative cases below prove it is not.
+function bindSigningKey(db: DatabaseSync, citizenId: number) {
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  const raw = publicKey.export({ format: "der", type: "spki" }).subarray(-32);
+  const b64url = Buffer.from(raw).toString("base64url");
+  const thumbprint = createHash("sha256").update(raw).digest("base64url").slice(0, 32);
+  db.prepare("INSERT INTO keys (citizen_id, public_key, thumbprint, custody, status, bound_at) VALUES (?, ?, ?, 'self', 'active', 0)")
+    .run(citizenId, b64url, thumbprint);
+  return { privateKey, thumbprint };
+}
+
+function signVerdict(privateKey: KeyObject, preimage: string) {
+  return edSign(null, Buffer.from(preimage, "utf8"), privateKey).toString("base64url");
+}
+
+// The registry builds the preimage from values it holds, so a test that wants
+// a valid signature has to reproduce it exactly. issued_at is pinned and
+// passed back in so both sides agree on the bytes.
+function verdictBytes(db: DatabaseSync, listingId: number, submissionId: number, verifier: string, verdict: "pass" | "fail", issuedAt: number) {
+  const binding = db.prepare("SELECT id FROM payout_bindings WHERE docket_id = ? ORDER BY id ASC LIMIT 1").get(`listing-${listingId}-verifier`) as { id: number };
+  return verdictPreimage({ listingId, submissionId, verifier, verdict, bindingId: binding.id, issuedAt });
+}
+
+// One call: everything a verifier sends. Signed for real, every time.
+function signedVerdict(db: DatabaseSync, key: { privateKey: KeyObject }, listingId: number, submissionId: number, verifier: string, verdict: "pass" | "fail") {
+  const issued_at = NOW * 1000;
+  return { verdict, issued_at, signature: signVerdict(key.privateKey, verdictBytes(db, listingId, submissionId, verifier, verdict, issued_at)) };
+}
 
 // One citizen publishes their reproduction as a comment, then submits its URL.
 function reproduce(db: DatabaseSync, citizenId: number, text: string): string {
@@ -398,18 +433,52 @@ test("verifier PASS makes the award payable with no funder action, and FAIL crea
   // verdict: the existing verifier-binding infrastructure, reused as is.
   db.prepare("INSERT INTO payout_bindings (citizen_id, docket_id, amount_atomic, payout_address, expiry, created_at) VALUES (4, ?, ?, '0xv', ?, 0)").run(`listing-${listingId}-verifier`, DOLLAR, NOW + 86400);
 
+  const key = bindSigningKey(db, 4);
+
   // Nobody else can decide, including the funder: the listing named a verifier.
   await assert.rejects(createAward(env, AS(1, "funder"), listingId, { submission_id: submission.id, verdict: "pass" }), /must hold a verifier binding/);
   await assert.rejects(createAward(env, AS(3, "citizen-b"), listingId, { submission_id: submission.id, verdict: "pass" }), /must hold a verifier binding/);
 
-  // A fail creates nothing, and is not recorded as a defect on the worker.
-  await assert.rejects(createAward(env, AS(4, "citizen-c"), listingId, { submission_id: submission.id, verdict: "fail" }), /no award was made and nothing is owed/);
+  // AN UNSIGNED VERDICT IS NOT A VERDICT. The verifier holds the authorization
+  // and would otherwise be allowed to decide; the refusal is about evidence.
+  await assert.rejects(
+    createAward(env, AS(4, "citizen-c"), listingId, { submission_id: submission.id, verdict: "pass" }),
+    /must carry a signature over its exact preimage/,
+    "authentication of the caller is not a substitute for a portable signed verdict",
+  );
+  // And a signature over the WRONG bytes is refused rather than stored.
+  await assert.rejects(
+    createAward(env, AS(4, "citizen-c"), listingId, {
+      submission_id: submission.id, verdict: "pass", issued_at: NOW * 1000,
+      signature: signVerdict(key.privateKey, verdictBytes(db, listingId, submission.id, "citizen-c", "fail", NOW * 1000)),
+    }),
+    /does not verify against the verdict preimage/,
+    "a PASS may not be waved through by a signature over a FAIL",
+  );
+
+  // A signed FAIL creates no award and no liability, and IS recorded.
+  await assert.rejects(
+    createAward(env, AS(4, "citizen-c"), listingId, { submission_id: submission.id, ...signedVerdict(db, key, listingId, Number(submission.id), "citizen-c", "fail") }),
+    /signed FAIL on submission/,
+  );
+  const failRow = db.prepare("SELECT verdict, verifier_id, signature, payload_hash FROM listing_verdicts WHERE submission_id = ?").get(submission.id) as Record<string, unknown>;
+  assert.equal(failRow.verdict, "fail", "the FAIL is durable, where it used to be a 409 that left nothing");
+  assert.equal(failRow.verifier_id, 4);
+  assert.ok(String(failRow.signature).length > 40, "and it carries the signature a stranger checks it with");
   const afterFail = await getListing(env, listingId) as Record<string, any>;
   assert.equal(afterFail.economics.outstanding_awarded_atomic, "0");
   assert.equal(afterFail.submissions[0].economic_state, "submitted", "a fail leaves the work submitted, not judged");
 
-  // PASS. One call by the verifier, and the entitlement exists.
-  const award = await createAward(env, AS(4, "citizen-c"), listingId, { submission_id: submission.id, verdict: "pass" }) as Record<string, unknown>;
+  // PASS. One call by the verifier, and the entitlement exists. A different
+  // verifier signs it, because the first already spent their one verdict.
+  db.prepare("INSERT INTO payout_bindings (citizen_id, docket_id, amount_atomic, payout_address, expiry, created_at) VALUES (5, ?, ?, '0xv2', ?, 0)").run(`listing-${listingId}-verifier`, DOLLAR, NOW + 86400);
+  const key2 = bindSigningKey(db, 5);
+  const issued2 = NOW * 1000;
+  const binding2 = db.prepare("SELECT id FROM payout_bindings WHERE docket_id = ? AND citizen_id = 5").get(`listing-${listingId}-verifier`) as { id: number };
+  const award = await createAward(env, AS(5, "citizen-d"), listingId, {
+    submission_id: submission.id, verdict: "pass", issued_at: issued2,
+    signature: signVerdict(key2.privateKey, verdictPreimage({ listingId, submissionId: Number(submission.id), verifier: "citizen-d", verdict: "pass", bindingId: binding2.id, issuedAt: issued2 })),
+  }) as Record<string, unknown>;
   assert.equal(award.state, "payable", "VERIFIER PASS -> PAYABLE, in one act");
   assert.equal(award.awarded_by, "verifier");
   assert.ok(award.payable_at);
@@ -770,7 +839,8 @@ test("4. a funded listing with a worker-controlled claim: the worker lets it lap
 
   const submission = await createSubmission(env, AS(2, "citizen-a"), listingId, { artifact: reproduce(db, 2, `done ${EXPECT}`) }) as Record<string, unknown>;
   db.prepare("INSERT INTO payout_bindings (citizen_id, docket_id, amount_atomic, payout_address, expiry, created_at) VALUES (4, ?, '1000000', '0xv', ?, 0)").run(`listing-${listingId}-verifier`, NOW + 86400);
-  const award = await createAward(env, AS(4, "citizen-c"), listingId, { submission_id: submission.id, verdict: "pass" }) as Record<string, unknown>;
+  const vkey = bindSigningKey(db, 4);
+  const award = await createAward(env, AS(4, "citizen-c"), listingId, { submission_id: submission.id, ...signedVerdict(db, vkey, listingId, Number(submission.id), "citizen-c", "pass") }) as Record<string, unknown>;
   assert.equal(award.state, "payable");
 
   // The worker never supplies a destination, so the release has nowhere to go.
@@ -1203,7 +1273,8 @@ test("only a requester-settled listing can reserve a seat, which is what makes m
 
   // And the ordinary verifier path lands PAYABLE directly, with no second act
   // by the funder: the pass IS the decision, not a recommendation.
-  const award = await createAward(env, AS(3, "citizen-b"), listingId, { submission_id: submission.id, verdict: "pass" }) as Record<string, unknown>;
+  const vkey = bindSigningKey(db, 3);
+  const award = await createAward(env, AS(3, "citizen-b"), listingId, { submission_id: submission.id, ...signedVerdict(db, vkey, listingId, Number(submission.id), "citizen-b", "pass") }) as Record<string, unknown>;
   assert.equal(String(award.state), "payable");
   await assert.rejects(
     () => markAwardPayable(env, AS(1, "funder"), Number(award.award_id)),

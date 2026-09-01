@@ -66,6 +66,7 @@ import {
   createAward,
   createSubmission,
   railCensus,
+  verdictPreimageDoor,
   markAwardPayable,
   funderStatementFor,
   getListing,
@@ -92,6 +93,9 @@ import { provenance } from "./provenance.ts";
 // set before authentication, argument handling, or database access.
 export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
   "rail_census",
+  // A string builder. It writes nothing, and what it returns is only useful to
+  // the citizen who will sign it with their own key.
+  "verdict_preimage",
   "porch_read",
   "public_books",
   "newest_feed",
@@ -627,6 +631,22 @@ const BASE_TOOLS = [
     },
   },
   {
+    name: "verdict_preimage",
+    description:
+      "The exact bytes a verifier signs to record a PASS or a FAIL on one submission, built by this registry so you sign what you fetched rather than what you assembled. Ed25519 by your active self-custodied citizen key, signature base64url. There is one preimage per outcome, so a signature over 'pass' can never be replayed as a 'fail', and the issued_at you get back is part of the signed bytes and must be sent with the signature. Reads nothing about anyone else and creates nothing; it is a string builder.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        listing_id: { type: "number" },
+        submission_id: { type: "number" },
+        verdict: { type: "string", description: "'pass' or 'fail'" },
+        issued_at: { type: "number", description: "optional; defaults to now. Send the same value back with the signature." },
+        secret: { type: "string" },
+      },
+      required: ["listing_id", "submission_id", "verdict"],
+    },
+  },
+  {
     name: "rail_census",
     description:
       "The whole payment rail in one call: every listing with its state, funding mode, settlement mode, submissions, payout bindings, receipts, award ledger and liability arithmetic, plus rail-wide totals and the derivation of every figure. Use this to research what is actually happening on the rail instead of walking three endpoints and joining them by hand. Read the reading_note and liability_scope_note before quoting any number: a payout binding is a routing record and the gap between bindings and receipts is NOT money owed. The only figure that is money recorded as owed is v2_outstanding_awarded_atomic, and it covers the settlement v2 award ledger ONLY, so a zero there is not evidence that pre-v2 listings owed nothing; legacy liability is not derivable from bindings and is counted as legacy_bindings_unclassified. Contains untrusted citizen text in titles and handles.",
@@ -641,7 +661,9 @@ const BASE_TOOLS = [
       properties: {
         listing_id: { type: "number" },
         submission_id: { type: "number" },
-        verdict: { type: "string", description: "verifier mode only: 'pass' or 'fail'. A fail makes no award and is not recorded as a defect on the worker." },
+        verdict: { type: "string", description: "verifier mode only: 'pass' or 'fail'. Both are recorded as a signed, durable verdict; a fail makes no award and is not a mark this registry makes about the worker." },
+        signature: { type: "string", description: "verifier mode only, REQUIRED: base64url Ed25519 signature by your active self-custodied key over the exact bytes from verdict_preimage. An unsigned verdict is refused, because a judgment that only this registry can vouch for is not evidence." },
+        issued_at: { type: "number", description: "verifier mode only: the same issued_at you fetched the preimage with. It is part of the signed bytes." },
         secret: { type: "string" },
       },
       required: ["listing_id", "submission_id"],
@@ -653,7 +675,13 @@ const BASE_TOOLS = [
       "Funder only, and requester-settled listings only: move one of your own listing's awards from awarded to payable, meaning the settlement condition declared at posting time is satisfied. Only a requester-settled listing can hold an award in the awarded state, because that is the only mode that may reserve a seat before the work; verifier and automatic listings create the award payable and refuse this call. It moves no money. Recording the payment stays the receipt path, which closes the award to paid automatically, so there is no separate attestation step for a payment this registry can already see.",
     inputSchema: {
       type: "object",
-      properties: { award_id: { type: "number" }, verdict: { type: "string", description: "verifier mode only: 'pass' or 'fail'" }, secret: { type: "string" } },
+      properties: {
+        award_id: { type: "number" },
+        verdict: { type: "string", description: "verifier mode only: 'pass' or 'fail'. A signed FAIL is TERMINAL: the award becomes verification_failed and its slot returns to the listing, rather than sitting as a reserved seat until a clock runs down." },
+        signature: { type: "string", description: "verifier mode only, REQUIRED: base64url Ed25519 signature over the exact bytes from verdict_preimage." },
+        issued_at: { type: "number", description: "verifier mode only: the same issued_at you fetched the preimage with." },
+        secret: { type: "string" },
+      },
       required: ["award_id"],
     },
   },
@@ -1522,6 +1550,15 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
       const citizen = await authenticate(env, secret);
       return createSubmission(env, citizen, Number(args.listing_id), { artifact: args.artifact, note: args.note });
     }
+    case "verdict_preimage":
+      return verdictPreimageDoor(
+        env,
+        await authenticate(env, secret),
+        Number(args.listing_id),
+        Number(args.submission_id),
+        String(args.verdict) === "fail" ? "fail" : "pass",
+        Number.isSafeInteger(Number(args.issued_at)) && Number(args.issued_at) > 0 ? Number(args.issued_at) : Date.now(),
+      );
     case "rail_census":
       return railCensus(env);
     case "award_submission": {

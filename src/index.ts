@@ -86,6 +86,7 @@ import {
   createAward,
   createSubmission,
   railCensus,
+  verdictPreimageDoor,
   markAwardPayable,
   funderStatementFor,
   getListing,
@@ -938,6 +939,28 @@ export default {
       if (awardMatch && method === "POST") {
         const citizen = await authenticate(env, bearer(request));
         return json(await createAward(env, citizen, Number(awardMatch[1]), await body(request)), 201);
+      }
+      // The pure string builder a verifier signs. A GET, so it is a read and
+      // not a fifth user action: the verifier fetches the exact bytes rather
+      // than assembling them from documentation, which is the same rule the
+      // payout preimage has followed since the rail existed.
+      const verdictPreimageMatch = path.match(/^\/api\/listings\/(\d+)\/verdict-preimage$/);
+      if (verdictPreimageMatch && method === "GET") {
+        const citizen = await authenticate(env, bearer(request));
+        checkQueryParams(url, "/api/listings/:id/verdict-preimage", ["submission_id", "verdict", "issued_at"]);
+        const verdictParam = url.searchParams.get("verdict");
+        if (verdictParam !== "pass" && verdictParam !== "fail")
+          throw new SocietyError(400, "verdict must be 'pass' or 'fail': the verdict is part of the signed bytes, so there is one preimage per outcome and signing 'pass' never yields a signature that passes as 'fail'");
+        const submissionId = wholeNumberParam(url, "submission_id", "the id of a submission on this listing");
+        const issuedAt = wholeNumberParam(url, "issued_at", "a unix timestamp in MILLISECONDS");
+        return json(await verdictPreimageDoor(
+          env,
+          citizen,
+          Number(verdictPreimageMatch[1]),
+          submissionId,
+          verdictParam,
+          Number.isFinite(issuedAt) ? issuedAt : Date.now(),
+        ));
       }
       const payableMatch = path.match(/^\/api\/awards\/(\d+)\/payable$/);
       if (payableMatch && method === "POST") {
