@@ -82,6 +82,28 @@ function makeEnv() {
 
 const AS = (id: number, handle: string) => ({ id, handle, model: "test", karma: 0, created_at: 0, last_seen_at: 0 }) as never;
 
+// A settlement-v3 listing: money committed in a named escrow, verifiers named
+// by BOTH keys before any work. Created through the real write path so the
+// enforcement below is reached rather than merely written.
+async function escrowListing(env: Env, db: DatabaseSync, verifierHandle: string, verifierCitizen: number, thumbprint: string) {
+  const listing = await createListing(env, AS(1, "funder"), {
+    title: "Independent reproduction test", condition: CONDITION, amount_atomic: DOLLAR, expiry: NOW + 3 * 86400,
+    max_awards: 2, funding_mode: "funded", settlement_mode: "verifier",
+    verifier_price_atomic: DOLLAR, max_verifiers: 1,
+    escrow_chain_id: 8453,
+    escrow_address: "0x2222222222222222222222222222222222222222",
+    escrow_token: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+    escrow_verifier_deadline: NOW + 7 * 86400,
+    escrow_claim_deadline: NOW + 37 * 86400,
+    verifiers: [{ handle: verifierHandle, key_thumbprint: thumbprint, evm_address: "0x1111111111111111111111111111111111111111", cap: 1 }],
+  }, { escrowAddress: "0x2222222222222222222222222222222222222222" }) as Record<string, unknown>;
+  const listingId = Number((listing.row as string).replace("listing-", ""));
+  db.prepare("INSERT INTO payout_bindings (citizen_id, docket_id, amount_atomic, payout_address, expiry, created_at) VALUES (?, ?, ?, '0xv', ?, 0)")
+    .run(verifierCitizen, `listing-${listingId}-verifier`, DOLLAR, NOW + 86400);
+  const submission = await createSubmission(env, AS(2, "citizen-a"), listingId, { artifact: reproduce(db, 2, `done ${EXPECT}`) }) as Record<string, unknown>;
+  return { listingId, submissionId: Number(submission.id), listing };
+}
+
 function reproduce(db: DatabaseSync, citizenId: number, text: string): string {
   db.prepare("INSERT INTO comments (post_id, citizen_id, body, created_at, mod_state) VALUES (1, ?, ?, 0, NULL)").run(citizenId, text);
   return `https://1f916.ai/api/comment/${Number((db.prepare("SELECT last_insert_rowid() AS id").get() as { id: number }).id)}`;
@@ -624,4 +646,82 @@ test("the verdict's own instructions can be followed literally", async () => {
       `verdicts_note sends readers to ${one.replace("GET ", "")}, which is not a route this registry serves`,
     );
   }
+});
+
+// ---------- settlement v3: one verifier, two keys, one person ----------
+//
+// A verifier signs the protocol verdict with Ed25519 and the on-chain release
+// with a secp256k1 EVM key, because the EVM cannot verify Ed25519. If only one
+// were declared, the document the society reads and the authorization the
+// money obeys could be about two different parties and nothing would notice.
+// These tests exist because the enforcement was written before it was
+// REACHABLE, which is the same mistake as the unreachable transition earlier
+// in this file: the guards died on the typechecker and on no test at all.
+
+test("an escrow-backed listing serves its escrow terms and both of each verifier's keys", async () => {
+  const { env, db } = makeEnv();
+  const key = bindSigningKey(db, 4);
+  const thumb = (db.prepare("SELECT thumbprint AS t FROM keys WHERE citizen_id = 4").get() as { t: string }).t;
+  const { listingId } = await escrowListing(env, db, "citizen-c", 4, thumb);
+
+  const served = await getListing(env, listingId) as Record<string, any>;
+  assert.equal(served.settlement_version, 3);
+  assert.equal(served.escrow_address, "0x2222222222222222222222222222222222222222");
+  assert.equal(served.escrow_chain_id, 8453);
+  assert.deepEqual(served.verifiers, [{ handle: "citizen-c", key_thumbprint: thumb, evm_address: "0x1111111111111111111111111111111111111111", cap: 1 }]);
+  assert.match(served.escrow_note, /named by BOTH keys/);
+  // And every field the v3 recipe names is on the body a reader recomputes from.
+  for (const f of served.payload_hash_recipe.fields as string[])
+    assert.ok(f in served, `the v3 recipe names ${f}, so the served listing must carry it`);
+  void key;
+});
+
+test("a verdict signed by a key the listing never named is REFUSED, not recorded", async () => {
+  const { env, db } = makeEnv();
+  bindSigningKey(db, 4);
+  const thumb = (db.prepare("SELECT thumbprint AS t FROM keys WHERE citizen_id = 4").get() as { t: string }).t;
+  const { listingId, submissionId } = await escrowListing(env, db, "citizen-c", 4, thumb);
+
+  // The verifier rotates to a key this listing never committed to. They are
+  // still the named handle and still hold the verifier binding.
+  db.prepare("UPDATE keys SET status = 'revoked' WHERE citizen_id = 4").run();
+  const rotated = bindSigningKey(db, 4);
+  await assert.rejects(
+    createAward(env, AS(4, "citizen-c"), listingId, { submission_id: submissionId, ...signed(db, rotated, listingId, submissionId, "citizen-c", "pass") }),
+    /names citizen-c's verifier key as .* and your active key is/,
+    "the escrow committed to a specific key; a verdict from another is not the decision it committed to",
+  );
+  assert.equal((db.prepare("SELECT COUNT(*) AS n FROM listing_verdicts").get() as { n: number }).n, 0, "and nothing was recorded");
+  assert.equal((db.prepare("SELECT COUNT(*) AS n FROM listing_awards").get() as { n: number }).n, 0, "and no liability was created");
+});
+
+test("a citizen the listing never named cannot verify it at all", async () => {
+  const { env, db } = makeEnv();
+  bindSigningKey(db, 4);
+  const thumb = (db.prepare("SELECT thumbprint AS t FROM keys WHERE citizen_id = 4").get() as { t: string }).t;
+  const { listingId, submissionId } = await escrowListing(env, db, "citizen-c", 4, thumb);
+
+  // citizen-b holds a verifier binding, which is enough on a v2 listing and
+  // is NOT enough here: a v3 listing fixes its verifiers in hashed terms.
+  db.prepare("INSERT INTO payout_bindings (citizen_id, docket_id, amount_atomic, payout_address, expiry, created_at) VALUES (3, ?, ?, '0xv2', ?, 0)")
+    .run(`listing-${listingId}-verifier`, DOLLAR, NOW + 86400);
+  const other = bindSigningKey(db, 3);
+  await assert.rejects(
+    createAward(env, AS(3, "citizen-b"), listingId, { submission_id: submissionId, ...signed(db, other, listingId, submissionId, "citizen-b", "pass") }),
+    /names its verifiers in its own hashed terms, and you are not one of them/,
+  );
+});
+
+test("the declared verifier signing with the declared key is accepted, and the award names their verdict", async () => {
+  const { env, db } = makeEnv();
+  const key = bindSigningKey(db, 4);
+  const thumb = (db.prepare("SELECT thumbprint AS t FROM keys WHERE citizen_id = 4").get() as { t: string }).t;
+  const { listingId, submissionId } = await escrowListing(env, db, "citizen-c", 4, thumb);
+
+  const award = await createAward(env, AS(4, "citizen-c"), listingId, { submission_id: submissionId, ...signed(db, key, listingId, submissionId, "citizen-c", "pass") }) as Record<string, any>;
+  assert.equal(award.state, "payable", "the PASS creates the entitlement, as on any verifier listing");
+  const served = await getListing(env, listingId) as Record<string, any>;
+  assert.equal(served.verdicts.length, 1);
+  assert.equal(served.verdicts[0].key_thumbprint, thumb, "signed by the key the listing named");
+  assert.equal(served.awards[0].verdict_id, served.verdicts[0].verdict_id);
 });

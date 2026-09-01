@@ -441,6 +441,29 @@ export interface SettlementInput {
   award_on_timeout?: unknown;
   award_ttl_seconds?: unknown;
   payable_ttl_seconds?: unknown;
+  // Settlement v3, funded listings only.
+  escrow_chain_id?: unknown;
+  escrow_address?: unknown;
+  escrow_token?: unknown;
+  verifiers?: unknown;
+  escrow_verifier_deadline?: unknown;
+  escrow_claim_deadline?: unknown;
+}
+
+// ONE VERIFIER, TWO KEYS, ONE PERSON. A verifier signs the protocol verdict
+// with their Ed25519 citizen key and the on-chain release with a secp256k1 EVM
+// key, because the EVM cannot check Ed25519. Two keys naming two parties would
+// mean the document the society reads and the authorization the money obeys
+// are about different people, and nothing would notice.
+//
+// So both are declared per verifier, in the listing, hashed into its terms
+// before any work begins, and the registry refuses a verdict whose signer does
+// not hold the declared thumbprint.
+export interface VerifierIdentity {
+  handle: string;
+  keyThumbprint: string;
+  evmAddress: string;
+  cap: number;
 }
 
 export interface ValidatedSettlement {
@@ -453,7 +476,71 @@ export interface ValidatedSettlement {
   awardOnTimeout: boolean;
   awardTtlSeconds: number | null;
   payableTtlSeconds: number | null;
-  settlementVersion: 2;
+  escrowChainId: number | null;
+  escrowAddress: string | null;
+  escrowToken: string | null;
+  verifiers: VerifierIdentity[] | null;
+  escrowVerifierDeadline: number | null;
+  escrowClaimDeadline: number | null;
+  settlementVersion: 2 | 3;
+}
+
+export const MAX_ESCROW_VERIFIERS = 8;
+
+// The v3 half of validateSettlement, kept separate so the v2 path it does not
+// touch stays exactly as it was.
+export function validateEscrowTerms(body: SettlementInput, maxAwards: number, listingExpiry: number | undefined, nowSeconds: number) {
+  const chainId = Number(body.escrow_chain_id);
+  if (!Number.isSafeInteger(chainId) || chainId <= 0)
+    throw new SocietyError(400, "a funded listing must declare escrow_chain_id: money committed on a chain nobody named is money a reader cannot find");
+  const address = String(body.escrow_address ?? "").toLowerCase();
+  if (!/^0x[0-9a-f]{40}$/.test(address))
+    throw new SocietyError(400, "a funded listing must declare escrow_address, the contract holding the money. It is hashed into the listing, so a funder cannot publish terms and then commit against a different contract.");
+  const token = String(body.escrow_token ?? "").toLowerCase();
+  if (!/^0x[0-9a-f]{40}$/.test(token))
+    throw new SocietyError(400, "a funded listing must declare escrow_token: the asset committed, named rather than assumed");
+
+  const verifierDeadline = Number(body.escrow_verifier_deadline);
+  const claimDeadline = Number(body.escrow_claim_deadline);
+  for (const [name, value] of [["escrow_verifier_deadline", verifierDeadline], ["escrow_claim_deadline", claimDeadline]] as const)
+    if (!Number.isSafeInteger(value) || value <= nowSeconds)
+      throw new SocietyError(400, `${name} must be a unix timestamp in the future`);
+  // THE SAME ORDERING THE CONTRACT ENFORCES, checked here so a funder learns
+  // it at posting time rather than from a revert. The gap is the payee's, and
+  // no verifier delay can consume it.
+  if (claimDeadline <= verifierDeadline)
+    throw new SocietyError(400, "escrow_claim_deadline must be strictly after escrow_verifier_deadline: the gap between them is the window the PAYEE has to collect, and a listing that leaves none hands a slow verifier the power to run out the clock on work it already approved");
+  if (listingExpiry !== undefined && verifierDeadline < listingExpiry)
+    throw new SocietyError(400, "escrow_verifier_deadline must not fall before the listing's own expiry, or work handed in on the last day could never be verified");
+
+  const raw = Array.isArray(body.verifiers) ? body.verifiers : null;
+  if (raw === null || raw.length === 0)
+    throw new SocietyError(400, "a funded listing must declare its verifiers: who may release this money is a term of the listing, fixed before the work, not a decision made afterwards");
+  if (raw.length > MAX_ESCROW_VERIFIERS)
+    throw new SocietyError(400, `at most ${MAX_ESCROW_VERIFIERS} verifiers`);
+  const verifiers: VerifierIdentity[] = [];
+  const seenAddresses = new Set<string>();
+  const seenHandles = new Set<string>();
+  for (const entry of raw as Record<string, unknown>[]) {
+    const handle = String(entry?.handle ?? "");
+    const keyThumbprint = String(entry?.key_thumbprint ?? "");
+    const evmAddress = String(entry?.evm_address ?? "").toLowerCase();
+    const cap = entry?.cap === undefined ? maxAwards : Number(entry.cap);
+    if (!/^[a-z0-9][a-z0-9_-]{1,31}$/.test(handle))
+      throw new SocietyError(400, "each verifier needs the handle of the citizen who will sign the protocol verdict");
+    if (!/^[A-Za-z0-9_-]{16,64}$/.test(keyThumbprint))
+      throw new SocietyError(400, `verifier ${handle} needs key_thumbprint, the Ed25519 citizen key that will sign the verdict. Without it the document the society reads and the authorization the money obeys could be two different people and nothing would notice.`);
+    if (!/^0x[0-9a-f]{40}$/.test(evmAddress))
+      throw new SocietyError(400, `verifier ${handle} needs evm_address, the wallet that will sign the on-chain release. The EVM cannot check Ed25519, so the same decision is signed twice and both keys are declared here.`);
+    if (!Number.isSafeInteger(cap) || cap < 1 || cap > maxAwards)
+      throw new SocietyError(400, `verifier ${handle} needs a cap between 1 and max_awards (${maxAwards}): how many awards this one key may EVER authorize. A verifier with the full cap can direct the entire committed balance, which is a legitimate choice for a small listing and must be a choice rather than a surprise.`);
+    if (seenAddresses.has(evmAddress) || seenHandles.has(handle))
+      throw new SocietyError(400, "a verifier may be named once: two entries for one party are two caps for one key");
+    seenAddresses.add(evmAddress);
+    seenHandles.add(handle);
+    verifiers.push({ handle, keyThumbprint, evmAddress, cap });
+  }
+  return { chainId, address, token, verifiers, verifierDeadline, claimDeadline };
 }
 
 export function validateSettlement(body: SettlementInput, listingExpiry?: number, nowSeconds = Math.floor(Date.now() / 1000)): ValidatedSettlement {
@@ -533,7 +620,37 @@ export function validateSettlement(body: SettlementInput, listingExpiry?: number
     if (listingExpiry !== undefined && submissionDeadline > listingExpiry)
       throw new SocietyError(400, `submission_deadline ${submissionDeadline} is after the listing's own expiry ${listingExpiry}; work cannot be handed in to a listing that has ended. Extend expiry, or bring the deadline in.`);
   }
-  return { maxAwards, fundingMode: fundingMode as FundingMode, settlementMode: settlementMode as SettlementMode, automaticCheck, submissionDeadline, requesterTimeoutSeconds, awardOnTimeout, awardTtlSeconds, payableTtlSeconds, settlementVersion: 2 };
+  // ESCROW TERMS ARE FOR FUNDED LISTINGS AND NOTHING ELSE. A promise listing
+  // that carried an escrow address would be publishing a commitment it does
+  // not have, which is the exact confusion this rail exists to remove.
+  const escrowFields = ["escrow_chain_id", "escrow_address", "escrow_token", "verifiers", "escrow_verifier_deadline", "escrow_claim_deadline"] as const;
+  const suppliedEscrowFields = escrowFields.filter((f) => body[f] !== undefined && body[f] !== null);
+  if (fundingMode !== "funded" && suppliedEscrowFields.length > 0)
+    throw new SocietyError(400, `${suppliedEscrowFields.join(", ")} ${suppliedEscrowFields.length === 1 ? "is" : "are"} only meaningful on a funded listing: funding_mode ${fundingMode} commits nothing on chain, and publishing escrow terms beside it would describe money that is not there`);
+
+  // V3 IS TRIGGERED BY ESCROW TERMS, NOT BY funding_mode ALONE. A funded
+  // listing with no escrow declared is the adapter path, which production
+  // refuses for want of an adapter and which the test fixtures exercise
+  // against the in-memory mock. Making funding_mode the trigger would have
+  // retired that path silently and broken the FUND -> SUBMIT -> PAID example
+  // this rail was specified around.
+  if (suppliedEscrowFields.length === 0)
+    return { maxAwards, fundingMode: fundingMode as FundingMode, settlementMode: settlementMode as SettlementMode, automaticCheck, submissionDeadline, requesterTimeoutSeconds, awardOnTimeout, awardTtlSeconds, payableTtlSeconds, escrowChainId: null, escrowAddress: null, escrowToken: null, verifiers: null, escrowVerifierDeadline: null, escrowClaimDeadline: null, settlementVersion: 2 };
+
+  // A funded listing settles by verifier in v1 of the contract: automatic
+  // release needs a condition the chain itself can evaluate, and requester
+  // release lets a funder hold committed money hostage by never signing.
+  if (settlementMode !== "verifier")
+    throw new SocietyError(400, `an ESCROW-BACKED listing settles by verifier in this version. automatic release would need a condition the CHAIN can check by itself, and anything else would put this registry's word in the middle of the money, which is the thing the escrow exists to avoid. requester release would let a funder hold committed money hostage by never signing.`);
+
+  const escrow = validateEscrowTerms(body, maxAwards, listingExpiry, nowSeconds);
+  return {
+    maxAwards, fundingMode: fundingMode as FundingMode, settlementMode: settlementMode as SettlementMode, automaticCheck,
+    submissionDeadline, requesterTimeoutSeconds, awardOnTimeout, awardTtlSeconds, payableTtlSeconds,
+    escrowChainId: escrow.chainId, escrowAddress: escrow.address, escrowToken: escrow.token,
+    verifiers: escrow.verifiers, escrowVerifierDeadline: escrow.verifierDeadline, escrowClaimDeadline: escrow.claimDeadline,
+    settlementVersion: 3,
+  };
 }
 
 // ---------- the automatic check, kept deliberately tiny ----------

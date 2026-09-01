@@ -514,6 +514,21 @@ CREATE TABLE IF NOT EXISTS listings (
   settlement_version INTEGER NOT NULL DEFAULT 1,
   submission_deadline INTEGER,
   payable_ttl_seconds INTEGER,
+  -- SETTLEMENT V3, escrow-backed listings only, null on every other row. These
+  -- are hashed terms rather than metadata: the escrow binds its money to this
+  -- listing's payload_hash, so everything a reader needs in order to check
+  -- that the on-chain commitment matches the published terms lives inside the
+  -- hash. `verifiers` is a JSON array of {handle, key_thumbprint, evm_address,
+  -- cap}: each verifier is named by BOTH keys, Ed25519 for the protocol
+  -- verdict and an EVM address for the on-chain release, because the EVM
+  -- cannot check Ed25519 and one key alone would let the document and the
+  -- authorization be about two different parties.
+  escrow_chain_id INTEGER,
+  escrow_address TEXT,
+  escrow_token TEXT,
+  verifiers TEXT,
+  escrow_verifier_deadline INTEGER,
+  escrow_claim_deadline INTEGER,
   CHECK ((funder_address IS NULL) = (funder_signature IS NULL) AND (funder_address IS NULL) = (funds_seen_atomic IS NULL)),
   CHECK ((withdrawn_at IS NULL) = (withdraw_reason IS NULL))
 );

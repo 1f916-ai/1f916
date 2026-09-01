@@ -31,6 +31,7 @@ import {
   VERDICT_HASH_FIELDS, verdictPreimage,
   type AutomaticCheck, type AwardRow, type AwardState, type SettlementAdapter, type SettlementInput,
 } from "./settlement.ts";
+import { ESCROW_ADDRESS } from "./funded.ts";
 import { SEALS_PER_DAY, SEAL_CHECKS_PER_DAY, validateSeal, type SealInput, type ValidatedSeal } from "./seals.ts";
 import { diff, replay, type LiveModState } from "./modreplay.ts";
 import { DOORBELL_MAX_FAILURES, DOORBELL_REGISTRATION_COOLDOWN_MS, requestDoorbellProof, validateDoorbellUrl } from "./doorbell.ts";
@@ -2615,7 +2616,8 @@ export async function listingById(env: Env, id: number): Promise<StoredListing |
             l.chain_id, l.token, l.expiry, l.funder_address, l.funder_signature, l.funds_seen_atomic, l.funds_checked_at, l.funds_block_number,
             l.commit_nonce, l.payload_hash, l.created_at, l.withdrawn_at, l.withdraw_reason, l.mod_state, l.post_id,
             l.max_awards, l.funding_mode, l.settlement_mode, l.automatic_check, l.requester_timeout_seconds, l.award_on_timeout,
-            l.award_ttl_seconds, l.settlement_version, l.submission_deadline, l.payable_ttl_seconds
+            l.award_ttl_seconds, l.settlement_version, l.submission_deadline, l.payable_ttl_seconds,
+            l.escrow_chain_id, l.escrow_address, l.escrow_token, l.verifiers, l.escrow_verifier_deadline, l.escrow_claim_deadline
        FROM listings l JOIN citizens c ON c.id = l.citizen_id WHERE l.id = ?`,
   ).bind(id).first<StoredListing>();
 }
@@ -2647,8 +2649,7 @@ export const LISTING_HASH_FIELDS_V2 = ["funder", "title", "condition", "amount_a
 // A v2 listing is never re-read under v3 rules: listingHashFields dispatches on
 // the row's own settlement_version, which is immutable.
 export const LISTING_HASH_FIELDS_V3 = [...LISTING_HASH_FIELDS_V2.slice(0, -2),
-  "escrow_chain_id", "escrow_address", "escrow_token", "verifier_evm_addresses", "verifier_caps",
-  "verifier_key_thumbprints", "escrow_verifier_deadline", "escrow_claim_deadline",
+  "escrow_chain_id", "escrow_address", "escrow_token", "verifiers", "escrow_verifier_deadline", "escrow_claim_deadline",
   ...LISTING_HASH_FIELDS_V2.slice(-2)] as const;
 
 export function listingHashFields(settlementVersion: number): readonly string[] {
@@ -2665,7 +2666,7 @@ export async function createListing(
   // is wired into the Worker, so POST /api/listings refuses funding_mode
   // funded on the live rail and says why. Tests and a local run inject the
   // mock. When a real adapter exists, wiring it here is the whole change.
-  deps: { readBalance?: typeof readUsdcBalanceTwoSource; settlementAdapter?: SettlementAdapter } = {},
+  deps: { escrowAddress?: string | null; readBalance?: typeof readUsdcBalanceTwoSource; settlementAdapter?: SettlementAdapter } = {},
 ) {
   const listing = validateListing(body, Math.floor(Date.now() / 1000), citizen.id === MAINTAINER_ID ? (env.TREASURY_ADDRESS ?? null) : null);
   // Settlement v2 terms. Every listing posted from here carries them, so
@@ -2676,8 +2677,25 @@ export async function createListing(
   // none exists (ADAPTER_STATUS). Refusing here is the honest half of the
   // feature: the alternative is a listing that says "funded" while nothing is
   // committed, which is worse than the promise listings we already have.
-  if (settlement.fundingMode === "funded" && deps.settlementAdapter === undefined)
+  // TWO WAYS TO BE FUNDED, AND BOTH ARE GATED.
+  //
+  // An ESCROW-BACKED listing (settlement v3) commits its money in a contract
+  // this registry only ever READS; it needs no adapter and no key here, and
+  // what it needs instead is that the escrow it names is one this registry is
+  // configured to read. ESCROW_ADDRESS is null until a reviewed contract is
+  // deployed, so production refuses every one of these, and the refusal names
+  // the missing thing rather than talking about adapters that are not the
+  // point. The older funded path still needs an adapter that can hold money,
+  // and none exists.
+  if (settlement.settlementVersion >= 3) {
+    const configured = deps.escrowAddress ?? ESCROW_ADDRESS;
+    if (configured === null)
+      throw new SocietyError(400, "an escrow-backed listing cannot be recorded yet: no settlement contract is deployed for this registry to read, so there is nowhere for the money to be committed and nothing for a reader to check the terms against. This registry holds no key that can move funds out of such a contract and never will; what is missing is the contract itself, reviewed and deployed.");
+    if (configured.toLowerCase() !== String(settlement.escrowAddress).toLowerCase())
+      throw new SocietyError(400, `this listing names escrow ${settlement.escrowAddress} and this registry can only read ${configured}. A listing whose escrow this registry cannot read is one whose FUNDED claim nobody here could ever check, so it is refused rather than published unverifiable.`);
+  } else if (settlement.fundingMode === "funded" && deps.settlementAdapter === undefined) {
     throw new SocietyError(400, `funding_mode funded cannot be recorded yet. ${ADAPTER_STATUS}`);
+  }
   if (settlement.fundingMode === "verified" && listing.funderAddress === null)
     throw new SocietyError(400, "funding_mode verified needs a funder_address to read: verified means this registry read that wallet's balance at posting time, and with no wallet named there is nothing to read");
   // The door check, same as createPost: title and condition are citizen text
@@ -2759,8 +2777,9 @@ export async function createListing(
     `INSERT INTO listings (citizen_id, title, condition, amount_atomic, verifier_price_atomic, max_verifiers, chain_id, token, expiry,
                            funder_address, funder_signature, funds_seen_atomic, funds_checked_at, funds_block_number, payload_hash, commit_nonce, created_at,
                            max_awards, funding_mode, settlement_mode, automatic_check, requester_timeout_seconds, award_on_timeout, award_ttl_seconds, settlement_version,
-                           submission_deadline, payable_ttl_seconds)
-     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                           submission_deadline, payable_ttl_seconds,
+                           escrow_chain_id, escrow_address, escrow_token, verifiers, escrow_verifier_deadline, escrow_claim_deadline)
+     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
       WHERE (SELECT COUNT(*) FROM listings WHERE citizen_id = ? AND created_at > ?) < ?
      RETURNING id`,
   ).bind(
@@ -2771,6 +2790,12 @@ export async function createListing(
     settlement.automaticCheck === null ? null : JSON.stringify(settlement.automaticCheck),
     settlement.requesterTimeoutSeconds, settlement.awardOnTimeout ? 1 : 0, settlement.awardTtlSeconds, settlement.settlementVersion,
     settlement.submissionDeadline, settlement.payableTtlSeconds,
+    // The escrow terms, serialized exactly as the hash recipe reads them back.
+    settlement.escrowChainId, settlement.escrowAddress, settlement.escrowToken,
+    settlement.verifiers === null
+      ? null
+      : JSON.stringify(settlement.verifiers.map((v) => ({ handle: v.handle, key_thumbprint: v.keyThumbprint, evm_address: v.evmAddress, cap: v.cap }))),
+    settlement.escrowVerifierDeadline, settlement.escrowClaimDeadline,
     citizen.id, dayAgo, LISTINGS_PER_DAY,
   );
   const committed = await commitWithIdentityEvent<{ id: number }>(
@@ -3082,6 +3107,22 @@ export async function sweepExpiredAwards(env: Env, listingId: number, nowMs: num
   return lapsed;
 }
 
+// The verifiers a settlement-v3 listing declared, read back off the row that
+// was hashed. Returns [] for any listing that declared none, which is every
+// listing below v3.
+export function declaredVerifiers(listing: StoredListing): { handle: string; keyThumbprint: string; evmAddress: string; cap: number }[] {
+  if (!listing.verifiers) return [];
+  try {
+    const parsed = JSON.parse(String(listing.verifiers)) as Record<string, unknown>[];
+    return parsed.map((v) => ({
+      handle: String(v.handle), keyThumbprint: String(v.key_thumbprint),
+      evmAddress: String(v.evm_address), cap: Number(v.cap),
+    }));
+  } catch {
+    return [];
+  }
+}
+
 // ---------- the signed verifier verdict ----------
 //
 // WHY THIS IS A DOCUMENT AND NOT A FUNCTION CALL. On a verifier-settled
@@ -3117,6 +3158,23 @@ export async function recordVerdict(
   const key = await env.DB.prepare(
     `SELECT public_key, thumbprint FROM keys WHERE citizen_id = ? AND status = 'active' AND custody = 'self' LIMIT 1`,
   ).bind(citizen.id).first<{ public_key: string; thumbprint: string }>();
+  // ON AN ESCROW-BACKED LISTING, THE VERIFIER IS NAMED BY BOTH KEYS.
+  //
+  // The listing declares, before any work, which handle will sign the protocol
+  // verdict and with which Ed25519 thumbprint, alongside the EVM address that
+  // will sign the on-chain release. Both are inside the listing's payload hash
+  // and the escrow commits to that hash. Checking the handle alone would let a
+  // verifier rotate to a key the listing never named and still produce
+  // verdicts the society reads as authoritative, while the money obeyed a
+  // different key entirely: the document and the authorization would be about
+  // two different acts and nothing would notice.
+  if (listing.settlement_version >= 3) {
+    const declared = declaredVerifiers(listing).find((v) => v.handle === citizen.handle);
+    if (!declared)
+      throw new SocietyError(403, `listing ${listing.id} names its verifiers in its own hashed terms, and you are not one of them. Who may decide this listing was fixed before the work began and cannot be added afterwards.`);
+    if (key && declared.keyThumbprint !== key.thumbprint)
+      throw new SocietyError(409, `this listing names ${citizen.handle}'s verifier key as ${declared.keyThumbprint} and your active key is ${key.thumbprint}. A verdict signed by a key the listing never named is not the decision the escrow committed to, so it is refused rather than recorded. If you rotated keys, the listing that named the old one cannot be re-pointed at the new one: that is what "named before the work" means.`);
+  }
   // NOT OPTIONAL. A verifier who cannot sign cannot pass judgment that moves
   // money on this rail; they can still submit, comment and verify in public
   // like anyone else. Accepting an unsigned verdict "just this once" is how

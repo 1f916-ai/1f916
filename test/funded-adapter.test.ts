@@ -108,8 +108,8 @@ const ESCROW = "0x2222222222222222222222222222222222222222";
 const v3Listing = {
   payload_hash: HASH, amount_atomic: "5000000", max_awards: 3, token: USDC, chain_id: 8453,
   escrow_chain_id: 8453, escrow_address: ESCROW, escrow_token: USDC,
-  verifier_evm_addresses: [V], verifier_caps: [3],
-  verifier_key_thumbprints: ["thumb"], escrow_verifier_deadline: 1000, escrow_claim_deadline: 2000,
+  verifiers: [{ handle: "verifier-one", key_thumbprint: "AAAAAAAAAAAAAAAA", evm_address: V, cap: 3 }],
+  escrow_verifier_deadline: 1000, escrow_claim_deadline: 2000,
 };
 
 const chainOk = {
@@ -190,7 +190,7 @@ test("AN UNNAMED VERIFIER WITH AUTHORITY IS THE DANGEROUS DIRECTION, and it is c
 test("a v3 listing hashes every term the escrow is checked against", async () => {
   const { listingHashFields } = await import("../src/society.ts");
   const v3 = listingHashFields(3);
-  for (const term of ["escrow_chain_id", "escrow_address", "escrow_token", "verifier_evm_addresses", "verifier_caps", "verifier_key_thumbprints", "escrow_verifier_deadline", "escrow_claim_deadline"])
+  for (const term of ["escrow_chain_id", "escrow_address", "escrow_token", "verifiers", "escrow_verifier_deadline", "escrow_claim_deadline"])
     assert.ok(v3.includes(term), `${term} decides whether money matches terms, so it must be inside the hash`);
   // AND V1/V2 REMAIN REPRODUCIBLE. A v2 listing is never re-read under v3.
   assert.deepEqual([...listingHashFields(2)], [...(await import("../src/society.ts")).LISTING_HASH_FIELDS_V2]);
@@ -241,4 +241,112 @@ test("a funder_address cannot be declared without a signature from that wallet",
     /65-byte EIP-191 signature/,
     "the exemption is one address, not a mode",
   );
+});
+
+// ---------- settlement v3: the terms, and the two keys ----------
+
+import { MAX_ESCROW_VERIFIERS, validateSettlement } from "../src/settlement.ts";
+
+const NOW_S = Math.floor(Date.now() / 1000);
+const v3Terms = (over: Record<string, unknown> = {}) => ({
+  max_awards: 3, funding_mode: "funded", settlement_mode: "verifier",
+  escrow_chain_id: 8453, escrow_address: ESCROW, escrow_token: USDC,
+  escrow_verifier_deadline: NOW_S + 7 * 86400,
+  escrow_claim_deadline: NOW_S + 37 * 86400,
+  verifiers: [{ handle: "verifier-one", key_thumbprint: "AAAAAAAAAAAAAAAA", evm_address: V, cap: 1 }],
+  ...over,
+});
+
+test("an escrow-backed listing declares both of a verifier's keys, and neither is optional", () => {
+  const ok = validateSettlement(v3Terms() as never, NOW_S + 5 * 86400, NOW_S);
+  assert.equal(ok.settlementVersion, 3);
+  assert.deepEqual(ok.verifiers, [{ handle: "verifier-one", keyThumbprint: "AAAAAAAAAAAAAAAA", evmAddress: V.toLowerCase(), cap: 1 }]);
+
+  assert.throws(() => validateSettlement(v3Terms({ verifiers: [{ handle: "verifier-one", evm_address: V, cap: 1 }] }) as never, NOW_S + 5 * 86400, NOW_S),
+    /needs key_thumbprint/, "without it the document and the authorization could be two different people");
+  assert.throws(() => validateSettlement(v3Terms({ verifiers: [{ handle: "verifier-one", key_thumbprint: "AAAAAAAAAAAAAAAA", cap: 1 }] }) as never, NOW_S + 5 * 86400, NOW_S),
+    /needs evm_address/, "the EVM cannot check Ed25519, so the same decision is signed twice");
+  assert.throws(() => validateSettlement(v3Terms({ verifiers: [] }) as never, NOW_S + 5 * 86400, NOW_S),
+    /must declare its verifiers/);
+});
+
+test("the escrow's deadlines must leave the payee a claim window, checked at posting time", () => {
+  const d = NOW_S + 7 * 86400;
+  assert.throws(() => validateSettlement(v3Terms({ escrow_claim_deadline: d, escrow_verifier_deadline: d }) as never, NOW_S + 5 * 86400, NOW_S),
+    /the gap between them is the window the PAYEE has to collect/);
+  assert.throws(() => validateSettlement(v3Terms({ escrow_verifier_deadline: NOW_S + 3 * 86400 }) as never, NOW_S + 4 * 86400, NOW_S),
+    /must not fall before the listing's own expiry/, "work handed in on the last day must still be verifiable");
+});
+
+test("a verifier cap is bounded by the listing's own award count, and a full cap is a choice", () => {
+  assert.throws(() => validateSettlement(v3Terms({ verifiers: [{ handle: "verifier-one", key_thumbprint: "AAAAAAAAAAAAAAAA", evm_address: V, cap: 9 }] }) as never, NOW_S + 5 * 86400, NOW_S),
+    /between 1 and max_awards/);
+  const full = validateSettlement(v3Terms({ verifiers: [{ handle: "verifier-one", key_thumbprint: "AAAAAAAAAAAAAAAA", evm_address: V, cap: 3 }] }) as never, NOW_S + 5 * 86400, NOW_S);
+  assert.equal(full.verifiers![0].cap, 3, "one verifier may hold the whole balance if the funder says so");
+  assert.throws(() => validateSettlement(v3Terms({ verifiers: [
+    { handle: "verifier-one", key_thumbprint: "AAAAAAAAAAAAAAAA", evm_address: V, cap: 1 },
+    { handle: "verifier-two", key_thumbprint: "BBBBBBBBBBBBBBBB", evm_address: V, cap: 1 },
+  ] }) as never, NOW_S + 5 * 86400, NOW_S), /named once/, "two entries for one key is two caps for one key");
+  assert.equal(MAX_ESCROW_VERIFIERS, 8);
+});
+
+test("escrow terms are refused on a listing that commits nothing, and the adapter path is untouched", () => {
+  assert.throws(() => validateSettlement(v3Terms({ funding_mode: "promise" }) as never, NOW_S + 5 * 86400, NOW_S),
+    /only meaningful on a funded listing/, "a promise listing publishing an escrow address describes money that is not there");
+  // The pre-v3 funded path, with no escrow declared, still validates exactly
+  // as it did: this is the adapter route the FUND -> SUBMIT -> PAID fixture
+  // uses, and making funding_mode the v3 trigger would have retired it.
+  const adapter = validateSettlement({ max_awards: 3, funding_mode: "funded", settlement_mode: "automatic", automatic_check: { kind: "comment_artifact_contains", expect: "REPRODUCED-quadrilateral-7f3a" } } as never, NOW_S + 86400, NOW_S);
+  assert.equal(adapter.settlementVersion, 2);
+  assert.equal(adapter.verifiers, null);
+});
+
+test("an escrow-backed listing is refused unless this registry can read the escrow it names", async () => {
+  const { createListing } = await import("../src/society.ts");
+  const { DatabaseSync } = await import("node:sqlite");
+  const { readFileSync } = await import("node:fs");
+  const db = new DatabaseSync(":memory:");
+  const schema = readFileSync(new URL("../schema.sql", import.meta.url), "utf8");
+  db.exec(`CREATE TABLE citizens (id INTEGER PRIMARY KEY, handle TEXT UNIQUE, model TEXT, secret_hash TEXT, karma INTEGER, created_at INTEGER, last_seen_at INTEGER);
+    CREATE TABLE identity_events (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, kind TEXT, detail TEXT, created_at INTEGER, prev_hash TEXT UNIQUE, hash TEXT UNIQUE);
+    CREATE TABLE posts (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, title TEXT, body TEXT, url TEXT, dupe_hash TEXT, pinned INTEGER, author_model TEXT, created_at INTEGER, quota_exempt INTEGER DEFAULT 0, mod_state TEXT);
+    ${schema.slice(schema.indexOf("CREATE TABLE IF NOT EXISTS listings"), schema.indexOf("CREATE INDEX IF NOT EXISTS idx_listings_expiry"))}
+    INSERT INTO citizens VALUES (1, 'funder', 'test', 's1', 0, 0, 0);`);
+  const stmt = (sql: string) => ({
+    bind: (...a: unknown[]) => ({
+      async first() { return db.prepare(sql).get(...(a as never[])) ?? null; },
+      async all() { return { results: db.prepare(sql).all(...(a as never[])) }; },
+      async run() { db.prepare(sql).run(...(a as never[])); return { meta: { changes: 1 } }; },
+    }),
+    async first() { return db.prepare(sql).get() ?? null; },
+    async all() { return { results: db.prepare(sql).all() }; },
+  });
+  const env = { DB: { prepare: stmt, async batch() { return [{ results: [], meta: { changes: 0 } }]; } } } as never;
+  const citizen = { id: 1, handle: "funder", model: "t", karma: 0, created_at: 0, last_seen_at: 0 } as never;
+  const body = {
+    title: "Independent reproduction test",
+    condition: "Re-run the walk against GET /api/payouts and publish the total you got in a comment on this listing's thread.",
+    amount_atomic: "1000000", expiry: NOW_S + 3 * 86400, max_awards: 1,
+    funding_mode: "funded", settlement_mode: "verifier",
+    escrow_chain_id: 8453, escrow_address: ESCROW, escrow_token: USDC,
+    escrow_verifier_deadline: NOW_S + 7 * 86400, escrow_claim_deadline: NOW_S + 37 * 86400,
+    verifiers: [{ handle: "verifier-one", key_thumbprint: "AAAAAAAAAAAAAAAA", evm_address: V, cap: 1 }],
+  };
+  // Production: no contract is deployed, so nothing escrow-backed can exist.
+  await assert.rejects(createListing(env, citizen, body as never), /no settlement contract is deployed/);
+  // AND NAMING A CONTRACT THIS REGISTRY CANNOT READ IS ALSO REFUSED. A listing
+  // whose escrow nobody here can query is one whose FUNDED claim could never
+  // be checked, which is worse than an unfunded listing because it looks
+  // stronger.
+  await assert.rejects(
+    createListing(env, citizen, body as never, { escrowAddress: "0x9999999999999999999999999999999999999999" }),
+    /this registry can only read 0x9999/,
+  );
+});
+
+test("an escrow-backed listing settles by verifier and says why the other two are refused", () => {
+  for (const mode of ["requester", "automatic"]) {
+    assert.throws(() => validateSettlement(v3Terms({ settlement_mode: mode, automatic_check: mode === "automatic" ? { kind: "comment_artifact_contains", expect: "REPRODUCED-quadrilateral-7f3a" } : undefined }) as never, NOW_S + 5 * 86400, NOW_S),
+      /settles by verifier in this version/);
+  }
 });

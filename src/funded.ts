@@ -139,8 +139,11 @@ export interface FundedTerms {
   escrow_chain_id: number;
   escrow_address: string;
   escrow_token: string;
-  verifier_evm_addresses: string[];
-  verifier_caps: number[];
+  // ONE ARRAY, THE SHAPE THE LISTING SERVES AND THE HASH RECIPE NAMES. An
+  // earlier version hashed three parallel arrays that no endpoint served, so
+  // the published recipe could not be followed against the published body:
+  // the same defect an independent reviewer caught on the verdict recipe.
+  verifiers: { handle: string; key_thumbprint: string; evm_address: string; cap: number }[];
   escrow_verifier_deadline: number;
   escrow_claim_deadline: number;
 }
@@ -230,16 +233,16 @@ export function fundedDisagreements(
   // but the escrow authorized is the more dangerous direction: it is a party
   // who can release this listing's money without appearing in the document the
   // work was done against.
-  const named = new Set(listing.verifier_evm_addresses.map((a) => a.toLowerCase()));
-  for (let i = 0; i < listing.verifier_evm_addresses.length; i++) {
-    const addr = listing.verifier_evm_addresses[i];
+  const named = new Set(listing.verifiers.map((v) => v.evm_address.toLowerCase()));
+  for (let i = 0; i < listing.verifiers.length; i++) {
+    const addr = listing.verifiers[i].evm_address;
     const onchainAuth = chain.verifierAuthority.find((v) => same(v.address, addr));
     if (!onchainAuth || onchainAuth.cap === 0) {
       out.push(`this listing names verifier ${addr} and the escrow gives that address no authority at all`);
       continue;
     }
-    if (onchainAuth.cap !== listing.verifier_caps[i])
-      out.push(`this listing gives verifier ${addr} a cap of ${listing.verifier_caps[i]} and the escrow gives it ${onchainAuth.cap}`);
+    if (onchainAuth.cap !== listing.verifiers[i].cap)
+      out.push(`this listing gives verifier ${addr} a cap of ${listing.verifiers[i].cap} and the escrow gives it ${onchainAuth.cap}`);
   }
   for (const auth of chain.verifierAuthority)
     if (auth.cap > 0 && !named.has(auth.address.toLowerCase()))

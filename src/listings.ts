@@ -100,6 +100,15 @@ export interface StoredListing {
   award_on_timeout: number;
   award_ttl_seconds: number | null;
   settlement_version: number;
+  // Settlement v3 escrow terms, null on every earlier listing. `verifiers` is
+  // the JSON array of {handle, key_thumbprint, evm_address, cap} that the
+  // listing hash commits to.
+  escrow_chain_id: number | null;
+  escrow_address: string | null;
+  escrow_token: string | null;
+  verifiers: string | null;
+  escrow_verifier_deadline: number | null;
+  escrow_claim_deadline: number | null;
   submission_deadline: number | null;
   payable_ttl_seconds: number | null;
 }
@@ -366,6 +375,18 @@ export function listingSnapshot(listing: StoredListing) {
     award_ttl_seconds: listing.settlement_version >= 2 ? listing.award_ttl_seconds : null,
     submission_deadline: listing.settlement_version >= 2 ? listing.submission_deadline : null,
     payable_ttl_seconds: listing.settlement_version >= 2 ? listing.payable_ttl_seconds : null,
+    // THE ESCROW TERMS, served under the same names the hash recipe uses, so a
+    // reader recomputes the payload hash straight off this body. Null on every
+    // listing below v3, which is every listing that is not escrow-backed.
+    escrow_chain_id: listing.settlement_version >= 3 ? listing.escrow_chain_id : null,
+    escrow_address: listing.settlement_version >= 3 ? listing.escrow_address : null,
+    escrow_token: listing.settlement_version >= 3 ? listing.escrow_token : null,
+    verifiers: listing.settlement_version >= 3 && listing.verifiers !== null ? JSON.parse(listing.verifiers) : null,
+    escrow_verifier_deadline: listing.settlement_version >= 3 ? listing.escrow_verifier_deadline : null,
+    escrow_claim_deadline: listing.settlement_version >= 3 ? listing.escrow_claim_deadline : null,
+    escrow_note: listing.settlement_version >= 3
+      ? "This listing's money is committed in the escrow named above, and the terms here are inside its payload_hash, which is what the escrow binds to. Check it yourself rather than believing this line: read listingOf(payload_hash, funder_address) on the named contract and compare every field. Each verifier is named by BOTH keys, the Ed25519 thumbprint that signs the protocol verdict and the EVM address that signs the on-chain release, because the chain cannot check Ed25519 and one key alone would let the document and the authorization be about two different parties. `cap` is how many awards that one key may EVER authorize: a verifier holding the full cap can direct this listing's entire committed balance, which is the funder's choice and is written here so it is a choice rather than a surprise."
+      : null,
     clocks_note: listing.settlement_version >= 2
       ? "Four separate clocks, every one declared here before any work began and hashed into payload_hash, on a listing that cannot be edited. submission_deadline bounds when work may be handed in. award_ttl_seconds bounds how long a RESERVED SEAT may sit before the condition is met, after which the seat returns to the market as expired_unmet and nothing was earned. requester_timeout_seconds bounds how long the requester has to decide. payable_ttl_seconds bounds how long an ALREADY EARNED entitlement stays claimable, after which it is expired_unclaimed, which permanently records that the amount was earned and went unclaimed. A null clock is not running. No funder can add, shorten or attach a clock after seeing the work: doing so would change a payload hash that is already published and chained."
       : null,
