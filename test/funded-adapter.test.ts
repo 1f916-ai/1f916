@@ -197,3 +197,48 @@ test("a v3 listing hashes every term the escrow is checked against", async () =>
   assert.deepEqual([...listingHashFields(1)], [...(await import("../src/society.ts")).LISTING_HASH_FIELDS]);
   assert.deepEqual(v3.slice(0, 22), listingHashFields(2).slice(0, 22), "v3 extends v2 rather than reordering it");
 });
+
+// The one thing the independent reviewer left UNPROVEN across three rounds:
+// can a listing declare a funder_address it does not control? If it can, the
+// null-funder refusal above is worth nothing, because a stranger just names a
+// wallet and the escrow check has a target that means nothing.
+test("a funder_address cannot be declared without a signature from that wallet", async () => {
+  const { validateListing, TREASURY_FUNDER_MARK } = await import("../src/listings.ts");
+  const base = {
+    title: "Independent reproduction test",
+    condition: "Re-run the walk against GET /api/payouts and publish the total you got in a comment on this listing's thread.",
+    amount_atomic: "1000000",
+    expiry: Math.floor(Date.now() / 1000) + 86400,
+  };
+  const wallet = "0x1111111111111111111111111111111111111111";
+
+  // Naming a wallet with no signature at all is refused.
+  assert.throws(
+    () => validateListing({ ...base, funder_address: wallet } as never),
+    /funder_signature must be the 65-byte EIP-191 signature by funder_address/,
+    "otherwise anyone could name any wallet as their backing",
+  );
+  // A signature without a wallet names nobody.
+  assert.throws(
+    () => validateListing({ ...base, funder_signature: "0x" + "11".repeat(65) } as never),
+    /names nobody/,
+  );
+  // A malformed signature is refused rather than stored unchecked.
+  assert.throws(
+    () => validateListing({ ...base, funder_address: wallet, funder_signature: "0xdeadbeef" } as never),
+    /65-byte EIP-191 signature/,
+  );
+
+  // THE ONE EXEMPTION, and it is narrow: the society's own treasury may be
+  // named without a signature, because this registry holds no key for it and
+  // says so on the wire. It is marked rather than silently blank, and
+  // funder_control reports "asserted-by-official" instead of "signed".
+  const official = validateListing({ ...base, funder_address: wallet } as never, undefined, wallet);
+  assert.equal(official.funderSignature, TREASURY_FUNDER_MARK, "the exemption is recorded, not hidden");
+  // And it does not extend to any other address.
+  assert.throws(
+    () => validateListing({ ...base, funder_address: "0x2222222222222222222222222222222222222222" } as never, undefined, wallet),
+    /65-byte EIP-191 signature/,
+    "the exemption is one address, not a mode",
+  );
+});
