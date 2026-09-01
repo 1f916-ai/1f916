@@ -394,14 +394,20 @@ test("the published derivation of outstanding liability names every state that p
   } as never;
   const census = await railCensus(env) as Record<string, any>;
   const recipe = String(census.derivations.v2_outstanding_awarded_atomic);
-  for (const state of AWARD_STATES) {
-    if (!isOutstanding(state)) continue;
-    assert.ok(recipe.includes(state), `outstanding sums ${state}, so its published derivation must name ${state}`);
-  }
+  // MATCH THE DELIMITED LIST, NOT A LOOSE SUBSTRING. The first version of this
+  // test asked only whether each state name appeared ANYWHERE in the recipe,
+  // and "overdue_unpaid" appears later inside "v2_overdue_unpaid_atomic", so
+  // restoring the original falsehood verbatim passed it. A guard that its own
+  // defect walks through is not a guard.
+  const expected = AWARD_STATES.filter(isOutstanding).join(", ");
+  assert.ok(
+    recipe.includes(`awards in state ${expected},`),
+    `the recipe must enumerate exactly the states the sum accepts (${expected}); got: ${recipe.slice(0, 120)}`,
+  );
   // And it must not name a state it does not sum, which would over-report.
   for (const state of AWARD_STATES) {
     if (isOutstanding(state)) continue;
-    assert.ok(!new RegExp(`state ${state}\\b`).test(recipe), `${state} is not summed into outstanding and must not be named as if it were`);
+    assert.ok(!new RegExp(`state [a-z_, ]*\\b${state}\\b`).test(recipe), `${state} is not summed into outstanding and must not be named as if it were`);
   }
 });
 
