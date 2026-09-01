@@ -331,7 +331,7 @@ test("the rail census answers the research question in one call, and never serve
   assert.equal(row.worker_bindings, 2);
   assert.equal(row.economics.available_award_capacity, 2);
   // Every figure carries its derivation, and the reading note names the trap.
-  for (const key of ["bindings", "receipts", "lapsed_bindings", "awards", "v2_outstanding_awarded_atomic", "v2_maximum_remaining_liability_atomic", "legacy_bindings_unclassified"]) {
+  for (const key of ["bindings", "receipts", "lapsed_bindings", "awards", "awarded_slots_used", "ever_payable", "v2_overdue_awards", "v2_outstanding_awarded_atomic", "v2_maximum_remaining_liability_atomic", "legacy_bindings_unclassified"]) {
     assert.ok(String(census.derivations[key]).length > 40, `${key} needs a published derivation`);
   }
   assert.match(census.reading_note, /ROUTING RECORD/);
