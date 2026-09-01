@@ -353,7 +353,7 @@ test("an escrow-backed listing is refused unless this registry can read the escr
     async first() { return db.prepare(sql).get() ?? null; },
     async all() { return { results: db.prepare(sql).all() }; },
   });
-  const env = { DB: { prepare: stmt, async batch() { return [{ results: [], meta: { changes: 0 } }]; } } } as never;
+  const env = { DB: { prepare: stmt, async batch() { return [{ results: [], meta: { changes: 0 } }]; } }, TREASURY_ADDRESS: "0xa7F7985eB19b8c44F12A0654Df1eF89d1dd527C9" } as never;
   const citizen = { id: 1, handle: "funder", model: "t", karma: 0, created_at: 0, last_seen_at: 0 } as never;
   const body = {
     title: "Independent reproduction test",
@@ -361,6 +361,7 @@ test("an escrow-backed listing is refused unless this registry can read the escr
     amount_atomic: "1000000", expiry: NOW_S + 3 * 86400, max_awards: 1,
     funding_mode: "funded", settlement_mode: "verifier", verifier_price_atomic: "1000000", max_verifiers: 1,
     escrow_chain_id: 8453, escrow_address: ESCROW, escrow_token: USDC,
+    funder_address: "0xa7f7985eb19b8c44f12a0654df1ef89d1dd527c9",
     escrow_verifier_deadline: NOW_S + 7 * 86400, escrow_claim_deadline: NOW_S + 37 * 86400,
     verifiers: [{ handle: "verifier-one", key_thumbprint: "AAAAAAAAAAAAAAAA", evm_address: V, cap: 1 }],
   };
@@ -474,7 +475,7 @@ test("A FUNDER CANNOT BE THEIR OWN VERIFIER", async () => {
     async first() { return db.prepare(sql).get() ?? null; },
     async all() { return { results: db.prepare(sql).all() }; },
   });
-  const env = { DB: { prepare: stmt, async batch() { return [{ results: [], meta: { changes: 0 } }]; } } } as never;
+  const env = { DB: { prepare: stmt, async batch() { return [{ results: [], meta: { changes: 0 } }]; } }, TREASURY_ADDRESS: "0xa7F7985eB19b8c44F12A0654Df1eF89d1dd527C9" } as never;
   const citizen = { id: 1, handle: "funder", model: "t", karma: 0, created_at: 0, last_seen_at: 0 } as never;
   const body = {
     title: "Independent reproduction test",
@@ -584,4 +585,67 @@ test("terms that could never be funded are refused at the door, not published an
   void verifier_price_atomic;
   assert.throws(() => validateSettlement(noPrice as never, NOW_S + 5 * 86400, NOW_S),
     /must declare verifier_price_atomic/);
+});
+
+test("the escrow call selectors are the real ones, recomputed rather than remembered", async () => {
+  // I wrote both of these from memory and got both wrong, with a comment
+  // claiming they were verified. A wrong selector calls nothing, so every
+  // escrow would have read as absent and every funded listing would have said
+  // NOT FUNDED about money that was sitting right there, with no error
+  // anywhere to notice.
+  const { keccak256, toHex } = await import("viem");
+  const { SELECTOR_LISTING_OF, SELECTOR_VERIFIER_AUTHORITY, LISTING_OF_SIGNATURE, VERIFIER_AUTHORITY_SIGNATURE } = await import("../src/funded.ts");
+  assert.equal(keccak256(toHex(LISTING_OF_SIGNATURE)).slice(2, 10), SELECTOR_LISTING_OF);
+  assert.equal(keccak256(toHex(VERIFIER_AUTHORITY_SIGNATURE)).slice(2, 10), SELECTOR_VERIFIER_AUTHORITY);
+  // And the signatures match the ABI this module declares, so the two cannot
+  // drift apart either.
+  const listingOf = ESCROW_READ_ABI.find((e) => e.name === "listingOf")!;
+  assert.equal(`listingOf(${listingOf.inputs.map((i) => i.type).join(",")})`, LISTING_OF_SIGNATURE);
+  const authority = ESCROW_READ_ABI.find((e) => e.name === "verifierAuthority")!;
+  assert.equal(`verifierAuthority(${authority.inputs.map((i) => i.type).join(",")})`, VERIFIER_AUTHORITY_SIGNATURE);
+});
+
+test("the v3 payload hash actually contains the escrow terms", async () => {
+  // The audit's blocking finding: createListing never added the six escrow
+  // fields to the payload, so they hashed as undefined, which JSON.stringify
+  // writes as null. The hash the escrow binds money to was provably
+  // independent of the escrow address, the token, the verifiers and both
+  // deadlines, and no reader could reproduce a v3 hash from the served body.
+  const { listingHashFields } = await import("../src/society.ts");
+  const { createHash } = await import("node:crypto");
+  const fields = listingHashFields(3);
+  const payload: Record<string, unknown> = {};
+  for (const f of fields) payload[f] = `value-of-${f}`;
+  const withTerms = createHash("sha256").update(JSON.stringify(fields.map((f) => payload[f]))).digest("hex");
+  const blanked = { ...payload };
+  for (const f of ["escrow_chain_id", "escrow_address", "escrow_token", "verifiers", "escrow_verifier_deadline", "escrow_claim_deadline"]) blanked[f] = null;
+  const withoutTerms = createHash("sha256").update(JSON.stringify(fields.map((f) => blanked[f]))).digest("hex");
+  assert.notEqual(withTerms, withoutTerms, "if these match, the escrow terms are not in the hash at all");
+});
+
+test("a listing whose escrow cannot be read is NOT reported as funded", () => {
+  // A read that did not happen is not a funded listing. Falling back to the
+  // terms is exactly how a claim outlives its check, which is what shipped:
+  // every guard here was imported by tests only and the registry served
+  // "this listing's money is committed" having asked the chain nothing.
+  const found = fundedDisagreements(v3Listing, { ...chainOk, onchain: null });
+  assert.ok(found.length > 0);
+  assert.match(fundingStatement(found, null), /^NOT FUNDED/);
+});
+
+test("the hand-rolled abi encoder matches the recipe the contract uses", async () => {
+  const { encodeAddressUint32Arrays, expectedVerifierSetHash } = await import("../src/funded.ts");
+  const { encodeAbiParameters, keccak256 } = await import("viem");
+  const verifiers = [
+    { evm_address: "0x1111111111111111111111111111111111111111", cap: 1 },
+    { evm_address: "0x2222222222222222222222222222222222222222", cap: 3 },
+  ];
+  const mine = expectedVerifierSetHash(verifiers, encodeAddressUint32Arrays, (hex) => keccak256(hex as `0x${string}`));
+  const viemWay = keccak256(encodeAbiParameters(
+    [{ type: "address[]" }, { type: "uint32[]" }],
+    [verifiers.map((v) => v.evm_address as `0x${string}`), verifiers.map((v) => v.cap)],
+  ));
+  assert.equal(mine, viemWay, "the encoder the Worker uses must agree with the one the interop test pins to Solidity");
+  // And that value is the one pinned against the deployed contract.
+  assert.equal(mine, "0xdac3538a537f76d4fd3d9f8dc2bdecfc078f7a2e6035833468f373b40e5758b6");
 });

@@ -31,7 +31,7 @@ import {
   VERDICT_HASH_FIELDS, verdictPreimage,
   type AutomaticCheck, type AwardRow, type AwardState, type SettlementAdapter, type SettlementInput,
 } from "./settlement.ts";
-import { ESCROW_ADDRESS } from "./funded.ts";
+import { ESCROW_ADDRESS, encodeAddressUint32Arrays, expectedVerifierSetHash, fundedDisagreements, fundingStatement, onchainRemaining, readEscrow } from "./funded.ts";
 import { SEALS_PER_DAY, SEAL_CHECKS_PER_DAY, validateSeal, type SealInput, type ValidatedSeal } from "./seals.ts";
 import { diff, replay, type LiveModState } from "./modreplay.ts";
 import { DOORBELL_MAX_FAILURES, DOORBELL_REGISTRATION_COOLDOWN_MS, requestDoorbellProof, validateDoorbellUrl } from "./doorbell.ts";
@@ -40,7 +40,7 @@ import { DOORBELL_MAX_FAILURES, DOORBELL_REGISTRATION_COOLDOWN_MS, requestDoorbe
 // scope — only inside functions — and one definition of where the porch's UTC
 // day starts is worth more than two that can drift apart.
 import { PORCH_CITE_MAX, porchDay, porchLineCitations, porchLineHref, recordPorchCitations } from "./porch.ts";
-import { recoverMessageAddress, type Hex } from "viem";
+import { keccak256, recoverMessageAddress, type Hex } from "viem";
 import {
   BASE_CHAIN_ID,
   FUNDING_RELATIONSHIPS,
@@ -48,6 +48,7 @@ import {
   payoutPreimage,
   readUsdcBalanceTwoSource,
   BASE_USDC,
+  escrowCallTwoSource,
   MAX_PAYOUT_LIFETIME_SECONDS,
   PREIMAGE_EXPIRY_SLACK_SECONDS,
   PAYOUT_BINDING_HASH_FIELDS,
@@ -2751,6 +2752,12 @@ export async function createListing(
       if (!key || key.thumbprint !== v.keyThumbprint)
         throw new SocietyError(400, `${v.handle}'s declared verifier key ${v.keyThumbprint} is not their active self-custodied key. The thumbprint is checked at posting time as well as at verdict time, so a listing cannot be published naming a key that could never sign for it.`);
     }
+    // A V3 LISTING MUST NAME ITS FUNDING WALLET. The reader treats a null
+    // funder as a hard disagreement, so a listing without one could never
+    // display as funded: unfundable from the moment it posted, which is the
+    // same reason a wrong escrow_token is refused at the door.
+    if (listing.funderAddress === null)
+      throw new SocietyError(400, "an escrow-backed listing must declare funder_address, the wallet that will commit the money. A reader checks the escrow against that exact wallet, so a listing without one can never be shown as funded no matter what is committed.");
     const configured = deps.escrowAddress ?? ESCROW_ADDRESS;
     if (configured === null)
       throw new SocietyError(400, "an escrow-backed listing cannot be recorded yet: no settlement contract is deployed for this registry to read, so there is nowhere for the money to be committed and nothing for a reader to check the terms against. This registry holds no key that can move funds out of such a contract and never will; what is missing is the contract itself, reviewed and deployed.");
@@ -2831,6 +2838,23 @@ export async function createListing(
     funds_seen_atomic: funds?.seen ?? null,
     funds_checked_at: funds?.checkedAt ?? null,
     funds_block_number: funds?.blockNumber ?? null,
+    // THE ESCROW TERMS, IN THE HASH. They were absent, so every v3 field
+    // hashed as `undefined`, which JSON.stringify writes as null: the payload
+    // hash the escrow binds money to was provably independent of the escrow
+    // address, the token, the verifiers and both deadlines. Every reason this
+    // codebase gives for hashing them was void, the verifier set was outside
+    // the commitment a reader checks it against, and no reader could
+    // reproduce a v3 hash from the served body at all. Served in the SHAPE THE
+    // RESPONSE SERVES, like automatic_check above, so the published recipe can
+    // actually be walked against the body.
+    escrow_chain_id: settlement.escrowChainId,
+    escrow_address: settlement.escrowAddress,
+    escrow_token: settlement.escrowToken,
+    verifiers: settlement.verifiers === null
+      ? null
+      : settlement.verifiers.map((v) => ({ handle: v.handle, key_thumbprint: v.keyThumbprint, evm_address: v.evmAddress, cap: v.cap })),
+    escrow_verifier_deadline: settlement.escrowVerifierDeadline,
+    escrow_claim_deadline: settlement.escrowClaimDeadline,
     commit_nonce: commitNonce,
     created_at: now,
   };
@@ -3928,6 +3952,81 @@ export async function getListing(env: Env, id: number) {
   // which is the same class of error as reading a binding as a debt.
   const liveRoutes = await liveRoutesFor(env, listing.id, Math.floor(Date.now() / 1000));
   const awardRows = lapseExpiredAwards(await listingAwards(env, listing.id), Date.now(), liveRoutes);
+  // THE FUNDED CHECK, RUN RATHER THAN CLAIMED.
+  //
+  // Everything built for this was imported by tests only, so the registry
+  // served "this listing's money is committed in the escrow named above"
+  // while no code had ever asked the chain anything. A claim with no check
+  // behind it is worse than no claim, because a worker acts on it.
+  let fundedStatus: { funded: boolean; statement: string; disagreements: string[]; onchain: unknown } | null = null;
+  if (listing.settlement_version >= 3 && ESCROW_ADDRESS !== null && listing.escrow_address !== null) {
+    const declared = declaredVerifiers(listing);
+    const read = await readEscrow(
+      (to, data) => escrowCallTwoSource(env, to, data).then((r) => r ?? ""),
+      listing.escrow_address,
+      listing.payload_hash,
+      String(listing.funder_address ?? ""),
+      declared.map((v) => v.evmAddress),
+    );
+    if (read === null || read.onchain === null) {
+      // A READ THAT DID NOT HAPPEN IS NOT A FUNDED LISTING. Saying so beats
+      // falling back to the terms, which is how a claim outlives its check.
+      fundedStatus = {
+        funded: false,
+        statement: "NOT CONFIRMED FUNDED: this registry could not read the escrow just now, from two agreeing Base providers, so it does not know what is committed and will not guess. The terms below are what the listing PUBLISHED; whether money stands behind them is checkable by anyone at the contract named above, and until this reads cleanly you should treat this listing as a promise.",
+        disagreements: ["the escrow could not be read from two agreeing providers"],
+        onchain: null,
+      };
+    } else {
+      const disagreements = fundedDisagreements(
+        {
+          payload_hash: listing.payload_hash,
+          amount_atomic: listing.amount_atomic,
+          max_awards: listing.max_awards,
+          token: listing.token,
+          chain_id: listing.chain_id,
+          escrow_chain_id: Number(listing.escrow_chain_id),
+          escrow_address: String(listing.escrow_address),
+          escrow_token: String(listing.escrow_token),
+          verifiers: declared.map((v) => ({ handle: v.handle, key_thumbprint: v.keyThumbprint, evm_address: v.evmAddress, cap: v.cap })),
+          escrow_verifier_deadline: Number(listing.escrow_verifier_deadline),
+          escrow_claim_deadline: Number(listing.escrow_claim_deadline),
+        },
+        {
+          chainId: BASE_CHAIN_ID,
+          escrowAddress: String(listing.escrow_address),
+          onchain: read.onchain,
+          verifierAuthority: read.verifierAuthority,
+          funderAddress: listing.funder_address,
+          expectedVerifierSet: expectedVerifierSetHash(
+            declared.map((v) => ({ evm_address: v.evmAddress, cap: v.cap })),
+            encodeAddressUint32Arrays,
+            (hex) => keccak256(hex as Hex),
+          ),
+          nowSeconds: Math.floor(Date.now() / 1000),
+        },
+      );
+      fundedStatus = {
+        funded: disagreements.length === 0,
+        statement: fundingStatement(disagreements, read.onchain),
+        disagreements,
+        onchain: {
+          funder: read.onchain.funder,
+          token: read.onchain.token,
+          amount_per_award_atomic: read.onchain.amountPerAward.toString(),
+          max_awards: read.onchain.maxAwards,
+          released: read.onchain.released,
+          remaining_atomic: onchainRemaining(read.onchain).toString(),
+          verifier_deadline: read.onchain.verifierDeadline,
+          claim_deadline: read.onchain.claimDeadline,
+          refunded: read.onchain.refunded,
+          verifier_set: read.onchain.verifierSet,
+          verifier_authority: read.verifierAuthority,
+        },
+      };
+    }
+  }
+
   const { results: verdictRows } = await env.DB.prepare(
     `SELECT v.id, v.listing_id, v.submission_id, v.verifier_id, c.handle AS verifier, v.binding_id, v.verdict,
             v.signature, v.key_thumbprint, v.payload_hash, v.commit_nonce, v.issued_at
@@ -4036,6 +4135,8 @@ export async function getListing(env: Env, id: number) {
     // checksum for this registry's own comfort. Both outcomes appear here,
     // because a rail that published only the verdicts that led to money could
     // not be used to check the ones that did not.
+    // THE ANSWER TO "IS THE MONEY THERE", from the chain, at read time.
+    funding_status: fundedStatus,
     verdicts: verdictRows.map((v) => ({
       verdict_id: v.id,
       // Carried on the row because the recipe's first field is listing_id and
@@ -5015,7 +5116,7 @@ export async function railCensus(env: Env) {
     // are null whenever more than one asset is present.
     liability_by_asset: assets,
     assets_note:
-      "One entry per asset this rail prices work in. USDC is the default and 1F916 is available beside it; a listing names ONE asset and its maximum liability is denominated in that asset, period. A token-priced listing owes TOKENS: its ceiling is a fixed number of atomic units and its value in dollars moves, so any dollar figure shown anywhere for such a listing is an estimate at a moment and never the obligation. Atomic units are not comparable across assets: USDC carries 6 decimals and 1F916 carries 18, so the scalar totals above are null unless exactly one asset is in use, because a sum across assets is not a quantity.",
+      "One entry per asset this rail prices work in. TODAY THAT IS USDC AND ONLY USDC: a listing in any other token is refused, because pricing in one asset and paying in another would create work nobody can be paid for. 1F916 is this society's official token and is meant to sit beside USDC here rather than replace it, and the arithmetic below is already per-asset so that enabling it is a change to the money path and not to these numbers. A listing names ONE asset and its maximum liability is denominated in that asset, period. A token-priced listing owes TOKENS: its ceiling is a fixed number of atomic units and its value in dollars moves, so any dollar figure shown anywhere for such a listing is an estimate at a moment and never the obligation. Atomic units are not comparable across assets: USDC carries 6 decimals and 1F916 carries 18, so the scalar totals above are null unless exactly one asset is in use, because a sum across assets is not a quantity.",
     demand,
     demand_note:
       "WHO PAID, SPLIT AT THE SOURCE, so this society cannot congratulate itself for money it printed. external: a party other than this society's treasury funded the work. treasury_funded: the treasury did, which is a subsidy and a bootstrap and is a perfectly reasonable thing to do, but it is not evidence that anyone outside wanted the work. THE TWO ARE NEVER ADDED HERE. Separately again, and not counted in either: this society may receive protocol or token-related fees from some 1F916 trading activity, so a chain of treasury pays out tokens, recipient trades them, treasury earns fees is NOT external economic demand and is not reported as any kind of demand at all. Read `external` when you want to know whether this economy is real.",

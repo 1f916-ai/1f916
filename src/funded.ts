@@ -357,6 +357,88 @@ export function expectedVerifierSetHash(
   ));
 }
 
+// READ THE ESCROW, FROM THE WORKER, OVER THE SAME RPC PLUMBING THE BALANCE
+// CHECK ALREADY USES.
+//
+// Everything below this comment existed and was imported by NOTHING outside
+// the tests. So the registry shipped the FUNDED claim without the FUNDED
+// check: listings served "this listing's money is committed in the escrow
+// named above" while no code had ever asked the chain anything. Every guard
+// built for this, the spent-authority count, the clock, the verifier set
+// commitment, the drained and refunded checks, was unreachable in production.
+//
+// This is the call that makes them reachable. It reads and only reads: two
+// view functions, no key, no signing, nothing that can change a byte on chain.
+export async function readEscrow(
+  rpcCall: (to: string, data: string) => Promise<string>,
+  escrow: string,
+  listingHash: string,
+  funder: string,
+  verifierAddresses: readonly string[],
+): Promise<{ onchain: EscrowTerms | null; verifierAuthority: { address: string; cap: number; used: number }[] } | null> {
+  const lh = hex32(listingHash, "listing payload_hash");
+  const pad = (a: string) => a.toLowerCase().replace(/^0x/, "").padStart(64, "0");
+  try {
+    // listingOf(bytes32,address) -> ten values
+    const raw = await rpcCall(escrow, "0x" + SELECTOR_LISTING_OF + lh.slice(2) + pad(funder));
+    if (!/^0x[0-9a-fA-F]{640}$/.test(raw)) return null;
+    const w = (i: number) => raw.slice(2 + i * 64, 2 + (i + 1) * 64);
+    const onchain: EscrowTerms = {
+      funder: "0x" + w(0).slice(24),
+      token: "0x" + w(1).slice(24),
+      amountPerAward: BigInt("0x" + w(2)),
+      maxAwards: Number(BigInt("0x" + w(3))),
+      released: Number(BigInt("0x" + w(4))),
+      verifierDeadline: Number(BigInt("0x" + w(5))),
+      claimDeadline: Number(BigInt("0x" + w(6))),
+      refunded: BigInt("0x" + w(7)) === 1n,
+      committed: BigInt("0x" + w(8)),
+      verifierSet: "0x" + w(9),
+    };
+    const verifierAuthority: { address: string; cap: number; used: number }[] = [];
+    for (const address of verifierAddresses) {
+      const got = await rpcCall(escrow, "0x" + SELECTOR_VERIFIER_AUTHORITY + lh.slice(2) + pad(funder) + pad(address));
+      if (!/^0x[0-9a-fA-F]{128}$/.test(got)) return null;
+      verifierAuthority.push({
+        address,
+        cap: Number(BigInt("0x" + got.slice(2, 66))),
+        used: Number(BigInt("0x" + got.slice(66, 130))),
+      });
+    }
+    return { onchain, verifierAuthority };
+  } catch {
+    // A READ THAT FAILED IS NOT A LISTING THAT IS FUNDED. Returning null makes
+    // the caller say so rather than fall back to the terms it hoped for.
+    return null;
+  }
+}
+
+// The first four bytes of keccak over each function signature. I wrote these
+// from memory the first time, got BOTH wrong, and attached a comment claiming
+// they were pinned against the ABI. They are taken from `cast sig` now and
+// pinned by a test that recomputes them from the signature strings, because a
+// wrong selector calls nothing and would have read every escrow as absent:
+// the exact shape of failure that reports "not funded" for money that is
+// sitting there, forever, with no error anywhere.
+export const LISTING_OF_SIGNATURE = "listingOf(bytes32,address)";
+export const VERIFIER_AUTHORITY_SIGNATURE = "verifierAuthority(bytes32,address,address)";
+export const SELECTOR_LISTING_OF = "b3e64062";
+export const SELECTOR_VERIFIER_AUTHORITY = "40a704fc";
+
+// abi.encode(address[], uint32[]) by hand. The Worker has viem available, but
+// this encoding is nine lines and pinning it here means the recipe the reader
+// uses is the recipe the test compares against the contract, with nothing in
+// between that could differ.
+export function encodeAddressUint32Arrays(_types: readonly { type: string }[], values: readonly unknown[]): string {
+  const [addresses, caps] = values as [string[], number[]];
+  const word = (hex: string) => hex.replace(/^0x/, "").toLowerCase().padStart(64, "0");
+  const num = (n: number | bigint) => BigInt(n).toString(16).padStart(64, "0");
+  const head = num(64) + num(64 + 32 + addresses.length * 32);
+  const addressBlock = num(addresses.length) + addresses.map((a) => word(a)).join("");
+  const capBlock = num(caps.length) + caps.map((c) => num(c)).join("");
+  return "0x" + head + addressBlock + capBlock;
+}
+
 export function onchainRemaining(onchain: EscrowTerms): bigint {
   return onchain.refunded ? 0n : BigInt(onchain.maxAwards - onchain.released) * onchain.amountPerAward;
 }

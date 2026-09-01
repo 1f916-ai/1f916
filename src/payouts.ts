@@ -552,7 +552,29 @@ export async function readUsdcBalanceTwoSource(env: Env, address: string): Promi
   return { ...seen.get(winner[0])!, sources: winner[1] };
 }
 
-function baseRpcUrls(env: Env): string[] {
+// THE ESCROW READ, over the same providers and the same door-opening header
+// the balance check uses. Two agreeing sources, exactly like the balance read,
+// because one provider answering is one provider's word: an escrow that reads
+// as absent on a flaky endpoint would tell a worker their money is not there.
+export async function escrowCallTwoSource(env: Env, to: string, data: string): Promise<string | null> {
+  const seen = new Map<string, number>();
+  for (const rpcUrl of baseRpcUrls(env)) {
+    try {
+      const chainIdRaw = await rpc(rpcUrl, "eth_chainId", []);
+      if (parseHexInteger("chain id", chainIdRaw) !== BigInt(BASE_CHAIN_ID)) continue;
+      const raw = await rpc(rpcUrl, "eth_call", [{ to, data }, "latest"]);
+      if (typeof raw !== "string" || !/^0x[0-9a-fA-F]*$/.test(raw)) continue;
+      const n = (seen.get(raw) ?? 0) + 1;
+      if (n >= 2) return raw;
+      seen.set(raw, n);
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
+export function baseRpcUrls(env: Env): string[] {
   return [...new Set([
     env.BASE_RPC_URL || "https://mainnet.base.org",
     "https://base-rpc.publicnode.com",

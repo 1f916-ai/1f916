@@ -99,10 +99,19 @@ async function escrowListing(env: Env, db: DatabaseSync, verifierHandle: string,
     escrow_chain_id: 8453,
     escrow_address: "0x2222222222222222222222222222222222222222",
     escrow_token: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+    // The treasury may be named without a signature, because this registry
+    // holds no key for it and says so on the wire. Any other wallet must sign.
+    funder_address: "0xa7f7985eb19b8c44f12a0654df1ef89d1dd527c9",
     escrow_verifier_deadline: NOW + 7 * 86400,
     escrow_claim_deadline: NOW + 37 * 86400,
     verifiers: [{ handle: verifierHandle, key_thumbprint: thumbprint, evm_address: "0x1111111111111111111111111111111111111111", cap: 2 }],
-  }, { escrowAddress: "0x2222222222222222222222222222222222222222" }) as Record<string, unknown>;
+  }, {
+    escrowAddress: "0x2222222222222222222222222222222222222222",
+    // Declaring a funder wallet triggers the proof-of-funds read, which the
+    // offline harness blocks. Stubbed so this fixture tests the escrow terms
+    // rather than the balance rail, which has its own tests.
+    readBalance: async () => ({ balanceAtomic: "1000000000", blockNumber: 1, sources: 2 }),
+  }) as Record<string, unknown>;
   const listingId = Number((listing.row as string).replace("listing-", ""));
   db.prepare("INSERT INTO payout_bindings (citizen_id, docket_id, amount_atomic, payout_address, expiry, created_at) VALUES (?, ?, ?, '0xv', ?, 0)")
     .run(verifierCitizen, `listing-${listingId}-verifier`, DOLLAR, NOW + 86400);
@@ -730,4 +739,36 @@ test("the declared verifier signing with the declared key is accepted, and the a
   assert.equal(served.verdicts.length, 1);
   assert.equal(served.verdicts[0].key_thumbprint, thumb, "signed by the key the listing named");
   assert.equal(served.awards[0].verdict_id, served.verdicts[0].verdict_id);
+});
+
+test("a v3 listing's payload hash reproduces from its own served body, escrow terms included", async () => {
+  // THE AUDIT'S BLOCKING FINDING, pinned. createListing never added the six
+  // escrow fields to the payload it hashes, so each hashed as `undefined`,
+  // which JSON.stringify writes as null. The hash the escrow binds money to
+  // was provably independent of the escrow address, the token, the verifiers
+  // and both deadlines, so every reason given for hashing them was void and
+  // no reader could reproduce a v3 hash from the body at all.
+  //
+  // My first attempt at this test compared two hypothetical payloads and
+  // passed against the broken code. This one walks the PUBLISHED RECIPE
+  // against the PUBLISHED BODY, which is the only version that catches it.
+  const { env, db } = makeEnv();
+  const key = bindSigningKey(db, 4);
+  const thumb = (db.prepare("SELECT thumbprint AS t FROM keys WHERE citizen_id = 4").get() as { t: string }).t;
+  const { listingId } = await escrowListing(env, db, "citizen-c", 4, thumb);
+  void key;
+
+  const served = await getListing(env, listingId) as Record<string, any>;
+  const fields = served.payload_hash_recipe.fields as string[];
+  for (const f of fields) assert.ok(f in served, `the recipe names ${f}, so the body must carry it`);
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(fields.map((f) => served[f]))));
+  const hex = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  assert.equal(hex, served.payload_hash, "a stranger walking the published recipe over the published body reproduces the hash");
+
+  // And the escrow terms are genuinely load-bearing: blank them and the hash
+  // must change, or they are not in the commitment at all.
+  const blanked = fields.map((f) => (["escrow_chain_id", "escrow_address", "escrow_token", "verifiers", "escrow_verifier_deadline", "escrow_claim_deadline"].includes(f) ? null : served[f]));
+  const other = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(blanked)));
+  assert.notEqual([...new Uint8Array(other)].map((b) => b.toString(16).padStart(2, "0")).join(""), served.payload_hash,
+    "if blanking the escrow terms leaves the hash unchanged, the escrow is bound to a hash that does not name it");
 });
