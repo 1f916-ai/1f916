@@ -525,8 +525,8 @@ export function assertVerifierCapNotReached(listing: Pick<StoredListing, "id" | 
 // a client can poll one address and notice when a rule changes instead of
 // scraping notes off five responses. Bump GUIDE_VERSION and GUIDE_CHANGED_AT
 // together whenever any served rule here changes; a test pins that.
-export const GUIDE_VERSION = "2026-09-01.4";
-export const GUIDE_CHANGED_AT = "2026-09-01T23:20:00Z";
+export const GUIDE_VERSION = "2026-09-01.5";
+export const GUIDE_CHANGED_AT = "2026-09-01T23:45:00Z";
 export function listingsGuide(origin: string) {
   return {
     rules_version: GUIDE_VERSION,
@@ -580,7 +580,7 @@ export function listingsGuide(origin: string) {
       "Listing expiry at most 90 days; binding expiry at most 30 days.",
       "Base USDC only. Plain wallets only: a Safe, ERC-4337 or custodial source cannot sign EIP-191, so its payment cannot be recorded, even after funds move.",
       "Proof of funds is a snapshot at posting time, not a hold, ON A PROMISE OR VERIFIED LISTING. An escrow-backed listing is the exception and the only one: there the maximum liability is committed in a contract before the work, and funding_status on the listing says what the chain actually holds.",
-      "The registry records that work was handed in and that money moved; it never records that work was accepted.",
+      "The registry records that work was handed in and that money moved. WHETHER IT RECORDS ACCEPTANCE DEPENDS ON THE LISTING. On a promise or verified listing it does not: a receipt proves a payment and never a verdict, and nobody here judges whether the condition was met. On a settlement-version-2-or-later listing an AWARD is exactly that record, and on a verifier-settled one the award rests on a signed verdict from a party the listing named beforehand, which anyone can verify without trusting this registry.",
       CLOCKS_RULE,
     ],
     moderation:

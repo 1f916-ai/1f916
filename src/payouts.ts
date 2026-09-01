@@ -556,49 +556,72 @@ export async function readUsdcBalanceTwoSource(env: Env, address: string): Promi
 // the balance check uses. Two agreeing sources, exactly like the balance read,
 // because one provider answering is one provider's word: an escrow that reads
 // as absent on a flaky endpoint would tell a worker their money is not there.
-// AGREEMENT ONCE, THEN ONE PROVIDER. The first version walked all nine
-// providers for EVERY call, two fetches each, sequentially, on an
-// unauthenticated GET: 162 subrequests and 405 seconds worst case for a
-// listing with eight verifiers. The balance read it was copied from only ever
-// ran on a rate-limited POST. A public read path cannot spend that.
+// EVERY CALL IS TWO-SOURCE, and the pair is what gets reused rather than the
+// answer.
 //
-// So consensus is established ONCE, on the first call, across at most
-// ESCROW_PROVIDER_ATTEMPTS providers, and the provider that agreed is then
-// reused for the rest of the reads in that batch. Two sources still have to
-// agree about the escrow's own state, which is the fact that matters; the
-// follow-up authority reads ride the endpoint that already proved itself.
-export const ESCROW_PROVIDER_ATTEMPTS = 3;
+// The first version fanned out across all nine providers for every call: 162
+// subrequests on one unauthenticated GET. The second fixed the cost by
+// establishing agreement once and then trusting ONE provider for the rest,
+// which reintroduced the failure the whole reader exists to prevent. A
+// provider that answers listingOf honestly and then lies on verifierAuthority
+// makes every cap look unspent, which silences the "no named verifier can
+// authorize anything" disagreement and displays FUNDED over money nobody can
+// release. Agreeing on call one does not attest call two.
+//
+// So: find TWO providers that agree, on the same chain, and then require both
+// of them to agree on every later call in the batch. Cost is two fetches per
+// call after the pair is found, not nine.
+export const ESCROW_PROVIDER_ATTEMPTS = 6;
 
 export interface EscrowReader {
   call(to: string, data: string): Promise<string | null>;
 }
 
 export function escrowReader(env: Env): EscrowReader {
-  let agreed: string | null = null;
+  let pair: string[] | null = null;
+  const onBase = new Map<string, boolean>();
+  const isBase = async (rpcUrl: string) => {
+    const known = onBase.get(rpcUrl);
+    if (known !== undefined) return known;
+    try {
+      const raw = await rpc(rpcUrl, "eth_chainId", []);
+      const ok = parseHexInteger("chain id", raw) === BigInt(BASE_CHAIN_ID);
+      onBase.set(rpcUrl, ok);
+      return ok;
+    } catch {
+      onBase.set(rpcUrl, false);
+      return false;
+    }
+  };
+  const call = async (rpcUrl: string, to: string, data: string) => {
+    try {
+      const raw = await rpc(rpcUrl, "eth_call", [{ to, data }, "latest"]);
+      return typeof raw === "string" && /^0x[0-9a-fA-F]*$/.test(raw) ? raw : null;
+    } catch {
+      return null;
+    }
+  };
   return {
     async call(to: string, data: string): Promise<string | null> {
-      if (agreed !== null) {
-        try {
-          const raw = await rpc(agreed, "eth_call", [{ to, data }, "latest"]);
-          return typeof raw === "string" && /^0x[0-9a-fA-F]*$/.test(raw) ? raw : null;
-        } catch {
-          return null;
-        }
+      if (pair !== null) {
+        const [a, b] = await Promise.all([call(pair[0], to, data), call(pair[1], to, data)]);
+        return a !== null && a === b ? a : null;
       }
+      // CHAIN ID IS CHECKED PER PROVIDER, once, before its answer counts. It
+      // was dropped when this path was written and env.BASE_RPC_URL sits
+      // first in the list, so an override pointed at another chain would have
+      // been believed.
       const seen = new Map<string, string>();
       for (const rpcUrl of baseRpcUrls(env).slice(0, ESCROW_PROVIDER_ATTEMPTS)) {
-        try {
-          const raw = await rpc(rpcUrl, "eth_call", [{ to, data }, "latest"]);
-          if (typeof raw !== "string" || !/^0x[0-9a-fA-F]*$/.test(raw)) continue;
-          const first = seen.get(raw);
-          if (first !== undefined) {
-            agreed = rpcUrl;
-            return raw;
-          }
-          seen.set(raw, rpcUrl);
-        } catch {
-          continue;
+        if (!(await isBase(rpcUrl))) continue;
+        const raw = await call(rpcUrl, to, data);
+        if (raw === null) continue;
+        const first = seen.get(raw);
+        if (first !== undefined) {
+          pair = [first, rpcUrl];
+          return raw;
         }
+        seen.set(raw, rpcUrl);
       }
       return null;
     },

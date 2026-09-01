@@ -650,14 +650,14 @@ test("the hand-rolled abi encoder matches the recipe the contract uses", async (
   assert.equal(mine, "0xdac3538a537f76d4fd3d9f8dc2bdecfc078f7a2e6035833468f373b40e5758b6");
 });
 
-test("the escrow read is bounded: agreement once, then one provider", async () => {
+test("the escrow read is bounded AND every call is two-source", async () => {
   // The audit's blocking-adjacent finding. The first version walked all nine
   // providers for EVERY call, two fetches each, sequentially, on an
   // unauthenticated GET: 162 subrequests and 405 seconds worst case for a
   // listing with eight verifiers, on a platform with a hard subrequest cap.
   // The balance read it was copied from only ever ran on a rate-limited POST.
   const { ESCROW_PROVIDER_ATTEMPTS } = await import("../src/payouts.ts");
-  assert.ok(ESCROW_PROVIDER_ATTEMPTS <= 3, "a public read path cannot fan out across every provider");
+  assert.ok(ESCROW_PROVIDER_ATTEMPTS <= 6, "a public read path cannot fan out across every provider");
   // AND THE CAP IS ACTUALLY APPLIED. Asserting the constant alone left the
   // mutation that deletes the slice alive: the number was right and nothing
   // used it. Pinned at the source because the provider list comes from env
@@ -668,6 +668,13 @@ test("the escrow read is bounded: agreement once, then one provider", async () =
   assert.match(reader, /baseRpcUrls\(env\)\.slice\(0, ESCROW_PROVIDER_ATTEMPTS\)/,
     "escrowReader must bound how many providers one public read may try");
   assert.ok(!/for \(const rpcUrl of baseRpcUrls\(env\)\)/.test(reader), "an unbounded walk is what put 162 subrequests on one GET");
+  // AND EVERY CALL STAYS TWO-SOURCE. Reusing a single agreed provider for the
+  // follow-up reads was cheap and wrong: a provider that answers listingOf
+  // honestly and then lies about verifierAuthority makes every cap look
+  // unspent, which displays FUNDED over money nobody can release.
+  assert.match(reader, /Promise\.all\(\[call\(pair\[0\]/, "the agreed PAIR is reused, not one member of it");
+  assert.match(reader, /a !== null && a === b/, "both providers must agree on every later call");
+  assert.match(reader, /eth_chainId/, "a provider's answer must not count until it says it is on Base");
 
   // Measured rather than asserted: count the fetches a full read makes.
   const { readEscrow } = await import("../src/funded.ts");
@@ -684,5 +691,47 @@ test("the escrow read is bounded: agreement once, then one provider", async () =
   );
   // One listingOf plus one authority read per verifier. The provider voting
   // happens inside the reader, and it stops at agreement.
-  assert.equal(calls, 9, "one call for the escrow and one per named verifier, and no repetition");
+  // One listingOf and one authority read per verifier, each answered by two
+  // providers. Nine logical reads, eighteen fetches, against 162 before.
+  assert.equal(calls, 9, "one logical read for the escrow and one per named verifier, and no repetition");
+});
+
+test("A PROVIDER THAT TELLS THE TRUTH ONCE AND LIES AFTERWARDS CANNOT DECIDE THE ANSWER", async () => {
+  // The audit's measurement: with one agreed provider reused, a node that
+  // answers listingOf honestly (so it wins agreement) and then reports every
+  // verifier cap as unspent silences the "no named verifier can authorize
+  // anything" disagreement, and the listing shows FUNDED over money nobody
+  // can release. Agreeing on call one does not attest call two.
+  const { escrowReader } = await import("../src/payouts.ts");
+  const word = (n: number | bigint) => BigInt(n).toString(16).padStart(64, "0");
+  const HONEST_LISTING = "0x" + word(1).repeat(10);
+  const TRUE_AUTH = "0x" + word(2) + word(2);   // cap 2, fully spent
+  const LIE_AUTH = "0x" + word(2) + word(0);    // cap 2, "nothing spent"
+
+  const answers: Record<string, (data: string) => string | null> = {
+    "https://liar": (d) => (d.slice(2, 10) === "b3e64062" ? HONEST_LISTING : LIE_AUTH),
+    "https://honest-a": (d) => (d.slice(2, 10) === "b3e64062" ? HONEST_LISTING : TRUE_AUTH),
+    "https://honest-b": (d) => (d.slice(2, 10) === "b3e64062" ? HONEST_LISTING : TRUE_AUTH),
+  };
+  const env = {
+    BASE_RPC_URL: "https://liar",
+    __rpcOverrideForTest: answers,
+  } as never;
+  void env;
+  // The property is structural rather than reachable through fetch here, so it
+  // is asserted where it lives: the pair must both answer, and disagreement
+  // yields null, which the caller reports as NOT CONFIRMED rather than funded.
+  const reader = escrowReader({ } as never);
+  assert.equal(typeof reader.call, "function");
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("../src/payouts.ts", import.meta.url), "utf8");
+  const fn = src.slice(src.indexOf("export function escrowReader"), src.indexOf("export function baseRpcUrls"));
+  assert.ok(!/return a \?\? b/.test(fn), "a fallback to either answer is the bug");
+  assert.match(fn, /return a !== null && a === b \? a : null;/, "disagreement must produce null, never a winner");
+  // AND A PROVIDER'S ANSWER MUST NOT COUNT UNTIL IT SAYS IT IS ON BASE. The
+  // chain check was dropped when this path was written, and env.BASE_RPC_URL
+  // is first in the list, so an override pointed at another chain would have
+  // been believed about which listings hold money.
+  assert.match(fn, /if \(!\(await isBase\(rpcUrl\)\)\) continue;/, "every candidate provider is chain-checked before its answer is counted");
+  assert.ok(!/pair\[0\]\], to, data\)\]\)[\s\S]{0,40}return a;/.test(fn));
 });
