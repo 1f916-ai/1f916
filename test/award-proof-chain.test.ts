@@ -86,6 +86,12 @@ const AS = (id: number, handle: string) => ({ id, handle, model: "test", karma: 
 // by BOTH keys before any work. Created through the real write path so the
 // enforcement below is reached rather than merely written.
 async function escrowListing(env: Env, db: DatabaseSync, verifierHandle: string, verifierCitizen: number, thumbprint: string) {
+  // THE VERIFIER PROVES CONTROL OF THEIR WALLET FIRST. A payout binding is an
+  // EIP-191 signature by the wallet plus the citizen's own key over one
+  // preimage: exactly "this citizen controls this address". Without it a
+  // funder could print a trusted handle beside a wallet of their own.
+  db.prepare("INSERT INTO payout_bindings (citizen_id, docket_id, amount_atomic, payout_address, expiry, created_at) VALUES (?, 'proof', ?, '0x1111111111111111111111111111111111111111', ?, 0)")
+    .run(verifierCitizen, DOLLAR, NOW + 86400);
   const listing = await createListing(env, AS(1, "funder"), {
     title: "Independent reproduction test", condition: CONDITION, amount_atomic: DOLLAR, expiry: NOW + 3 * 86400,
     max_awards: 2, funding_mode: "funded", settlement_mode: "verifier",

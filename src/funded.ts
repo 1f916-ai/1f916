@@ -132,7 +132,19 @@ export const ESCROW_READ_ABI = [
       { name: "released", type: "uint32" }, { name: "verifierDeadline", type: "uint64" },
       { name: "claimDeadline", type: "uint64" }, { name: "refunded", type: "bool" },
       { name: "committed", type: "uint256" },
+      // THE TENTH OUTPUT. It was missing, so the only decoder in this repo
+      // could not produce the one field the hidden-verifier defence depends
+      // on: the fix existed on chain and was unreachable through the reader.
+      // The ABI test asserted only the entry NAMES, so it stayed green while
+      // the decode was wrong, which is a guard passing over a broken
+      // guarantee.
+      { name: "verifierSet", type: "bytes32" },
     ],
+  },
+  {
+    type: "function", name: "verifierSetHash", stateMutability: "pure",
+    inputs: [{ name: "verifiers", type: "address[]" }, { name: "caps", type: "uint32[]" }],
+    outputs: [{ name: "", type: "bytes32" }],
   },
   {
     type: "function", name: "verifierAuthority", stateMutability: "view",
@@ -288,6 +300,21 @@ export function fundedDisagreements(
     out.push("every award on this listing has already been released or refunded, so the escrow holds nothing and no further work on it can be paid from here");
 
   return out;
+}
+
+// THE RECIPE, ON THIS SIDE, so the two implementations can be compared rather
+// than assumed equal. keccak256(abi.encode(address[] verifiers, uint32[] caps))
+// over the listing's OWN published verifiers, in the order the listing
+// published them.
+export function expectedVerifierSetHash(
+  verifiers: readonly { evm_address: string; cap: number }[],
+  encode: (types: readonly { type: string }[], values: readonly unknown[]) => string,
+  keccak: (hex: string) => string,
+): string {
+  return keccak(encode(
+    [{ type: "address[]" }, { type: "uint32[]" }],
+    [verifiers.map((v) => v.evm_address), verifiers.map((v) => v.cap)],
+  ));
 }
 
 export function onchainRemaining(onchain: EscrowTerms): bigint {

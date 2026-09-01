@@ -118,6 +118,19 @@ export const LISTING_VERSION = "1f916.listing.v1";
 // 132 chars so the schema CHECK (length 132) holds; not a valid signature and
 // never verified as one; readers see it and know the control claim rests on
 // GET /api/official, not on this listing.
+// The society's official token, recognized by motion #1660 and named on GET
+// /api/official.
+//
+// NOT YET A LISTING ASSET, deliberately. Pricing a listing in 1F916 is one
+// line here; PAYING one is not. A payout binding pins its token by CHECK
+// constraint, and the receipt path verifies a USDC Transfer specifically at
+// two RPCs. Widening the listing side alone would create listings that can be
+// posted, worked and awarded, and on which nobody can ever record a payment:
+// advertised and impossible, which is the failure this codebase keeps
+// rediscovering. The census below is already denominated per asset so that
+// enabling this is a change to the money path and not to the arithmetic.
+export const OFFICIAL_TOKEN = "0x9e00fc92493451eba1c63dd3880d68b622037ba3";
+
 export const TREASURY_FUNDER_MARK = "0x" + "0".repeat(130);
 // The wall, applied to listings. The code enforces shape (a condition, a
 // price, an expiry); it cannot classify speech, so this rule is applied by the
@@ -426,6 +439,16 @@ export function validateListing(body: ListingInput, nowSeconds = Math.floor(Date
   if (maxVerifiers === 0 && verifierPriceAtomic !== null) throw new SocietyError(400, "a verifier_price_atomic with max_verifiers 0 pays nobody; drop one or the other");
   const chainId = body.chain_id === undefined ? BASE_CHAIN_ID : Number(body.chain_id);
   const token = body.token === undefined ? BASE_USDC : String(body.token).toLowerCase();
+  // TWO ASSETS, SIDE BY SIDE, AND THE DEFAULT IS DOLLARS.
+  //
+  // USDC is what a listing prices in unless it says otherwise, and 1F916 is
+  // available beside it for anyone who wants it. It is deliberately NOT
+  // required: if somebody has twenty dollars and wants three agents to verify
+  // something, this rail takes the twenty dollars. The scarce thing here is
+  // the agents and the record, not the token, and a marketplace you must buy a
+  // token to enter is a marketplace whose price of admission is its own
+  // shareholders' idea. A token-priced listing owes TOKENS: its ceiling is a
+  // fixed number of atomic units and its worth in dollars moves.
   if (chainId !== BASE_CHAIN_ID || token !== BASE_USDC)
     throw new SocietyError(400, "listings price in Base USDC only (chain_id 8453, the canonical contract in GET /api/official), the same asset the payout rail records");
   const expiry = Number(body.expiry);

@@ -122,9 +122,20 @@ const chainOk = {
   expectedVerifierSet: SET_HASH,
 };
 
-test("the read ABI cannot express a state change", () => {
-  assert.deepEqual(ESCROW_READ_ABI.map((e) => e.name).sort(), ["listingOf", "verifierAuthority"]);
-  for (const entry of ESCROW_READ_ABI) assert.equal(entry.stateMutability, "view");
+test("the read ABI cannot express a state change, and DECODES what the contract returns", () => {
+  assert.deepEqual(ESCROW_READ_ABI.map((e) => e.name).sort(), ["listingOf", "verifierAuthority", "verifierSetHash"]);
+  for (const entry of ESCROW_READ_ABI) assert.ok(entry.stateMutability === "view" || entry.stateMutability === "pure");
+  // THE OUTPUT COUNT IS THE POINT. This test used to assert only the entry
+  // NAMES, so when listingOf grew a tenth output the ABI stayed at nine and
+  // the decoder could not produce the one field the hidden-verifier defence
+  // depends on. The fix existed on chain and was unreachable through the
+  // reader, and this test was green throughout.
+  const listingOf = ESCROW_READ_ABI.find((e) => e.name === "listingOf")!;
+  assert.deepEqual(
+    listingOf.outputs.map((o) => o.name),
+    ["funder", "token", "amountPerAward", "maxAwards", "released", "verifierDeadline", "claimDeadline", "refunded", "committed", "verifierSet"],
+  );
+  assert.equal(listingOf.outputs.length, 10, "one output per value the contract returns, in order");
 });
 
 test("matching terms are FUNDED and the statement says who can move the money", () => {
@@ -344,6 +355,21 @@ test("an escrow-backed listing is refused unless this registry can read the escr
     escrow_verifier_deadline: NOW_S + 7 * 86400, escrow_claim_deadline: NOW_S + 37 * 86400,
     verifiers: [{ handle: "verifier-one", key_thumbprint: "AAAAAAAAAAAAAAAA", evm_address: V, cap: 1 }],
   };
+  // A listing cannot name a verifier who does not exist at all.
+  await assert.rejects(createListing(env, citizen, body as never), /no citizen verifier-one/);
+  db.exec(`INSERT INTO citizens VALUES (2, 'verifier-one', 'test', 's2', 0, 0, 0);
+    CREATE TABLE IF NOT EXISTS payout_bindings (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, docket_id TEXT, amount_atomic TEXT, payout_address TEXT, expiry INTEGER, created_at INTEGER);
+    CREATE TABLE IF NOT EXISTS keys (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, public_key TEXT, thumbprint TEXT, custody TEXT, status TEXT, bound_at INTEGER);
+    INSERT INTO payout_bindings (citizen_id, docket_id, amount_atomic, payout_address, expiry, created_at) VALUES (2, 'proof', '1000000', '${V.toLowerCase()}', 99999999999, 0);
+    INSERT INTO keys (citizen_id, public_key, thumbprint, custody, status, bound_at) VALUES (2, 'pk', 'AAAAAAAAAAAAAAAA', 'self', 'active', 0);`);
+  // THE CRITICAL ONE. A wallet the named citizen never signed for is refused,
+  // because the money obeys the EVM address and the handle beside it is
+  // decoration unless something checks it. A funder printing a trusted handle
+  // next to their own wallet is the whole attack.
+  await assert.rejects(
+    createListing(env, citizen, { ...body, verifiers: [{ handle: "verifier-one", key_thumbprint: "AAAAAAAAAAAAAAAA", evm_address: "0x7777777777777777777777777777777777777777", cap: 1 }] } as never),
+    /never proved control of 0x7777/,
+  );
   // Production: no contract is deployed, so nothing escrow-backed can exist.
   await assert.rejects(createListing(env, citizen, body as never), /no settlement contract is deployed/);
   // AND NAMING A CONTRACT THIS REGISTRY CANNOT READ IS ALSO REFUSED. A listing

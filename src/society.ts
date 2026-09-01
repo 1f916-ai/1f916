@@ -2688,6 +2688,37 @@ export async function createListing(
   // point. The older funded path still needs an adapter that can hold money,
   // and none exists.
   if (settlement.settlementVersion >= 3) {
+    // EVERY VERIFIER'S WALLET MUST BE ONE THEY PROVED THEY CONTROL.
+    //
+    // The set commitment proves the escrow's verifiers equal the listing's.
+    // It does NOT prove the listing's verifiers are who the listing says they
+    // are, and that gap was the same drain one step earlier: a funder publishes
+    // a respected citizen's handle and their real key thumbprint beside the
+    // FUNDER'S OWN wallet, every hash matches, the site says FUNDED, the work
+    // gets done, and the funder signs the releases to himself. The money obeys
+    // the EVM address; the handle beside it is decoration unless something
+    // checks it.
+    //
+    // The proof already exists on this rail and needs no new ceremony: a
+    // payout binding is an EIP-191 signature by the wallet plus the citizen's
+    // own key over one preimage, which is exactly "this citizen controls this
+    // address". So a verifier's declared wallet must be one they have already
+    // bound. A funder cannot name a wallet on someone else's behalf.
+    for (const v of settlement.verifiers ?? []) {
+      const who = await env.DB.prepare("SELECT id FROM citizens WHERE handle = ?").bind(v.handle).first<{ id: number }>();
+      if (!who)
+        throw new SocietyError(400, `no citizen ${v.handle}: a listing cannot name a verifier who does not exist`);
+      const proven = await env.DB.prepare(
+        `SELECT 1 AS ok FROM payout_bindings WHERE citizen_id = ? AND lower(payout_address) = ? LIMIT 1`,
+      ).bind(who.id, v.evmAddress).first<{ ok: number }>();
+      if (!proven)
+        throw new SocietyError(400, `${v.handle} has never proved control of ${v.evmAddress}. A verifier's wallet is what the money obeys, so naming one they did not sign for would let a funder print a trusted handle beside an address of their own choosing and take the escrow back through it. ${v.handle} must file a payout binding for that address first: it is an EIP-191 signature by the wallet AND their citizen key over one preimage, which is the proof this check wants.`);
+      const key = await env.DB.prepare(
+        `SELECT thumbprint FROM keys WHERE citizen_id = ? AND status = 'active' AND custody = 'self' LIMIT 1`,
+      ).bind(who.id).first<{ thumbprint: string }>();
+      if (!key || key.thumbprint !== v.keyThumbprint)
+        throw new SocietyError(400, `${v.handle}'s declared verifier key ${v.keyThumbprint} is not their active self-custodied key. The thumbprint is checked at posting time as well as at verdict time, so a listing cannot be published naming a key that could never sign for it.`);
+    }
     const configured = deps.escrowAddress ?? ESCROW_ADDRESS;
     if (configured === null)
       throw new SocietyError(400, "an escrow-backed listing cannot be recorded yet: no settlement contract is deployed for this registry to read, so there is nowhere for the money to be committed and nothing for a reader to check the terms against. This registry holds no key that can move funds out of such a contract and never will; what is missing is the contract itself, reviewed and deployed.");
@@ -4694,7 +4725,8 @@ export async function railCensus(env: Env) {
   const { results: listings } = await env.DB.prepare(
     `SELECT l.id, l.citizen_id, c.handle AS funder, l.title, l.amount_atomic, l.verifier_price_atomic, l.max_verifiers,
             l.expiry, l.funder_address, l.funds_seen_atomic, l.withdrawn_at, l.mod_state, l.created_at, l.post_id,
-            l.max_awards, l.funding_mode, l.settlement_mode, l.award_ttl_seconds, l.settlement_version
+            l.max_awards, l.funding_mode, l.settlement_mode, l.award_ttl_seconds, l.settlement_version,
+            l.token, l.chain_id, l.funder_signature
        FROM listings l JOIN citizens c ON c.id = l.citizen_id
       ORDER BY l.id ASC`,
   ).all<Record<string, unknown>>();
@@ -4759,6 +4791,14 @@ export async function railCensus(env: Env) {
       expiry: l.expiry,
       created_at: l.created_at,
       thread: l.post_id === null ? null : `/api/post/${l.post_id}`,
+      // THE ASSET, NAMED ON EVERY ROW. Two listings can both say "5000000"
+      // and mean five dollars and five millionths of a token: USDC carries six
+      // decimals and 1F916 carries eighteen. An atomic figure without its
+      // asset is not a quantity, and adding two of them is not arithmetic.
+      asset: { chain_id: Number(l.chain_id), token: String(l.token) },
+      // Funded by this society's own treasury rather than by an outside
+      // party. Read from the marker the listing carries, never guessed.
+      treasury_funded: l.funder_signature === TREASURY_FUNDER_MARK,
       award_amount_atomic: l.amount_atomic,
       verifier_price_atomic: l.verifier_price_atomic,
       max_verifiers: l.max_verifiers,
@@ -4822,6 +4862,36 @@ export async function railCensus(env: Env) {
   // Serving one unprefixed "outstanding" over both would turn "we cannot
   // derive it" into "we have proved it is zero", which is the opposite error to
   // the one this rail was built to fix and is just as wrong.
+  // LIABILITY IS PER ASSET, ALWAYS. USDC has six decimals and 1F916 has
+  // eighteen, so one scalar summing both is not a quantity at all: it is two
+  // different units added together and printed as money. The rail carries both
+  // assets side by side by design, so the by-asset map is the truth and the
+  // single-scalar fields below become NULL the moment a second asset appears,
+  // rather than quietly reporting a number that means nothing.
+  const byAsset = new Map<string, Record<string, string | number>>();
+  for (const r of rows) {
+    const key = `${r.asset.chain_id}:${r.asset.token}`;
+    const a = byAsset.get(key) ?? {
+      chain_id: r.asset.chain_id, token: r.asset.token, listings: 0,
+      v2_outstanding_awarded_atomic: "0", v2_currently_due_atomic: "0", v2_overdue_unpaid_atomic: "0",
+      v2_expired_unclaimed_atomic: "0", v2_paid_atomic: "0", v2_maximum_remaining_liability_atomic: "0",
+    };
+    a.listings = Number(a.listings) + 1;
+    for (const [field, value] of [
+      ["v2_outstanding_awarded_atomic", r.economics.outstanding_awarded_atomic],
+      ["v2_currently_due_atomic", r.economics.currently_due_atomic],
+      ["v2_overdue_unpaid_atomic", r.economics.overdue_unpaid_atomic],
+      ["v2_expired_unclaimed_atomic", r.economics.expired_unclaimed_atomic],
+      ["v2_paid_atomic", r.economics.amount_paid_atomic],
+      ["v2_maximum_remaining_liability_atomic", r.economics.maximum_remaining_liability_atomic ?? "0"],
+    ] as const) {
+      a[field] = (BigInt(String(a[field])) + BigInt(String(value))).toString();
+    }
+    byAsset.set(key, a);
+  }
+  const assets = [...byAsset.values()];
+  const singleAsset = assets.length <= 1;
+
   const totals = rows.reduce(
     (acc, r) => ({
       listings: acc.listings + 1,
@@ -4846,6 +4916,33 @@ export async function railCensus(env: Env) {
       legacy_bindings_unclassified: acc.legacy_bindings_unclassified + r.legacy_bindings_unclassified,
     }),
     { listings: 0, open: 0, submissions: 0, bindings: 0, receipts: 0, lapsed_bindings: 0, awards: 0, v2_listings: 0, v2_currently_due_atomic: "0", v2_overdue_unpaid_atomic: "0", v2_outstanding_awarded_atomic: "0", v2_paid_atomic: "0", v2_expired_unclaimed_atomic: "0", v2_maximum_remaining_liability_atomic: "0", legacy_listings: 0, legacy_listings_without_declared_cap: 0, legacy_bindings_unclassified: 0 },
+  );
+
+  // The scalar liability fields are the single-asset case only. With two
+  // assets present there is no such number, and null says so where a sum would
+  // have lied.
+  const scalarFields = ["v2_currently_due_atomic", "v2_overdue_unpaid_atomic", "v2_outstanding_awarded_atomic", "v2_paid_atomic", "v2_expired_unclaimed_atomic", "v2_maximum_remaining_liability_atomic"] as const;
+  const scopedTotals: Record<string, unknown> = { ...totals };
+  if (!singleAsset) for (const f of scalarFields) scopedTotals[f] = null;
+
+  // WHOSE MONEY IS MOVING, and it is not one number either. A rail whose
+  // volume is mostly its own treasury paying for work is a subsidy, and
+  // reporting it beside outside demand would let this society congratulate
+  // itself for money it printed. The marker is exact rather than inferred:
+  // funder_signature is TREASURY_FUNDER_MARK only on a listing whose funding
+  // wallet was asserted by this registry rather than signed for by a wallet.
+  const demand = rows.reduce(
+    (acc, r) => {
+      const side = r.treasury_funded ? "treasury_funded" : "external";
+      acc[side].listings += 1;
+      acc[side].paid_atomic_by_asset[`${r.asset.chain_id}:${r.asset.token}`] =
+        (BigInt(acc[side].paid_atomic_by_asset[`${r.asset.chain_id}:${r.asset.token}`] ?? "0") + BigInt(r.economics.amount_paid_atomic)).toString();
+      return acc;
+    },
+    {
+      external: { listings: 0, paid_atomic_by_asset: {} as Record<string, string> },
+      treasury_funded: { listings: 0, paid_atomic_by_asset: {} as Record<string, string> },
+    },
   );
 
   // Settlement history, per funder. A missed payment deadline is a fact about
@@ -4876,7 +4973,16 @@ export async function railCensus(env: Env) {
   return {
     now,
     now_utc: new Date(now).toISOString(),
-    totals,
+    totals: scopedTotals,
+    // Every asset priced on this rail, with its own liability. This is the
+    // figure to quote; the scalars above are the single-asset convenience and
+    // are null whenever more than one asset is present.
+    liability_by_asset: assets,
+    assets_note:
+      "One entry per asset this rail prices work in. USDC is the default and 1F916 is available beside it; a listing names ONE asset and its maximum liability is denominated in that asset, period. A token-priced listing owes TOKENS: its ceiling is a fixed number of atomic units and its value in dollars moves, so any dollar figure shown anywhere for such a listing is an estimate at a moment and never the obligation. Atomic units are not comparable across assets: USDC carries 6 decimals and 1F916 carries 18, so the scalar totals above are null unless exactly one asset is in use, because a sum across assets is not a quantity.",
+    demand,
+    demand_note:
+      "WHO PAID, SPLIT AT THE SOURCE, so this society cannot congratulate itself for money it printed. external: a party other than this society's treasury funded the work. treasury_funded: the treasury did, which is a subsidy and a bootstrap and is a perfectly reasonable thing to do, but it is not evidence that anyone outside wanted the work. THE TWO ARE NEVER ADDED HERE. Separately again, and not counted in either: this society may receive protocol or token-related fees from some 1F916 trading activity, so a chain of treasury pays out tokens, recipient trades them, treasury earns fees is NOT external economic demand and is not reported as any kind of demand at all. Read `external` when you want to know whether this economy is real.",
     funders: [...funders.values()].sort((a, b) => (BigInt(b.v2_overdue_unpaid_atomic) > BigInt(a.v2_overdue_unpaid_atomic) ? 1 : -1)),
     funders_note: "One row per funder. v2_overdue_unpaid_atomic is money they owe on work that was accepted, where the worker had already supplied a payout destination and the deadline passed anyway. It is a fact about this funder and never about the workers, and on a promise listing a reader has nothing else to go on. v2_expired_unclaimed_atomic on the same row is NOT a mark against them: it is money their listing owed to a worker who did not supply a destination in time. READ THE ZEROS CORRECTLY: every atomic figure here is derived from the v2 award ledger alone, so a funder showing 0 has NO V2-RECORDED OUTSTANDING LIABILITY, which is not a finding that they never owed anyone anything. Where liability_scope is legacy_unclassified or mixed, that funder also holds legacy_listings whose obligations are NOT DERIVABLE from their payout bindings, counted as legacy_bindings_unclassified on the same row. This registry will not clear a funder it cannot audit, and it will not accuse one either.",
     listings: rows,
@@ -4906,6 +5012,8 @@ export async function railCensus(env: Env) {
       v2_paid_atomic: "Receipts joined to award rows. A pre-v2 payment has no award row to join to, so money that genuinely moved on a legacy listing is NOT in this figure; the `receipts` count above is where those live.",
       v2_maximum_remaining_liability_atomic: "Per listing: outstanding plus available capacity times the award amount. Summed here over listings that declare a cap. Legacy listings declare none, are counted in legacy_listings_without_declared_cap, and contribute nothing, because this registry will not invent a cap its funder never declared.",
       legacy_listings: "Listings posted before settlement v2. They hold no award ledger and awards cannot be made against them, so they contribute exactly 0 to every v2_ figure above BY CONSTRUCTION. That zero is an absence of records, not a finding.",
+      liability_by_asset: "The same v2 liability figures, grouped by the asset each listing prices in. THIS is the figure to quote. Atomic units mean different quantities in different assets, so the scalar totals are null whenever more than one asset is present rather than summing units that do not add.",
+      demand: "Listings split by whether this society's own treasury funded them. Read off the listing's funder marker, not inferred from handles. Treasury-funded work is a subsidy: real, useful, and not evidence of outside demand. Token fee income is neither and appears in neither.",
       legacy_bindings_unclassified: "Payout bindings on legacy listings with no receipt against them. Each one is a routing record that never said whether an award was made, so it is UNKNOWN: not a debt, and not proof there was none. This is the size of what settlement v2 cannot audit, published so that the unknown is a number on the page rather than an omission.",
     },
     liability_scope_note:

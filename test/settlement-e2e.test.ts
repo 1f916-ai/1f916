@@ -1282,3 +1282,68 @@ test("only a requester-settled listing can reserve a seat, which is what makes m
     "and the funder has no confirm step to withhold: the door refuses a verifier-settled listing outright",
   );
 });
+
+// ---------- one asset today, two by design ----------
+//
+// USDC is the default and 1F916 is meant to sit beside it, never to replace
+// it. The arithmetic is already denominated per asset, because atomic units
+// are not comparable across assets: USDC carries six decimals and 1F916
+// eighteen, so one scalar summing both is two different units added together
+// and printed as money.
+//
+// PRICING a listing in 1F916 is one line in the validator. PAYING one is not:
+// payout bindings pin their token by CHECK constraint and the receipt path
+// verifies a USDC Transfer specifically. So the listing side stays closed
+// until the money path opens, and these tests pin the shape rather than a
+// capability that does not exist yet.
+
+test("every listing names the asset it is priced in, and liability is grouped by it", async () => {
+  const { env, db } = makeEnv();
+  const listing = await createListing(env, AS(1, "funder"), {
+    title: "Independent reproduction test", condition: CONDITION, amount_atomic: "5000000", expiry: NOW + 86400,
+    max_awards: 1, funding_mode: "promise", settlement_mode: "requester",
+  }) as Record<string, unknown>;
+  const id = Number((listing.row as string).replace("listing-", ""));
+  const sub = await createSubmission(env, AS(2, "citizen-a"), id, { artifact: reproduce(db, 2, "a") }) as Record<string, unknown>;
+  await createAward(env, AS(1, "funder"), id, { submission_id: sub.id });
+
+  const census = await railCensus(env) as Record<string, any>;
+  for (const row of census.listings)
+    assert.ok(row.asset.token && row.asset.chain_id, "an atomic figure without its asset is not a quantity");
+  assert.equal(census.liability_by_asset.length, 1, "one asset in use today");
+  assert.equal(census.liability_by_asset[0].v2_outstanding_awarded_atomic, "5000000");
+  // With one asset the scalars still answer, so nothing reading them breaks.
+  assert.equal(census.totals.v2_outstanding_awarded_atomic, "5000000");
+  assert.match(census.assets_note, /owes TOKENS/);
+  assert.match(census.assets_note, /never the obligation/);
+  assert.match(census.assets_note, /null unless exactly one asset is in use/);
+});
+
+test("the listing door prices in USDC today and says so, rather than half-opening the token", async () => {
+  const { env } = makeEnv();
+  await assert.rejects(
+    createListing(env, AS(1, "funder"), {
+      title: "Independent reproduction test", condition: CONDITION, amount_atomic: "2000000000000000000000000",
+      expiry: NOW + 86400, max_awards: 1, funding_mode: "promise", settlement_mode: "requester",
+      token: "0x9e00fc92493451eba1c63dd3880d68b622037ba3",
+    }),
+    /price in Base USDC only/,
+    "a listing that can be posted and awarded but never paid is worse than one that cannot be posted",
+  );
+});
+
+test("treasury-funded work is never counted as outside demand", async () => {
+  const { env, db } = makeEnv();
+  await createListing(env, AS(1, "funder"), {
+    title: "Independent reproduction test", condition: CONDITION, amount_atomic: DOLLAR, expiry: NOW + 86400,
+    max_awards: 1, funding_mode: "promise", settlement_mode: "requester",
+  });
+  const census = await railCensus(env) as Record<string, any>;
+  assert.equal(census.demand.external.listings + census.demand.treasury_funded.listings, census.totals.listings, "every listing lands on exactly one side");
+  assert.equal(census.demand.treasury_funded.listings, 0, "this fixture's funder signed for their own wallet");
+  // The disclosure is served, not filed somewhere nobody reads.
+  assert.match(census.demand_note, /NEVER ADDED/);
+  assert.match(census.demand_note, /token-related fees/);
+  assert.match(census.demand_note, /is NOT external economic demand/);
+  void db;
+});
