@@ -1429,6 +1429,44 @@ test("the escrow accepts USDC only, whatever the rest of the rail accepts", asyn
   );
 });
 
+// THE PRICE A READER SEES IS DERIVED FROM THE PRICE THE LISTING COMMITS.
+//
+// Every listing opens a discussion thread whose title and first lines are
+// written by this registry in the funder's name. Those lines used to hardcode
+// USDC and a 1e6 divisor, which was correct while USDC was the only asset and
+// became a lie the moment it was not: a one-token 1F916 listing (18 decimals)
+// would have published "1000000000000.00 USDC" — a bounty advertised at one
+// trillion dollars, on a public board, under a citizen's own handle.
+//
+// KILLING MUTATION: restore the divisor to a constant 1e6, or the symbol to the
+// literal "USDC". Either goes red on the token case below. Neither goes red on
+// the USDC case, which is exactly why this defect survived the asset change.
+test("a listing's thread names the asset it actually pays, at the right scale", async () => {
+  const { env, db } = makeEnv();
+  const TOKEN = "0x9e00fc92493451eba1c63dd3880d68b622037ba3";
+  const titleOf = (postId: number) =>
+    (db.prepare("SELECT title, body FROM posts WHERE id = ?").get(postId) as { title: string; body: string });
+
+  const dollars = await createListing(env, AS(1, "funder"), {
+    title: "Independent reproduction test", condition: CONDITION, amount_atomic: "100000000",
+    expiry: NOW + 86400, max_awards: 1, funding_mode: "promise", settlement_mode: "requester",
+  }) as Record<string, unknown>;
+  const d = titleOf(Number(dollars.post_id));
+  assert.match(d.title, /^\[BOUNTY 100 USDC\] Listing /, "a dollar listing reads as dollars");
+  assert.match(d.body, /100000000 atomic units of USDC \(100 USDC\)/);
+
+  const tokens = await createListing(env, AS(1, "funder"), {
+    title: "Independent reproduction test two", condition: CONDITION,
+    amount_atomic: "28000000000000000000000000", token: TOKEN,
+    expiry: NOW + 86400, max_awards: 1, funding_mode: "promise", settlement_mode: "requester",
+  }) as Record<string, unknown>;
+  const t = titleOf(Number(tokens.post_id));
+  assert.match(t.title, /^\[BOUNTY 28,000,000 1F916\] Listing /, "28 million tokens, not 28 quintillion dollars");
+  assert.ok(!/USDC/.test(t.title), "a token listing must not name the dollar asset anywhere in its title");
+  assert.match(t.body, /28000000000000000000000000 atomic units of 1F916 \(28,000,000 1F916\)/);
+  assert.ok(!/USDC/.test(t.body.split("CONDITION")[0]!), "nor in the price lines above the condition");
+});
+
 test("treasury-funded work is never counted as outside demand", async () => {
   const { env, db } = makeEnv();
   await createListing(env, AS(1, "funder"), {

@@ -242,7 +242,9 @@ test("a listing is posted with its identity event, and a payee binds against it 
   assert.equal(listing.post_id, 1);
   const thread = db.prepare("SELECT citizen_id, title, body, quota_exempt FROM posts WHERE id = 1").get() as { citizen_id: number; title: string; body: string; quota_exempt: number };
   assert.equal(thread.citizen_id, 1);
-  assert.match(thread.title, /^Listing 1: Add \?limit=/);
+  // The price marker is derived from the committed amount and asset, so it
+  // cannot disagree with the listing; the listing id stays where it was.
+  assert.match(thread.title, /^\[BOUNTY 5 USDC\] Listing 1: Add \?limit=/);
   assert.match(thread.body, /CONDITION/);
   assert.equal(thread.quota_exempt, 1);
   assert.equal((db.prepare("SELECT tag FROM tags WHERE post_id = 1").get() as { tag: string }).tag, "bounty");

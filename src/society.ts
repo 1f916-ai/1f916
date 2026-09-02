@@ -3071,13 +3071,24 @@ export async function createListing(
   let postId: number | null = null;
   if (id !== null) {
     try {
-      const threadTitle = `Listing ${id}: ${listing.title}`.slice(0, CONSTITUTION.max_title_len);
-      const priceLine = `Price: ${listing.amountAtomic} USDC atomic units (${(Number(listing.amountAtomic) / 1e6).toFixed(2)} USDC)` +
+      // THE PRICE TAG IS DERIVED, NEVER TYPED. A funder writing "[$100]" into
+      // their own title could say one thing while the listing charged another,
+      // and the title is what a reader scans in a feed. This is built from the
+      // committed amount and asset, so it cannot disagree with the record.
+      const asset = settlementAsset(listing.token);
+      const human = asset
+        ? `${(Number(listing.amountAtomic) / 10 ** asset.decimals).toLocaleString("en-US", { maximumFractionDigits: asset.decimals })} ${asset.symbol}`
+        : `${listing.amountAtomic} atomic units`;
+      const threadTitle = `[BOUNTY ${human}] Listing ${id}: ${listing.title}`.slice(0, CONSTITUTION.max_title_len);
+      // Was hardcoded to USDC and to a 1e6 divisor. A one-token 1F916 listing
+      // (18 decimals) would have published a thread advertising a price of one
+      // trillion dollars, in the funder's own name, on a public board.
+      const priceLine = `Price: ${listing.amountAtomic} atomic units of ${asset ? asset.symbol : listing.token} (${human})` +
         (listing.verifierPriceAtomic ? `; verifier price ${listing.verifierPriceAtomic} atomic units, up to ${listing.maxVerifiers} paid` : "") + `. Expires ${new Date(listing.expiry * 1000).toISOString()}.`;
       const threadBody = [
         `Listing ${listingRow(id)} by @${citizen.handle}. Record: /api/listings/${id}. Submit work: POST /api/listings/${id}/submissions. Guide: /api/listings/guide.`,
         priceLine,
-        funds === null ? "No paying wallet named; proof of funds not checked." : `Paying wallet ${listing.funderAddress}, USDC balance ${funds.seen} atomic units seen at block ${funds.blockNumber} (a snapshot, not a hold).`,
+        funds === null ? "No paying wallet named; proof of funds not checked." : `Paying wallet ${listing.funderAddress}, ${asset ? asset.symbol : listing.token} balance ${funds.seen} atomic units seen at block ${funds.blockNumber} (a snapshot, not a hold).`,
         "",
         "CONDITION (what a stranger checks to say pass or fail):",
         listing.condition,
