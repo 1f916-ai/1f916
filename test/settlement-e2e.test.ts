@@ -13,6 +13,7 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "node:fs";
 import { MockSettlementAdapter, verdictPreimage } from "../src/settlement.ts";
+import { assetRefusal, soleAsset, settlementAsset, BASE_USDC } from "../src/payouts.ts";
 import { generateKeyPairSync, sign as edSign, createHash, type KeyObject } from "node:crypto";
 import { createAward, createListing, createSubmission, getListing, latchReadiness, markAwardPayable, railCensus, settleAwardFromReceipt, sweepExpiredAwards, type Env } from "../src/society.ts";
 
@@ -1319,17 +1320,77 @@ test("every listing names the asset it is priced in, and liability is grouped by
   assert.match(census.assets_note, /null unless exactly one asset is in use/);
 });
 
-test("the listing door prices in USDC today and says so, rather than half-opening the token", async () => {
+// The token is open now (migration 0045), and this test keeps the original
+// guarantee rather than dropping it: the danger was never the token, it was
+// HALF opening it. A listing that can be posted and awarded but never paid is
+// worse than one that cannot be posted at all.
+//
+// KILLING MUTATION: revert any ONE of the three gates to `token !== BASE_USDC`
+// — the listing gate in listings.ts, the binding gate or the receipt gate in
+// payouts.ts. Each leaves the other two open and this test goes red on the
+// mismatched one, which is exactly the half-open state the original refusal
+// existed to prevent.
+test("the token is open at every gate or at none: posting, binding and receipts agree on one closed list", async () => {
   const { env } = makeEnv();
-  await assert.rejects(
-    createListing(env, AS(1, "funder"), {
-      title: "Independent reproduction test", condition: CONDITION, amount_atomic: "2000000000000000000000000",
-      expiry: NOW + 86400, max_awards: 1, funding_mode: "promise", settlement_mode: "requester",
-      token: "0x9e00fc92493451eba1c63dd3880d68b622037ba3",
-    }),
-    /price in Base USDC only/,
-    "a listing that can be posted and awarded but never paid is worse than one that cannot be posted",
-  );
+  const TOKEN = "0x9e00fc92493451eba1c63dd3880d68b622037ba3";
+
+  const listing = await createListing(env, AS(1, "funder"), {
+    title: "Independent reproduction test", condition: CONDITION,
+    amount_atomic: "2000000000000000000000000",
+    expiry: NOW + 86400, max_awards: 1, funding_mode: "promise", settlement_mode: "requester",
+    token: TOKEN,
+  }) as Record<string, unknown>;
+  assert.equal(listing.token, TOKEN, "the listing records the asset it was priced in");
+
+  // The other two gates read the SAME closed list, so a token that can be
+  // listed can also be bound and receipted. Anything else is the half-open
+  // state.
+  assert.equal(assetRefusal(TOKEN, 8453), null, "binding and receipt gates must accept what the listing gate accepted");
+  assert.equal(assetRefusal(BASE_USDC, 8453), null, "USDC is unchanged and still the default");
+
+  // And the list stays closed: an arbitrary contract does not become a
+  // registry-looking asset by being named in a request.
+  assert.ok(assetRefusal("0xdead" + "0".repeat(36), 8453), "an unlisted token is refused");
+  assert.ok(assetRefusal(TOKEN, 1), "another chain is refused even for a known asset");
+
+  // The decimals differ (6 vs 18), so the two are not comparable as integers.
+  // soleAsset is what forces a caller to notice instead of summing them.
+  assert.equal(soleAsset([TOKEN, BASE_USDC]), null, "a scalar spanning two assets is not a quantity");
+  assert.equal(soleAsset([TOKEN, TOKEN])?.decimals, 18);
+  assert.equal(soleAsset([BASE_USDC])?.decimals, 6);
+});
+
+// DECIMALS ARE PINNED, because the comment on SETTLEMENT_ASSETS promises they
+// were read from chain rather than assumed, and an unchecked promise in a
+// comment is just a sentence.
+//
+// Both were read from Base mainnet on 2026-09-01 by eth_call to decimals()
+// (selector 0x313ce567): USDC returned 6, 1F916 returned 18, and 1F916's
+// totalSupply returned 100,000,000,000 whole tokens, matching the verified
+// contract source. If a future asset is added with a guessed decimals field,
+// this test is the only thing standing between that guess and an amount
+// displayed a million times wrong.
+//
+// KILLING MUTATION: change 1F916's decimals to 6 in SETTLEMENT_ASSETS. This
+// goes red. Nothing else in the suite notices, because every atomic amount is
+// stored as an opaque string and the error surfaces only where a human reads a
+// number.
+test("settlement asset decimals are pinned to what the chain reported, not assumed", () => {
+  assert.equal(settlementAsset(BASE_USDC)?.decimals, 6, "USDC carries 6 decimals on Base");
+  assert.equal(settlementAsset("0x9e00fc92493451eba1c63dd3880d68b622037ba3")?.decimals, 18, "1F916 carries 18");
+  assert.equal(settlementAsset(BASE_USDC)?.stable, true);
+  assert.equal(settlementAsset("0x9e00fc92493451eba1c63dd3880d68b622037ba3")?.stable, false,
+    "the token is not a stable asset and must never be marked as one");
+
+  // The consequence, stated as a test so it cannot be forgotten: one atomic
+  // unit is not one atomic unit across these two assets. A dollar is 1e6 units
+  // of USDC and a single token is 1e18 units of 1F916, so an integer compare
+  // between them is meaningless by a factor of a trillion.
+  const usdcDollar = 10n ** 6n;
+  const oneToken = 10n ** 18n;
+  assert.ok(oneToken > usdcDollar * 1_000_000n,
+    "an integer that looks larger can be worth far less; this is why scalars never span assets");
+  assert.equal(soleAsset([BASE_USDC, "0x9e00fc92493451eba1c63dd3880d68b622037ba3"]), null);
 });
 
 test("treasury-funded work is never counted as outside demand", async () => {

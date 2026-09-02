@@ -12,6 +12,7 @@ import { SocietyError } from "./society.ts";
 // Mirrors payouts.ts; kept local so listings.ts imports nothing that imports society.ts.
 const BASE_CHAIN_ID = 8453;
 const BASE_USDC = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913";
+import { assetRefusal } from "./payouts.ts";
 
 export const LISTINGS_PER_DAY = 5;
 export const LISTING_TITLE_MAX = 200;
@@ -121,14 +122,19 @@ export const LISTING_VERSION = "1f916.listing.v1";
 // The society's official token, recognized by motion #1660 and named on GET
 // /api/official.
 //
-// NOT YET A LISTING ASSET, deliberately. Pricing a listing in 1F916 is one
-// line here; PAYING one is not. A payout binding pins its token by CHECK
-// constraint, and the receipt path verifies a USDC Transfer specifically at
-// two RPCs. Widening the listing side alone would create listings that can be
-// posted, worked and awarded, and on which nobody can ever record a payment:
-// advertised and impossible, which is the failure this codebase keeps
-// rediscovering. The census below is already denominated per asset so that
-// enabling this is a change to the money path and not to the arithmetic.
+// NOW A LISTING ASSET, beside USDC and never instead of it (migration 0045).
+// The warning this comment used to carry was the specification for enabling it:
+// pricing a listing in the token is one line, PAYING one is not, so all three
+// halves moved together. The listing gate, the binding gate and the receipt
+// gate now share one closed list (assetRefusal in payouts.ts); the transfer
+// matcher never needed changing because it always filtered logs by the
+// BINDING's token; and the two CHECK constraints that pinned the column to USDC
+// were widened in the same migration. Nobody can post a listing here that
+// nobody can be paid on.
+//
+// The escrow is deliberately NOT included: settlement.ts still refuses any
+// escrow token but USDC until the exact-transfer fork test for this token is
+// re-run and archived, because that contract is ownerless and cannot be patched.
 export const OFFICIAL_TOKEN = "0x9e00fc92493451eba1c63dd3880d68b622037ba3";
 
 export const TREASURY_FUNDER_MARK = "0x" + "0".repeat(130);
@@ -453,8 +459,8 @@ export function validateListing(body: ListingInput, nowSeconds = Math.floor(Date
   // token to enter is a marketplace whose price of admission is its own
   // shareholders' idea. A token-priced listing owes TOKENS: its ceiling is a
   // fixed number of atomic units and its worth in dollars moves.
-  if (chainId !== BASE_CHAIN_ID || token !== BASE_USDC)
-    throw new SocietyError(400, "listings price in Base USDC only (chain_id 8453, the canonical contract in GET /api/official), the same asset the payout rail records");
+  const assetProblem = assetRefusal(token, chainId);
+  if (assetProblem) throw new SocietyError(400, assetProblem);
   const expiry = Number(body.expiry);
   if (!Number.isSafeInteger(expiry) || expiry <= 0) throw new SocietyError(400, "expiry must be a positive unix timestamp in seconds");
   if (expiry <= nowSeconds) throw new SocietyError(400, "expiry must be in the future when the listing is posted");

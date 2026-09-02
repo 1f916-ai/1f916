@@ -391,7 +391,10 @@ CREATE TABLE IF NOT EXISTS payout_bindings (
   version TEXT NOT NULL CHECK (version = '1f916.payout.v1'),
   amount_atomic TEXT NOT NULL CHECK (length(amount_atomic) BETWEEN 1 AND 78 AND amount_atomic NOT GLOB '*[^0-9]*' AND substr(amount_atomic, 1, 1) != '0'),
   chain_id INTEGER NOT NULL CHECK (chain_id = 8453),
-  token TEXT NOT NULL CHECK (token = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913'),
+  token TEXT NOT NULL CHECK (token IN (
+    '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
+    '0x9e00fc92493451eba1c63dd3880d68b622037ba3'
+  )),
   payout_address TEXT NOT NULL CHECK (length(payout_address) = 42 AND payout_address = lower(payout_address)),
   expiry INTEGER NOT NULL,
   -- Nullable since 0044, guarded by the table CHECK at the end of this table:
@@ -512,7 +515,10 @@ CREATE TABLE IF NOT EXISTS listings (
   verifier_price_atomic TEXT CHECK (verifier_price_atomic IS NULL OR (length(verifier_price_atomic) BETWEEN 1 AND 78 AND verifier_price_atomic NOT GLOB '*[^0-9]*' AND substr(verifier_price_atomic, 1, 1) != '0')),
   max_verifiers INTEGER NOT NULL DEFAULT 0 CHECK (max_verifiers BETWEEN 0 AND 10 AND ((max_verifiers = 0) = (verifier_price_atomic IS NULL))),
   chain_id INTEGER NOT NULL CHECK (chain_id = 8453),
-  token TEXT NOT NULL CHECK (token = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913'),
+  token TEXT NOT NULL CHECK (token IN (
+    '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
+    '0x9e00fc92493451eba1c63dd3880d68b622037ba3'
+  )),
   expiry INTEGER NOT NULL,
   -- Proof of funds, optional: the paying wallet, proven by EIP-191 signature
   -- over the listing preimage, and its USDC balance as two agreeing providers

@@ -159,14 +159,16 @@ async function payeeBinding(row: string, amountAtomic: string, ed = generateKeyP
   };
 }
 
-test("validateListing refuses a listing without a real condition, a non-USDC price, or a standing expiry", () => {
+test("validateListing refuses a listing without a real condition, an unlisted asset, or a standing expiry", () => {
   const ok = validateListing({ title: "Add ?limit= to GET /api/post", condition: CONDITION, amount_atomic: "5000000", expiry: NOW + 3600 }, NOW);
   assert.equal(ok.amountAtomic, "5000000");
   assert.equal(ok.chainId, 8453);
   assert.throws(() => validateListing({ title: "x", condition: CONDITION, amount_atomic: "1", expiry: NOW + 10 }, NOW), /title/);
   assert.throws(() => validateListing({ title: "A task", condition: "do it", amount_atomic: "1", expiry: NOW + 10 }, NOW), /condition must be/);
   assert.throws(() => validateListing({ title: "A task", condition: CONDITION, amount_atomic: "0", expiry: NOW + 10 }, NOW), /amount_atomic/);
-  assert.throws(() => validateListing({ title: "A task", condition: CONDITION, amount_atomic: "1", expiry: NOW + 10, token: "0x0000000000000000000000000000000000000001" }, NOW), /Base USDC only/);
+  // The closed list, not "USDC only": an arbitrary contract still does not
+  // become a registry-looking asset by being named in a request.
+  assert.throws(() => validateListing({ title: "A task", condition: CONDITION, amount_atomic: "1", expiry: NOW + 10, token: "0x0000000000000000000000000000000000000001" }, NOW), /is not an asset this rail prices work in/);
   assert.throws(() => validateListing({ title: "A task", condition: CONDITION, amount_atomic: "1", expiry: NOW - 1 }, NOW), /future/);
   assert.throws(() => validateListing({ title: "A task", condition: CONDITION, amount_atomic: "1", expiry: NOW + 91 * 86400 }, NOW), /90 days/);
   assert.equal(listingIdFromRow("listing-12"), 12);
@@ -419,7 +421,7 @@ test("proof of funds: the paying wallet signs the listing, two providers vouch f
   // Not enough: needs 6 USDC (5 + 1 x 1), wallet shows 5.5.
   await assert.rejects(
     createListing(env, FUNDER as never, body, { readBalance: async () => ({ balanceAtomic: "5500000", blockNumber: 100, sources: 2 }) }),
-    /holds 5500000 USDC atomic units at block 100; this listing.s maximum liability is 6000000/,
+    /holds 5500000 atomic units of USDC at block 100; this listing.s maximum liability is 6000000/,
   );
   // Wrong signer: another wallet signed the same preimage.
   const other = privateKeyToAccount(generatePrivateKey());

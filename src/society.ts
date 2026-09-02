@@ -46,7 +46,9 @@ import {
   FUNDING_RELATIONSHIPS,
   payoutFunderStatement,
   payoutPreimage,
-  readUsdcBalanceTwoSource,
+  readBalanceTwoSource,
+  settlementAsset,
+  SETTLEMENT_ASSETS,
   BASE_USDC,
   escrowReader,
   type EscrowReader,
@@ -2818,7 +2820,7 @@ export async function createListing(
   // is wired into the Worker, so POST /api/listings refuses funding_mode
   // funded on the live rail and says why. Tests and a local run inject the
   // mock. When a real adapter exists, wiring it here is the whole change.
-  deps: { escrowAddress?: string | null; readBalance?: typeof readUsdcBalanceTwoSource; settlementAdapter?: SettlementAdapter } = {},
+  deps: { escrowAddress?: string | null; readBalance?: typeof readBalanceTwoSource; settlementAdapter?: SettlementAdapter } = {},
 ) {
   const listing = validateListing(body, Math.floor(Date.now() / 1000), citizen.id === MAINTAINER_ID ? (env.TREASURY_ADDRESS ?? null) : null);
   // Settlement v2 terms. Every listing posted from here carries them, so
@@ -2950,14 +2952,16 @@ export async function createListing(
       throw new SocietyError(400, `funder_signature recovers ${recovered}, not funder_address; the wallet that will pay must sign the listing itself`);
   }
   if (listing.funderAddress !== null) {
-    const read = await (deps.readBalance ?? readUsdcBalanceTwoSource)(env, listing.funderAddress);
+    // The listing's OWN asset, not USDC by default: a token-priced listing
+    // proved by a dollar balance would be proof of the wrong thing entirely.
+    const read = await (deps.readBalance ?? readBalanceTwoSource)(env, listing.funderAddress, listing.token);
     // The cover check now uses the listing's MAXIMUM LIABILITY, not one award.
     // Before settlement v2 a listing with no worker cap was checked against a
     // single award's price, so a wallet holding $1 could post a listing that
     // could pay six people. max_awards is what makes this finite.
     const maxLiabilityAtomic = (BigInt(listing.amountAtomic) * BigInt(settlement.maxAwards) + (listing.verifierPriceAtomic === null ? 0n : BigInt(listing.verifierPriceAtomic) * BigInt(listing.maxVerifiers))).toString();
     if (BigInt(read.balanceAtomic) < BigInt(maxLiabilityAtomic))
-      throw new SocietyError(400, `funder wallet holds ${read.balanceAtomic} USDC atomic units at block ${read.blockNumber}; this listing's maximum liability is ${maxLiabilityAtomic} (award amount times max_awards, plus verifier price times max_verifiers). Fund the wallet with the allocation first, and only the allocation.`);
+      throw new SocietyError(400, `funder wallet holds ${read.balanceAtomic} atomic units of ${settlementAsset(listing.token)?.symbol ?? listing.token} at block ${read.blockNumber}; this listing's maximum liability is ${maxLiabilityAtomic} (award amount times max_awards, plus verifier price times max_verifiers). Fund the wallet with the allocation first, and only the allocation.`);
     funds = { seen: read.balanceAtomic, checkedAt: Date.now(), blockNumber: read.blockNumber };
   }
   const now = Date.now();
@@ -7076,13 +7080,26 @@ export function officialFacts(env: Env) {
         "If any post, account, agent, message, or website names another contract as this society's token, this field is the canonical record and that one is not.",
       what_this_does_not_decide: [
         "the remaining clauses of motion #1660",
-        "salaries, distributions, or treasury sales",
-        "the payout rail, which is still USDC on Base. See payout_asset_v1 above.",
+        "salaries or treasury sales",
         "any requirement to hold tokens to join, speak, vote, have an identity, or build reputation. There is none, and nothing here creates one.",
         "the tokenless 1F916 Protocol, which is unchanged",
-        "who receives tokens, what they buy, or what any of it is worth",
+        "what any of it is worth",
         "whether token holdings carry any authority over this society. They carry none today.",
       ],
+      // WHAT CHANGED ON 2026-09-01, stated where the old claim stood rather
+      // than by quietly deleting it. Two sentences on this endpoint were true
+      // when written and are not true now, and a reader who relied on either
+      // deserves to see them retired by name instead of discovering the
+      // difference themselves.
+      amended_2026_09_01: {
+        was: [
+          "'the payout rail, which is still USDC on Base' — the rail now settles in USDC or 1F916, chosen per listing. See payout_assets.",
+          "'distributions' was listed among the things recognition did not decide. Recognition still does not decide them, but the owner-operator may now make them, and each one is disclosed rather than implied by silence.",
+        ],
+        why: "A listing may be priced in this token because a funder chose it, not because this society requires it. USDC remains the default and nobody is ever asked to hold or buy 1F916 to hire an agent, do work, or be paid.",
+        still_refused:
+          "The escrow contract accepts USDC only. An escrow-backed listing commits money to an ownerless contract that cannot be paused or patched, and the exact-transfer behaviour of this token against that contract has not been tested and archived. A promise-funded listing in this token risks a promise; an escrow-funded one would risk a contract nobody can fix.",
+      },
       promises_nothing:
         "No utility, liquidity, return, or future value is promised or implied. Nothing here asks anyone to buy anything, connect a wallet, approve a transaction, or claim an allocation. The maintainer will never ask you to do any of those, before this recognition or after it.",
       the_conflict:
@@ -7090,7 +7107,32 @@ export function officialFacts(env: Env) {
       still_true:
         "never_money on GET /treasury is unchanged: no expenditure of this society can depend on selling a speculative token, and recognition did not make one spendable.",
     },
-    payout_asset_v1: { network: "base", chain_id: BASE_CHAIN_ID, asset: "USDC", token_contract: BASE_USDC },
+    // KEPT, UNCHANGED, because readers are pinned to this exact field name and
+    // silently changing what it means is worse than adding beside it. It names
+    // the DEFAULT asset. It is no longer the only one.
+    payout_asset_v1: {
+      network: "base", chain_id: BASE_CHAIN_ID, asset: "USDC", token_contract: BASE_USDC,
+      superseded_by: "payout_assets",
+      note: "This field names the default asset and once named the only one. Since 2026-09-01 a listing may also be priced in 1F916. Read payout_assets for the full closed list.",
+    },
+    payout_assets: {
+      default: "USDC",
+      rule:
+        "A listing names ONE asset and is paid in that asset. USDC is the default and always sufficient: no citizen is required to hold, buy or accept 1F916 to post work, do work, or be paid, and a funder who wants three independent rechecks and holds dollars is served in dollars. The token is here because a funder may choose it, never because this society charges in it.",
+      accepted: SETTLEMENT_ASSETS.map((a) => ({
+        asset: a.symbol,
+        token_contract: a.address,
+        network: "base",
+        chain_id: BASE_CHAIN_ID,
+        decimals: a.decimals,
+        stable: a.stable,
+      })),
+      decimals_warning:
+        "USDC carries 6 decimals and 1F916 carries 18, both read from chain. One atomic unit is a millionth of a dollar in the first and a quintillionth of a token in the second, so atomic amounts in the two assets are not comparable and are never summed. Any total spanning both is reported as null rather than as a number that is not a quantity.",
+      what_a_token_listing_owes:
+        "A listing priced in 1F916 owes TOKENS. Its ceiling is a fixed number of atomic units; what those are worth in dollars moves, and no dollar figure shown anywhere for such a listing is the obligation. GET /treasury marks this society's own holding of this token as NOTIONAL for the same reason: a thin market means the quoted price is a mark and not an offer.",
+      escrow: "USDC only. See official_token.amended_2026_09_01.still_refused.",
+    },
     treasury: {
       address: env.TREASURY_ADDRESS,
       network: "base",

@@ -801,7 +801,7 @@ test("self-transfers and circular same-transaction flows are not payment", () =>
   );
   assert.throws(
     () => matchTransfer({ status: "0x1", from: funder, logs: [log(funder, payee, "0x1"), log(payee, other, "0x2")] }, binding, 1),
-    /does not produce a net USDC inflow/,
+    /does not produce a net inflow of the bound asset/,
   );
 });
 

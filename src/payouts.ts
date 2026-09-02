@@ -32,6 +32,59 @@ export const MAX_PAYOUT_LIFETIME_SECONDS = 30 * 24 * 60 * 60;
 export const PREIMAGE_EXPIRY_SLACK_SECONDS = 300;
 export const BASE_CHAIN_ID = 8453;
 export const BASE_USDC = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913";
+// The society's official token, recognized 2026-08-25 and named canonically by
+// GET /api/official. Launched by an outside party; this society did not create,
+// mint or sell it.
+export const BASE_1F916 = "0x9e00fc92493451eba1c63dd3880d68b622037ba3";
+
+export interface SettlementAsset {
+  symbol: string;
+  address: string;
+  /** ERC-20 decimals, READ FROM CHAIN and pinned by a test, never assumed. */
+  decimals: number;
+  stable: boolean;
+}
+
+// WHAT THIS RAIL WILL PRICE WORK IN. A closed list, because "any ERC-20 the
+// caller names" is how a listing comes to owe a token nobody can sell and how a
+// worthless contract acquires registry-looking legitimacy by appearing in our
+// own records.
+//
+// DECIMALS ARE NOT DECORATION. USDC carries 6 and 1F916 carries 18, so a single
+// atomic integer means a millionth of a dollar in one asset and a quintillionth
+// of a token in the other. Any code that adds, compares or ranks atomic amounts
+// across two assets is producing a number that is not a quantity. The helpers
+// below exist so that mistake has to be made deliberately.
+export const SETTLEMENT_ASSETS: readonly SettlementAsset[] = [
+  { symbol: "USDC", address: BASE_USDC, decimals: 6, stable: true },
+  { symbol: "1F916", address: BASE_1F916, decimals: 18, stable: false },
+];
+
+export function settlementAsset(token: string): SettlementAsset | null {
+  const t = token.toLowerCase();
+  return SETTLEMENT_ASSETS.find((a) => a.address === t) ?? null;
+}
+
+// The one sentence every refusal should give back, so a caller learns the whole
+// closed list rather than discovering it one rejected asset at a time.
+export function assetRefusal(token: string, chainId: number): string | null {
+  if (chainId !== BASE_CHAIN_ID)
+    return `this rail settles on Base (chain_id ${BASE_CHAIN_ID}) only; chain ${chainId} is not recorded here`;
+  if (settlementAsset(token) === null)
+    return `token ${token.toLowerCase()} is not an asset this rail prices work in. The closed list is ${SETTLEMENT_ASSETS.map((a) => `${a.symbol} (${a.address})`).join(" and ")}, both named canonically by GET /api/official. Arbitrary token addresses do not become registry-looking assets here.`;
+  return null;
+}
+
+// COMPARING ACROSS ASSETS IS THE BUG THIS PREVENTS. Callers that hold amounts
+// from more than one asset must refuse to produce a scalar, because summing
+// 6-decimal and 18-decimal integers yields a number that means nothing. Returns
+// the single asset when exactly one is in play, and null when a scalar would be
+// a lie.
+export function soleAsset(tokens: readonly string[]): SettlementAsset | null {
+  const distinct = new Set(tokens.map((t) => t.toLowerCase()));
+  if (distinct.size !== 1) return null;
+  return settlementAsset([...distinct][0]!);
+}
 export const MIN_PAYMENT_CONFIRMATIONS = 12;
 // Mandatory relationship testimony was proposed by @alpha-altcoins in c7028
 // on #864. It is disclosure by a signer, never inferred real-world identity.
@@ -417,8 +470,8 @@ export async function validatePayoutBinding(
   if (!ADDRESS_RE.test(addressRaw)) throw new SocietyError(400, "address must be a 20-byte 0x-prefixed EVM payout address");
   const token = tokenRaw.toLowerCase();
   const address = addressRaw.toLowerCase();
-  if (chainId !== BASE_CHAIN_ID || token !== BASE_USDC)
-    throw new SocietyError(400, "payout v1 currently records Base USDC only (chain_id 8453, the canonical contract in GET /api/official); arbitrary token addresses do not become registry-looking assets here");
+  const assetProblem = assetRefusal(token, chainId);
+  if (assetProblem) throw new SocietyError(400, assetProblem);
   const expiry = positiveSafeInteger("expiry", body.expiry);
   if (expiry <= nowSeconds) throw new SocietyError(400, "expiry must be in the future when the binding is recorded");
   if (expiry > nowSeconds + MAX_PAYOUT_LIFETIME_SECONDS)
@@ -730,14 +783,20 @@ export function matchTransfer(
   if (matches[0]!.sourceAddress === payee)
     throw new SocietyError(400, "a self-transfer does not pay the bound address; no payment receipt was recorded");
   if (netPayeeFlow < expectedAmount)
-    throw new SocietyError(400, "the transaction does not produce a net USDC inflow at least as large as the bound amount; circular or offsetting transfers are not recorded as payment");
+    throw new SocietyError(400, "the transaction does not produce a net inflow of the bound asset at least as large as the bound amount; circular or offsetting transfers are not recorded as payment");
   return { ...matches[0], transactionSender: receipt.from.toLowerCase() };
 }
 
-// A funder's USDC balance, read from at least two independently operated
-// providers that agree, at one block height. A snapshot, not a hold: the
-// listing that records it says so. Used by listings for proof of funds.
-export async function readUsdcBalanceTwoSource(env: Env, address: string): Promise<{ balanceAtomic: string; blockNumber: number; sources: number }> {
+// A funder's balance IN THE ASSET THE LISTING PRICES IN, read from at least two
+// independently operated providers that agree, at one block height. A snapshot,
+// not a hold: the listing that records it says so.
+//
+// THE TOKEN IS A PARAMETER, and that is the whole correctness of this function
+// now that the rail prices in more than one asset. It used to call balanceOf on
+// the USDC contract unconditionally, so a listing denominated in 1F916 would
+// have had its proof of funds satisfied by a wallet holding dollars and none of
+// the token it actually promised. The check would pass and mean nothing.
+export async function readBalanceTwoSource(env: Env, address: string, token: string): Promise<{ balanceAtomic: string; blockNumber: number; sources: number }> {
   const observations = new Map<string, number>();
   const seen = new Map<string, { balanceAtomic: string; blockNumber: number }>();
   const data = "0x70a08231" + address.toLowerCase().replace(/^0x/, "").padStart(64, "0");
@@ -747,7 +806,7 @@ export async function readUsdcBalanceTwoSource(env: Env, address: string): Promi
       if (parseHexInteger("chain id", chainIdRaw) !== BigInt(BASE_CHAIN_ID)) continue;
       const blockRaw = await rpc(rpcUrl, "eth_blockNumber", []);
       const blockBig = parseHexInteger("block number", blockRaw);
-      const raw = await rpc(rpcUrl, "eth_call", [{ to: BASE_USDC, data }, "0x" + blockBig.toString(16)]);
+      const raw = await rpc(rpcUrl, "eth_call", [{ to: token.toLowerCase(), data }, "0x" + blockBig.toString(16)]);
       if (typeof raw !== "string" || !/^0x[0-9a-fA-F]*$/.test(raw)) continue;
       const balance = raw === "0x" ? 0n : BigInt(raw);
       const key = balance.toString();
@@ -911,8 +970,12 @@ export async function verifyBasePayment(
   requestedLogIndex: number | null,
   now = Date.now(),
 ): Promise<VerifiedPayment> {
-  if (binding.chain_id !== BASE_CHAIN_ID || binding.token.toLowerCase() !== BASE_USDC)
-    throw new SocietyError(400, "automated payment receipts currently support only Base USDC; the signed binding remains public and independently verifiable on any EVM chain");
+  // The transfer matcher below filters logs by binding.token and compares the
+  // exact atomic amount, so it was never USDC-specific. This gate only decides
+  // which assets the registry is willing to record a receipt FOR.
+  const assetProblem = assetRefusal(binding.token, binding.chain_id);
+  if (assetProblem)
+    throw new SocietyError(400, `${assetProblem} The signed binding remains public and independently verifiable on any EVM chain.`);
 
   // A permanent public payment fact needs more than the first RPC to answer.
   // Each provider independently proves the receipt block is canonical at its
