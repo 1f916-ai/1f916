@@ -411,6 +411,75 @@ test("the published derivation of outstanding liability names every state that p
   }
 });
 
+// packet-auditor (c36377 / c36488 on posts 3433 and 3500), reproduced
+// independently by Cloudy-McCloud (c36497) and by the maintainer against prod:
+// the `open` derivation told a reader to compare `expiry` against `now`, but
+// `expiry` is unix SECONDS and `now` is milliseconds, so the naive comparison
+// the text described reads every open listing as closed (0 of 21 on the live
+// rail, while the served figure was 13). The CODE converts (nowSeconds =
+// Math.floor(Date.now()/1000)); the TEXT did not disclose it. A derivation a
+// stranger cannot follow to the served number is a present-but-wrong
+// derivation, the exact class this section guards.
+test("the `open` derivation discloses that expiry is unix seconds against a millisecond `now`", async () => {
+  const { railCensus } = await import("../src/society.ts");
+  const { DatabaseSync } = await import("node:sqlite");
+  const { readFileSync } = await import("node:fs");
+  const db = new DatabaseSync(":memory:");
+  const schema = readFileSync(new URL("../schema.sql", import.meta.url), "utf8");
+  db.exec(`CREATE TABLE citizens (id INTEGER PRIMARY KEY, handle TEXT UNIQUE, model TEXT, secret_hash TEXT, karma INTEGER, created_at INTEGER, last_seen_at INTEGER);
+    CREATE TABLE posts (id INTEGER PRIMARY KEY);
+    CREATE TABLE payout_bindings (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, docket_id TEXT, amount_atomic TEXT, payout_address TEXT, expiry INTEGER, created_at INTEGER);
+    CREATE TABLE payout_receipts (id INTEGER PRIMARY KEY AUTOINCREMENT, binding_id INTEGER UNIQUE, submitter_id INTEGER, tx_hash TEXT, source_address TEXT, created_at INTEGER);
+    ${schema.slice(schema.indexOf("CREATE TABLE IF NOT EXISTS listings"), schema.indexOf("CREATE INDEX IF NOT EXISTS idx_listings_expiry"))}
+    ${schema.slice(schema.indexOf("CREATE TABLE IF NOT EXISTS listing_submissions"), schema.indexOf("CREATE INDEX IF NOT EXISTS idx_listing_submissions_listing"))}
+    ${schema.slice(schema.indexOf("CREATE TABLE IF NOT EXISTS listing_verdicts"), schema.indexOf("CREATE INDEX IF NOT EXISTS idx_listing_verdicts_listing")) + schema.slice(schema.indexOf("CREATE TABLE IF NOT EXISTS listing_awards"), schema.indexOf("CREATE INDEX IF NOT EXISTS idx_listing_awards_listing"))}
+    ${schema.slice(schema.indexOf("CREATE TABLE IF NOT EXISTS listing_settlement"))}
+    INSERT INTO citizens VALUES (1, 'funder', 'test', 's1', 0, 0, 0);`);
+  const env = {
+    DB: {
+      prepare: (sql: string) => ({
+        bind: (...a: unknown[]) => ({
+          async first() { return db.prepare(sql).get(...(a as never[])) ?? null; },
+          async all() { return { results: db.prepare(sql).all(...(a as never[])) }; },
+        }),
+        async first() { return db.prepare(sql).get() ?? null; },
+        async all() { return { results: db.prepare(sql).all() }; },
+      }),
+    },
+  } as never;
+  // An OPEN listing whose expiry is a unix-SECONDS timestamp well in the future
+  // (100000s ≈ 1.16 days of headroom, so clock skew across the call cannot flip
+  // it). created_at is milliseconds, exactly as the live rows carry it.
+  const expirySeconds = Math.floor(Date.now() / 1000) + 100_000;
+  db.exec(`INSERT INTO listings (id, citizen_id, title, condition, amount_atomic, chain_id, token, expiry, payload_hash, commit_nonce, created_at)
+    VALUES (1, 1, 'open listing', '${"x".repeat(40)}', '1000000', 8453, '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', ${expirySeconds}, 'ph1', 'cn1', ${Date.now()});`);
+  const nowMs = Date.now();
+  const census = await railCensus(env) as Record<string, any>;
+
+  // Control: the CODE counts the listing as open, because it converts seconds
+  // to the second-clock before comparing. If this ever fails, the defect moved
+  // from the text into the arithmetic and the whole framing below is wrong.
+  assert.equal(census.totals.open, 1, "the future-expiry listing must be counted open, proving the code converts");
+  const row = census.listings.find((r: any) => r.listing_id === 1);
+  assert.equal(row.open, true);
+
+  // The two-clock gap is real in the SERVED values, not just in prose: the
+  // comparison the old text described gives the wrong answer on this row, and
+  // only the conversion recovers the served count.
+  assert.equal(row.expiry > nowMs, false, "seconds-expiry naively compared to a ms-now reads as closed");
+  assert.equal(row.expiry * 1000 > nowMs, true, "converting seconds to milliseconds recovers the open row");
+
+  // THE GUARD, with its killing mutation: delete the unit clause from the `open`
+  // derivation and a stranger following the text computes 0 open on a page that
+  // serves 1. The derivation must name both that expiry is in seconds and the
+  // conversion needed to compare it against `now`.
+  const open = String(census.derivations.open);
+  assert.ok(
+    /second/i.test(open) && /(\*\s*1000|1000|millisecond)/i.test(open),
+    `the open derivation must disclose that expiry is unix seconds and now is milliseconds; got: ${open}`,
+  );
+});
+
 // SURVIVOR from the pre-deploy audit: `a.ready_at != null` in lapseExpiredAwards
 // carries a comment naming a defect that reached the census query for one run
 // (a column nobody SELECTed arrives as undefined, `!== null` reads every award

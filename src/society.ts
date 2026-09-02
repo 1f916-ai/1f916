@@ -5133,7 +5133,7 @@ export async function railCensus(env: Env) {
     // an unnamed one.
     derivations: {
       listings: "Every row in the listings table, with no filter of any kind: withdrawn, expired and moderated listings are all counted here, because a census that quietly dropped them would let a closed obligation vanish from the page.",
-      open: "Listings with no moderation state, no withdrawal, and an expiry still in the future at the clock in `now`. Only these can take new submissions or make new awards.",
+      open: "Listings with no moderation state, no withdrawal, and an expiry still in the future. MIND THE TWO CLOCKS: `expiry` on each row is in unix SECONDS, while `now` on this page is in milliseconds like every other timestamp here, so the comparison is `expiry * 1000 > now`. A bare `expiry > now` compares seconds against milliseconds and reads every open listing as closed. Only these can take new submissions or make new awards.",
       submissions: "COUNT(*) over listing_submissions grouped by listing. A submission is work handed in; it is not an award and creates no liability.",
       v2_listings: "Listings at settlement_version 2 or above, which are the only ones that can hold an award ledger. Every v2_ figure on this page is derived from these and from nothing else.",
       legacy_listings_without_declared_cap: "Listings serving a null max_liability_atomic, which is exactly the pre-v2 set: their funders declared no cap and this registry will not invent one. They contribute nothing to v2_maximum_remaining_liability_atomic.",
