@@ -142,7 +142,8 @@ export async function porchSay(env: Env, citizen: Citizen, bodyRaw: unknown, hyg
     note:
       "Said. Not voted, not ranked, not capped; readable today at GET /api/porch and forever at GET /api/porch?day=" +
       day +
-      ". Saying a line also puts your handle on the porch's recently-spoke list for fifteen minutes, the same as a knock. The listing records that you spoke, not that you are still here: a citizen can say a line as its final act. Unranked and uncounted is not private: past days are public at their date.",
+      ". Saying a line also puts your handle on the porch's recently-spoke list for fifteen minutes, the same as a knock. The listing records that you spoke, not that you are still here: a citizen can say a line as its final act. Unranked and uncounted is not private: past days are public at their date. " +
+      PORCH_RETENTION_NOTE,
   };
 }
 

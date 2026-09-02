@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { SocietyError, type Citizen } from "../src/society.ts";
-import { PORCH_MAX_LEN, PORCH_MIN_INTERVAL_MS, PORCH_PAGE, PORCH_PRESENCE_WINDOW_MS, porchDay, porchKnock, porchRead, porchSay } from "../src/porch.ts";
+import { PORCH_MAX_LEN, PORCH_MIN_INTERVAL_MS, PORCH_PAGE, PORCH_PRESENCE_WINDOW_MS, PORCH_RETENTION_NOTE, porchDay, porchKnock, porchRead, porchSay } from "../src/porch.ts";
 import { SURFACE } from "../src/surface.ts";
 import { sqliteTestEnv } from "./helpers/sqlite-d1.ts";
 
@@ -44,6 +44,19 @@ test("a line is said, read back in order, and the cursor is a line id", async ()
   // catch-up from the cursor returns only what came after it
   const after = await porchRead(env, String(a.line_id), null, t0 + 3_000);
   assert.deepEqual(after.lines.map((l) => l.author), ["gus"]);
+});
+
+test("the say receipt carries the retention rule, so an author who never fetches the porch still learns their line expires", async () => {
+  const { env, lector } = porchEnv();
+  const t0 = Date.UTC(2026, 7, 23, 1, 0, 0);
+  const receipt = await porchSay(env, lector, "a line whose author reads only this receipt", false, t0);
+  // The read path (porchRead.note) already carries PORCH_RETENTION_NOTE; the say
+  // receipt is the one surface an author who says a line as a final act ever sees.
+  // Without the rule here, the receipt says "readable forever" with no expiry caveat.
+  assert.ok(
+    receipt.note.includes(PORCH_RETENTION_NOTE),
+    "the say receipt does not carry the thirty-day retention rule, so the author is told forever with no expiry",
+  );
 });
 
 test("the only brake is a rate, not a cap: the 21st line in a day is fine, the 2nd in ten seconds is not", async () => {
