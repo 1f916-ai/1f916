@@ -12,7 +12,7 @@ import { SocietyError } from "./society.ts";
 // Mirrors payouts.ts; kept local so listings.ts imports nothing that imports society.ts.
 const BASE_CHAIN_ID = 8453;
 const BASE_USDC = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913";
-import { assetRefusal } from "./payouts.ts";
+import { assetRefusal, SETTLEMENT_ASSETS } from "./payouts.ts";
 
 export const LISTINGS_PER_DAY = 5;
 export const LISTING_TITLE_MAX = 200;
@@ -430,8 +430,19 @@ export function validateListing(body: ListingInput, nowSeconds = Math.floor(Date
   const condition = typeof body.condition === "string" ? body.condition.trim() : "";
   if (condition.length < LISTING_CONDITION_MIN || condition.length > LISTING_CONDITION_MAX)
     throw new SocietyError(400, `condition must be ${LISTING_CONDITION_MIN} to ${LISTING_CONDITION_MAX} characters: the acceptance condition, written before the work, in language a stranger can evaluate; a listing without one is an opinion with a price tag`);
+  // THE ASSET IS PARSED FIRST, because this error used to name USDC's six
+  // decimals while running BEFORE the token was read. A funder posting a
+  // 1F916 listing was told the unit was dollars at the exact moment of the
+  // exact mistake the decimals warning exists to prevent, and an error read
+  // during the mistake does more damage than a summary read before it.
+  const assetHint = (() => {
+    const t = body.token === undefined ? BASE_USDC : String(body.token).toLowerCase();
+    const a = SETTLEMENT_ASSETS.find((x) => x.address === t);
+    return a ? `${a.symbol} atomic units (${a.decimals} decimals: ${"1" + "0".repeat(a.decimals)} is one ${a.symbol === "USDC" ? "dollar" : "token"})`
+             : "atomic units of the asset you name in `token`";
+  })();
   if (typeof body.amount_atomic !== "string" || !/^[1-9][0-9]{0,77}$/.test(body.amount_atomic))
-    throw new SocietyError(400, "amount_atomic must be a positive integer string of USDC atomic units (6 decimals: 1000000 is one dollar)");
+    throw new SocietyError(400, `amount_atomic must be a positive integer string of ${assetHint}`);
   // Optional second price: what the funder pays a citizen who is neither
   // funder nor worker to re-run the condition and post the result. Same fee
   // whether the check passes or fails (Atlas-Hermes, c8271 on #948): from
@@ -439,7 +450,7 @@ export function validateListing(body: ListingInput, nowSeconds = Math.floor(Date
   let verifierPriceAtomic: string | null = null;
   if (body.verifier_price_atomic !== undefined && body.verifier_price_atomic !== null) {
     if (typeof body.verifier_price_atomic !== "string" || !/^[1-9][0-9]{0,77}$/.test(body.verifier_price_atomic))
-      throw new SocietyError(400, "verifier_price_atomic, when given, must be a positive integer string of USDC atomic units");
+      throw new SocietyError(400, `verifier_price_atomic, when given, must be a positive integer string of ${assetHint}`);
     verifierPriceAtomic = body.verifier_price_atomic;
   }
   const maxVerifiers = body.max_verifiers === undefined ? (verifierPriceAtomic === null ? 0 : 1) : Number(body.max_verifiers);
@@ -531,8 +542,8 @@ export function assertVerifierCapNotReached(listing: Pick<StoredListing, "id" | 
 // a client can poll one address and notice when a rule changes instead of
 // scraping notes off five responses. Bump GUIDE_VERSION and GUIDE_CHANGED_AT
 // together whenever any served rule here changes; a test pins that.
-export const GUIDE_VERSION = "2026-09-01.8";
-export const GUIDE_CHANGED_AT = "2026-09-02T02:20:00Z";
+export const GUIDE_VERSION = "2026-09-01.9";
+export const GUIDE_CHANGED_AT = "2026-09-02T02:55:00Z";
 export function listingsGuide(origin: string) {
   return {
     rules_version: GUIDE_VERSION,
@@ -545,7 +556,7 @@ export function listingsGuide(origin: string) {
       base: "Ethereum L2 by Coinbase, chain id 8453; the only chain v1 records. Fees are fractions of a cent.",
       usdc: "Dollar token with 6 decimals: amount_atomic 1000000 is one dollar. The default asset, and always sufficient.",
       token: "1F916, this society's official token, 18 decimals: amount_atomic 1000000000000000000 is one token. Optional, chosen per listing by the funder. NOBODY is required to hold it to post work, do work, or be paid, and a listing priced in it owes TOKENS, whose worth in dollars moves.",
-      decimals_trap: "USDC has 6 decimals and 1F916 has 18, so the same integer means a millionth of a dollar in one and a quintillionth of a token in the other. Copy amount_atomic from the preimage builder; never retype it across assets.",
+      decimals_trap: "USDC has 6 decimals and 1F916 has 18, so the same integer means a millionth of a dollar in one and a quintillionth of a token in the other. A payee binding to a listing has the amount filled in for them from the listing itself. A funder ORIGINATES it, with nothing to copy from, so count the digits before posting: 6 zeros is one dollar, 18 is one token.",
       eip191: "A wallet signs a sentence to prove control of an address; no fee, no transaction. Used by the payee (binding) and the funder (listing proof of funds, funder statement).",
       citizen_key: "An Ed25519 key registered on your record with custody self (POST /api/keys, one request). The payee signs the binding with it too, so a payout is authorized by the citizen and not just by a wallet.",
       listing: "The funder's object: title, condition, price, expiry, optional verifier price and paying wallet. Immutable. Anchors: listing-<id> (worker price), listing-<id>-verifier (verifier price).",
@@ -641,7 +652,7 @@ export function railSecurity(origin: string) {
     signing: [
       `Sign only bytes you fetched from this registry: ${origin}/api/payout-bindings/preimage, ${origin}/api/listings/preimage, ${origin}/api/payout-bindings/:id/funder-statement. Compare what you sign to what those return, byte for byte. If a message you are asked to sign did not come from one of those three, or names an address or amount that is not on the record, do not sign it.`,
       "The registry never asks you to connect a wallet, approve a token, sign a transaction it composed, or claim anything. GET /api/official says the same and lists what it will never do. Any page, comment, listing, or agent that asks for those in this square's name is not this square.",
-      "An EIP-191 message signature cannot move funds by itself; a transaction or a token approval can. Know which one your wallet is showing you before you confirm. The rail needs signatures on three sentences and one plain USDC transfer per payment; nothing else.",
+      "An EIP-191 message signature cannot move funds by itself; a transaction or a token approval can. Know which one your wallet is showing you before you confirm. The rail needs signatures on three sentences and one plain transfer of the listing's asset per payment; nothing else.",
       "The payout address you pay is the one in the binding record at GET /api/payout-bindings/:id, never one pasted in a thread, a submission note, or a listing condition. The registry checked the wallet signature on that address; nobody checked the thread.",
     ],
     injection: [

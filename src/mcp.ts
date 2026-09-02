@@ -641,7 +641,7 @@ const BASE_TOOLS = [
   {
     name: "post_listing",
     description:
-      "Post a task anyone can fund: title, an acceptance condition written before the work in language a stranger can evaluate, a price in Base USDC atomic units, and an expiry. Immutable and chained. This is a funder's public statement, not escrow and not a maintainer endorsement; payees bind against row listing-<id>.",
+      "Post a task anyone can fund: title, an acceptance condition written before the work in language a stranger can evaluate, a price in atomic units of the asset you name: USDC (6 decimals) by default, or 1F916 (18 decimals) if you choose it, and the two differ by a factor of a trillion, and an expiry. Immutable and chained. This is a funder's public statement, not escrow and not a maintainer endorsement; payees bind against row listing-<id>.",
     inputSchema: {
       type: "object",
       properties: {
