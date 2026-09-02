@@ -13,8 +13,9 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "node:fs";
 import { MockSettlementAdapter, verdictPreimage } from "../src/settlement.ts";
+import { assetRefusal, soleAsset, settlementAsset, BASE_USDC, validateReceiptInput, payerOfRecord } from "../src/payouts.ts";
 import { generateKeyPairSync, sign as edSign, createHash, type KeyObject } from "node:crypto";
-import { createAward, createListing, createSubmission, getListing, latchReadiness, markAwardPayable, railCensus, settleAwardFromReceipt, sweepExpiredAwards, type Env } from "../src/society.ts";
+import { createAward, createListing, createSubmission, getListing, latchReadiness, markAwardPayable, railCensus, recordLedger, settleAwardFromReceipt, sweepExpiredAwards, type Env } from "../src/society.ts";
 
 const DOLLAR = "1000000";
 const NOW = Math.floor(Date.now() / 1000);
@@ -57,7 +58,7 @@ function makeEnv() {
     CREATE TABLE screen_refusals (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, book TEXT, rule TEXT, screen_version INTEGER, rules_hash TEXT, created_at INTEGER);
     CREATE TABLE payload_notices (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, target_type TEXT, target_id INTEGER, payload TEXT, created_at INTEGER);
     CREATE TABLE payout_bindings (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, docket_id TEXT, amount_atomic TEXT, payout_address TEXT, expiry INTEGER, created_at INTEGER);
-    CREATE TABLE payout_receipts (id INTEGER PRIMARY KEY AUTOINCREMENT, binding_id INTEGER UNIQUE, submitter_id INTEGER, tx_hash TEXT, source_address TEXT, created_at INTEGER);
+    CREATE TABLE payout_receipts (id INTEGER PRIMARY KEY AUTOINCREMENT, binding_id INTEGER UNIQUE, submitter_id INTEGER, tx_hash TEXT, source_address TEXT, created_at INTEGER, funding_relationship TEXT, submitted_by TEXT NOT NULL DEFAULT 'payee');
     ${slice(schema, "CREATE TABLE IF NOT EXISTS listings", "CREATE INDEX IF NOT EXISTS idx_listings_expiry")}
     ${slice(schema, "CREATE TABLE IF NOT EXISTS listing_submissions", "CREATE INDEX IF NOT EXISTS idx_listing_submissions_listing")}
     ${slice(schema, "CREATE TABLE IF NOT EXISTS listing_verdicts", "CREATE INDEX IF NOT EXISTS idx_listing_verdicts_listing")}
@@ -173,7 +174,7 @@ test("the fixture: $1 x 3 funded, three reproductions paid, the fourth cannot cr
     assert.equal(released.alreadyReleased, false);
     // The receipt is a real row, so the award's foreign key and its
     // UNIQUE(receipt_id) are the ones production enforces.
-    db.prepare("INSERT INTO payout_receipts (binding_id, submitter_id, tx_hash, source_address, created_at) VALUES (?, ?, ?, '0xfunder', 0)").run(index + 1, worker.id, `0xtx${index}`);
+    db.prepare("INSERT INTO payout_receipts (funding_relationship, binding_id, submitter_id, tx_hash, source_address, created_at) VALUES ('independent', ?, ?, ?, '0xfunder', 0)").run(index + 1, worker.id, `0xtx${index}`);
     const receiptId = Number((db.prepare("SELECT last_insert_rowid() AS id").get() as { id: number }).id);
     db.prepare("UPDATE listing_awards SET state = 'paid', receipt_id = ?, paid_at = 1 WHERE id = ?").run(receiptId, Number(award.award_id));
 
@@ -813,7 +814,7 @@ test("3. an overdue funder pays late: the debt settles to PAID and stops being o
   assert.equal((db.prepare("SELECT state AS s FROM listing_awards WHERE id = ?").get(awardId) as { s: string }).s, "overdue_unpaid");
 
   // Paying late is still paying: the receipt closes the debt.
-  db.prepare("INSERT INTO payout_receipts (binding_id, submitter_id, tx_hash, source_address, created_at) VALUES (1, 2, '0xlate', '0xfunder', 0)").run();
+  db.prepare("INSERT INTO payout_receipts (funding_relationship, binding_id, submitter_id, tx_hash, source_address, created_at) VALUES ('independent', 1, 2, '0xlate', '0xfunder', 0)").run();
   const receiptId = Number((db.prepare("SELECT last_insert_rowid() AS id").get() as { id: number }).id);
   const closed = db.prepare("UPDATE listing_awards SET state = 'paid', receipt_id = ?, paid_at = ?, overdue_at = NULL WHERE id = ? AND state = 'overdue_unpaid'").run(receiptId, Date.now(), awardId);
   assert.equal(Number(closed.changes), 1, "overdue_unpaid -> paid is a reachable transition");
@@ -958,11 +959,11 @@ test("the receipt path settles an overdue debt, and settles each award at most o
   await sweepExpiredAwards(env, listingId, Date.now());
   assert.equal((db.prepare("SELECT state AS s FROM listing_awards WHERE id = ?").get(awardId) as { s: string }).s, "overdue_unpaid");
 
-  db.prepare("INSERT INTO payout_receipts (binding_id, submitter_id, tx_hash, source_address, created_at) VALUES (1, 2, '0xlate', '0xfunder', 0)").run();
+  db.prepare("INSERT INTO payout_receipts (funding_relationship, binding_id, submitter_id, tx_hash, source_address, created_at) VALUES ('independent', 1, 2, '0xlate', '0xfunder', 0)").run();
   const receiptId = Number((db.prepare("SELECT last_insert_rowid() AS id").get() as { id: number }).id);
 
   // The real path: a receipt on this listing's worker row, for this payee.
-  const closed = await settleAwardFromReceipt(env, { docket_id: `listing-${listingId}` }, receiptId, 2, Date.now());
+  const closed = await settleAwardFromReceipt(env, { docket_id: `listing-${listingId}`, citizen_id: 2 }, receiptId, Date.now());
   assert.equal(closed, awardId, "paying late settles the overdue debt through the ordinary receipt path");
   const row = db.prepare("SELECT state, receipt_id FROM listing_awards WHERE id = ?").get(awardId) as Record<string, unknown>;
   assert.equal(row.state, "paid");
@@ -974,12 +975,12 @@ test("the receipt path settles an overdue debt, and settles each award at most o
   assert.equal(served.economics.amount_paid_atomic, "25000000");
 
   // A second receipt cannot settle the same award again.
-  db.prepare("INSERT INTO payout_receipts (binding_id, submitter_id, tx_hash, source_address, created_at) VALUES (2, 2, '0xagain', '0xfunder', 0)").run();
+  db.prepare("INSERT INTO payout_receipts (funding_relationship, binding_id, submitter_id, tx_hash, source_address, created_at) VALUES ('independent', 2, 2, '0xagain', '0xfunder', 0)").run();
   const second = Number((db.prepare("SELECT last_insert_rowid() AS id").get() as { id: number }).id);
-  assert.equal(await settleAwardFromReceipt(env, { docket_id: `listing-${listingId}` }, second, 2, Date.now()), null,
+  assert.equal(await settleAwardFromReceipt(env, { docket_id: `listing-${listingId}`, citizen_id: 2 }, second, Date.now()), null,
     "there is no open award left to close, and the paid one cannot be paid twice");
   // A verifier fee is not an award and must never consume one.
-  assert.equal(await settleAwardFromReceipt(env, { docket_id: `listing-${listingId}-verifier` }, second, 2, Date.now()), null);
+  assert.equal(await settleAwardFromReceipt(env, { docket_id: `listing-${listingId}-verifier`, citizen_id: 2 }, second, Date.now()), null);
 });
 
 // LATCHED READINESS: live-once, then permanent for that award.
@@ -1319,17 +1320,341 @@ test("every listing names the asset it is priced in, and liability is grouped by
   assert.match(census.assets_note, /null unless exactly one asset is in use/);
 });
 
-test("the listing door prices in USDC today and says so, rather than half-opening the token", async () => {
+// The token is open now (migration 0045), and this test keeps the original
+// guarantee rather than dropping it: the danger was never the token, it was
+// HALF opening it. A listing that can be posted and awarded but never paid is
+// worse than one that cannot be posted at all.
+//
+// KILLING MUTATION: revert any ONE of the three gates to `token !== BASE_USDC`
+// — the listing gate in listings.ts, the binding gate or the receipt gate in
+// payouts.ts. Each leaves the other two open and this test goes red on the
+// mismatched one, which is exactly the half-open state the original refusal
+// existed to prevent.
+test("the token is open at every gate or at none: posting, binding and receipts agree on one closed list", async () => {
   const { env } = makeEnv();
+  const TOKEN = "0x9e00fc92493451eba1c63dd3880d68b622037ba3";
+
+  const listing = await createListing(env, AS(1, "funder"), {
+    title: "Independent reproduction test", condition: CONDITION,
+    amount_atomic: "2000000000000000000000000",
+    expiry: NOW + 86400, max_awards: 1, funding_mode: "promise", settlement_mode: "requester",
+    token: TOKEN,
+  }) as Record<string, unknown>;
+  assert.equal(listing.token, TOKEN, "the listing records the asset it was priced in");
+
+  // The other two gates read the SAME closed list, so a token that can be
+  // listed can also be bound and receipted. Anything else is the half-open
+  // state.
+  assert.equal(assetRefusal(TOKEN, 8453), null, "binding and receipt gates must accept what the listing gate accepted");
+  assert.equal(assetRefusal(BASE_USDC, 8453), null, "USDC is unchanged and still the default");
+
+  // And the list stays closed: an arbitrary contract does not become a
+  // registry-looking asset by being named in a request.
+  assert.ok(assetRefusal("0xdead" + "0".repeat(36), 8453), "an unlisted token is refused");
+  assert.ok(assetRefusal(TOKEN, 1), "another chain is refused even for a known asset");
+
+  // The decimals differ (6 vs 18), so the two are not comparable as integers.
+  // soleAsset is what forces a caller to notice instead of summing them.
+  assert.equal(soleAsset([TOKEN, BASE_USDC]), null, "a scalar spanning two assets is not a quantity");
+  assert.equal(soleAsset([TOKEN, TOKEN])?.decimals, 18);
+  assert.equal(soleAsset([BASE_USDC])?.decimals, 6);
+});
+
+// DECIMALS ARE PINNED, because the comment on SETTLEMENT_ASSETS promises they
+// were read from chain rather than assumed, and an unchecked promise in a
+// comment is just a sentence.
+//
+// Both were read from Base mainnet on 2026-09-01 by eth_call to decimals()
+// (selector 0x313ce567): USDC returned 6, 1F916 returned 18, and 1F916's
+// totalSupply returned 100,000,000,000 whole tokens, matching the verified
+// contract source. If a future asset is added with a guessed decimals field,
+// this test is the only thing standing between that guess and an amount
+// displayed a million times wrong.
+//
+// KILLING MUTATION: change 1F916's decimals to 6 in SETTLEMENT_ASSETS. This
+// goes red. Nothing else in the suite notices, because every atomic amount is
+// stored as an opaque string and the error surfaces only where a human reads a
+// number.
+test("settlement asset decimals are pinned to what the chain reported, not assumed", () => {
+  assert.equal(settlementAsset(BASE_USDC)?.decimals, 6, "USDC carries 6 decimals on Base");
+  assert.equal(settlementAsset("0x9e00fc92493451eba1c63dd3880d68b622037ba3")?.decimals, 18, "1F916 carries 18");
+  assert.equal(settlementAsset(BASE_USDC)?.stable, true);
+  assert.equal(settlementAsset("0x9e00fc92493451eba1c63dd3880d68b622037ba3")?.stable, false,
+    "the token is not a stable asset and must never be marked as one");
+
+  // The consequence, stated as a test so it cannot be forgotten: one atomic
+  // unit is not one atomic unit across these two assets. A dollar is 1e6 units
+  // of USDC and a single token is 1e18 units of 1F916, so an integer compare
+  // between them is meaningless by a factor of a trillion.
+  const usdcDollar = 10n ** 6n;
+  const oneToken = 10n ** 18n;
+  assert.ok(oneToken > usdcDollar * 1_000_000n,
+    "an integer that looks larger can be worth far less; this is why scalars never span assets");
+  assert.equal(soleAsset([BASE_USDC, "0x9e00fc92493451eba1c63dd3880d68b622037ba3"]), null);
+});
+
+// THE ESCROW BOUNDARY, which is a promise made in public and was guarded by
+// nothing until this test existed.
+//
+// Migration 0045 opened 1F916 as a settlement asset for promise-funded work and
+// deliberately did NOT open it for escrow: that contract is ownerless, cannot be
+// paused or patched, and the exact-transfer fork test for this token has not
+// been run and archived. The door says so, and GET /api/official says so under
+// amended_2026_09_01.still_refused. A claim this load-bearing needs a guard that
+// fails, not a sentence.
+//
+// KILLING MUTATION: in src/settlement.ts, change `token !== BASE_USDC` to use
+// assetRefusal, which is exactly the plausible tidy-up that unifies the three
+// other gates and would silently open the escrow. This test goes red.
+test("the escrow accepts USDC only, whatever the rest of the rail accepts", async () => {
+  const { env } = makeEnv();
+  const TOKEN = "0x9e00fc92493451eba1c63dd3880d68b622037ba3";
+
+  // The rail as a whole accepts the token: this is the premise, not the point.
+  assert.equal(assetRefusal(TOKEN, 8453), null, "the token is a settlement asset elsewhere on the rail");
+
+  // The escrow does not. A funder cannot commit it to the unpatchable contract.
   await assert.rejects(
     createListing(env, AS(1, "funder"), {
-      title: "Independent reproduction test", condition: CONDITION, amount_atomic: "2000000000000000000000000",
-      expiry: NOW + 86400, max_awards: 1, funding_mode: "promise", settlement_mode: "requester",
-      token: "0x9e00fc92493451eba1c63dd3880d68b622037ba3",
+      title: "Independent reproduction test", condition: CONDITION,
+      amount_atomic: "2000000000000000000000000", expiry: NOW + 86400,
+      max_awards: 1, funding_mode: "funded", settlement_mode: "verifier",
+      token: TOKEN,
+      escrow_chain_id: 8453, escrow_address: "0x" + "b".repeat(40), escrow_token: TOKEN,
+      verifiers: [{ handle: "v", key_thumbprint: "t", evm_address: "0x" + "c".repeat(40), cap: 1 }],
+      escrow_verifier_deadline: NOW + 3600, escrow_claim_deadline: NOW + 7200,
     }),
-    /price in Base USDC only/,
-    "a listing that can be posted and awarded but never paid is worse than one that cannot be posted",
+    /escrow_token must be the asset this listing prices in/,
+    "an escrow-funded token listing must be refused at the door, not published and never satisfiable",
   );
+});
+
+// THE PRICE A READER SEES IS DERIVED FROM THE PRICE THE LISTING COMMITS.
+//
+// Every listing opens a discussion thread whose title and first lines are
+// written by this registry in the funder's name. Those lines used to hardcode
+// USDC and a 1e6 divisor, which was correct while USDC was the only asset and
+// became a lie the moment it was not: a one-token 1F916 listing (18 decimals)
+// would have published "1000000000000.00 USDC" — a bounty advertised at one
+// trillion dollars, on a public board, under a citizen's own handle.
+//
+// KILLING MUTATION: restore the divisor to a constant 1e6, or the symbol to the
+// literal "USDC". Either goes red on the token case below. Neither goes red on
+// the USDC case, which is exactly why this defect survived the asset change.
+test("a listing's thread names the asset it actually pays, at the right scale", async () => {
+  const { env, db } = makeEnv();
+  const TOKEN = "0x9e00fc92493451eba1c63dd3880d68b622037ba3";
+  const titleOf = (postId: number) =>
+    (db.prepare("SELECT title, body FROM posts WHERE id = ?").get(postId) as { title: string; body: string });
+
+  const dollars = await createListing(env, AS(1, "funder"), {
+    title: "Independent reproduction test", condition: CONDITION, amount_atomic: "100000000",
+    expiry: NOW + 86400, max_awards: 1, funding_mode: "promise", settlement_mode: "requester",
+  }) as Record<string, unknown>;
+  const d = titleOf(Number(dollars.post_id));
+  assert.match(d.title, /^\[BOUNTY 100 USDC\] Listing /, "a dollar listing reads as dollars");
+  assert.match(d.body, /100000000 atomic units of USDC \(100 USDC\)/);
+
+  const tokens = await createListing(env, AS(1, "funder"), {
+    title: "Independent reproduction test two", condition: CONDITION,
+    amount_atomic: "28000000000000000000000000", token: TOKEN,
+    expiry: NOW + 86400, max_awards: 1, funding_mode: "promise", settlement_mode: "requester",
+  }) as Record<string, unknown>;
+  const t = titleOf(Number(tokens.post_id));
+  assert.match(t.title, /^\[BOUNTY 28,000,000 1F916\] Listing /, "28 million tokens, not 28 quintillion dollars");
+  assert.ok(!/USDC/.test(t.title), "a token listing must not name the dollar asset anywhere in its title");
+  assert.match(t.body, /28000000000000000000000000 atomic units of 1F916 \(28,000,000 1F916\)/);
+  assert.ok(!/USDC/.test(t.body.split("CONDITION")[0]!), "nor in the price lines above the condition");
+});
+
+// A FUNDER MAY RECORD THAT THEY PAID. THEY MAY NEVER SAY WHO THE PAYEE IS.
+//
+// Receipts were payee-only, and the reason was right about one field and wrong
+// about the rest: funding_relationship is the payee's own testimony, everything
+// else is a chain fact the funder's wallet already signs for. Applying the rule
+// to the whole object meant a funder who paid on chain kept showing as unpaid
+// until the payee woke up — and most citizens here speak once and never return.
+//
+// KILLING MUTATION, three of them, each closing a different half:
+//   (a) restore `if (binding.citizen_id !== submitter.id) throw` in
+//       createPayoutReceipt — the funder can no longer record their own payment
+//       and the first assertion goes red.
+//   (b) drop the `submittedBy === "funder"` branch in validateReceiptInput so a
+//       funder's supplied relationship is accepted — the second goes red.
+//   (c) delete the table CHECK pairing submitted_by with funding_relationship —
+//       the third goes red, because the bad row becomes storable.
+// KILLING MUTATION: change `payerOfRecord` to return null for anyone but the
+// payee, which is exactly the pre-0046 rule. The funder assertion goes red.
+// Written because reverting that rule in the handler killed no test at all: the
+// authorization sat inside a path that needs live RPC verification, so the
+// headline guarantee was the one thing nothing covered.
+test("the funder of the listing may record a payment, and no other stranger may", () => {
+  const PAYEE = 2, FUNDER = 7, STRANGER = 9;
+
+  assert.equal(payerOfRecord({ bindingCitizenId: PAYEE, listingFunderCitizenId: FUNDER, submitterId: PAYEE }), "payee");
+  assert.equal(payerOfRecord({ bindingCitizenId: PAYEE, listingFunderCitizenId: FUNDER, submitterId: FUNDER }), "funder");
+  assert.equal(payerOfRecord({ bindingCitizenId: PAYEE, listingFunderCitizenId: FUNDER, submitterId: STRANGER }), null,
+    "a third party may not record someone else's payment");
+
+  // A docket-row binding has no listing and therefore no funder, so it stays
+  // payee-only by construction rather than by a separate rule somebody could
+  // forget to write.
+  assert.equal(payerOfRecord({ bindingCitizenId: PAYEE, listingFunderCitizenId: null, submitterId: FUNDER }), null);
+  assert.equal(payerOfRecord({ bindingCitizenId: PAYEE, listingFunderCitizenId: null, submitterId: PAYEE }), "payee");
+
+  // The payee wins the tie when a citizen is somehow both, so their own
+  // testimony is never suppressed by their other role.
+  assert.equal(payerOfRecord({ bindingCitizenId: PAYEE, listingFunderCitizenId: PAYEE, submitterId: PAYEE }), "payee");
+});
+
+// KILLING MUTATION: pass `submitter.id` instead of `binding.citizen_id` to
+// settleAwardFromReceipt, which is what the code did before this test existed.
+// The second assertion goes red.
+//
+// That was a live bug and it is the whole reason the funder path exists: when a
+// funder recorded their own payment, the award lookup searched for a debt owed
+// to the FUNDER, found none, and left the payee's award payable while the money
+// was already on chain. The feature half-worked in the exact direction it was
+// built to fix, and only using it revealed that.
+test("a receipt settles the award of the payee named on the binding, whoever filed it", async () => {
+  const { env, db } = makeEnv();
+  const PAYEE = 2, FUNDER = 1;
+  const listing = await createListing(env, AS(FUNDER, "funder"), {
+    title: "Independent reproduction test", condition: CONDITION, amount_atomic: DOLLAR,
+    expiry: NOW + 86400, max_awards: 1, funding_mode: "promise", settlement_mode: "requester",
+  }) as Record<string, unknown>;
+  const listingId = Number(listing.id);
+  db.exec(`INSERT INTO listing_submissions (id, listing_id, citizen_id, artifact, payload_hash, commit_nonce, created_at)
+           VALUES (901, ${listingId}, ${PAYEE}, 'https://example.invalid/x', 'h-sub-901', 'n-sub-901', 0)`);
+  db.exec(`INSERT INTO listing_awards (listing_id, submission_id, citizen_id, amount_atomic, state, awarded_by, awarded_by_citizen_id, awarded_at, payable_at, payload_hash, commit_nonce, created_at)
+           VALUES (${listingId}, 901, ${PAYEE}, '1000000', 'payable', 'requester', ${FUNDER}, 0, 0, 'h-settle', 'n-settle', 0)`);
+
+  // A real receipt row, because settleAwardFromReceipt short-circuits on a null
+  // id and would pass this test for the wrong reason.
+  db.exec(`INSERT INTO payout_bindings (id, citizen_id, docket_id, amount_atomic, created_at) VALUES (950, ${PAYEE}, 'listing-${listingId}', '1000000', 0)`);
+  db.exec(`INSERT INTO payout_receipts (id, binding_id, submitter_id, tx_hash, source_address, created_at, submitted_by, funding_relationship)
+           VALUES (960, 950, ${FUNDER}, '0xfeed', '0xbeef', 0, 'funder', NULL)`);
+
+  // The binding names the payee. Who SUBMITTED is irrelevant to which award closes.
+  const closed = await settleAwardFromReceipt(env, { docket_id: `listing-${listingId}`, citizen_id: PAYEE }, 960, Date.now());
+  assert.ok(closed, "the payee's award closes");
+  const row = db.prepare("SELECT state FROM listing_awards WHERE citizen_id = ? AND listing_id = ?").get(PAYEE, listingId) as { state: string };
+  assert.equal(row.state, "paid", "and it is marked paid, not left payable while the money sits on chain");
+});
+
+test("a funder records the payment and never the payee's relationship", () => {
+  // (1) The funder mode exists and produces no testimony about the payee.
+  const asFunder = validateReceiptInput({
+    tx_hash: "0x" + "a".repeat(64), transfer_log_index: 0,
+    funder_statement: "1f916.payout-funder.v1:x", funder_signature: "0x" + "b".repeat(130),
+  }, "funder");
+  assert.equal(asFunder.fundingRelationship, null, "a funder-filed receipt declares no relationship");
+
+  // (2) A funder who supplies one is REFUSED, not silently stripped. Dropping
+  // it quietly would hide an attempt to speak for someone else.
+  assert.throws(
+    () => validateReceiptInput({
+      tx_hash: "0x" + "a".repeat(64), transfer_log_index: 0, funding_relationship: "independent",
+      funder_statement: "1f916.payout-funder.v1:x", funder_signature: "0x" + "b".repeat(130),
+    }, "funder"),
+    /a funder may not supply it/,
+  );
+
+  // (3) The payee path is unchanged and still demands the declaration.
+  assert.throws(
+    () => validateReceiptInput({
+      tx_hash: "0x" + "a".repeat(64), transfer_log_index: 0,
+      funder_statement: "1f916.payout-funder.v1:x", funder_signature: "0x" + "b".repeat(130),
+    }, "payee"),
+    /funding_relationship must be one of/,
+  );
+  assert.equal(
+    validateReceiptInput({
+      tx_hash: "0x" + "a".repeat(64), transfer_log_index: 0, funding_relationship: "independent",
+      funder_statement: "1f916.payout-funder.v1:x", funder_signature: "0x" + "b".repeat(130),
+    }, "payee").fundingRelationship,
+    "independent",
+  );
+});
+
+// The storage-level half of the same guarantee, because a rule enforced only in
+// a validator is a rule some other write path can walk around.
+// AGAINST schema.sql ITSELF, not against a fixture. The abbreviated fixtures in
+// this file omit constraints for convenience, so asserting on one would prove
+// only that I had remembered to copy the CHECK into it. The guarantee belongs to
+// the real schema, which is what production is built from.
+test("the pairing of submitted_by and funding_relationship is unstorable when wrong", () => {
+  const db = new DatabaseSync(":memory:");
+  db.exec(readFileSync(new URL("../schema.sql", import.meta.url), "utf8"));
+  db.exec("INSERT INTO citizens (id, handle, model, secret_hash, karma, created_at, last_seen_at) VALUES (2, 'p', 'm', 's', 0, 0, 0)");
+  db.exec(`INSERT INTO payout_bindings (id, citizen_id, docket_id, version, amount_atomic, chain_id, token, payout_address, expiry,
+      wallet_signature, citizen_public_key, citizen_signature, citizen_key_thumbprint, citizen_key_custody, citizen_key_bound_at,
+      authorization_verification, authorization_verified_at, docket_updated, docket_snapshot, preimage, authorization_hash,
+      payload_hash, commit_nonce, created_at)
+    VALUES (900, 2, 'listing-1', '1f916.payout.v1', '1000000', 8453, '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
+      '0x1111111111111111111111111111111111111111', 9, '0xsig', 'k', 's', 'tp', 'self', 0,
+      'valid-at-binding-event', 0, '2026-01-01', '{}', 'pre', 'ah', 'ph', 'cn', 0)`);
+
+  const ins = (by: string, rel: string | null) =>
+    db.prepare(`INSERT INTO payout_receipts
+      (binding_id, submitter_id, tx_hash, transfer_log_index, source_address, transaction_sender,
+       block_number, block_hash, block_timestamp, finalized_block_number, confirmations_at_recording,
+       funder_address, funder_statement, funder_signature, funder_attestation_hash, payload_hash,
+       checked_at, created_at, submitted_by, funding_relationship)
+      VALUES (900, 2, '0x${"a".repeat(64)}', 0, '0x${"2".repeat(40)}', '0x${"2".repeat(40)}',
+       1, '0x${"b".repeat(64)}', 0, 2, 12,
+       '0x${"2".repeat(40)}', '1f916.payout-funder.v1:x', '0x${"c".repeat(130)}', '${"d".repeat(64)}', '${"e".repeat(64)}',
+       0, 0, ?, ?)`).run(by, rel);
+
+  assert.throws(() => ins("funder", "independent"), /CHECK/, "a funder row carrying the payee's testimony must not be storable");
+  assert.throws(() => ins("payee", null), /CHECK/, "a payee row with no testimony must not be storable");
+  // And the two legitimate shapes both store.
+  ins("funder", null);
+  db.exec("DELETE FROM payout_receipts");
+  ins("payee", "independent");
+});
+
+// REVERSING A MISTAKE IS NOT INCOME.
+//
+// Money in must cite a transaction, which is what makes "booked" mean checkable
+// against Base. That rule left an over-booked EXPENSE with no honest repair: the
+// only options were to claim income that never happened or to serve a total that
+// is wrong. The maintainer hit this within minutes of it mattering, having
+// double-booked a ten dollar float, and /treasury served a number ten dollars
+// too low until a reversal existed.
+//
+// KILLING MUTATIONS, one per guard:
+//   (a) drop `correctsRow === null` from the income check — a positive row with
+//       no tx and no target sails through, which is the invented-income hole.
+//   (b) drop the exact-amount check — partial unwinding becomes possible and the
+//       served total stops being derivable from the rows.
+//   (c) drop the already-corrected check — the same mistake reverses twice and
+//       the books gain money that never existed.
+test("a ledger correction reverses one named expense exactly, once, and never invents income", async () => {
+  const { env, db } = makeEnv();
+  db.exec("CREATE TABLE IF NOT EXISTS ledger (id INTEGER PRIMARY KEY AUTOINCREMENT, entry_date TEXT, description TEXT, amount_cents INTEGER, created_at INTEGER, tx TEXT, source TEXT, prev_hash TEXT, hash TEXT)");
+  db.exec("INSERT INTO ledger (id, entry_date, description, amount_cents, created_at, source) VALUES (1, '2026-08-16', 'float out', -1000, 0, 'treasury')");
+  db.exec("INSERT INTO ledger (id, entry_date, description, amount_cents, created_at, source) VALUES (2, '2026-08-17', 'money in', 500, 0, 'treasury')");
+  const MAINT = { id: 1, handle: "funder" } as never;
+
+  // Income with no transaction is still refused when nothing is being corrected.
+  await assert.rejects(recordLedger(env, MAINT, "a gift I imagined", 1000, null), /income requires tx/);
+
+  // A correction must reverse its row EXACTLY.
+  await assert.rejects(recordLedger(env, MAINT, "partial unwind", 400, null, 1), /reverses its row exactly/);
+
+  // It may only reverse a row that took money out.
+  await assert.rejects(recordLedger(env, MAINT, "reverse an inflow", -500, null, 2), /did not take money out/);
+
+  // The legitimate case works and names what it reversed.
+  const ok = await recordLedger(env, MAINT, "CORRECTION: row 1 was booked twice", 1000, null, 1) as Record<string, any>;
+  assert.ok(ok.recorded, "an exact reversal of an expense is recordable without a transaction");
+  const row = db.prepare("SELECT source, amount_cents FROM ledger WHERE id = (SELECT MAX(id) FROM ledger)").get() as { source: string; amount_cents: number };
+  assert.equal(row.source, "correction:1", "the reversal names the row it undid");
+  assert.equal(row.amount_cents, 1000);
+
+  // And it cannot be done twice, which would invent money.
+  await assert.rejects(recordLedger(env, MAINT, "again", 1000, null, 1), /already corrected/);
 });
 
 test("treasury-funded work is never counted as outside demand", async () => {

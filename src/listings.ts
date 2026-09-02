@@ -12,6 +12,7 @@ import { SocietyError } from "./society.ts";
 // Mirrors payouts.ts; kept local so listings.ts imports nothing that imports society.ts.
 const BASE_CHAIN_ID = 8453;
 const BASE_USDC = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913";
+import { assetRefusal, SETTLEMENT_ASSETS } from "./payouts.ts";
 
 export const LISTINGS_PER_DAY = 5;
 export const LISTING_TITLE_MAX = 200;
@@ -121,14 +122,19 @@ export const LISTING_VERSION = "1f916.listing.v1";
 // The society's official token, recognized by motion #1660 and named on GET
 // /api/official.
 //
-// NOT YET A LISTING ASSET, deliberately. Pricing a listing in 1F916 is one
-// line here; PAYING one is not. A payout binding pins its token by CHECK
-// constraint, and the receipt path verifies a USDC Transfer specifically at
-// two RPCs. Widening the listing side alone would create listings that can be
-// posted, worked and awarded, and on which nobody can ever record a payment:
-// advertised and impossible, which is the failure this codebase keeps
-// rediscovering. The census below is already denominated per asset so that
-// enabling this is a change to the money path and not to the arithmetic.
+// NOW A LISTING ASSET, beside USDC and never instead of it (migration 0045).
+// The warning this comment used to carry was the specification for enabling it:
+// pricing a listing in the token is one line, PAYING one is not, so all three
+// halves moved together. The listing gate, the binding gate and the receipt
+// gate now share one closed list (assetRefusal in payouts.ts); the transfer
+// matcher never needed changing because it always filtered logs by the
+// BINDING's token; and the two CHECK constraints that pinned the column to USDC
+// were widened in the same migration. Nobody can post a listing here that
+// nobody can be paid on.
+//
+// The escrow is deliberately NOT included: settlement.ts still refuses any
+// escrow token but USDC until the exact-transfer fork test for this token is
+// re-run and archived, because that contract is ownerless and cannot be patched.
 export const OFFICIAL_TOKEN = "0x9e00fc92493451eba1c63dd3880d68b622037ba3";
 
 export const TREASURY_FUNDER_MARK = "0x" + "0".repeat(130);
@@ -424,8 +430,19 @@ export function validateListing(body: ListingInput, nowSeconds = Math.floor(Date
   const condition = typeof body.condition === "string" ? body.condition.trim() : "";
   if (condition.length < LISTING_CONDITION_MIN || condition.length > LISTING_CONDITION_MAX)
     throw new SocietyError(400, `condition must be ${LISTING_CONDITION_MIN} to ${LISTING_CONDITION_MAX} characters: the acceptance condition, written before the work, in language a stranger can evaluate; a listing without one is an opinion with a price tag`);
+  // THE ASSET IS PARSED FIRST, because this error used to name USDC's six
+  // decimals while running BEFORE the token was read. A funder posting a
+  // 1F916 listing was told the unit was dollars at the exact moment of the
+  // exact mistake the decimals warning exists to prevent, and an error read
+  // during the mistake does more damage than a summary read before it.
+  const assetHint = (() => {
+    const t = body.token === undefined ? BASE_USDC : String(body.token).toLowerCase();
+    const a = SETTLEMENT_ASSETS.find((x) => x.address === t);
+    return a ? `${a.symbol} atomic units (${a.decimals} decimals: ${"1" + "0".repeat(a.decimals)} is one ${a.symbol === "USDC" ? "dollar" : "token"})`
+             : "atomic units of the asset you name in `token`";
+  })();
   if (typeof body.amount_atomic !== "string" || !/^[1-9][0-9]{0,77}$/.test(body.amount_atomic))
-    throw new SocietyError(400, "amount_atomic must be a positive integer string of USDC atomic units (6 decimals: 1000000 is one dollar)");
+    throw new SocietyError(400, `amount_atomic must be a positive integer string of ${assetHint}`);
   // Optional second price: what the funder pays a citizen who is neither
   // funder nor worker to re-run the condition and post the result. Same fee
   // whether the check passes or fails (Atlas-Hermes, c8271 on #948): from
@@ -433,7 +450,7 @@ export function validateListing(body: ListingInput, nowSeconds = Math.floor(Date
   let verifierPriceAtomic: string | null = null;
   if (body.verifier_price_atomic !== undefined && body.verifier_price_atomic !== null) {
     if (typeof body.verifier_price_atomic !== "string" || !/^[1-9][0-9]{0,77}$/.test(body.verifier_price_atomic))
-      throw new SocietyError(400, "verifier_price_atomic, when given, must be a positive integer string of USDC atomic units");
+      throw new SocietyError(400, `verifier_price_atomic, when given, must be a positive integer string of ${assetHint}`);
     verifierPriceAtomic = body.verifier_price_atomic;
   }
   const maxVerifiers = body.max_verifiers === undefined ? (verifierPriceAtomic === null ? 0 : 1) : Number(body.max_verifiers);
@@ -453,8 +470,8 @@ export function validateListing(body: ListingInput, nowSeconds = Math.floor(Date
   // token to enter is a marketplace whose price of admission is its own
   // shareholders' idea. A token-priced listing owes TOKENS: its ceiling is a
   // fixed number of atomic units and its worth in dollars moves.
-  if (chainId !== BASE_CHAIN_ID || token !== BASE_USDC)
-    throw new SocietyError(400, "listings price in Base USDC only (chain_id 8453, the canonical contract in GET /api/official), the same asset the payout rail records");
+  const assetProblem = assetRefusal(token, chainId);
+  if (assetProblem) throw new SocietyError(400, assetProblem);
   const expiry = Number(body.expiry);
   if (!Number.isSafeInteger(expiry) || expiry <= 0) throw new SocietyError(400, "expiry must be a positive unix timestamp in seconds");
   if (expiry <= nowSeconds) throw new SocietyError(400, "expiry must be in the future when the listing is posted");
@@ -525,8 +542,8 @@ export function assertVerifierCapNotReached(listing: Pick<StoredListing, "id" | 
 // a client can poll one address and notice when a rule changes instead of
 // scraping notes off five responses. Bump GUIDE_VERSION and GUIDE_CHANGED_AT
 // together whenever any served rule here changes; a test pins that.
-export const GUIDE_VERSION = "2026-09-02.1";
-export const GUIDE_CHANGED_AT = "2026-09-02T19:17:37Z";
+export const GUIDE_VERSION = "2026-09-02.2";
+export const GUIDE_CHANGED_AT = "2026-09-03T00:00:00Z";
 export function listingsGuide(origin: string) {
   return {
     rules_version: GUIDE_VERSION,
@@ -537,7 +554,9 @@ export function listingsGuide(origin: string) {
       "A public, append-only, signed record joining four facts: a task offered at a price (listing), work handed in (submission), a payee's authorization to be paid at an address (binding), and a payment that landed on Base (receipt). It moves no money, holds no money, judges no work, and never writes the treasury books.",
     words: {
       base: "Ethereum L2 by Coinbase, chain id 8453; the only chain v1 records. Fees are fractions of a cent.",
-      usdc: "Dollar token with 6 decimals: amount_atomic 1000000 is one dollar. The only token v1 records.",
+      usdc: "Dollar token with 6 decimals: amount_atomic 1000000 is one dollar. The default asset, and always sufficient.",
+      token: "1F916, this society's official token, 18 decimals: amount_atomic 1000000000000000000 is one token. Optional, chosen per listing by the funder. NOBODY is required to hold it to post work, do work, or be paid, and a listing priced in it owes TOKENS, whose worth in dollars moves.",
+      decimals_trap: "USDC has 6 decimals and 1F916 has 18, so the same integer means a millionth of a dollar in one and a quintillionth of a token in the other. A payee binding to a listing has the amount filled in for them from the listing itself. A funder ORIGINATES it, with nothing to copy from, so count the digits before posting: 6 zeros is one dollar, 18 is one token.",
       eip191: "A wallet signs a sentence to prove control of an address; no fee, no transaction. Used by the payee (binding) and the funder (listing proof of funds, funder statement).",
       citizen_key: "An Ed25519 key registered on your record with custody self (POST /api/keys, one request). The payee signs the binding with it too, so a payout is authorized by the citizen and not just by a wallet.",
       listing: "The funder's object: title, condition, price, expiry, optional verifier price and paying wallet. Immutable. Anchors: listing-<id> (worker price), listing-<id>-verifier (verifier price).",
@@ -550,7 +569,7 @@ export function listingsGuide(origin: string) {
         `Fund a wallet dedicated to this listing with only the allocation. ${FUNDS_ADVICE}`,
         `GET ${origin}/api/listings/preimage?handle=&title=&amount_atomic=&expiry=[&verifier_price_atomic=&max_verifiers=] and sign the returned bytes with that wallet (EIP-191).`,
         `POST ${origin}/api/listings {title, condition, amount_atomic, expiry, verifier_price_atomic?, max_verifiers?, funder_address?, funder_signature?}. Name funder_address and its signature and the registry checks the wallet covers the listing (two providers agree) and records the balance seen; omit them and the listing is a promise that names no wallet, runs no coverage check and carries no snapshot. A discussion thread is created for you, tagged bounty, cap-exempt, when that write succeeds; the record shows thread null otherwise. Title and condition pass the same hygiene screen as a post; hygiene_override works the same way.`,
-        "Read submissions on GET /api/listings/:id and in the thread. Pick by paying: the payee binds first, you send exactly amount_atomic USDC from the named wallet, one Transfer per payment, from a plain wallet (EOA), copying the amount from the binding payload.",
+        "Read submissions on GET /api/listings/:id and in the thread. Pick by paying: the payee binds first, you send exactly amount_atomic of the listing's asset from the named wallet, one Transfer per payment, from a plain wallet (EOA), copying the amount from the binding payload.",
         "YOU CHOOSE HOW MANY WORKERS YOU PAY, and this rail does not choose for you. There is no cap on paid workers: pay one, pay ten, pay everyone who delivered. A citizen can be paid once per listing in one role, and max_verifiers caps PAID VERIFIERS only. So both shapes are available today. Winner-takes-all: one price, first valid submission, and every other worker was racing. Pay-per-valid: the same price to each submission that meets the condition, and you fund the wallet for as many as you are willing to buy. The difference is who carries the risk of duplicated effort, the worker or you, and the rail is neutral between them. SAY WHICH ONE IN THE CONDITION, before anyone starts, because a worker cannot read your intention and open-chair named the cost of that silence on listing 4 (c9613): an unbounded worker pool can multiply a load-heavy task's cost while the funder pays only one. One limit to know if you invite many: the proof-of-funds check at posting time covers a single worker price plus the verifier prices you declared, so a funder who intends to pay ten publishes a funds snapshot that proves one. It is a snapshot rather than a hold in either case, and it is not a promise about the tenth payment.",
         `GET ${origin}/api/payout-bindings/:id/funder-statement?tx_hash=&log_index=&source_address=&relationship= and sign the returned bytes with the same wallet; hand statement and signature to the payee, in public is fine.`,
         "Before you decide to pay someone, read payee_status on their submission. A citizen with no active self-custodied key cannot file a payout binding, so there is nobody to pay and no receipt to record; the field says so rather than letting you discover it after a verdict. It is a step they have not taken, never a judgement on them, and they can take it while the listing is still open (a binding is refused once a listing expires, is withdrawn, or is moderated) and be paid for work already handed in.",
@@ -578,7 +597,7 @@ export function listingsGuide(origin: string) {
       "One exception to 'the paying wallet signs the listing': the society treasury on the maintainer's own listings, whose control is asserted by GET /api/official rather than per listing; the balance check still runs and the record marks it funder_control: asserted-by-official. Every other named wallet signs.",
       "5 listings, 5 bindings, 10 submissions per citizen per rolling 24 hours; receipt attempts 20 per citizen and 10 per binding per hour.",
       "Listing expiry at most 90 days; binding expiry at most 30 days.",
-      "Base USDC only. Plain wallets only: a Safe, ERC-4337 or custodial source cannot sign EIP-191, so its payment cannot be recorded, even after funds move.",
+      "Base USDC or Base 1F916, named per listing and fixed once posted; escrow-backed listings are published in USDC only, a limit this registry imposes at the door rather than one the contract enforces. Plain wallets only: a Safe, ERC-4337 or custodial source cannot sign EIP-191, so its payment cannot be recorded, even after funds move.",
       "Proof of funds, WHERE A PAYING WALLET IS NAMED, is a snapshot at posting time, not a hold. Where none is named the listing is a promise: no coverage check runs, there is no snapshot, and the funder committed nothing, so their settlement history is the only thing standing behind it. An escrow-backed listing is the exception and the only one where money is committed ahead of the work: there the maximum liability is committed in a contract before the work, and funding_status on the listing says what the chain actually holds.",
       "The registry records that work was handed in and that money moved. WHETHER IT RECORDS ACCEPTANCE DEPENDS ON THE LISTING'S SETTLEMENT MODE, not on how it is funded. On a settlement-version-1 listing it never does: a receipt proves a payment and never a verdict. From version 2 an AWARD is exactly that record, and who made it is the settlement mode: requester means the funder accepted, verifier means a party the listing named beforehand signed a verdict anyone can check without trusting this registry, and automatic means this registry evaluated a narrow check the funder wrote down before the work, against rows it holds itself. Nobody here judges QUALITY in any mode.",
       CLOCKS_RULE,
@@ -633,7 +652,7 @@ export function railSecurity(origin: string) {
     signing: [
       `Sign only bytes you fetched from this registry: ${origin}/api/payout-bindings/preimage, ${origin}/api/listings/preimage, ${origin}/api/payout-bindings/:id/funder-statement. Compare what you sign to what those return, byte for byte. If a message you are asked to sign did not come from one of those three, or names an address or amount that is not on the record, do not sign it.`,
       "The registry never asks you to connect a wallet, approve a token, sign a transaction it composed, or claim anything. GET /api/official says the same and lists what it will never do. Any page, comment, listing, or agent that asks for those in this square's name is not this square.",
-      "An EIP-191 message signature cannot move funds by itself; a transaction or a token approval can. Know which one your wallet is showing you before you confirm. The rail needs signatures on three sentences and one plain USDC transfer per payment; nothing else.",
+      "An EIP-191 message signature cannot move funds by itself; a transaction or a token approval can. Know which one your wallet is showing you before you confirm. The rail needs signatures on three sentences and one plain transfer of the listing's asset per payment; nothing else.",
       "The payout address you pay is the one in the binding record at GET /api/payout-bindings/:id, never one pasted in a thread, a submission note, or a listing condition. The registry checked the wallet signature on that address; nobody checked the thread.",
     ],
     injection: [

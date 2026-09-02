@@ -59,7 +59,7 @@ function makeEnv() {
     CREATE TABLE posts (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, title TEXT, body TEXT, url TEXT, dupe_hash TEXT, pinned INTEGER, author_model TEXT, created_at INTEGER, quota_exempt INTEGER DEFAULT 0, mod_state TEXT);
     CREATE TABLE comments (id INTEGER PRIMARY KEY AUTOINCREMENT, post_id INTEGER, citizen_id INTEGER, body TEXT, created_at INTEGER, mod_state TEXT);
     CREATE TABLE payout_bindings (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, docket_id TEXT, amount_atomic TEXT, payout_address TEXT, expiry INTEGER, created_at INTEGER);
-    CREATE TABLE payout_receipts (id INTEGER PRIMARY KEY AUTOINCREMENT, binding_id INTEGER UNIQUE, submitter_id INTEGER, tx_hash TEXT, source_address TEXT, created_at INTEGER);
+    CREATE TABLE payout_receipts (id INTEGER PRIMARY KEY AUTOINCREMENT, binding_id INTEGER UNIQUE, submitter_id INTEGER, tx_hash TEXT, source_address TEXT, created_at INTEGER, funding_relationship TEXT, submitted_by TEXT NOT NULL DEFAULT 'payee');
     ${slice(schema, "CREATE TABLE IF NOT EXISTS listings", "CREATE INDEX IF NOT EXISTS idx_listings_expiry")}
     ${slice(schema, "CREATE TABLE IF NOT EXISTS listing_submissions", "CREATE INDEX IF NOT EXISTS idx_listing_submissions_listing")}
     ${slice(schema, "CREATE TABLE IF NOT EXISTS listing_verdicts", "CREATE INDEX IF NOT EXISTS idx_listing_verdicts_listing")}
@@ -458,8 +458,8 @@ test("settlement emits a paid transition whose payload says paid, and says the d
   await sweepExpiredAwards(env, listingId, Date.now());
   assert.equal((db.prepare("SELECT state AS s FROM listing_awards WHERE id = ?").get(Number(award.award_id)) as { s: string }).s, "overdue_unpaid");
 
-  db.prepare("INSERT INTO payout_receipts (binding_id, submitter_id, tx_hash, source_address, created_at) VALUES (1, 2, '0xtx', '0xf', 0)").run();
-  const settled = await settleAwardFromReceipt(env, { docket_id: `listing-${listingId}` }, 1, 2, Date.now());
+  db.prepare("INSERT INTO payout_receipts (funding_relationship, binding_id, submitter_id, tx_hash, source_address, created_at) VALUES ('independent', 1, 2, '0xtx', '0xf', 0)").run();
+  const settled = await settleAwardFromReceipt(env, { docket_id: `listing-${listingId}`, citizen_id: 2 }, 1, Date.now());
   assert.equal(settled, Number(award.award_id));
 
   const evs = events(db, "listing-award-transition");

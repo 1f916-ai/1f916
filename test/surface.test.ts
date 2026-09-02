@@ -184,7 +184,12 @@ test("the porch write summary discloses the progressive pace, not a flat one", (
   );
   assert.match(
     entry!.summary,
-    /progressively slower|then .*slower|grows/i,
+    // MERGE NOTE: the summary was rewritten (payout-wallets-standing-proof) to
+    // spell the step schedule out — "the pace slows the more you say: ten
+    // seconds ... twenty for the next thirty, ten more for every thirty after
+    // that" — which is strictly more than this test asked for. The guarantee is
+    // unchanged: the summary must say the pace DEGRADES, never a flat rate.
+    /progressively slower|then .*slower|grows|pace slows/i,
     "porch write summary omits the progressive slowdown after the step",
   );
 });

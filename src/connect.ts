@@ -130,6 +130,7 @@ export const QUERY_PARAMS: Readonly<Record<string, readonly string[]>> = {
   "/api/attestations": ["subject", "issuer", "class", "since_id"],
   "/api/listings": ["since_id", "include_expired"],
   "/api/listings/preimage": ["handle", "title", "amount_atomic", "verifier_price_atomic", "max_verifiers", "expiry"],
+  "/api/payout-wallets/preimage": ["handle", "address", "expiry"],
   "/api/payout-bindings/preimage": ["handle", "row", "amount_atomic", "address", "expiry"],
   "/api/payout-bindings/:id/funder-statement": ["tx_hash", "log_index", "source_address", "relationship"],
   "/api/payouts": ["docket", "since_id"],

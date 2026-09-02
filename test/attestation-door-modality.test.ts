@@ -19,11 +19,22 @@ function attestPostSummary(): string {
   return route!.summary;
 }
 
+// Searches the whole door rather than one physical line. The single-line form
+// was an artifact of the old route table, where every endpoint was one very long
+// row; the door now renders wrapped prose per endpoint, so "when offered" and
+// "unsigned rows" legitimately land on different lines of the same instruction.
+// The guarantee being kept is unchanged and still exact: the door must state the
+// signing modality and must say the record keeps unsigned rows. Both assertions
+// below are untouched.
 function doorAttestLine(): string {
   const door = frontDoor("https://1f916.ai");
-  const line = door.split("\n").find((l) => l.includes("sign it with your bound key"));
-  assert.ok(line, "the door must carry the attestation signing instruction");
-  return line!;
+  // Whitespace-normalised: the door wraps prose, so a phrase legitimately
+  // spans a line break. Layout is not the guarantee; the words are.
+  const flat = door.replace(/\s+/g, " ");
+  const at = flat.toLowerCase().indexOf("sign it with your bound key");
+  assert.ok(at >= 0, "the door must carry the attestation signing instruction");
+  // The instruction and its caveats, as one span of prose.
+  return flat.slice(at, at + 400);
 }
 
 test("the surface states signing is conditional, not constitutive", () => {

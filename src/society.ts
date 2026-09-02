@@ -46,7 +46,10 @@ import {
   FUNDING_RELATIONSHIPS,
   payoutFunderStatement,
   payoutPreimage,
-  readUsdcBalanceTwoSource,
+  readBalanceTwoSource,
+  settlementAsset,
+  assetRefusal,
+  SETTLEMENT_ASSETS,
   BASE_USDC,
   escrowReader,
   type EscrowReader,
@@ -57,14 +60,22 @@ import {
   PAYOUT_RECEIPT_HASH_FIELDS,
   PAYOUT_RECEIPT_ATTEMPTS_PER_BINDING,
   PAYOUT_RECEIPT_ATTEMPTS_PER_HOUR,
+  PAYOUT_WALLETS_PER_DAY,
+  PAYOUT_WALLET_VERSION,
+  MAX_PAYOUT_WALLET_LIFETIME_SECONDS,
+  payerOfRecord,
   payoutBindingPayload,
   payoutBindingPayloadHash,
+  payoutWalletPreimage,
+  payoutWalletPayloadHash,
+  validatePayoutWallet,
   payoutReceiptPayload,
   payoutReceiptPayloadHash,
   validatePayoutBinding,
   validateReceiptInput,
   verifyBasePayment,
   verifyFunderAttestation,
+  type FundingRelationship,
   type PayoutBindingInput,
   type PayoutReceiptInput,
   type StoredPayoutBinding,
@@ -2458,6 +2469,140 @@ export async function keysOf(env: Env, handle: string) {
 // This is an authorization record, not a payment, delivery verdict, or
 // reputation event. Both signatures are checked before anything reaches D1;
 // then the full immutable row and its bounded chain anchor commit together.
+// THE ONE-TIME WALLET PROOF. Everything expensive about being paid happens
+// here, once, and never again: this is the request that usually needs a human.
+export async function createPayoutWallet(env: Env, citizen: Citizen, body: Record<string, unknown>) {
+  const wallet = await validatePayoutWallet(env, citizen, body);
+  const now = Date.now();
+  const commitNonce = crypto.randomUUID();
+  const payloadHash = await payoutWalletPayloadHash(wallet, now, commitNonce);
+  const dayAgo = now - 86_400_000;
+  const existing = await env.DB.prepare(
+    "SELECT id FROM payout_wallets WHERE citizen_id = ? AND address = ? AND revoked_at IS NULL LIMIT 1",
+  ).bind(citizen.id, wallet.address).first<{ id: number }>();
+  if (existing)
+    throw new SocietyError(409, `you already hold a live proof of ${wallet.address} as payout wallet ${existing.id}; revoke it first if you want to re-prove it with a different expiry`);
+
+  const stateStmt = env.DB.prepare(
+    `INSERT INTO payout_wallets
+      (citizen_id, version, chain_id, address, expiry, wallet_signature, citizen_public_key, citizen_signature,
+       citizen_key_thumbprint, citizen_key_custody, citizen_key_bound_at, preimage, proof_hash, payload_hash,
+       commit_nonce, created_at)
+     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+      WHERE (SELECT COUNT(*) FROM payout_wallets WHERE citizen_id = ? AND created_at > ?) < ?
+        AND EXISTS (SELECT 1 FROM keys WHERE citizen_id = ? AND public_key = ? AND custody = 'self' AND status = 'active')
+        AND ? > unixepoch()
+     RETURNING id`,
+  ).bind(
+    citizen.id, wallet.version, wallet.chainId, wallet.address, wallet.expiry, wallet.walletSignature,
+    wallet.citizenPublicKey, wallet.citizenSignature, wallet.citizenKeyThumbprint, wallet.citizenKeyCustody,
+    wallet.citizenKeyBoundAt, wallet.preimage, wallet.proofHash, payloadHash, commitNonce, now,
+    citizen.id, dayAgo, PAYOUT_WALLETS_PER_DAY,
+    citizen.id, wallet.citizenPublicKey,
+    wallet.expiry,
+  );
+  const committed = await commitWithIdentityEvent<{ id: number }>(
+    env,
+    stateStmt,
+    {
+      citizen_id: citizen.id,
+      kind: "payout-wallet",
+      detail: `address=${wallet.address}, payout-wallet payload sha256=${payloadHash}, citizen key=${wallet.citizenKeyThumbprint}`,
+    },
+    "payout-wallet chain head moved four times running; refusing to record a wallet proof without its anchor",
+    { sql: "EXISTS (SELECT 1 FROM payout_wallets WHERE commit_nonce = ?)", binds: [commitNonce] },
+  );
+  if (!committed.state)
+    throw new SocietyError(429, `at most ${PAYOUT_WALLETS_PER_DAY} payout-wallet proofs a day, the citizen key must still be active and self-custodied, and the expiry must still be in the future`);
+
+  return {
+    id: committed.state.id,
+    address: wallet.address,
+    chain_id: wallet.chainId,
+    expiry: wallet.expiry,
+    proof_hash: wallet.proofHash,
+    payload_hash: payloadHash,
+    identity_event: committed.hash,
+    created_at: now,
+    what_this_does:
+      "Every later payout binding on any listing needs your citizen key alone. This proof is what the registry checks instead of a fresh wallet signature, and it is the only thing that had to involve your wallet.",
+    what_this_does_not_do:
+      "It authorizes no payment by itself and creates no entitlement. Money still moves only against a per-listing binding naming an exact amount, and a binding is still not a debt.",
+    revoke: "POST /api/payout-wallets/" + committed.state.id + "/revoke with a public reason. Bindings already filed stand; new ones against this address stop.",
+  };
+}
+
+export async function listPayoutWallets(env: Env, citizen: Citizen) {
+  const { results } = await env.DB.prepare(
+    `SELECT id, chain_id, address, expiry, proof_hash, payload_hash, created_at, revoked_at, revoke_reason
+       FROM payout_wallets WHERE citizen_id = ? ORDER BY id DESC`,
+  ).bind(citizen.id).all<Record<string, unknown>>();
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  return {
+    handle: citizen.handle,
+    wallets: (results ?? []).map((w) => ({
+      ...w,
+      // LIVE IS THREE CONDITIONS, NOT ONE. Reading revoked_at alone would call
+      // a lapsed proof live forever, which is the exact mistake the binding
+      // path guards against at its own clock.
+      live: w.revoked_at === null && Number(w.expiry) > nowSeconds,
+      state: w.revoked_at !== null ? "revoked" : Number(w.expiry) > nowSeconds ? "live" : "expired",
+    })),
+    note:
+      "A payout wallet is an address you proved is yours, once. It routes nothing and owes nothing on its own: a per-listing binding still names the exact amount, and payment is still a funder's act.",
+  };
+}
+
+export async function revokePayoutWallet(env: Env, citizen: Citizen, id: number, body: Record<string, unknown>) {
+  const reason = typeof body.reason === "string" ? body.reason.trim() : "";
+  if (reason.length < 3 || reason.length > 500)
+    throw new SocietyError(400, "reason must be 3 to 500 characters: revoking a payout wallet is a public fact about where your money may no longer be sent");
+  const wallet = await env.DB.prepare("SELECT id, citizen_id, address, revoked_at FROM payout_wallets WHERE id = ?")
+    .bind(id).first<{ id: number; citizen_id: number; address: string; revoked_at: number | null }>();
+  if (!wallet) throw new SocietyError(404, `no payout wallet ${id}`);
+  if (wallet.citizen_id !== citizen.id) throw new SocietyError(403, "a payout wallet is revoked by the citizen who proved it");
+  if (wallet.revoked_at !== null) throw new SocietyError(409, `payout wallet ${id} was already revoked at ${wallet.revoked_at}`);
+  const now = Date.now();
+  await env.DB.prepare("UPDATE payout_wallets SET revoked_at = ?, revoke_reason = ? WHERE id = ? AND revoked_at IS NULL")
+    .bind(now, reason, id).run();
+  return {
+    id,
+    address: wallet.address,
+    revoked_at: now,
+    reason,
+    // A REVOCATION IS NOT A REWRITE. Bindings filed while the proof was live
+    // are evidence of what was true when they were filed, and a payment already
+    // owed does not stop being owed because the route was later closed.
+    effect: "New bindings against this address are refused from now on. Bindings already recorded stand, and any entitlement they carry is unchanged.",
+  };
+}
+
+export async function payoutWalletPreimageFor(env: Env, params: { handle: string | null; address: string | null; expiry: string | null }) {
+  const handle = (params.handle ?? "").trim();
+  const address = (params.address ?? "").trim().toLowerCase();
+  if (!handle) throw new SocietyError(400, "handle is required");
+  if (!/^0x[0-9a-fA-F]{40}$/.test(address)) throw new SocietyError(400, "address must be a 20-byte 0x-prefixed EVM address");
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const expiry = params.expiry === null || params.expiry.trim() === ""
+    ? nowSeconds + MAX_PAYOUT_WALLET_LIFETIME_SECONDS - 300
+    : Number(params.expiry);
+  if (!Number.isSafeInteger(expiry) || expiry <= nowSeconds)
+    throw new SocietyError(400, "expiry must be a whole number of seconds in the future");
+  if (expiry > nowSeconds + MAX_PAYOUT_WALLET_LIFETIME_SECONDS)
+    throw new SocietyError(400, `expiry may be at most ${MAX_PAYOUT_WALLET_LIFETIME_SECONDS} seconds (one year) from now`);
+  const preimage = payoutWalletPreimage({ handle, chainId: BASE_CHAIN_ID, address, expiry });
+  return {
+    version: PAYOUT_WALLET_VERSION,
+    handle,
+    chain_id: BASE_CHAIN_ID,
+    address,
+    expiry,
+    preimage,
+    sign: "Sign these exact bytes twice: EIP-191 with the wallet at this address, and Ed25519 with your active self-custodied citizen key. POST both to /api/payout-wallets.",
+    then: "After this, a payout binding on any listing needs your citizen key alone. Omit `signature` on POST /api/payout-bindings and the registry checks this proof instead.",
+  };
+}
+
 export async function createPayoutBinding(env: Env, citizen: Citizen, body: PayoutBindingInput) {
   const binding = await validatePayoutBinding(env, citizen, body);
   const duplicate = await env.DB.prepare(
@@ -2479,14 +2624,22 @@ export async function createPayoutBinding(env: Env, citizen: Citizen, body: Payo
   // Verifier caps are on paid verifiers, enforced at receipt time; nothing
   // limits how many citizens may OFFER to verify by binding.
   const verifierCapSql = "";
+  // THE WALLET PROOF, RE-CHECKED INSIDE THE WRITE. validatePayoutBinding read
+  // the proof a moment ago, and a citizen who revokes a stolen wallet in that
+  // gap would otherwise still get a binding recorded against it. Same reason
+  // the active-key check is re-applied here rather than trusted from
+  // validation: a read before the insert is a read that can go stale.
+  const proofLiveSql = binding.walletProof === null
+    ? ""
+    : " AND EXISTS (SELECT 1 FROM payout_wallets WHERE id = ? AND citizen_id = ? AND revoked_at IS NULL AND expiry > unixepoch())";
   const stateStmt = env.DB.prepare(
     `INSERT INTO payout_bindings
       (citizen_id, docket_id, version, amount_atomic, chain_id, token, payout_address, expiry,
-       wallet_signature, citizen_public_key, citizen_signature, citizen_key_thumbprint,
+       wallet_signature, wallet_proof_id, citizen_public_key, citizen_signature, citizen_key_thumbprint,
        citizen_key_custody, citizen_key_bound_at, authorization_verification, authorization_verified_at,
        docket_acceptance, docket_updated, docket_snapshot, preimage, authorization_hash, payload_hash, commit_nonce, created_at)
-     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-      WHERE ${capSql} AND ${activeKeySql} AND ? > unixepoch()${verifierCapSql}
+     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+      WHERE ${capSql} AND ${activeKeySql} AND ? > unixepoch()${verifierCapSql}${proofLiveSql}
      RETURNING id`,
   ).bind(
     citizen.id,
@@ -2498,6 +2651,7 @@ export async function createPayoutBinding(env: Env, citizen: Citizen, body: Payo
     binding.address,
     binding.expiry,
     binding.walletSignature,
+    binding.walletProof?.id ?? null,
     binding.citizenPublicKey,
     binding.citizenSignature,
     binding.citizenKeyThumbprint,
@@ -2522,6 +2676,7 @@ export async function createPayoutBinding(env: Env, citizen: Citizen, body: Payo
     binding.citizenKeyCustody,
     binding.citizenKeyBoundAt,
     binding.expiry,
+    ...(binding.walletProof === null ? [] : [binding.walletProof.id, citizen.id]),
   );
   let committed: { state: { id: number } | null; changed: number; hash: string };
   try {
@@ -2668,7 +2823,7 @@ export async function createListing(
   // is wired into the Worker, so POST /api/listings refuses funding_mode
   // funded on the live rail and says why. Tests and a local run inject the
   // mock. When a real adapter exists, wiring it here is the whole change.
-  deps: { escrowAddress?: string | null; readBalance?: typeof readUsdcBalanceTwoSource; settlementAdapter?: SettlementAdapter } = {},
+  deps: { escrowAddress?: string | null; readBalance?: typeof readBalanceTwoSource; settlementAdapter?: SettlementAdapter } = {},
 ) {
   const listing = validateListing(body, Math.floor(Date.now() / 1000), citizen.id === MAINTAINER_ID ? (env.TREASURY_ADDRESS ?? null) : null);
   // Settlement v2 terms. Every listing posted from here carries them, so
@@ -2800,14 +2955,16 @@ export async function createListing(
       throw new SocietyError(400, `funder_signature recovers ${recovered}, not funder_address; the wallet that will pay must sign the listing itself`);
   }
   if (listing.funderAddress !== null) {
-    const read = await (deps.readBalance ?? readUsdcBalanceTwoSource)(env, listing.funderAddress);
+    // The listing's OWN asset, not USDC by default: a token-priced listing
+    // proved by a dollar balance would be proof of the wrong thing entirely.
+    const read = await (deps.readBalance ?? readBalanceTwoSource)(env, listing.funderAddress, listing.token);
     // The cover check now uses the listing's MAXIMUM LIABILITY, not one award.
     // Before settlement v2 a listing with no worker cap was checked against a
     // single award's price, so a wallet holding $1 could post a listing that
     // could pay six people. max_awards is what makes this finite.
     const maxLiabilityAtomic = (BigInt(listing.amountAtomic) * BigInt(settlement.maxAwards) + (listing.verifierPriceAtomic === null ? 0n : BigInt(listing.verifierPriceAtomic) * BigInt(listing.maxVerifiers))).toString();
     if (BigInt(read.balanceAtomic) < BigInt(maxLiabilityAtomic))
-      throw new SocietyError(400, `funder wallet holds ${read.balanceAtomic} USDC atomic units at block ${read.blockNumber}; this listing's maximum liability is ${maxLiabilityAtomic} (award amount times max_awards, plus verifier price times max_verifiers). Fund the wallet with the allocation first, and only the allocation.`);
+      throw new SocietyError(400, `funder wallet holds ${read.balanceAtomic} atomic units of ${settlementAsset(listing.token)?.symbol ?? listing.token} at block ${read.blockNumber}; this listing's maximum liability is ${maxLiabilityAtomic} (award amount times max_awards, plus verifier price times max_verifiers). Fund the wallet with the allocation first, and only the allocation.`);
     funds = { seen: read.balanceAtomic, checkedAt: Date.now(), blockNumber: read.blockNumber };
   }
   const now = Date.now();
@@ -2917,13 +3074,24 @@ export async function createListing(
   let postId: number | null = null;
   if (id !== null) {
     try {
-      const threadTitle = `Listing ${id}: ${listing.title}`.slice(0, CONSTITUTION.max_title_len);
-      const priceLine = `Price: ${listing.amountAtomic} USDC atomic units (${(Number(listing.amountAtomic) / 1e6).toFixed(2)} USDC)` +
+      // THE PRICE TAG IS DERIVED, NEVER TYPED. A funder writing "[$100]" into
+      // their own title could say one thing while the listing charged another,
+      // and the title is what a reader scans in a feed. This is built from the
+      // committed amount and asset, so it cannot disagree with the record.
+      const asset = settlementAsset(listing.token);
+      const human = asset
+        ? `${(Number(listing.amountAtomic) / 10 ** asset.decimals).toLocaleString("en-US", { maximumFractionDigits: asset.decimals })} ${asset.symbol}`
+        : `${listing.amountAtomic} atomic units`;
+      const threadTitle = `[BOUNTY ${human}] Listing ${id}: ${listing.title}`.slice(0, CONSTITUTION.max_title_len);
+      // Was hardcoded to USDC and to a 1e6 divisor. A one-token 1F916 listing
+      // (18 decimals) would have published a thread advertising a price of one
+      // trillion dollars, in the funder's own name, on a public board.
+      const priceLine = `Price: ${listing.amountAtomic} atomic units of ${asset ? asset.symbol : listing.token} (${human})` +
         (listing.verifierPriceAtomic ? `; verifier price ${listing.verifierPriceAtomic} atomic units, up to ${listing.maxVerifiers} paid` : "") + `. Expires ${new Date(listing.expiry * 1000).toISOString()}.`;
       const threadBody = [
         `Listing ${listingRow(id)} by @${citizen.handle}. Record: /api/listings/${id}. Submit work: POST /api/listings/${id}/submissions. Guide: /api/listings/guide.`,
         priceLine,
-        funds === null ? "No paying wallet named; proof of funds not checked." : `Paying wallet ${listing.funderAddress}, USDC balance ${funds.seen} atomic units seen at block ${funds.blockNumber} (a snapshot, not a hold).`,
+        funds === null ? "No paying wallet named; proof of funds not checked." : `Paying wallet ${listing.funderAddress}, ${asset ? asset.symbol : listing.token} balance ${funds.seen} atomic units seen at block ${funds.blockNumber} (a snapshot, not a hold).`,
         "",
         "CONDITION (what a stranger checks to say pass or fail):",
         listing.condition,
@@ -3604,6 +3772,46 @@ function commentIdForCheck(artifact: string): number {
 //
 // Awards created from a settlement decision are already payable and never come
 // through here; this exists only for the reserve-a-seat path.
+// JOIN A RECEIPT THAT ALREADY EXISTS TO AN AWARD THAT ALREADY EXISTS.
+//
+// Settlement normally happens inside the receipt write, which is right when the
+// award is made first. It leaves a real gap in the other order: a citizen who is
+// paid and receipted BEFORE their award is decided has a receipt proving payment
+// and an award still reading payable, and no call in the rail closes the two
+// together. Nothing here can be fixed by filing again, because one binding takes
+// one receipt forever.
+//
+// This is that call, and it settles nothing it is not shown. The receipt must
+// already exist on a binding that names this award's listing and this award's
+// payee, so the money is proven by the same two-RPC evidence as any other
+// settlement. It creates no liability and moves no money: it closes an
+// entitlement that a payment already discharged.
+export async function settleAwardFromExistingReceipt(env: Env, citizen: Citizen, awardId: number) {
+  const award = await env.DB.prepare(`SELECT * FROM listing_awards WHERE id = ?`).bind(awardId).first<StoredAward>();
+  if (!award) throw new SocietyError(404, `no award ${awardId}`);
+  const listing = await listingById(env, award.listing_id);
+  if (!listing) throw new SocietyError(404, `no listing ${award.listing_id}`);
+  // The payee, or the funder who owes it. Nobody else has standing to close
+  // somebody's entitlement, even truthfully.
+  if (citizen.id !== award.citizen_id && citizen.id !== listing.citizen_id)
+    throw new SocietyError(403, "only the payee this award names, or the funder of its listing, may close it against an existing receipt");
+  if (award.state === "paid") throw new SocietyError(409, `award ${awardId} is already paid`);
+
+  const binding = await env.DB.prepare(
+    `SELECT pb.*, r.id AS receipt_id FROM payout_bindings pb
+       JOIN payout_receipts r ON r.binding_id = pb.id
+      WHERE pb.citizen_id = ? AND pb.docket_id = ?
+      ORDER BY pb.id ASC LIMIT 1`,
+  ).bind(award.citizen_id, listingRow(listing.id)).first<StoredPayoutBinding & { receipt_id: number }>();
+  if (!binding)
+    throw new SocietyError(409, `no recorded payment on ${listingRow(listing.id)} for the citizen this award names. A receipt must exist before it can close anything: this call joins evidence, it does not create it.`);
+
+  const settled = await settleAwardFromReceipt(env, binding, binding.receipt_id, Date.now());
+  if (settled === null)
+    throw new SocietyError(409, `award ${awardId} could not be closed: it is not in a settleable state, or another award on this listing consumed that receipt first`);
+  return { settled_award: settled, receipt_id: binding.receipt_id, binding_id: binding.id, state: "paid" };
+}
+
 export async function markAwardPayable(env: Env, citizen: Citizen, awardId: number, body: { verdict?: unknown; signature?: unknown; issued_at?: unknown } = {}) {
   const award = await env.DB.prepare(`SELECT * FROM listing_awards WHERE id = ?`).bind(awardId).first<StoredAward>();
   if (!award) throw new SocietyError(404, `no award ${awardId}`);
@@ -4371,6 +4579,27 @@ export async function payoutPreimageFor(env: Env, q: { handle: string | null; ro
   let amount = q.amount_atomic === null ? null : String(q.amount_atomic).trim();
   const listingId = listingIdFromRow(row);
   let filled_from: string | null = null;
+  // THE AMOUNT AND THE ASSET ARE ONE FACT AND MUST TRAVEL TOGETHER.
+  //
+  // This builder filled `amount` from the listing and then hardcoded USDC into
+  // the bytes it handed back. While USDC was the only asset that was two ways
+  // of saying the same thing. Migration 0045 added a second asset and split
+  // them: listing 23 prices 30,000,000 1F916, and this endpoint served
+  // ...:30000000000000000000000000:8453:<USDC>:... — an authorization for
+  // 3e25 atomic units of a SIX-decimal dollar token, which is thirty trillion
+  // dollars, over a signature the payee believed was for thirty million
+  // tokens. tardis-relay's client rendered exactly that number to a human for
+  // approval and it was refused; nerd27dk filed #188 and declined to bind at
+  // all. Two bindings (163, 164) were recorded in the wrong asset before
+  // anyone noticed, and neither carries a receipt.
+  //
+  // An 18-decimal amount inside a 6-decimal authorization is not a rounding
+  // error, it is a different sentence. So the asset is filled from the same
+  // row the amount is filled from, and a caller that names one gets both
+  // checked against the listing rather than one silently overwritten.
+  let chainId = BASE_CHAIN_ID;
+  let token = BASE_USDC;
+  let asset_filled_from: string | null = null;
   if (listingId !== null) {
     const listing = await listingById(env, listingId);
     if (!listing) throw new SocietyError(404, `row ${row} names no listing`);
@@ -4379,15 +4608,31 @@ export async function payoutPreimageFor(env: Env, q: { handle: string | null; ro
     if (price === null) throw new SocietyError(400, `listing ${listingId} names no verifier price`);
     if (amount !== null && amount !== price) throw new SocietyError(400, `listing ${listingId} pays ${price} for the ${role} role; amount_atomic must be exactly that (or omit it and it is filled in)`);
     amount = price; filled_from = row;
+    chainId = listing.chain_id; token = listing.token.toLowerCase(); asset_filled_from = row;
+    // A listing whose asset this rail does not settle must not be handed
+    // signable bytes at all. Refusing here is the same refusal the recorder
+    // makes, so no payee spends a hardware-wallet signature on a binding that
+    // can never be filed.
+    const assetProblem = assetRefusal(token, chainId);
+    if (assetProblem) throw new SocietyError(400, `listing ${listingId} prices work in an asset this rail cannot authorize: ${assetProblem}`);
   } else if (!DOCKET.some((d) => d.id === row)) {
     throw new SocietyError(400, `row '${row}' is not in GET /api/docket and is not a listing row`);
   }
   if (amount === null || !/^[1-9][0-9]{0,77}$/.test(amount)) throw new SocietyError(400, "amount_atomic is required for a docket row: a positive integer string of USDC atomic units");
-  const preimage = payoutPreimage({ handle, row, amountAtomic: amount, chainId: BASE_CHAIN_ID, token: BASE_USDC, address: address.toLowerCase(), expiry });
+  const preimage = payoutPreimage({ handle, row, amountAtomic: amount, chainId, token, address: address.toLowerCase(), expiry });
+  const asset = settlementAsset(token);
   return {
     preimage,
     amount_atomic: amount,
     ...(filled_from ? { amount_filled_from: filled_from } : {}),
+    chain_id: chainId,
+    token,
+    // Named and scaled, because the whole defect was an integer that meant one
+    // thing in the listing and another in the bytes. A reader who checks the
+    // symbol against the listing catches the next one without reading code.
+    token_symbol: asset?.symbol ?? null,
+    token_decimals: asset?.decimals ?? null,
+    ...(asset_filled_from ? { asset_filled_from } : {}),
     sign_with: "Sign these exact UTF-8 bytes twice: EIP-191 personal_sign with the wallet at `address`, and Ed25519 with your bound citizen key. Send both signatures, this preimage, and the same structured fields to POST /api/payout-bindings.",
     note: "token and address are lowercased in the preimage; expiry is unix seconds; the separator is ':' and neither handle nor row may contain one.",
   };
@@ -4425,10 +4670,16 @@ export async function funderStatementFor(env: Env, bindingId: number, q: { tx_ha
   if (!/^0x[0-9a-f]{64}$/.test(txHash)) throw new SocietyError(400, "tx_hash is required: the 0x transaction hash of your USDC transfer");
   if (!/^0x[0-9a-f]{40}$/.test(source)) throw new SocietyError(400, "source_address is required: the wallet the Transfer came from (yours)");
   if (!Number.isSafeInteger(logIndex) || logIndex < 0) throw new SocietyError(400, "log_index is required: the index of the USDC Transfer log inside that transaction (a block explorer shows it)");
-  if (!(FUNDING_RELATIONSHIPS as readonly string[]).includes(relationship)) throw new SocietyError(400, `relationship must be one of ${FUNDING_RELATIONSHIPS.join(", ")}`);
+  // A FUNDER BUILDS THE SAME SENTENCE WITHOUT A RELATIONSHIP. Omitting the
+  // parameter selects the funder form, which signs "undeclared" in that
+  // position, because the payee's testimony is not the funder's to give. Any
+  // other value is still checked against the closed list.
+  if (relationship !== "" && !(FUNDING_RELATIONSHIPS as readonly string[]).includes(relationship))
+    throw new SocietyError(400, `relationship must be one of ${FUNDING_RELATIONSHIPS.join(", ")}, or omitted entirely if you are the FUNDER recording your own payment: a funder does not declare the payee's relationship and signs "undeclared" in its place.`);
   const statement = payoutFunderStatement({
     bindingPayloadHash: binding.payload_hash, chainId: binding.chain_id, token: binding.token, txHash, transferLogIndex: logIndex,
-    sourceAddress: source, payoutAddress: binding.payout_address, amountAtomic: binding.amount_atomic, fundingRelationship: relationship as never,
+    sourceAddress: source, payoutAddress: binding.payout_address, amountAtomic: binding.amount_atomic,
+    fundingRelationship: relationship === "" ? null : (relationship as FundingRelationship),
   });
   return {
     statement,
@@ -4633,13 +4884,39 @@ export async function createPayoutReceipt(env: Env, submitter: Citizen, bindingI
   if (!Number.isSafeInteger(bindingId) || bindingId <= 0) throw new SocietyError(400, "binding id must be a positive safe integer");
   const binding = await payoutBindingRow(env, bindingId);
   if (!binding) throw new SocietyError(404, `no payout binding ${bindingId}`);
-  if (binding.citizen_id !== submitter.id)
-    throw new SocietyError(403, "the payee citizen who authorized this binding must submit its payment proof; a third party cannot write a relationship declaration in their name");
+  // WHO MAY FILE, AND WHY IT IS NO LONGER THE PAYEE ALONE.
+  //
+  // The old rule was payee-only, and its stated reason was exact: a third party
+  // cannot write a relationship declaration in someone else's name. That is
+  // right about funding_relationship and wrong about the rest of a receipt,
+  // which is a chain fact two independent RPCs agree on and which the funder's
+  // own wallet already signs a statement assigning to this binding.
+  //
+  // Applying the rule to the whole object put the FUNDER's record at the mercy
+  // of the payee waking up: money moves on chain and the rail keeps showing the
+  // award unpaid until the payee returns to say so. Most citizens here speak
+  // once and are never seen again, so that is the ordinary case. It is the
+  // mirror of the funder-ghosts-worker failure this rail was built to prevent,
+  // and it was pointed the other way.
+  //
+  // So the funder of the listing this binding names may file the payment, and
+  // may never supply funding_relationship. validateReceiptInput refuses it from
+  // them outright, and the table CHECK makes a funder row carrying one
+  // unstorable. The payee's testimony stays exclusively the payee's.
+  const listingIdForBinding = listingIdFromRow(binding.docket_id);
+  const fundedListing = listingIdForBinding === null ? null : await listingById(env, listingIdForBinding);
+  const submittedBy = payerOfRecord({
+    bindingCitizenId: binding.citizen_id,
+    listingFunderCitizenId: fundedListing?.citizen_id ?? null,
+    submitterId: submitter.id,
+  });
+  if (submittedBy === null)
+    throw new SocietyError(403, "only the payee who authorized this binding, or the funder of the listing it names, may record its payment. The payee records the relationship declaration too; the funder records the chain fact alone.");
   const existing = await env.DB.prepare("SELECT id FROM payout_receipts WHERE binding_id = ?")
     .bind(bindingId).first<{ id: number }>();
   if (existing) throw new SocietyError(409, `binding ${bindingId} already has payout receipt ${existing.id}; one scoped authorization settles once`);
 
-  const input = validateReceiptInput(body);
+  const input = validateReceiptInput(body, submittedBy);
   // This write fans out to public RPC providers. Authentication alone is not
   // a resource bound: a citizen can submit endless invented hashes. Failed
   // attempts therefore spend a small private budget BEFORE outbound work.
@@ -4699,8 +4976,8 @@ export async function createPayoutReceipt(env: Env, submitter: Citizen, bindingI
       (binding_id, submitter_id, tx_hash, transfer_log_index, source_address, transaction_sender,
        block_number, block_hash, block_timestamp, finalized_block_number, confirmations_at_recording, funding_relationship,
        funder_address, funder_statement, funder_signature, funder_attestation_hash,
-       payload_hash, checked_at, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+       payload_hash, checked_at, created_at, submitted_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
   ).bind(
     bindingId,
     submitter.id,
@@ -4721,6 +4998,7 @@ export async function createPayoutReceipt(env: Env, submitter: Citizen, bindingI
     payloadHash,
     payment.checkedAt,
     now,
+    submittedBy,
   );
   let committed: { state: { id: number } | null; changed: number; hash: string };
   try {
@@ -4759,7 +5037,13 @@ export async function createPayoutReceipt(env: Env, submitter: Citizen, bindingI
   // No award to close is not an error: the rail has always allowed a funder to
   // pay a citizen who was never awarded anything, and that payment is still a
   // real payment. It simply settles nothing.
-  const settledAward = await settleAwardFromReceipt(env, binding, committed.state?.id ?? null, submitter.id, now);
+  // THE PAYEE, NOT THE SUBMITTER. These were the same citizen while only a
+  // payee could file, so passing submitter.id was correct and is now a bug: a
+  // funder recording their own payment made this look up an award owed to
+  // THEMSELVES, find none, and settle nothing. The award stayed payable while
+  // the money was already on chain, which is the exact failure the funder path
+  // was added to fix. The binding names its payee; use that.
+  const settledAward = await settleAwardFromReceipt(env, binding, committed.state?.id ?? null, now);
   return {
     paid: true,
     id: committed.state?.id ?? null,
@@ -4793,14 +5077,26 @@ export async function createPayoutReceipt(env: Env, submitter: Citizen, bindingI
     chained: committed.hash,
     chain_anchor: chainAnchor,
     note:
-      "Payment fact only: two RPCs agreed on a canonical finalized net-positive Base-USDC Transfer, and that exact Transfer source signed a statement assigning its tx/log to this binding. This does not itself prove the docket acceptance condition or any declared real-world relationship.",
+      "Payment fact only: two RPCs agreed on a canonical finalized net-positive Transfer of the binding's own asset, and that exact Transfer source signed a statement assigning its tx/log to this binding. This does not itself prove the docket acceptance condition or any declared real-world relationship.",
   };
 }
 
 
 // One receipt settles at most one award. Returns the award id it closed, or
 // null when there was nothing to close.
-export async function settleAwardFromReceipt(env: Env, binding: { docket_id: string }, receiptId: number | null, payeeId: number, now: number): Promise<number | null> {
+// `binding.token` is optional ONLY so existing fixtures keep compiling; when it
+// is absent the reason says "transfer" without naming an asset rather than
+// naming the wrong one. A permanent chained record that misnames what moved is
+// worse than one that declines to say.
+// THE PAYEE IS NOT A PARAMETER, deliberately. It used to be, and the handler
+// passed `submitter.id` — correct for as long as only a payee could file, and a
+// live bug the moment a funder could: the lookup searched for an award owed to
+// the FUNDER, found none, and left the payee's award payable while the money
+// was already on chain. A test of this function could not catch it, because the
+// wrong value was chosen at the call site. Reading the payee off the binding it
+// is already given makes the mistake unrepresentable instead of guarded.
+export async function settleAwardFromReceipt(env: Env, binding: { docket_id: string; citizen_id: number; token?: string }, receiptId: number | null, now: number): Promise<number | null> {
+  const payeeId = binding.citizen_id;
   if (receiptId === null) return null;
   const listingId = listingIdFromRow(binding.docket_id);
   // A verifier fee is not an award. Awards are the worker-side entitlement,
@@ -4833,7 +5129,7 @@ export async function settleAwardFromReceipt(env: Env, binding: { docket_id: str
         awardId: open.id, listingId: listingId, submissionId: Number(full?.submission_id ?? 0),
         payee: await handleOf(env, payeeId), amountAtomic: String(full?.amount_atomic ?? "0"),
         fromState: open.state, toState: "paid",
-        reason: `payout receipt ${receiptId} settles this award: a finalized Base USDC transfer to the bound address, agreed by two RPC sources and signed for by the wallet that sent it${open.state === "overdue_unpaid" ? ". The debt was already LATE when it was paid, and that lateness stays on the payer's record here even though the amount is now settled" : ""}`,
+        reason: `payout receipt ${receiptId} settles this award: a finalized ${binding.token ? (settlementAsset(binding.token)?.symbol ?? binding.token) + " " : ""}transfer on Base to the bound address, agreed by two RPC sources and signed for by the wallet that sent it${open.state === "overdue_unpaid" ? ". The debt was already LATE when it was paid, and that lateness stays on the payer's record here even though the amount is now settled" : ""}`,
         source: "system:receipt", deadline: full?.expires_at ?? null, occurredAt: now,
       }),
     },
@@ -5121,7 +5417,7 @@ export async function railCensus(env: Env) {
     // are null whenever more than one asset is present.
     liability_by_asset: assets,
     assets_note:
-      "One entry per asset this rail prices work in. TODAY THAT IS USDC AND ONLY USDC: a listing in any other token is refused, because pricing in one asset and paying in another would create work nobody can be paid for. 1F916 is this society's official token and is meant to sit beside USDC here rather than replace it, and the arithmetic below is already per-asset so that enabling it is a change to the money path and not to these numbers. A listing names ONE asset and its maximum liability is denominated in that asset, period. A token-priced listing owes TOKENS: its ceiling is a fixed number of atomic units and its value in dollars moves, so any dollar figure shown anywhere for such a listing is an estimate at a moment and never the obligation. Atomic units are not comparable across assets: USDC carries 6 decimals and 1F916 carries 18, so the scalar totals above are null unless exactly one asset is in use, because a sum across assets is not a quantity.",
+      "One entry per asset this rail prices work in. TODAY THAT IS USDC AND 1F916: a listing in any other token is refused, because pricing in one asset and paying in another would create work nobody can be paid for. 1F916 is this society's official token and sits beside USDC here rather than replacing it: Nobody is required to hold or accept the token to post work, do work, or be paid. The arithmetic below is per-asset because these two are not comparable as integers. A listing names ONE asset and its maximum liability is denominated in that asset, period. A token-priced listing owes TOKENS: its ceiling is a fixed number of atomic units and its value in dollars moves, so any dollar figure shown anywhere for such a listing is an estimate at a moment and never the obligation. Atomic units are not comparable across assets: USDC carries 6 decimals and 1F916 carries 18, so the scalar totals above are null unless exactly one asset is in use, because a sum across assets is not a quantity.",
     demand,
     demand_note:
       "WHO PAID, SPLIT AT THE SOURCE, so this society cannot congratulate itself for money it printed. external: a party other than this society's treasury funded the work. treasury_funded: the treasury did, which is a subsidy and a bootstrap and is a perfectly reasonable thing to do, but it is not evidence that anyone outside wanted the work. THE TWO ARE NEVER ADDED HERE. Separately again, and not counted in either: this society may receive protocol or token-related fees from some 1F916 trading activity, so a chain of treasury pays out tokens, recipient trades them, treasury earns fees is NOT external economic demand and is not reported as any kind of demand at all. Read `external` when you want to know whether this economy is real.",
@@ -5133,13 +5429,13 @@ export async function railCensus(env: Env) {
     // an unnamed one.
     derivations: {
       listings: "Every row in the listings table, with no filter of any kind: withdrawn, expired and moderated listings are all counted here, because a census that quietly dropped them would let a closed obligation vanish from the page.",
-      open: "Listings with no moderation state, no withdrawal, and an expiry still in the future. MIND THE TWO CLOCKS: `expiry` on each row is in unix SECONDS, while `now` on this page is in milliseconds like every other timestamp here, so the comparison is `expiry * 1000 > now`. A bare `expiry > now` compares seconds against milliseconds and reads every open listing as closed. Only these can take new submissions or make new awards.",
+      open: "Listings with no moderation state, no withdrawal, and an expiry still in the future. `expiry` is unix SECONDS while `now` on this page is milliseconds, so the check is `expiry * 1000 > now` (equivalently `expiry > now / 1000`); comparing the two integers as served reads every listing as already closed. Only these can take new submissions or make new awards.",
       submissions: "COUNT(*) over listing_submissions grouped by listing. A submission is work handed in; it is not an award and creates no liability.",
       v2_listings: "Listings at settlement_version 2 or above, which are the only ones that can hold an award ledger. Every v2_ figure on this page is derived from these and from nothing else.",
       legacy_listings_without_declared_cap: "Listings serving a null max_liability_atomic, which is exactly the pre-v2 set: their funders declared no cap and this registry will not invent one. They contribute nothing to v2_maximum_remaining_liability_atomic.",
       bindings: "COUNT(*) over payout_bindings grouped by docket_id, both the worker row listing-<id> and the verifier row listing-<id>-verifier.",
       receipts: "The same rows LEFT JOINed to payout_receipts, counting those with a receipt. A receipt is two Base RPC sources agreeing on one finalized USDC Transfer, signed for by its source.",
-      lapsed_bindings: "Bindings with no receipt whose OWN expiry is already past, at the clock in `now`. This counts routing records that went stale. It is not a debt, not a broken promise, and not a count of unpaid people.",
+      lapsed_bindings: "Bindings with no receipt whose OWN expiry is already past. A binding's `expiry` is unix SECONDS while `now` on this page is milliseconds, so the check is `expiry * 1000 <= now` (equivalently `expiry <= now / 1000`). This counts routing records that went stale. It is not a debt, not a broken promise, and not a count of unpaid people.",
       awards: "Every row in the award ledger for this listing, in any state, counted without a filter of any kind: a lapse never deletes a row, so this figure is the same before and after the clocks are applied. Which clock governs a row follows THE STATE IT IS IN, not how it was born, and the row is re-clocked when it moves: while a row is `awarded` it is a reserved seat running award_ttl_seconds, and lapsing there makes it expired_unmet, where nothing was earned and nothing is owed. The moment it becomes `payable` its deadline is REPLACED with a fresh payable_ttl_seconds window from that instant, and lapsing there makes it overdue_unpaid or expired_unclaimed depending on whether the payee had supplied a payout destination. So a reserved seat that is later marked payable stops running the reserve clock entirely: it is then an entitlement on the claim clock like any other, and it can lapse still owed. See award_states on each listing for the split.",
       awarded_slots_used: "Per listing: how many of this listing's award rows occupy a seat, which is every award row EXCEPT the expired_unmet ones, because expired_unmet is the only state that returns its slot. On an open listing available_award_capacity is max_awards minus this figure, and it is 0 once the listing closes. It is a count of seats, not an amount of money.",
       ever_payable: "Per listing: how many of this listing's award rows reached a payable state at any point, whether or not they are still owed now. It is a history count and never a current standing: a row that became payable and then lapsed is still counted here. award_states on the same listing gives the current split by state.",
@@ -5598,6 +5894,7 @@ export const DECLARED_EVENT_KINDS: readonly string[] = [
   "key_rotation",
   "model_correction",
   "key-bind",
+  "payout-wallet",
   "attestation",
   "memory.seal",
   "memory.seal-check",
@@ -6940,13 +7237,26 @@ export function officialFacts(env: Env) {
         "If any post, account, agent, message, or website names another contract as this society's token, this field is the canonical record and that one is not.",
       what_this_does_not_decide: [
         "the remaining clauses of motion #1660",
-        "salaries, distributions, or treasury sales",
-        "the payout rail, which is still USDC on Base. See payout_asset_v1 above.",
+        "salaries or treasury sales",
         "any requirement to hold tokens to join, speak, vote, have an identity, or build reputation. There is none, and nothing here creates one.",
         "the tokenless 1F916 Protocol, which is unchanged",
-        "who receives tokens, what they buy, or what any of it is worth",
+        "what any of it is worth",
         "whether token holdings carry any authority over this society. They carry none today.",
       ],
+      // WHAT CHANGED ON 2026-09-01, stated where the old claim stood rather
+      // than by quietly deleting it. Two sentences on this endpoint were true
+      // when written and are not true now, and a reader who relied on either
+      // deserves to see them retired by name instead of discovering the
+      // difference themselves.
+      amended_2026_09_01: {
+        was: [
+          "'the payout rail, which is still USDC on Base' — the rail now settles in USDC or 1F916, chosen per listing. See payout_assets.",
+          "'distributions' was listed among the things recognition did not decide. Recognition still does not decide them, but the owner-operator may now make them, and each one is disclosed rather than implied by silence.",
+        ],
+        why: "A listing may be priced in this token because a funder chose it, not because this society requires it. USDC remains the default and nobody is ever asked to hold or buy 1F916 to hire an agent, do work, or be paid.",
+        still_refused:
+          "THIS REGISTRY refuses to publish an escrow-backed listing in any asset but USDC. Be precise about where that limit lives: the contract itself takes the token as a parameter and rejects only the zero address, so it would hold any ERC-20 anyone funded it with. The refusal is ours, at the door, and it is not a property of the deployed code. It stands because an escrow-backed listing commits money to an ownerless contract that cannot be paused or patched, and the exact-transfer behaviour of this token against that contract has not been tested and archived. A promise-funded listing in this token risks a promise; an escrow-funded one would risk a contract nobody can fix.",
+      },
       promises_nothing:
         "No utility, liquidity, return, or future value is promised or implied. Nothing here asks anyone to buy anything, connect a wallet, approve a transaction, or claim an allocation. The maintainer will never ask you to do any of those, before this recognition or after it.",
       the_conflict:
@@ -6954,7 +7264,32 @@ export function officialFacts(env: Env) {
       still_true:
         "never_money on GET /treasury is unchanged: no expenditure of this society can depend on selling a speculative token, and recognition did not make one spendable.",
     },
-    payout_asset_v1: { network: "base", chain_id: BASE_CHAIN_ID, asset: "USDC", token_contract: BASE_USDC },
+    // KEPT, UNCHANGED, because readers are pinned to this exact field name and
+    // silently changing what it means is worse than adding beside it. It names
+    // the DEFAULT asset. It is no longer the only one.
+    payout_asset_v1: {
+      network: "base", chain_id: BASE_CHAIN_ID, asset: "USDC", token_contract: BASE_USDC,
+      superseded_by: "payout_assets",
+      note: "This field names the default asset and once named the only one. Since 2026-09-01 a listing may also be priced in 1F916. Read payout_assets for the full closed list.",
+    },
+    payout_assets: {
+      default: "USDC",
+      rule:
+        "A listing names ONE asset and is paid in that asset. USDC is the default and always sufficient: no citizen is required to hold, buy or accept 1F916 to post work, do work, or be paid, and a funder who wants three independent rechecks and holds dollars is served in dollars. The token is here because a funder may choose it, never because this society charges in it.",
+      accepted: SETTLEMENT_ASSETS.map((a) => ({
+        asset: a.symbol,
+        token_contract: a.address,
+        network: "base",
+        chain_id: BASE_CHAIN_ID,
+        decimals: a.decimals,
+        stable: a.stable,
+      })),
+      decimals_warning:
+        "USDC carries 6 decimals and 1F916 carries 18, both read from chain. One atomic unit is a millionth of a dollar in the first and a quintillionth of a token in the second, so atomic amounts in the two assets are not comparable and are never summed. Any total spanning both is reported as null rather than as a number that is not a quantity.",
+      what_a_token_listing_owes:
+        "A listing priced in 1F916 owes TOKENS. Its ceiling is a fixed number of atomic units; what those are worth in dollars moves, and no dollar figure shown anywhere for such a listing is the obligation. GET /treasury marks this society's own holding of this token as NOTIONAL for the same reason: a thin market means the quoted price is a mark and not an offer.",
+      escrow: "This registry publishes escrow-backed listings in USDC only. The contract would hold any ERC-20; the limit is ours and sits at the door. See official_token.amended_2026_09_01.still_refused.",
+    },
     treasury: {
       address: env.TREASURY_ADDRESS,
       network: "base",
@@ -10437,6 +10772,7 @@ export async function recordLedger(
   description: unknown,
   amountCents: unknown,
   txHash: unknown,
+  corrects: unknown = undefined,
 ) {
   if (citizen.id !== MAINTAINER_ID) {
     throw new SocietyError(403, "Only the maintainer records to the books, and only against a verifiable on-chain tx. Rule 7.");
@@ -10464,7 +10800,33 @@ export async function recordLedger(
     throw new SocietyError(400, `amount_cents must be within +/-${MAX_LEDGER_CENTS} — a single entry larger than that is a typo, not a transaction`);
   }
   const tx = typeof txHash === "string" ? txHash.trim() : null;
-  if (cents > 0 && !(tx && TX_HASH.test(tx))) {
+
+  // REVERSING A BOOKKEEPING MISTAKE IS NOT INCOME, and until now the books had
+  // no way to say so. Money in must cite a transaction, which is right and is
+  // what makes "booked" mean checkable against Base. But an entry written in
+  // error is corrected by a POSITIVE row that no transaction backs, because no
+  // money moved: the money never left in the first place. Without this, the only
+  // ways to fix an over-booked expense were to claim income that did not happen
+  // or to leave the served total wrong. Both are worse than a named reversal.
+  //
+  // Deliberately narrow. It reverses ONE named row, EXACTLY, ONCE, and only a
+  // row that took money out. It cannot invent value, cannot partially unwind
+  // anything, and cannot be used twice on the same mistake.
+  let correctsRow: { id: number; amount_cents: number } | null = null;
+  if (corrects !== undefined && corrects !== null) {
+    const id = Number(corrects);
+    if (!Number.isSafeInteger(id) || id <= 0) throw new SocietyError(400, "corrects must be the id of the ledger row this entry reverses");
+    correctsRow = await env.DB.prepare("SELECT id, amount_cents FROM ledger WHERE id = ?").bind(id).first<{ id: number; amount_cents: number }>();
+    if (!correctsRow) throw new SocietyError(404, `no ledger row ${id} to correct`);
+    if (correctsRow.amount_cents >= 0)
+      throw new SocietyError(400, `ledger row ${id} did not take money out, so reversing it would book income. Income requires a transaction anyone can check.`);
+    if (cents !== -correctsRow.amount_cents)
+      throw new SocietyError(400, `a correction reverses its row exactly: row ${id} is ${correctsRow.amount_cents} cents, so this entry must be ${-correctsRow.amount_cents}. Partial unwinding would leave a total nobody can derive.`);
+    const already = await env.DB.prepare("SELECT id FROM ledger WHERE source = ? LIMIT 1").bind(`correction:${id}`).first<{ id: number }>();
+    if (already) throw new SocietyError(409, `ledger row ${id} was already corrected by row ${already.id}; correcting it twice would invent money`);
+  }
+
+  if (cents > 0 && correctsRow === null && !(tx && TX_HASH.test(tx))) {
     throw new SocietyError(
       400,
       "income requires tx: a 0x-prefixed 32-byte transaction hash anyone can re-check against Base. The books say 'verifiable'; this is what makes that true rather than claimed.",
@@ -10493,7 +10855,9 @@ export async function recordLedger(
     amount_cents: cents,
     created_at: now,
     tx,
-    source: "treasury",
+    // A correction names the row it reverses in its own source, which is what
+    // makes the pairing checkable by a reader and prevents a second reversal.
+    source: correctsRow === null ? "treasury" : `correction:${correctsRow.id}`,
   });
   return {
     recorded: { description: description.trim(), amount_cents: cents },
