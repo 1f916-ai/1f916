@@ -963,7 +963,7 @@ test("the receipt path settles an overdue debt, and settles each award at most o
   const receiptId = Number((db.prepare("SELECT last_insert_rowid() AS id").get() as { id: number }).id);
 
   // The real path: a receipt on this listing's worker row, for this payee.
-  const closed = await settleAwardFromReceipt(env, { docket_id: `listing-${listingId}` }, receiptId, 2, Date.now());
+  const closed = await settleAwardFromReceipt(env, { docket_id: `listing-${listingId}`, citizen_id: 2 }, receiptId, Date.now());
   assert.equal(closed, awardId, "paying late settles the overdue debt through the ordinary receipt path");
   const row = db.prepare("SELECT state, receipt_id FROM listing_awards WHERE id = ?").get(awardId) as Record<string, unknown>;
   assert.equal(row.state, "paid");
@@ -977,10 +977,10 @@ test("the receipt path settles an overdue debt, and settles each award at most o
   // A second receipt cannot settle the same award again.
   db.prepare("INSERT INTO payout_receipts (funding_relationship, binding_id, submitter_id, tx_hash, source_address, created_at) VALUES ('independent', 2, 2, '0xagain', '0xfunder', 0)").run();
   const second = Number((db.prepare("SELECT last_insert_rowid() AS id").get() as { id: number }).id);
-  assert.equal(await settleAwardFromReceipt(env, { docket_id: `listing-${listingId}` }, second, 2, Date.now()), null,
+  assert.equal(await settleAwardFromReceipt(env, { docket_id: `listing-${listingId}`, citizen_id: 2 }, second, Date.now()), null,
     "there is no open award left to close, and the paid one cannot be paid twice");
   // A verifier fee is not an award and must never consume one.
-  assert.equal(await settleAwardFromReceipt(env, { docket_id: `listing-${listingId}-verifier` }, second, 2, Date.now()), null);
+  assert.equal(await settleAwardFromReceipt(env, { docket_id: `listing-${listingId}-verifier`, citizen_id: 2 }, second, Date.now()), null);
 });
 
 // LATCHED READINESS: live-once, then permanent for that award.
@@ -1505,6 +1505,41 @@ test("the funder of the listing may record a payment, and no other stranger may"
   // The payee wins the tie when a citizen is somehow both, so their own
   // testimony is never suppressed by their other role.
   assert.equal(payerOfRecord({ bindingCitizenId: PAYEE, listingFunderCitizenId: PAYEE, submitterId: PAYEE }), "payee");
+});
+
+// KILLING MUTATION: pass `submitter.id` instead of `binding.citizen_id` to
+// settleAwardFromReceipt, which is what the code did before this test existed.
+// The second assertion goes red.
+//
+// That was a live bug and it is the whole reason the funder path exists: when a
+// funder recorded their own payment, the award lookup searched for a debt owed
+// to the FUNDER, found none, and left the payee's award payable while the money
+// was already on chain. The feature half-worked in the exact direction it was
+// built to fix, and only using it revealed that.
+test("a receipt settles the award of the payee named on the binding, whoever filed it", async () => {
+  const { env, db } = makeEnv();
+  const PAYEE = 2, FUNDER = 1;
+  const listing = await createListing(env, AS(FUNDER, "funder"), {
+    title: "Independent reproduction test", condition: CONDITION, amount_atomic: DOLLAR,
+    expiry: NOW + 86400, max_awards: 1, funding_mode: "promise", settlement_mode: "requester",
+  }) as Record<string, unknown>;
+  const listingId = Number(listing.id);
+  db.exec(`INSERT INTO listing_submissions (id, listing_id, citizen_id, artifact, payload_hash, commit_nonce, created_at)
+           VALUES (901, ${listingId}, ${PAYEE}, 'https://example.invalid/x', 'h-sub-901', 'n-sub-901', 0)`);
+  db.exec(`INSERT INTO listing_awards (listing_id, submission_id, citizen_id, amount_atomic, state, awarded_by, awarded_by_citizen_id, awarded_at, payable_at, payload_hash, commit_nonce, created_at)
+           VALUES (${listingId}, 901, ${PAYEE}, '1000000', 'payable', 'requester', ${FUNDER}, 0, 0, 'h-settle', 'n-settle', 0)`);
+
+  // A real receipt row, because settleAwardFromReceipt short-circuits on a null
+  // id and would pass this test for the wrong reason.
+  db.exec(`INSERT INTO payout_bindings (id, citizen_id, docket_id, amount_atomic, created_at) VALUES (950, ${PAYEE}, 'listing-${listingId}', '1000000', 0)`);
+  db.exec(`INSERT INTO payout_receipts (id, binding_id, submitter_id, tx_hash, source_address, created_at, submitted_by, funding_relationship)
+           VALUES (960, 950, ${FUNDER}, '0xfeed', '0xbeef', 0, 'funder', NULL)`);
+
+  // The binding names the payee. Who SUBMITTED is irrelevant to which award closes.
+  const closed = await settleAwardFromReceipt(env, { docket_id: `listing-${listingId}`, citizen_id: PAYEE }, 960, Date.now());
+  assert.ok(closed, "the payee's award closes");
+  const row = db.prepare("SELECT state FROM listing_awards WHERE citizen_id = ? AND listing_id = ?").get(PAYEE, listingId) as { state: string };
+  assert.equal(row.state, "paid", "and it is marked paid, not left payable while the money sits on chain");
 });
 
 test("a funder records the payment and never the payee's relationship", () => {

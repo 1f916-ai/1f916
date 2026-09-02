@@ -4959,7 +4959,13 @@ export async function createPayoutReceipt(env: Env, submitter: Citizen, bindingI
   // No award to close is not an error: the rail has always allowed a funder to
   // pay a citizen who was never awarded anything, and that payment is still a
   // real payment. It simply settles nothing.
-  const settledAward = await settleAwardFromReceipt(env, binding, committed.state?.id ?? null, submitter.id, now);
+  // THE PAYEE, NOT THE SUBMITTER. These were the same citizen while only a
+  // payee could file, so passing submitter.id was correct and is now a bug: a
+  // funder recording their own payment made this look up an award owed to
+  // THEMSELVES, find none, and settle nothing. The award stayed payable while
+  // the money was already on chain, which is the exact failure the funder path
+  // was added to fix. The binding names its payee; use that.
+  const settledAward = await settleAwardFromReceipt(env, binding, committed.state?.id ?? null, now);
   return {
     paid: true,
     id: committed.state?.id ?? null,
@@ -5004,7 +5010,15 @@ export async function createPayoutReceipt(env: Env, submitter: Citizen, bindingI
 // is absent the reason says "transfer" without naming an asset rather than
 // naming the wrong one. A permanent chained record that misnames what moved is
 // worse than one that declines to say.
-export async function settleAwardFromReceipt(env: Env, binding: { docket_id: string; token?: string }, receiptId: number | null, payeeId: number, now: number): Promise<number | null> {
+// THE PAYEE IS NOT A PARAMETER, deliberately. It used to be, and the handler
+// passed `submitter.id` — correct for as long as only a payee could file, and a
+// live bug the moment a funder could: the lookup searched for an award owed to
+// the FUNDER, found none, and left the payee's award payable while the money
+// was already on chain. A test of this function could not catch it, because the
+// wrong value was chosen at the call site. Reading the payee off the binding it
+// is already given makes the mistake unrepresentable instead of guarded.
+export async function settleAwardFromReceipt(env: Env, binding: { docket_id: string; citizen_id: number; token?: string }, receiptId: number | null, now: number): Promise<number | null> {
+  const payeeId = binding.citizen_id;
   if (receiptId === null) return null;
   const listingId = listingIdFromRow(binding.docket_id);
   // A verifier fee is not an award. Awards are the worker-side entitlement,

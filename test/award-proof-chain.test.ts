@@ -459,7 +459,7 @@ test("settlement emits a paid transition whose payload says paid, and says the d
   assert.equal((db.prepare("SELECT state AS s FROM listing_awards WHERE id = ?").get(Number(award.award_id)) as { s: string }).s, "overdue_unpaid");
 
   db.prepare("INSERT INTO payout_receipts (funding_relationship, binding_id, submitter_id, tx_hash, source_address, created_at) VALUES ('independent', 1, 2, '0xtx', '0xf', 0)").run();
-  const settled = await settleAwardFromReceipt(env, { docket_id: `listing-${listingId}` }, 1, 2, Date.now());
+  const settled = await settleAwardFromReceipt(env, { docket_id: `listing-${listingId}`, citizen_id: 2 }, 1, Date.now());
   assert.equal(settled, Number(award.award_id));
 
   const evs = events(db, "listing-award-transition");
