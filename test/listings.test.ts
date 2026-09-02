@@ -1611,3 +1611,90 @@ test("GET /api/listings/:id serves count/total/has_more on both capped lists, an
     `the surface summary claims completeness ("${listingDetailRoute.summary}") for a route that clips both lists at LIMIT 200 and here serves 200 of ${detail.bindings_total} bindings`,
   );
 });
+
+// ---------------------------------------------------------------------------
+// #188: the payout rail named USDC for a listing priced in 1F916.
+//
+// Migration 0045 made 1F916 a second settlement asset and moved the listing,
+// binding and receipt gates onto one closed list. The PREIMAGE BUILDER was not
+// moved: it filled `amount` from the listing and then hardcoded BASE_USDC into
+// the bytes. Listing 23 prices 30,000,000 1F916 (18 decimals) and the endpoint
+// served an authorization for 30000000000000000000000000 atomic units of
+// six-decimal USDC — thirty trillion dollars. tardis-relay's client rendered
+// that figure to a human for approval; nerd27dk filed #188 and declined to
+// bind. Bindings 163 and 164 were recorded in the wrong asset before anyone
+// noticed. Neither carries a receipt, so no money moved.
+//
+// The recorder was the second half of the same hole: it checked the binding's
+// amount against the listing and never its asset, so assetRefusal cleared any
+// recognised token no matter what the listing priced in.
+const F916 = "0x9e00fc92493451eba1c63dd3880d68b622037ba3";
+
+// KILLING MUTATION: in payoutPreimageFor, restore
+//   `chainId: BASE_CHAIN_ID, token: BASE_USDC` in the payoutPreimage call
+// (or delete the `chainId = listing.chain_id; token = listing.token...` line).
+// The preimage equality below goes red: the bytes name USDC again.
+test("the payout preimage fills its ASSET from the listing, not just its amount", async () => {
+  const ed = generateKeyPairSync("ed25519");
+  const publicKey = (ed.publicKey.export({ format: "jwk" }) as { x: string }).x;
+  const { env } = makeEnv(publicKey);
+  await createListing(env, FUNDER as never, {
+    title: "A window into 1F916", condition: CONDITION,
+    amount_atomic: "30000000000000000000000000", token: F916, expiry: NOW + 3600,
+  });
+  const wallet = privateKeyToAccount(generatePrivateKey());
+  const p = await payoutPreimageFor(env, { handle: PAYEE.handle, row: "listing-1", amount_atomic: null, address: wallet.address, expiry: String(NOW + 600) });
+
+  assert.equal(p.amount_atomic, "30000000000000000000000000");
+  assert.equal(p.token, F916, "the bytes name the asset the listing prices in");
+  assert.equal(p.token_symbol, "1F916");
+  assert.equal(p.token_decimals, 18, "18 decimals, so a reader can scale the integer without guessing");
+  assert.equal(p.asset_filled_from, "listing-1");
+  assert.equal(
+    p.preimage,
+    payoutPreimage({ handle: PAYEE.handle, row: "listing-1", amountAtomic: "30000000000000000000000000", chainId: 8453, token: F916, address: wallet.address.toLowerCase(), expiry: NOW + 600 }),
+  );
+  // The exact string from #188 must never be served again for this listing.
+  assert.doesNotMatch(p.preimage, new RegExp(BASE_USDC), "an 18-decimal amount inside a USDC authorization is #188");
+});
+
+// KILLING MUTATION: delete the `if (listingAsset && (token !== listingAsset.token
+// ...))` block in recordPayoutBinding (src/payouts.ts). The rejection below
+// stops throwing and the USDC binding on a 1F916 listing is recorded — which is
+// exactly how bindings 163 and 164 exist.
+test("a binding may not swap the listing's asset for another recognised one", async () => {
+  const ed = generateKeyPairSync("ed25519");
+  const publicKey = (ed.publicKey.export({ format: "jwk" }) as { x: string }).x;
+  const { env } = makeEnv(publicKey);
+  await createListing(env, FUNDER as never, {
+    title: "A window into 1F916", condition: CONDITION,
+    amount_atomic: "30000000000000000000000000", token: F916, expiry: NOW + 3600,
+  });
+  const wallet = privateKeyToAccount(generatePrivateKey());
+  const amount = "30000000000000000000000000";
+  const mismatched = payoutPreimage({ handle: PAYEE.handle, row: "listing-1", amountAtomic: amount, chainId: 8453, token: BASE_USDC, address: wallet.address.toLowerCase(), expiry: NOW + 600 });
+  const body = {
+    version: PAYOUT_VERSION, handle: PAYEE.handle, row: "listing-1", amount_atomic: amount,
+    chain_id: 8453, token: BASE_USDC, address: wallet.address.toLowerCase(), expiry: NOW + 600,
+    signature: await wallet.signMessage({ message: mismatched }), citizen_public_key: publicKey,
+    citizen_signature: b64urlEncode(new Uint8Array(edSign(null, Buffer.from(mismatched), ed.privateKey))), preimage: mismatched,
+  };
+  // Both signatures are valid over these bytes. The bytes are the problem.
+  await assert.rejects(
+    createPayoutBinding(env, PAYEE as never, body),
+    /this listing pays in 1F916 \(18 decimals\).*binding authorizes USDC \(6 decimals\)/s,
+    "a valid signature over the wrong asset is still the wrong authorization",
+  );
+
+  // And the bytes the builder actually serves are accepted, so the fix does not
+  // simply close the row: a 1F916 listing stays bindable in 1F916.
+  const good = await payoutPreimageFor(env, { handle: PAYEE.handle, row: "listing-1", amount_atomic: null, address: wallet.address, expiry: String(NOW + 600) });
+  const ok = await createPayoutBinding(env, PAYEE as never, {
+    version: PAYOUT_VERSION, handle: PAYEE.handle, row: "listing-1", amount_atomic: amount,
+    chain_id: 8453, token: F916, address: wallet.address.toLowerCase(), expiry: NOW + 600,
+    signature: await wallet.signMessage({ message: good.preimage }), citizen_public_key: publicKey,
+    citizen_signature: b64urlEncode(new Uint8Array(edSign(null, Buffer.from(good.preimage), ed.privateKey))), preimage: good.preimage,
+  });
+  assert.ok(ok.id, "the asset the listing names is still bindable");
+  assert.equal(ok.token, F916);
+});

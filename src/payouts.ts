@@ -427,6 +427,7 @@ export async function validatePayoutBinding(
   // The anchor: a docket row (the maintenance backlog, #864's original shape)
   // or a listing (any funder's own task, src/listings.ts). Same downstream.
   let anchor: { acceptance: string | null; updated: string; snapshot: Record<string, unknown> };
+  let listingAsset: { chainId: number; token: string } | null = null;
   const listingId = listingIdFromRow(row);
   if (listingId !== null) {
     const listing = await listingById(env, listingId);
@@ -453,6 +454,7 @@ export async function validatePayoutBinding(
     } else if (listing.amount_atomic !== amountAtomic) {
       throw new SocietyError(400, `listing ${listingId} prices the task at ${listing.amount_atomic} atomic units; the binding must authorize exactly that amount`);
     }
+    listingAsset = { chainId: listing.chain_id, token: listing.token.toLowerCase() };
     anchor = { acceptance: listing.condition, updated: new Date(listing.created_at).toISOString().slice(0, 10), snapshot: { ...listingSnapshot(listing), role } };
   } else {
     const docket = DOCKET.find((item) => item.id === row);
@@ -472,6 +474,24 @@ export async function validatePayoutBinding(
   const address = addressRaw.toLowerCase();
   const assetProblem = assetRefusal(token, chainId);
   if (assetProblem) throw new SocietyError(400, assetProblem);
+  // THE BINDING'S ASSET MUST BE THE LISTING'S ASSET.
+  //
+  // The amount was checked against the listing a few lines up and the asset was
+  // not, so `assetRefusal` cleared any recognised token regardless of what the
+  // listing actually prices in. That let bindings 163 and 164 be recorded
+  // against listing 23 — priced at 30,000,000 1F916, eighteen decimals —
+  // authorizing 30000000000000000000000000 atomic units of SIX-decimal USDC.
+  // An amount checked against one asset and signed under another is not a
+  // checked amount at all; the pair is the fact, and the pair is what the
+  // funder's wallet is later matched against. #188, nerd27dk.
+  if (listingAsset && (token !== listingAsset.token || chainId !== listingAsset.chainId)) {
+    const want = settlementAsset(listingAsset.token);
+    const got = settlementAsset(token);
+    throw new SocietyError(
+      400,
+      `this listing pays in ${want ? `${want.symbol} (${want.decimals} decimals)` : listingAsset.token} on chain ${listingAsset.chainId}; the binding authorizes ${got ? `${got.symbol} (${got.decimals} decimals)` : token} on chain ${chainId}. The amount is atomic units of the listing's asset and means a different quantity under another one, so a binding may not change the asset. Fetch the bytes from GET /api/payout-bindings/preimage, which fills both the amount and the asset from the listing.`,
+    );
+  }
   const expiry = positiveSafeInteger("expiry", body.expiry);
   if (expiry <= nowSeconds) throw new SocietyError(400, "expiry must be in the future when the binding is recorded");
   if (expiry > nowSeconds + MAX_PAYOUT_LIFETIME_SECONDS)

@@ -48,6 +48,7 @@ import {
   payoutPreimage,
   readBalanceTwoSource,
   settlementAsset,
+  assetRefusal,
   SETTLEMENT_ASSETS,
   BASE_USDC,
   escrowReader,
@@ -4578,6 +4579,27 @@ export async function payoutPreimageFor(env: Env, q: { handle: string | null; ro
   let amount = q.amount_atomic === null ? null : String(q.amount_atomic).trim();
   const listingId = listingIdFromRow(row);
   let filled_from: string | null = null;
+  // THE AMOUNT AND THE ASSET ARE ONE FACT AND MUST TRAVEL TOGETHER.
+  //
+  // This builder filled `amount` from the listing and then hardcoded USDC into
+  // the bytes it handed back. While USDC was the only asset that was two ways
+  // of saying the same thing. Migration 0045 added a second asset and split
+  // them: listing 23 prices 30,000,000 1F916, and this endpoint served
+  // ...:30000000000000000000000000:8453:<USDC>:... — an authorization for
+  // 3e25 atomic units of a SIX-decimal dollar token, which is thirty trillion
+  // dollars, over a signature the payee believed was for thirty million
+  // tokens. tardis-relay's client rendered exactly that number to a human for
+  // approval and it was refused; nerd27dk filed #188 and declined to bind at
+  // all. Two bindings (163, 164) were recorded in the wrong asset before
+  // anyone noticed, and neither carries a receipt.
+  //
+  // An 18-decimal amount inside a 6-decimal authorization is not a rounding
+  // error, it is a different sentence. So the asset is filled from the same
+  // row the amount is filled from, and a caller that names one gets both
+  // checked against the listing rather than one silently overwritten.
+  let chainId = BASE_CHAIN_ID;
+  let token = BASE_USDC;
+  let asset_filled_from: string | null = null;
   if (listingId !== null) {
     const listing = await listingById(env, listingId);
     if (!listing) throw new SocietyError(404, `row ${row} names no listing`);
@@ -4586,15 +4608,31 @@ export async function payoutPreimageFor(env: Env, q: { handle: string | null; ro
     if (price === null) throw new SocietyError(400, `listing ${listingId} names no verifier price`);
     if (amount !== null && amount !== price) throw new SocietyError(400, `listing ${listingId} pays ${price} for the ${role} role; amount_atomic must be exactly that (or omit it and it is filled in)`);
     amount = price; filled_from = row;
+    chainId = listing.chain_id; token = listing.token.toLowerCase(); asset_filled_from = row;
+    // A listing whose asset this rail does not settle must not be handed
+    // signable bytes at all. Refusing here is the same refusal the recorder
+    // makes, so no payee spends a hardware-wallet signature on a binding that
+    // can never be filed.
+    const assetProblem = assetRefusal(token, chainId);
+    if (assetProblem) throw new SocietyError(400, `listing ${listingId} prices work in an asset this rail cannot authorize: ${assetProblem}`);
   } else if (!DOCKET.some((d) => d.id === row)) {
     throw new SocietyError(400, `row '${row}' is not in GET /api/docket and is not a listing row`);
   }
   if (amount === null || !/^[1-9][0-9]{0,77}$/.test(amount)) throw new SocietyError(400, "amount_atomic is required for a docket row: a positive integer string of USDC atomic units");
-  const preimage = payoutPreimage({ handle, row, amountAtomic: amount, chainId: BASE_CHAIN_ID, token: BASE_USDC, address: address.toLowerCase(), expiry });
+  const preimage = payoutPreimage({ handle, row, amountAtomic: amount, chainId, token, address: address.toLowerCase(), expiry });
+  const asset = settlementAsset(token);
   return {
     preimage,
     amount_atomic: amount,
     ...(filled_from ? { amount_filled_from: filled_from } : {}),
+    chain_id: chainId,
+    token,
+    // Named and scaled, because the whole defect was an integer that meant one
+    // thing in the listing and another in the bytes. A reader who checks the
+    // symbol against the listing catches the next one without reading code.
+    token_symbol: asset?.symbol ?? null,
+    token_decimals: asset?.decimals ?? null,
+    ...(asset_filled_from ? { asset_filled_from } : {}),
     sign_with: "Sign these exact UTF-8 bytes twice: EIP-191 personal_sign with the wallet at `address`, and Ed25519 with your bound citizen key. Send both signatures, this preimage, and the same structured fields to POST /api/payout-bindings.",
     note: "token and address are lowercased in the preimage; expiry is unix seconds; the separator is ':' and neither handle nor row may contain one.",
   };
