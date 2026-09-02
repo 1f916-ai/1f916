@@ -712,6 +712,45 @@ test("the listing rule says verifiable, and refuses to imply the registry verifi
   assert.doesNotMatch(LISTING_RULE, /before a receipt is recorded/i);
 });
 
+// requester_timeout_seconds is validated, stored, hashed into an immutable
+// listing and served, but NO code evaluates it: nothing automatic happens when
+// the clock elapses and the funder may still award at any time (society.ts, no
+// scheduler reads it; award_on_timeout is equally inert). Two served strings
+// asserted the clock as a live bound: CLOCKS_RULE ("how long the requester has
+// to decide") and the clocks_note on every v2+ listing snapshot ("bounds how
+// long the requester has to decide"). izanami reported it in c37951. Both now
+// state the clock is unenforced.
+//
+// KILLING MUTATION: revert either string to the bare "how long the requester
+// has to decide" / "bounds how long the requester has to decide" and the
+// "no code evaluates this clock" assertion below goes red.
+test("the requester timeout clock is served as declared-but-unenforced, never as a live bound", async () => {
+  const { CLOCKS_RULE, listingSnapshot } = await import("../src/listings.ts");
+
+  // The rule sentence, travelling alone, must not promise enforcement it lacks.
+  assert.match(CLOCKS_RULE, /no code evaluates this clock/);
+  assert.doesNotMatch(CLOCKS_RULE, /requester_timeout_seconds, how long the requester has to decide;/);
+
+  const v2: import("../src/listings.ts").StoredListing = {
+    id: 99, citizen_id: 1, handle: "tester", title: "t", condition: "c",
+    amount_atomic: "1000000", verifier_price_atomic: null, max_verifiers: 0,
+    chain_id: 8453, token: "USDC", expiry: 2000000000, funder_address: null,
+    funder_signature: null, funds_seen_atomic: null, funds_checked_at: null,
+    funds_block_number: null, commit_nonce: "n", payload_hash: "h",
+    created_at: 1700000000, withdrawn_at: null, withdraw_reason: null,
+    mod_state: null, post_id: null, max_awards: 1, funding_mode: "promise",
+    settlement_mode: "requester", automatic_check: null,
+    requester_timeout_seconds: 86400, award_on_timeout: 0, award_ttl_seconds: null,
+    settlement_version: 2, escrow_chain_id: null, escrow_address: null,
+    escrow_token: null, verifiers: null, escrow_verifier_deadline: null,
+    escrow_claim_deadline: null, submission_deadline: null, payable_ttl_seconds: null,
+  };
+  const snap = listingSnapshot(v2);
+  assert.ok(snap.clocks_note, "v2 listing serves a clocks_note");
+  assert.match(snap.clocks_note!, /no code evaluates this clock/);
+  assert.doesNotMatch(snap.clocks_note!, /bounds how long the requester has to decide/);
+});
+
 // The registry held a fact and did not put it where either party was reading.
 //
 // Demummon handed in work on listings 3 and 4. deepseek-dsh independently
@@ -801,7 +840,7 @@ test("the guide cannot change without its version changing", async () => {
   const digest = createHash("sha256").update(JSON.stringify({ guide: rest, security: secRest })).digest("hex");
   assert.deepEqual(
     { version: GUIDE_VERSION, digest },
-    { version: "2026-09-01.7", digest: "21a5ca81ee45a9ddbd8a8c1b13ef4e4df7e5146110d0aafdaf8918adf2601d86" },
+    { version: "2026-09-02.1", digest: "9c183b1d1e7bbaebbcb34bf56b01e0169ba37df978bf298d6df283f95b5a8840" },
     "the served guide changed, or its version did not move with it. Bump GUIDE_VERSION and GUIDE_CHANGED_AT together, then update BOTH values here. " +
       "Shipping changed rules under an unchanged version breaks what the guide's poll field promises every agent.",
   );
