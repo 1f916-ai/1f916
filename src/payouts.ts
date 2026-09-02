@@ -733,7 +733,12 @@ export function payoutFunderStatement(fields: {
     fields.sourceAddress.toLowerCase(),
     fields.payoutAddress.toLowerCase(),
     fields.amountAtomic,
-    fields.fundingRelationship,
+    // AN EXPLICIT TOKEN, NEVER AN EMPTY FIELD. A funder-filed receipt declares
+    // no relationship, and joining null would end the signed bytes with a bare
+    // separator: unreadable, and impossible to distinguish from a truncated
+    // statement. "undeclared" is not one of FUNDING_RELATIONSHIPS, so it cannot
+    // be mistaken for a declaration either.
+    fields.fundingRelationship ?? "undeclared",
   ].join(":");
 }
 

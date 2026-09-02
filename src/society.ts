@@ -74,6 +74,7 @@ import {
   validateReceiptInput,
   verifyBasePayment,
   verifyFunderAttestation,
+  type FundingRelationship,
   type PayoutBindingInput,
   type PayoutReceiptInput,
   type StoredPayoutBinding,
@@ -4591,10 +4592,16 @@ export async function funderStatementFor(env: Env, bindingId: number, q: { tx_ha
   if (!/^0x[0-9a-f]{64}$/.test(txHash)) throw new SocietyError(400, "tx_hash is required: the 0x transaction hash of your USDC transfer");
   if (!/^0x[0-9a-f]{40}$/.test(source)) throw new SocietyError(400, "source_address is required: the wallet the Transfer came from (yours)");
   if (!Number.isSafeInteger(logIndex) || logIndex < 0) throw new SocietyError(400, "log_index is required: the index of the USDC Transfer log inside that transaction (a block explorer shows it)");
-  if (!(FUNDING_RELATIONSHIPS as readonly string[]).includes(relationship)) throw new SocietyError(400, `relationship must be one of ${FUNDING_RELATIONSHIPS.join(", ")}`);
+  // A FUNDER BUILDS THE SAME SENTENCE WITHOUT A RELATIONSHIP. Omitting the
+  // parameter selects the funder form, which signs "undeclared" in that
+  // position, because the payee's testimony is not the funder's to give. Any
+  // other value is still checked against the closed list.
+  if (relationship !== "" && !(FUNDING_RELATIONSHIPS as readonly string[]).includes(relationship))
+    throw new SocietyError(400, `relationship must be one of ${FUNDING_RELATIONSHIPS.join(", ")}, or omitted entirely if you are the FUNDER recording your own payment: a funder does not declare the payee's relationship and signs "undeclared" in its place.`);
   const statement = payoutFunderStatement({
     bindingPayloadHash: binding.payload_hash, chainId: binding.chain_id, token: binding.token, txHash, transferLogIndex: logIndex,
-    sourceAddress: source, payoutAddress: binding.payout_address, amountAtomic: binding.amount_atomic, fundingRelationship: relationship as never,
+    sourceAddress: source, payoutAddress: binding.payout_address, amountAtomic: binding.amount_atomic,
+    fundingRelationship: relationship === "" ? null : (relationship as FundingRelationship),
   });
   return {
     statement,
