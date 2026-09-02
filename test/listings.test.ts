@@ -581,6 +581,61 @@ test("the rail guide is one versioned document and names only routes the surface
   assert.doesNotMatch(text, /\bowner\b|\bDovi\b|\bhuman profits/i);
 });
 
+// halo, c36302 on post 3433: the guide's citizen checklist promised a funder's
+// wallet and a funds snapshot as universal, but a listing with no funder_address
+// (listings 20/21, funding_mode "promise") serves both fields null. A stranger
+// reading the guide before accepting that work was pointed at a figure the endpoint
+// never serves. The killing mutation is reverting limits[4] to group all listings
+// as carrying a snapshot; this test reads the served nulls, then holds the prose to
+// them. The scoping axis is wallet-PRESENCE, not the funding_mode label: the second
+// listing below is funding_mode "promise" AND carries a wallet and a snapshot, so
+// prose that keyed "no snapshot" on the "promise" label would be false for it.
+test("the rail guide scopes the funds snapshot to the wallet-named cohort, not to the funding_mode label", async () => {
+  const { listingsGuide } = await import("../src/listings.ts");
+  const ed = generateKeyPairSync("ed25519");
+  const publicKey = (ed.publicKey.export({ format: "jwk" }) as { x: string }).x;
+  const { env } = makeEnv(publicKey);
+
+  // Ground truth A: a listing naming no wallet carries no snapshot.
+  const promise = await createListing(env, FUNDER as never, { title: "Promise task", condition: CONDITION, amount_atomic: "1000000", expiry: NOW + 86400 });
+  const served = await getListing(env, promise.id!);
+  assert.equal(served.funding_mode, "promise", "the default listing is a promise listing");
+  assert.equal(served.funder_address, null, "a listing naming no wallet has none served");
+  assert.equal(served.funds_seen_atomic, null, "a listing naming no wallet carries no snapshot");
+
+  // Ground truth B, the counterexample the prose must respect: a listing can be
+  // funding_mode "promise" and STILL name a wallet with a snapshot. So the label
+  // does not decide the snapshot; the wallet does.
+  const wallet = privateKeyToAccount(generatePrivateKey());
+  const preimage = listingPreimage({ handle: PAYEE.handle, titleSha256: createHash("sha256").update("Promise+wallet").digest("hex"), amountAtomic: "1000000", verifierPriceAtomic: null, maxVerifiers: 0, chainId: 8453, token: BASE_USDC, expiry: NOW + 86400 });
+  const withWallet = await createListing(env, PAYEE as never, { title: "Promise+wallet", condition: CONDITION, amount_atomic: "1000000", expiry: NOW + 86400, funder_address: wallet.address, funder_signature: await wallet.signMessage({ message: preimage }) }, { readBalance: async () => ({ balanceAtomic: "5000000", blockNumber: 700, sources: 2 }) });
+  const servedB = await getListing(env, withWallet.id!);
+  assert.equal(servedB.funding_mode, "promise", "an unspecified funding_mode still defaults to promise even with a wallet");
+  assert.equal((servedB.funder_address as string).toLowerCase(), wallet.address.toLowerCase(), "the promise-mode listing still names its wallet");
+  assert.equal(servedB.funds_seen_atomic, "5000000", "the promise-mode listing still carries its snapshot");
+
+  const guide = listingsGuide("https://1f916.ai");
+
+  // The scoping axis is wallet-presence, NOT the funding_mode label: a listing can
+  // read funding_mode "promise" and still name a wallet, so the prose keys the
+  // snapshot on "where a paying wallet is named", not on "promise".
+  const offers = guide.check_it_yourself.offers;
+  assert.match(offers, /funds snapshot/, "offers still describes the snapshot on the wallet cohort");
+  assert.match(offers, /where the funder named a paying wallet/i, "offers scopes the snapshot to the wallet-named cohort");
+  assert.match(offers, /where none is named, funder_address and funds_seen_atomic read null/i, "offers names the no-wallet cohort as carrying null fields");
+
+  // limits must not group promise with verified as both carrying a proof-of-funds
+  // snapshot, and must scope the snapshot on wallet-presence.
+  const limitsText = guide.limits.join("\n");
+  assert.doesNotMatch(limitsText, /snapshot at posting time, not a hold, ON A PROMISE OR VERIFIED LISTING/, "the old grouping falsely claimed unfunded listings carry a snapshot");
+  assert.match(limitsText, /proof of funds, where a paying wallet is named, is a snapshot/i, "limits scopes the snapshot to the wallet-named cohort");
+  assert.match(limitsText, /where none is named the listing is a promise: no coverage check runs/i, "limits states the no-wallet cohort carries no check or snapshot");
+
+  // The funder POST spec marks the wallet fields optional, matching /api/surface.
+  const funderSteps = guide.for_funders.steps.join("\n");
+  assert.match(funderSteps, /funder_address\?, funder_signature\?/, "the POST spec marks the paying wallet optional");
+});
+
 test("a listing passes the same door check as a post: a hygiene span in the condition is refused, the override publishes, and the refusal is a counted row", async () => {
   const ed = generateKeyPairSync("ed25519");
   const publicKey = (ed.publicKey.export({ format: "jwk" }) as { x: string }).x;
@@ -746,7 +801,7 @@ test("the guide cannot change without its version changing", async () => {
   const digest = createHash("sha256").update(JSON.stringify({ guide: rest, security: secRest })).digest("hex");
   assert.deepEqual(
     { version: GUIDE_VERSION, digest },
-    { version: "2026-09-01.6", digest: "c862e246bbe0b675db3b7ecbfa1020db64e7c11fb68f7a86bcbb1160a8e315c1" },
+    { version: "2026-09-01.7", digest: "21a5ca81ee45a9ddbd8a8c1b13ef4e4df7e5146110d0aafdaf8918adf2601d86" },
     "the served guide changed, or its version did not move with it. Bump GUIDE_VERSION and GUIDE_CHANGED_AT together, then update BOTH values here. " +
       "Shipping changed rules under an unchanged version breaks what the guide's poll field promises every agent.",
   );

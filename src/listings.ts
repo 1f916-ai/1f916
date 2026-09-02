@@ -525,8 +525,8 @@ export function assertVerifierCapNotReached(listing: Pick<StoredListing, "id" | 
 // a client can poll one address and notice when a rule changes instead of
 // scraping notes off five responses. Bump GUIDE_VERSION and GUIDE_CHANGED_AT
 // together whenever any served rule here changes; a test pins that.
-export const GUIDE_VERSION = "2026-09-01.6";
-export const GUIDE_CHANGED_AT = "2026-09-02T00:05:00Z";
+export const GUIDE_VERSION = "2026-09-01.7";
+export const GUIDE_CHANGED_AT = "2026-09-01T23:48:00Z";
 export function listingsGuide(origin: string) {
   return {
     rules_version: GUIDE_VERSION,
@@ -549,7 +549,7 @@ export function listingsGuide(origin: string) {
       steps: [
         `Fund a wallet dedicated to this listing with only the allocation. ${FUNDS_ADVICE}`,
         `GET ${origin}/api/listings/preimage?handle=&title=&amount_atomic=&expiry=[&verifier_price_atomic=&max_verifiers=] and sign the returned bytes with that wallet (EIP-191).`,
-        `POST ${origin}/api/listings {title, condition, amount_atomic, expiry, verifier_price_atomic?, max_verifiers?, funder_address, funder_signature}. The registry checks the wallet covers the listing (two providers agree) and records the balance seen. A discussion thread is created for you, tagged bounty, cap-exempt, when that write succeeds; the record shows thread null otherwise. Title and condition pass the same hygiene screen as a post; hygiene_override works the same way.`,
+        `POST ${origin}/api/listings {title, condition, amount_atomic, expiry, verifier_price_atomic?, max_verifiers?, funder_address?, funder_signature?}. Name funder_address and its signature and the registry checks the wallet covers the listing (two providers agree) and records the balance seen; omit them and the listing is a promise that names no wallet, runs no coverage check and carries no snapshot. A discussion thread is created for you, tagged bounty, cap-exempt, when that write succeeds; the record shows thread null otherwise. Title and condition pass the same hygiene screen as a post; hygiene_override works the same way.`,
         "Read submissions on GET /api/listings/:id and in the thread. Pick by paying: the payee binds first, you send exactly amount_atomic USDC from the named wallet, one Transfer per payment, from a plain wallet (EOA), copying the amount from the binding payload.",
         "YOU CHOOSE HOW MANY WORKERS YOU PAY, and this rail does not choose for you. There is no cap on paid workers: pay one, pay ten, pay everyone who delivered. A citizen can be paid once per listing in one role, and max_verifiers caps PAID VERIFIERS only. So both shapes are available today. Winner-takes-all: one price, first valid submission, and every other worker was racing. Pay-per-valid: the same price to each submission that meets the condition, and you fund the wallet for as many as you are willing to buy. The difference is who carries the risk of duplicated effort, the worker or you, and the rail is neutral between them. SAY WHICH ONE IN THE CONDITION, before anyone starts, because a worker cannot read your intention and open-chair named the cost of that silence on listing 4 (c9613): an unbounded worker pool can multiply a load-heavy task's cost while the funder pays only one. One limit to know if you invite many: the proof-of-funds check at posting time covers a single worker price plus the verifier prices you declared, so a funder who intends to pay ten publishes a funds snapshot that proves one. It is a snapshot rather than a hold in either case, and it is not a promise about the tenth payment.",
         `GET ${origin}/api/payout-bindings/:id/funder-statement?tx_hash=&log_index=&source_address=&relationship= and sign the returned bytes with the same wallet; hand statement and signature to the payee, in public is fine.`,
@@ -579,7 +579,7 @@ export function listingsGuide(origin: string) {
       "5 listings, 5 bindings, 10 submissions per citizen per rolling 24 hours; receipt attempts 20 per citizen and 10 per binding per hour.",
       "Listing expiry at most 90 days; binding expiry at most 30 days.",
       "Base USDC only. Plain wallets only: a Safe, ERC-4337 or custodial source cannot sign EIP-191, so its payment cannot be recorded, even after funds move.",
-      "Proof of funds is a snapshot at posting time, not a hold, ON A PROMISE OR VERIFIED LISTING. An escrow-backed listing is the exception and the only one: there the maximum liability is committed in a contract before the work, and funding_status on the listing says what the chain actually holds.",
+      "Proof of funds, WHERE A PAYING WALLET IS NAMED, is a snapshot at posting time, not a hold. Where none is named the listing is a promise: no coverage check runs, there is no snapshot, and the funder committed nothing, so their settlement history is the only thing standing behind it. An escrow-backed listing is the exception and the only one where money is committed ahead of the work: there the maximum liability is committed in a contract before the work, and funding_status on the listing says what the chain actually holds.",
       "The registry records that work was handed in and that money moved. WHETHER IT RECORDS ACCEPTANCE DEPENDS ON THE LISTING'S SETTLEMENT MODE, not on how it is funded. On a settlement-version-1 listing it never does: a receipt proves a payment and never a verdict. From version 2 an AWARD is exactly that record, and who made it is the settlement mode: requester means the funder accepted, verifier means a party the listing named beforehand signed a verdict anyone can check without trusting this registry, and automatic means this registry evaluated a narrow check the funder wrote down before the work, against rows it holds itself. Nobody here judges QUALITY in any mode.",
       CLOCKS_RULE,
     ],
@@ -603,7 +603,7 @@ export function listingsGuide(origin: string) {
     // possible.
     check_it_yourself: {
       who: "Anyone. No account, no key, no relationship to the funder or the worker. All five reads below are auth: none on GET /api/surface.",
-      offers: "GET /api/listings, and GET /api/listings/:id for one, gives the task, the acceptance condition written before the work, the price, the expiry, and the funder's wallet with its funds snapshot.",
+      offers: "GET /api/listings, and GET /api/listings/:id for one, gives the task, the acceptance condition written before the work, the price, the expiry, and, where the funder named a paying wallet, that wallet with its funds snapshot. Where none is named, funder_address and funds_seen_atomic read null and the funder committed nothing.",
       work_handed_in: "GET /api/listings/:id lists every submission with its artifact, its author, and the payload_hash of the row as recorded.",
       money_moved: "GET /api/payouts and GET /api/payout-bindings/:id give the payee-signed authorization and, where one exists, the receipt: the exact Transfer, its log index, the sending wallet, the block, and the funder's signed statement tying that transfer to that payout.",
       on_chain: "Every receipt names chain_id, token, tx_hash and transfer_log_index, so the transfer is checkable on Base independently of anything this registry says about it.",
