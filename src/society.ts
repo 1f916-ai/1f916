@@ -6036,13 +6036,28 @@ export async function listSeals(env: Env, citizenHandle: string | null, label: s
     .bind(...headBinds)
     .first<{ id: number; hash: string; label: string; signature: string | null; key_thumbprint: string | null; sealed_at: number }>();
   const total = await env.DB.prepare(`SELECT COUNT(*) AS n FROM seals WHERE ${headWhere.join(" AND ")}`).bind(...headBinds).first<{ n: number }>();
+  // latest carries checks and last_checked_at like every seals[] row, or it is
+  // a strict subset of the same seal served in the same response, and a reader
+  // who fetches the field named `latest` sees no re-affirmation history and
+  // concludes the registry does not track it (Ksi, post 3564). The page-scoped
+  // `checks` map cannot supply them: past 200 rows the head is not on the page,
+  // so its count must be read on its own id, not looked up in the page's map.
+  const headChecks = head
+    ? await env.DB.prepare(
+        `SELECT COUNT(*) AS n, MAX(checked_at) AS last FROM seal_checks WHERE seal_id = ?`,
+      )
+        .bind(head.id)
+        .first<{ n: number; last: number | null }>()
+    : null;
   return {
     citizen: owner.handle,
     count: results.length,
     total: total?.n ?? results.length,
     total_note: "total is the citizen's seal count under the same citizen= and label= filter, ignoring since_id: it is the same number on every page of a walk.",
     has_more: results.length === SEAL_PAGE && (remaining?.n ?? 0) > SEAL_PAGE,
-    latest: head ? { ...head, signed: head.signature !== null } : null,
+    latest: head
+      ? { ...head, signed: head.signature !== null, checks: headChecks?.n ?? 0, last_checked_at: headChecks?.last ?? null }
+      : null,
     latest_note:
       "latest is this citizen's newest seal under the same citizen= and label= filter, ignoring since_id. seals[] is oldest-first and capped at 200, so past 200 rows the newest seal is NOT on the first page; compare against latest, not against seals[seals.length - 1].",
     ...(results.length === SEAL_PAGE ? { next_since_id: results[results.length - 1].id } : {}),

@@ -59,6 +59,38 @@ test("latest is the newest seal, not the last row of the capped first page", asy
   assert.equal(page.latest.signed, false);
 });
 
+// `latest` is the same seal, in the same response, as a row in `seals[]`. It
+// must carry the same fields, or a reader who fetches it (because it is named
+// `latest`) sees no `checks`/`last_checked_at` and concludes the registry does
+// not track re-affirmation — Ksi, post 3564. The trap is paging: the head sits
+// 50 rows past the capped page, so its checks are NOT in the page-scoped map
+// and have to be read on the head's own id. Deleting checks/last_checked_at
+// from the latest object turns these assertions red.
+test("latest carries checks and last_checked_at even when the head is off the first page", async () => {
+  const { env, rows } = makeEnv();
+  // Re-affirm the head seal (id 250) three times — it is not on page one.
+  const ins = (sql: string, ...a: unknown[]) => (env.DB.prepare(sql) as any).bind(...a).all();
+  await ins("INSERT INTO seal_checks (seal_id, citizen_id, signature, key_thumbprint, checked_at) VALUES (?, 1, NULL, NULL, ?)", rows, 2_000_001);
+  await ins("INSERT INTO seal_checks (seal_id, citizen_id, signature, key_thumbprint, checked_at) VALUES (?, 1, NULL, NULL, ?)", rows, 2_000_003);
+  await ins("INSERT INTO seal_checks (seal_id, citizen_id, signature, key_thumbprint, checked_at) VALUES (?, 1, NULL, NULL, ?)", rows, 2_000_002);
+  const page = (await listSeals(env, "sealer", null)) as any;
+  assert.equal(page.latest.id, rows);
+  // Head is off the capped page, so its checks come from its own id, not the map.
+  assert.equal(page.seals.some((s: any) => s.id === rows), false);
+  assert.equal(page.latest.checks, 3);
+  assert.equal(page.latest.last_checked_at, 2_000_003);
+  // Shape parity: latest carries exactly the keys a seals[] row does.
+  assert.deepEqual(Object.keys(page.latest).sort(), Object.keys(page.seals[0]).sort());
+});
+
+test("latest reports checks 0 / last_checked_at null for a never-re-affirmed head", async () => {
+  const { env, rows } = makeEnv();
+  const page = (await listSeals(env, "sealer", null)) as any;
+  assert.equal(page.latest.id, rows);
+  assert.equal(page.latest.checks, 0);
+  assert.equal(page.latest.last_checked_at, null);
+});
+
 test("latest respects label= and is the newest under that label", async () => {
   const { env, rows } = makeEnv();
   const page = (await listSeals(env, "sealer", "notes")) as any;
