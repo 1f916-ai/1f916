@@ -496,7 +496,7 @@ export default {
       if (path === "/api/ledger" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));
         const b = await body(request);
-        return json(await recordLedger(env, citizen, b.description, b.amount_cents, b.tx), 201);
+        return json(await recordLedger(env, citizen, b.description, b.amount_cents, b.tx, b.corrects), 201);
       }
       if (path === "/api/attest" && method === "GET") {
         // The names, not just the values. `identuty_expect=<hash>` used to

@@ -10719,6 +10719,7 @@ export async function recordLedger(
   description: unknown,
   amountCents: unknown,
   txHash: unknown,
+  corrects: unknown = undefined,
 ) {
   if (citizen.id !== MAINTAINER_ID) {
     throw new SocietyError(403, "Only the maintainer records to the books, and only against a verifiable on-chain tx. Rule 7.");
@@ -10746,7 +10747,33 @@ export async function recordLedger(
     throw new SocietyError(400, `amount_cents must be within +/-${MAX_LEDGER_CENTS} — a single entry larger than that is a typo, not a transaction`);
   }
   const tx = typeof txHash === "string" ? txHash.trim() : null;
-  if (cents > 0 && !(tx && TX_HASH.test(tx))) {
+
+  // REVERSING A BOOKKEEPING MISTAKE IS NOT INCOME, and until now the books had
+  // no way to say so. Money in must cite a transaction, which is right and is
+  // what makes "booked" mean checkable against Base. But an entry written in
+  // error is corrected by a POSITIVE row that no transaction backs, because no
+  // money moved: the money never left in the first place. Without this, the only
+  // ways to fix an over-booked expense were to claim income that did not happen
+  // or to leave the served total wrong. Both are worse than a named reversal.
+  //
+  // Deliberately narrow. It reverses ONE named row, EXACTLY, ONCE, and only a
+  // row that took money out. It cannot invent value, cannot partially unwind
+  // anything, and cannot be used twice on the same mistake.
+  let correctsRow: { id: number; amount_cents: number } | null = null;
+  if (corrects !== undefined && corrects !== null) {
+    const id = Number(corrects);
+    if (!Number.isSafeInteger(id) || id <= 0) throw new SocietyError(400, "corrects must be the id of the ledger row this entry reverses");
+    correctsRow = await env.DB.prepare("SELECT id, amount_cents FROM ledger WHERE id = ?").bind(id).first<{ id: number; amount_cents: number }>();
+    if (!correctsRow) throw new SocietyError(404, `no ledger row ${id} to correct`);
+    if (correctsRow.amount_cents >= 0)
+      throw new SocietyError(400, `ledger row ${id} did not take money out, so reversing it would book income. Income requires a transaction anyone can check.`);
+    if (cents !== -correctsRow.amount_cents)
+      throw new SocietyError(400, `a correction reverses its row exactly: row ${id} is ${correctsRow.amount_cents} cents, so this entry must be ${-correctsRow.amount_cents}. Partial unwinding would leave a total nobody can derive.`);
+    const already = await env.DB.prepare("SELECT id FROM ledger WHERE source = ? LIMIT 1").bind(`correction:${id}`).first<{ id: number }>();
+    if (already) throw new SocietyError(409, `ledger row ${id} was already corrected by row ${already.id}; correcting it twice would invent money`);
+  }
+
+  if (cents > 0 && correctsRow === null && !(tx && TX_HASH.test(tx))) {
     throw new SocietyError(
       400,
       "income requires tx: a 0x-prefixed 32-byte transaction hash anyone can re-check against Base. The books say 'verifiable'; this is what makes that true rather than claimed.",
@@ -10775,7 +10802,9 @@ export async function recordLedger(
     amount_cents: cents,
     created_at: now,
     tx,
-    source: "treasury",
+    // A correction names the row it reverses in its own source, which is what
+    // makes the pairing checkable by a reader and prevents a second reversal.
+    source: correctsRow === null ? "treasury" : `correction:${correctsRow.id}`,
   });
   return {
     recorded: { description: description.trim(), amount_cents: cents },

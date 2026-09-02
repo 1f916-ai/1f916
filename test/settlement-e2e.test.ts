@@ -15,7 +15,7 @@ import { readFileSync } from "node:fs";
 import { MockSettlementAdapter, verdictPreimage } from "../src/settlement.ts";
 import { assetRefusal, soleAsset, settlementAsset, BASE_USDC, validateReceiptInput, payerOfRecord } from "../src/payouts.ts";
 import { generateKeyPairSync, sign as edSign, createHash, type KeyObject } from "node:crypto";
-import { createAward, createListing, createSubmission, getListing, latchReadiness, markAwardPayable, railCensus, settleAwardFromReceipt, sweepExpiredAwards, type Env } from "../src/society.ts";
+import { createAward, createListing, createSubmission, getListing, latchReadiness, markAwardPayable, railCensus, recordLedger, settleAwardFromReceipt, sweepExpiredAwards, type Env } from "../src/society.ts";
 
 const DOLLAR = "1000000";
 const NOW = Math.floor(Date.now() / 1000);
@@ -1612,6 +1612,49 @@ test("the pairing of submitted_by and funding_relationship is unstorable when wr
   ins("funder", null);
   db.exec("DELETE FROM payout_receipts");
   ins("payee", "independent");
+});
+
+// REVERSING A MISTAKE IS NOT INCOME.
+//
+// Money in must cite a transaction, which is what makes "booked" mean checkable
+// against Base. That rule left an over-booked EXPENSE with no honest repair: the
+// only options were to claim income that never happened or to serve a total that
+// is wrong. The maintainer hit this within minutes of it mattering, having
+// double-booked a ten dollar float, and /treasury served a number ten dollars
+// too low until a reversal existed.
+//
+// KILLING MUTATIONS, one per guard:
+//   (a) drop `correctsRow === null` from the income check — a positive row with
+//       no tx and no target sails through, which is the invented-income hole.
+//   (b) drop the exact-amount check — partial unwinding becomes possible and the
+//       served total stops being derivable from the rows.
+//   (c) drop the already-corrected check — the same mistake reverses twice and
+//       the books gain money that never existed.
+test("a ledger correction reverses one named expense exactly, once, and never invents income", async () => {
+  const { env, db } = makeEnv();
+  db.exec("CREATE TABLE IF NOT EXISTS ledger (id INTEGER PRIMARY KEY AUTOINCREMENT, entry_date TEXT, description TEXT, amount_cents INTEGER, created_at INTEGER, tx TEXT, source TEXT, prev_hash TEXT, hash TEXT)");
+  db.exec("INSERT INTO ledger (id, entry_date, description, amount_cents, created_at, source) VALUES (1, '2026-08-16', 'float out', -1000, 0, 'treasury')");
+  db.exec("INSERT INTO ledger (id, entry_date, description, amount_cents, created_at, source) VALUES (2, '2026-08-17', 'money in', 500, 0, 'treasury')");
+  const MAINT = { id: 1, handle: "funder" } as never;
+
+  // Income with no transaction is still refused when nothing is being corrected.
+  await assert.rejects(recordLedger(env, MAINT, "a gift I imagined", 1000, null), /income requires tx/);
+
+  // A correction must reverse its row EXACTLY.
+  await assert.rejects(recordLedger(env, MAINT, "partial unwind", 400, null, 1), /reverses its row exactly/);
+
+  // It may only reverse a row that took money out.
+  await assert.rejects(recordLedger(env, MAINT, "reverse an inflow", -500, null, 2), /did not take money out/);
+
+  // The legitimate case works and names what it reversed.
+  const ok = await recordLedger(env, MAINT, "CORRECTION: row 1 was booked twice", 1000, null, 1) as Record<string, any>;
+  assert.ok(ok.recorded, "an exact reversal of an expense is recordable without a transaction");
+  const row = db.prepare("SELECT source, amount_cents FROM ledger WHERE id = (SELECT MAX(id) FROM ledger)").get() as { source: string; amount_cents: number };
+  assert.equal(row.source, "correction:1", "the reversal names the row it undid");
+  assert.equal(row.amount_cents, 1000);
+
+  // And it cannot be done twice, which would invent money.
+  await assert.rejects(recordLedger(env, MAINT, "again", 1000, null, 1), /already corrected/);
 });
 
 test("treasury-funded work is never counted as outside demand", async () => {
