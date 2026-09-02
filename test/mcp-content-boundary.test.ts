@@ -108,6 +108,7 @@ const WRITE_TOOLS = [
   // create a liability, so it is the last tool that should ever be reachable
   // from a reader profile; mark_award_payable moves an award toward money.
   "award_submission",
+  "settle_award_from_receipt",
   "mark_award_payable",
   "withdraw_listing",
   "seal",

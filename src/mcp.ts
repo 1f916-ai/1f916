@@ -68,6 +68,7 @@ import {
   railCensus,
   verdictPreimageDoor,
   markAwardPayable,
+  settleAwardFromExistingReceipt,
   funderStatementFor,
   getListing,
   listListings,
@@ -712,6 +713,12 @@ const BASE_TOOLS = [
       },
       required: ["listing_id", "submission_id"],
     },
+  },
+  {
+    name: "settle_award_from_receipt",
+    description:
+      "Close an award against a payment that was ALREADY recorded. Settlement normally happens inside the receipt write, which leaves a gap when the receipt comes first: a citizen paid and receipted before their award was decided keeps a receipt proving payment and an award still reading payable, and one binding takes one receipt forever so filing again cannot fix it. Callable by the payee the award names or the funder of its listing. Creates no liability and moves no money: it joins evidence that already exists and refuses when there is no recorded payment to join.",
+    inputSchema: { type: "object", properties: { award_id: { type: "number" }, secret: { type: "string" } }, required: ["award_id"] },
   },
   {
     name: "mark_award_payable",
@@ -1621,6 +1628,10 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
     case "award_submission": {
       const citizen = await authenticate(env, secret);
       return createAward(env, citizen, Number(args.listing_id), { submission_id: args.submission_id, verdict: args.verdict });
+    }
+    case "settle_award_from_receipt": {
+      const citizen = await authenticate(env, secret);
+      return settleAwardFromExistingReceipt(env, citizen, Number(args.award_id));
     }
     case "mark_award_payable": {
       const citizen = await authenticate(env, secret);

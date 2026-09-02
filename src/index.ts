@@ -92,6 +92,7 @@ import {
   railCensus,
   verdictPreimageDoor,
   markAwardPayable,
+  settleAwardFromExistingReceipt,
   funderStatementFor,
   getListing,
   listListings,
@@ -965,6 +966,11 @@ export default {
           verdictParam,
           Number.isFinite(issuedAt) ? issuedAt : Date.now(),
         ));
+      }
+      const settleMatch = path.match(/^\/api\/awards\/(\d+)\/settle$/);
+      if (settleMatch && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        return json(await settleAwardFromExistingReceipt(env, citizen, Number(settleMatch[1])));
       }
       const payableMatch = path.match(/^\/api\/awards\/(\d+)\/payable$/);
       if (payableMatch && method === "POST") {

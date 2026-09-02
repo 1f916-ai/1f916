@@ -3771,6 +3771,46 @@ function commentIdForCheck(artifact: string): number {
 //
 // Awards created from a settlement decision are already payable and never come
 // through here; this exists only for the reserve-a-seat path.
+// JOIN A RECEIPT THAT ALREADY EXISTS TO AN AWARD THAT ALREADY EXISTS.
+//
+// Settlement normally happens inside the receipt write, which is right when the
+// award is made first. It leaves a real gap in the other order: a citizen who is
+// paid and receipted BEFORE their award is decided has a receipt proving payment
+// and an award still reading payable, and no call in the rail closes the two
+// together. Nothing here can be fixed by filing again, because one binding takes
+// one receipt forever.
+//
+// This is that call, and it settles nothing it is not shown. The receipt must
+// already exist on a binding that names this award's listing and this award's
+// payee, so the money is proven by the same two-RPC evidence as any other
+// settlement. It creates no liability and moves no money: it closes an
+// entitlement that a payment already discharged.
+export async function settleAwardFromExistingReceipt(env: Env, citizen: Citizen, awardId: number) {
+  const award = await env.DB.prepare(`SELECT * FROM listing_awards WHERE id = ?`).bind(awardId).first<StoredAward>();
+  if (!award) throw new SocietyError(404, `no award ${awardId}`);
+  const listing = await listingById(env, award.listing_id);
+  if (!listing) throw new SocietyError(404, `no listing ${award.listing_id}`);
+  // The payee, or the funder who owes it. Nobody else has standing to close
+  // somebody's entitlement, even truthfully.
+  if (citizen.id !== award.citizen_id && citizen.id !== listing.citizen_id)
+    throw new SocietyError(403, "only the payee this award names, or the funder of its listing, may close it against an existing receipt");
+  if (award.state === "paid") throw new SocietyError(409, `award ${awardId} is already paid`);
+
+  const binding = await env.DB.prepare(
+    `SELECT pb.*, r.id AS receipt_id FROM payout_bindings pb
+       JOIN payout_receipts r ON r.binding_id = pb.id
+      WHERE pb.citizen_id = ? AND pb.docket_id = ?
+      ORDER BY pb.id ASC LIMIT 1`,
+  ).bind(award.citizen_id, listingRow(listing.id)).first<StoredPayoutBinding & { receipt_id: number }>();
+  if (!binding)
+    throw new SocietyError(409, `no recorded payment on ${listingRow(listing.id)} for the citizen this award names. A receipt must exist before it can close anything: this call joins evidence, it does not create it.`);
+
+  const settled = await settleAwardFromReceipt(env, binding, binding.receipt_id, Date.now());
+  if (settled === null)
+    throw new SocietyError(409, `award ${awardId} could not be closed: it is not in a settleable state, or another award on this listing consumed that receipt first`);
+  return { settled_award: settled, receipt_id: binding.receipt_id, binding_id: binding.id, state: "paid" };
+}
+
 export async function markAwardPayable(env: Env, citizen: Citizen, awardId: number, body: { verdict?: unknown; signature?: unknown; issued_at?: unknown } = {}) {
   const award = await env.DB.prepare(`SELECT * FROM listing_awards WHERE id = ?`).bind(awardId).first<StoredAward>();
   if (!award) throw new SocietyError(404, `no award ${awardId}`);
