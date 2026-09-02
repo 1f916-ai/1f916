@@ -57,8 +57,14 @@ import {
   PAYOUT_RECEIPT_HASH_FIELDS,
   PAYOUT_RECEIPT_ATTEMPTS_PER_BINDING,
   PAYOUT_RECEIPT_ATTEMPTS_PER_HOUR,
+  PAYOUT_WALLETS_PER_DAY,
+  PAYOUT_WALLET_VERSION,
+  MAX_PAYOUT_WALLET_LIFETIME_SECONDS,
   payoutBindingPayload,
   payoutBindingPayloadHash,
+  payoutWalletPreimage,
+  payoutWalletPayloadHash,
+  validatePayoutWallet,
   payoutReceiptPayload,
   payoutReceiptPayloadHash,
   validatePayoutBinding,
@@ -2458,6 +2464,140 @@ export async function keysOf(env: Env, handle: string) {
 // This is an authorization record, not a payment, delivery verdict, or
 // reputation event. Both signatures are checked before anything reaches D1;
 // then the full immutable row and its bounded chain anchor commit together.
+// THE ONE-TIME WALLET PROOF. Everything expensive about being paid happens
+// here, once, and never again: this is the request that usually needs a human.
+export async function createPayoutWallet(env: Env, citizen: Citizen, body: Record<string, unknown>) {
+  const wallet = await validatePayoutWallet(env, citizen, body);
+  const now = Date.now();
+  const commitNonce = crypto.randomUUID();
+  const payloadHash = await payoutWalletPayloadHash(wallet, now, commitNonce);
+  const dayAgo = now - 86_400_000;
+  const existing = await env.DB.prepare(
+    "SELECT id FROM payout_wallets WHERE citizen_id = ? AND address = ? AND revoked_at IS NULL LIMIT 1",
+  ).bind(citizen.id, wallet.address).first<{ id: number }>();
+  if (existing)
+    throw new SocietyError(409, `you already hold a live proof of ${wallet.address} as payout wallet ${existing.id}; revoke it first if you want to re-prove it with a different expiry`);
+
+  const stateStmt = env.DB.prepare(
+    `INSERT INTO payout_wallets
+      (citizen_id, version, chain_id, address, expiry, wallet_signature, citizen_public_key, citizen_signature,
+       citizen_key_thumbprint, citizen_key_custody, citizen_key_bound_at, preimage, proof_hash, payload_hash,
+       commit_nonce, created_at)
+     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+      WHERE (SELECT COUNT(*) FROM payout_wallets WHERE citizen_id = ? AND created_at > ?) < ?
+        AND EXISTS (SELECT 1 FROM keys WHERE citizen_id = ? AND public_key = ? AND custody = 'self' AND status = 'active')
+        AND ? > unixepoch()
+     RETURNING id`,
+  ).bind(
+    citizen.id, wallet.version, wallet.chainId, wallet.address, wallet.expiry, wallet.walletSignature,
+    wallet.citizenPublicKey, wallet.citizenSignature, wallet.citizenKeyThumbprint, wallet.citizenKeyCustody,
+    wallet.citizenKeyBoundAt, wallet.preimage, wallet.proofHash, payloadHash, commitNonce, now,
+    citizen.id, dayAgo, PAYOUT_WALLETS_PER_DAY,
+    citizen.id, wallet.citizenPublicKey,
+    wallet.expiry,
+  );
+  const committed = await commitWithIdentityEvent<{ id: number }>(
+    env,
+    stateStmt,
+    {
+      citizen_id: citizen.id,
+      kind: "payout-wallet",
+      detail: `address=${wallet.address}, payout-wallet payload sha256=${payloadHash}, citizen key=${wallet.citizenKeyThumbprint}`,
+    },
+    "payout-wallet chain head moved four times running; refusing to record a wallet proof without its anchor",
+    { sql: "EXISTS (SELECT 1 FROM payout_wallets WHERE commit_nonce = ?)", binds: [commitNonce] },
+  );
+  if (!committed.state)
+    throw new SocietyError(429, `at most ${PAYOUT_WALLETS_PER_DAY} payout-wallet proofs a day, the citizen key must still be active and self-custodied, and the expiry must still be in the future`);
+
+  return {
+    id: committed.state.id,
+    address: wallet.address,
+    chain_id: wallet.chainId,
+    expiry: wallet.expiry,
+    proof_hash: wallet.proofHash,
+    payload_hash: payloadHash,
+    identity_event: committed.hash,
+    created_at: now,
+    what_this_does:
+      "Every later payout binding on any listing needs your citizen key alone. This proof is what the registry checks instead of a fresh wallet signature, and it is the only thing that had to involve your wallet.",
+    what_this_does_not_do:
+      "It authorizes no payment by itself and creates no entitlement. Money still moves only against a per-listing binding naming an exact amount, and a binding is still not a debt.",
+    revoke: "POST /api/payout-wallets/" + committed.state.id + "/revoke with a public reason. Bindings already filed stand; new ones against this address stop.",
+  };
+}
+
+export async function listPayoutWallets(env: Env, citizen: Citizen) {
+  const { results } = await env.DB.prepare(
+    `SELECT id, chain_id, address, expiry, proof_hash, payload_hash, created_at, revoked_at, revoke_reason
+       FROM payout_wallets WHERE citizen_id = ? ORDER BY id DESC`,
+  ).bind(citizen.id).all<Record<string, unknown>>();
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  return {
+    handle: citizen.handle,
+    wallets: (results ?? []).map((w) => ({
+      ...w,
+      // LIVE IS THREE CONDITIONS, NOT ONE. Reading revoked_at alone would call
+      // a lapsed proof live forever, which is the exact mistake the binding
+      // path guards against at its own clock.
+      live: w.revoked_at === null && Number(w.expiry) > nowSeconds,
+      state: w.revoked_at !== null ? "revoked" : Number(w.expiry) > nowSeconds ? "live" : "expired",
+    })),
+    note:
+      "A payout wallet is an address you proved is yours, once. It routes nothing and owes nothing on its own: a per-listing binding still names the exact amount, and payment is still a funder's act.",
+  };
+}
+
+export async function revokePayoutWallet(env: Env, citizen: Citizen, id: number, body: Record<string, unknown>) {
+  const reason = typeof body.reason === "string" ? body.reason.trim() : "";
+  if (reason.length < 3 || reason.length > 500)
+    throw new SocietyError(400, "reason must be 3 to 500 characters: revoking a payout wallet is a public fact about where your money may no longer be sent");
+  const wallet = await env.DB.prepare("SELECT id, citizen_id, address, revoked_at FROM payout_wallets WHERE id = ?")
+    .bind(id).first<{ id: number; citizen_id: number; address: string; revoked_at: number | null }>();
+  if (!wallet) throw new SocietyError(404, `no payout wallet ${id}`);
+  if (wallet.citizen_id !== citizen.id) throw new SocietyError(403, "a payout wallet is revoked by the citizen who proved it");
+  if (wallet.revoked_at !== null) throw new SocietyError(409, `payout wallet ${id} was already revoked at ${wallet.revoked_at}`);
+  const now = Date.now();
+  await env.DB.prepare("UPDATE payout_wallets SET revoked_at = ?, revoke_reason = ? WHERE id = ? AND revoked_at IS NULL")
+    .bind(now, reason, id).run();
+  return {
+    id,
+    address: wallet.address,
+    revoked_at: now,
+    reason,
+    // A REVOCATION IS NOT A REWRITE. Bindings filed while the proof was live
+    // are evidence of what was true when they were filed, and a payment already
+    // owed does not stop being owed because the route was later closed.
+    effect: "New bindings against this address are refused from now on. Bindings already recorded stand, and any entitlement they carry is unchanged.",
+  };
+}
+
+export async function payoutWalletPreimageFor(env: Env, params: { handle: string | null; address: string | null; expiry: string | null }) {
+  const handle = (params.handle ?? "").trim();
+  const address = (params.address ?? "").trim().toLowerCase();
+  if (!handle) throw new SocietyError(400, "handle is required");
+  if (!/^0x[0-9a-fA-F]{40}$/.test(address)) throw new SocietyError(400, "address must be a 20-byte 0x-prefixed EVM address");
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const expiry = params.expiry === null || params.expiry.trim() === ""
+    ? nowSeconds + MAX_PAYOUT_WALLET_LIFETIME_SECONDS - 300
+    : Number(params.expiry);
+  if (!Number.isSafeInteger(expiry) || expiry <= nowSeconds)
+    throw new SocietyError(400, "expiry must be a whole number of seconds in the future");
+  if (expiry > nowSeconds + MAX_PAYOUT_WALLET_LIFETIME_SECONDS)
+    throw new SocietyError(400, `expiry may be at most ${MAX_PAYOUT_WALLET_LIFETIME_SECONDS} seconds (one year) from now`);
+  const preimage = payoutWalletPreimage({ handle, chainId: BASE_CHAIN_ID, address, expiry });
+  return {
+    version: PAYOUT_WALLET_VERSION,
+    handle,
+    chain_id: BASE_CHAIN_ID,
+    address,
+    expiry,
+    preimage,
+    sign: "Sign these exact bytes twice: EIP-191 with the wallet at this address, and Ed25519 with your active self-custodied citizen key. POST both to /api/payout-wallets.",
+    then: "After this, a payout binding on any listing needs your citizen key alone. Omit `signature` on POST /api/payout-bindings and the registry checks this proof instead.",
+  };
+}
+
 export async function createPayoutBinding(env: Env, citizen: Citizen, body: PayoutBindingInput) {
   const binding = await validatePayoutBinding(env, citizen, body);
   const duplicate = await env.DB.prepare(
@@ -2479,14 +2619,22 @@ export async function createPayoutBinding(env: Env, citizen: Citizen, body: Payo
   // Verifier caps are on paid verifiers, enforced at receipt time; nothing
   // limits how many citizens may OFFER to verify by binding.
   const verifierCapSql = "";
+  // THE WALLET PROOF, RE-CHECKED INSIDE THE WRITE. validatePayoutBinding read
+  // the proof a moment ago, and a citizen who revokes a stolen wallet in that
+  // gap would otherwise still get a binding recorded against it. Same reason
+  // the active-key check is re-applied here rather than trusted from
+  // validation: a read before the insert is a read that can go stale.
+  const proofLiveSql = binding.walletProof === null
+    ? ""
+    : " AND EXISTS (SELECT 1 FROM payout_wallets WHERE id = ? AND citizen_id = ? AND revoked_at IS NULL AND expiry > unixepoch())";
   const stateStmt = env.DB.prepare(
     `INSERT INTO payout_bindings
       (citizen_id, docket_id, version, amount_atomic, chain_id, token, payout_address, expiry,
-       wallet_signature, citizen_public_key, citizen_signature, citizen_key_thumbprint,
+       wallet_signature, wallet_proof_id, citizen_public_key, citizen_signature, citizen_key_thumbprint,
        citizen_key_custody, citizen_key_bound_at, authorization_verification, authorization_verified_at,
        docket_acceptance, docket_updated, docket_snapshot, preimage, authorization_hash, payload_hash, commit_nonce, created_at)
-     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-      WHERE ${capSql} AND ${activeKeySql} AND ? > unixepoch()${verifierCapSql}
+     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+      WHERE ${capSql} AND ${activeKeySql} AND ? > unixepoch()${verifierCapSql}${proofLiveSql}
      RETURNING id`,
   ).bind(
     citizen.id,
@@ -2498,6 +2646,7 @@ export async function createPayoutBinding(env: Env, citizen: Citizen, body: Payo
     binding.address,
     binding.expiry,
     binding.walletSignature,
+    binding.walletProof?.id ?? null,
     binding.citizenPublicKey,
     binding.citizenSignature,
     binding.citizenKeyThumbprint,
@@ -2522,6 +2671,7 @@ export async function createPayoutBinding(env: Env, citizen: Citizen, body: Payo
     binding.citizenKeyCustody,
     binding.citizenKeyBoundAt,
     binding.expiry,
+    ...(binding.walletProof === null ? [] : [binding.walletProof.id, citizen.id]),
   );
   let committed: { state: { id: number } | null; changed: number; hash: string };
   try {
@@ -5598,6 +5748,7 @@ export const DECLARED_EVENT_KINDS: readonly string[] = [
   "key_rotation",
   "model_correction",
   "key-bind",
+  "payout-wallet",
   "attestation",
   "memory.seal",
   "memory.seal-check",

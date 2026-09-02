@@ -34,6 +34,10 @@ class D1Statement {
 function makeEnv(publicKey: string, status = "active", citizenId = 1) {
   const db = new DatabaseSync(":memory:");
   db.exec("CREATE TABLE keys (citizen_id INTEGER, public_key TEXT, thumbprint TEXT, custody TEXT, status TEXT, bound_at INTEGER)");
+  // Present but empty by default, so omitting the wallet signature resolves to
+  // "no live proof" (a 400 a caller can act on) rather than a missing-table
+  // crash. Tests that want proof mode insert a row themselves.
+  db.exec("CREATE TABLE payout_wallets (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, version TEXT, chain_id INTEGER, address TEXT, expiry INTEGER, wallet_signature TEXT, citizen_public_key TEXT, citizen_signature TEXT, citizen_key_thumbprint TEXT, citizen_key_custody TEXT, citizen_key_bound_at INTEGER, preimage TEXT, proof_hash TEXT UNIQUE, payload_hash TEXT UNIQUE, commit_nonce TEXT UNIQUE, created_at INTEGER, revoked_at INTEGER, revoke_reason TEXT)");
   db.prepare("INSERT INTO keys VALUES (?, ?, 'citizen-tp', 'self', ?, 0)").run(citizenId, publicKey, status);
   return { DB: { prepare: (sql: string) => new D1Statement(db, sql) } } as unknown as Env;
 }
@@ -186,9 +190,20 @@ function makeFullEnv(publicKey: string, failAfterState = false) {
     CREATE TABLE payout_bindings (
       id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, docket_id TEXT, version TEXT, amount_atomic TEXT,
       chain_id INTEGER, token TEXT, payout_address TEXT, expiry INTEGER, wallet_signature TEXT,
+      wallet_proof_id INTEGER,
       citizen_public_key TEXT, citizen_signature TEXT, citizen_key_thumbprint TEXT, citizen_key_custody TEXT,
       citizen_key_bound_at INTEGER, authorization_verification TEXT, authorization_verified_at INTEGER, docket_acceptance TEXT,
-      docket_updated TEXT, docket_snapshot TEXT, preimage TEXT, authorization_hash TEXT UNIQUE, payload_hash TEXT UNIQUE, commit_nonce TEXT UNIQUE, created_at INTEGER
+      docket_updated TEXT, docket_snapshot TEXT, preimage TEXT, authorization_hash TEXT UNIQUE, payload_hash TEXT UNIQUE, commit_nonce TEXT UNIQUE, created_at INTEGER,
+      -- Mirrors schema.sql: exactly one proof of the wallet, never zero, never two.
+      CHECK ((wallet_signature IS NOT NULL AND wallet_proof_id IS NULL)
+          OR (wallet_signature IS NULL AND wallet_proof_id IS NOT NULL))
+    );
+    CREATE TABLE payout_wallets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, version TEXT, chain_id INTEGER,
+      address TEXT, expiry INTEGER, wallet_signature TEXT, citizen_public_key TEXT, citizen_signature TEXT,
+      citizen_key_thumbprint TEXT, citizen_key_custody TEXT, citizen_key_bound_at INTEGER,
+      preimage TEXT, proof_hash TEXT UNIQUE, payload_hash TEXT UNIQUE, commit_nonce TEXT UNIQUE,
+      created_at INTEGER, revoked_at INTEGER, revoke_reason TEXT
     );
     CREATE TABLE payout_receipts (
       id INTEGER PRIMARY KEY AUTOINCREMENT, binding_id INTEGER UNIQUE, submitter_id INTEGER, tx_hash TEXT,

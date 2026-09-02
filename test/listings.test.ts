@@ -92,9 +92,19 @@ function makeEnv(payeePublicKey: string) {
     CREATE TABLE payout_bindings (
       id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, docket_id TEXT, version TEXT, amount_atomic TEXT,
       chain_id INTEGER, token TEXT, payout_address TEXT, expiry INTEGER, wallet_signature TEXT,
+      wallet_proof_id INTEGER,
       citizen_public_key TEXT, citizen_signature TEXT, citizen_key_thumbprint TEXT, citizen_key_custody TEXT,
       citizen_key_bound_at INTEGER, authorization_verification TEXT, authorization_verified_at INTEGER, docket_acceptance TEXT,
-      docket_updated TEXT, docket_snapshot TEXT, preimage TEXT, authorization_hash TEXT UNIQUE, payload_hash TEXT UNIQUE, commit_nonce TEXT UNIQUE, created_at INTEGER
+      docket_updated TEXT, docket_snapshot TEXT, preimage TEXT, authorization_hash TEXT UNIQUE, payload_hash TEXT UNIQUE, commit_nonce TEXT UNIQUE, created_at INTEGER,
+      CHECK ((wallet_signature IS NOT NULL AND wallet_proof_id IS NULL)
+          OR (wallet_signature IS NULL AND wallet_proof_id IS NOT NULL))
+    );
+    CREATE TABLE payout_wallets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, version TEXT, chain_id INTEGER,
+      address TEXT, expiry INTEGER, wallet_signature TEXT, citizen_public_key TEXT, citizen_signature TEXT,
+      citizen_key_thumbprint TEXT, citizen_key_custody TEXT, citizen_key_bound_at INTEGER,
+      preimage TEXT, proof_hash TEXT UNIQUE, payload_hash TEXT UNIQUE, commit_nonce TEXT UNIQUE,
+      created_at INTEGER, revoked_at INTEGER, revoke_reason TEXT
     );
     CREATE TABLE payout_receipts (
       id INTEGER PRIMARY KEY AUTOINCREMENT, binding_id INTEGER UNIQUE, submitter_id INTEGER, tx_hash TEXT,
@@ -1216,7 +1226,7 @@ test("a binding past the listing page cap still resolves, and a settled binding 
   // page the listing response reads. The old map was built from that page, so
   // a PAID payee read as unbound and step 4 invited the funder to pay again.
   const insert = db.prepare(
-    "INSERT INTO payout_bindings (citizen_id, docket_id, version, amount_atomic, chain_id, token, payout_address, expiry, authorization_hash, payload_hash, commit_nonce, created_at) VALUES (3, 'listing-1', 'v', '1000000', 8453, 't', ?, 0, ?, ?, ?, 0)",
+    "INSERT INTO payout_bindings (citizen_id, docket_id, version, amount_atomic, chain_id, token, payout_address, expiry, wallet_signature, authorization_hash, payload_hash, commit_nonce, created_at) VALUES (3, 'listing-1', 'v', '1000000', 8453, 't', ?, 0, '0xsig', ?, ?, ?, 0)",
   );
   for (let i = 0; i < 200; i++) insert.run(`0x${String(i).padStart(40, "0")}`, `auth${i}`, `pay${i}`, `nonce${i}`);
 
@@ -1565,7 +1575,7 @@ test("GET /api/listings/:id serves count/total/has_more on both capped lists, an
   // Push the bindings list past the 200-row cap so the promise actually binds.
   // These are raw rows, not filed through createPayoutBinding: the point is the
   // completeness COUNT and the page clip, not the authorization path.
-  const insert = db.prepare("INSERT INTO payout_bindings (citizen_id, docket_id, created_at) VALUES (2, 'listing-1', ?)");
+  const insert = db.prepare("INSERT INTO payout_bindings (citizen_id, docket_id, wallet_signature, created_at) VALUES (2, 'listing-1', '0xsig', ?)");
   for (let i = 0; i < 201; i++) insert.run(NOW + i);
 
   detail = await getListing(env, 1);

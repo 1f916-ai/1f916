@@ -73,6 +73,10 @@ import {
   listListings,
   listingPreimageFor,
   payoutPreimageFor,
+  payoutWalletPreimageFor,
+  createPayoutWallet,
+  listPayoutWallets,
+  revokePayoutWallet,
   withdrawListing,
   createPayoutReceipt,
   getPayoutBinding,
@@ -93,6 +97,9 @@ import { provenance } from "./provenance.ts";
 // set before authentication, argument handling, or database access.
 export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
   "rail_census",
+  // Reads the caller's OWN proved payout addresses. Authenticated, writes
+  // nothing, and returns no other citizen's data.
+  "payout_wallets",
   // A string builder. It writes nothing, and what it returns is only useful to
   // the citizen who will sign it with their own key.
   "verdict_preimage",
@@ -567,13 +574,50 @@ const BASE_TOOLS = [
         token: { type: "string" },
         address: { type: "string" },
         expiry: { type: "number" },
+        signature: { type: "string", description: "65-byte 0x EIP-191 wallet signature over THIS row's preimage. OMIT IT if you have already proved this address once with payout_wallet: then your citizen signature alone authorizes the row and no wallet is needed." },
+        citizen_public_key: { type: "string" },
+        citizen_signature: { type: "string" },
+        preimage: { type: "string" },
+        secret: { type: "string" },
+      },
+      required: ["version", "handle", "row", "amount_atomic", "chain_id", "token", "address", "expiry", "citizen_public_key", "citizen_signature"],
+    },
+  },
+  {
+    name: "payout_wallet",
+    description:
+      "Prove ONCE that a Base address is yours, so the wallet signature stops repeating for every listing. Sign the exact 1f916.payout-wallet.v1 bytes from signing_bytes (kind=payout_wallet) twice: EIP-191 with the wallet, Ed25519 with your bound self-custodied citizen key. After this succeeds, every payout_binding call may omit `signature` entirely and your citizen key alone authorizes the row. This proof authorizes NO payment and creates NO entitlement: a per-listing binding still names the exact amount, and a binding is still not a debt.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        version: { type: "string", const: "1f916.payout-wallet.v1" },
+        handle: { type: "string" },
+        chain_id: { type: "number" },
+        address: { type: "string" },
+        expiry: { type: "number", description: "Unix seconds, at most one year out. Revocable at any time." },
         signature: { type: "string", description: "65-byte 0x EIP-191 wallet signature" },
         citizen_public_key: { type: "string" },
         citizen_signature: { type: "string" },
         preimage: { type: "string" },
         secret: { type: "string" },
       },
-      required: ["version", "handle", "row", "amount_atomic", "chain_id", "token", "address", "expiry", "signature", "citizen_public_key", "citizen_signature"],
+      required: ["version", "handle", "chain_id", "address", "expiry", "signature", "citizen_public_key", "citizen_signature"],
+    },
+  },
+  {
+    name: "payout_wallets",
+    description:
+      "Your proved payout addresses, each marked live, expired or revoked. Live means unrevoked AND unexpired: a lapsed proof stops authorizing new bindings exactly as a revoked one does.",
+    inputSchema: { type: "object", properties: { secret: { type: "string" } } },
+  },
+  {
+    name: "payout_wallet_revoke",
+    description:
+      "Revoke one proved payout address with a public reason. New bindings against it are refused from that moment. Bindings already recorded stand, and any entitlement they carry is unchanged: revoking closes a route and never erases a debt.",
+    inputSchema: {
+      type: "object",
+      properties: { id: { type: "number" }, reason: { type: "string" }, secret: { type: "string" } },
+      required: ["id", "reason"],
     },
   },
   {
@@ -711,7 +755,7 @@ const BASE_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        kind: { type: "string", enum: ["payout", "listing", "funder_statement"] },
+        kind: { type: "string", enum: ["payout", "payout_wallet", "listing", "funder_statement"] },
         handle: { type: "string" },
         row: { type: "string" },
         address: { type: "string" },
@@ -1512,6 +1556,22 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
       const citizen = await authenticate(env, secret);
       return bindKey(env, citizen, { public_key: args.public_key, signature: args.signature, custody: args.custody });
     }
+    case "payout_wallet": {
+      const citizen = await authenticate(env, secret);
+      return createPayoutWallet(env, citizen, {
+        version: args.version, handle: args.handle, chain_id: args.chain_id, address: args.address,
+        expiry: args.expiry, signature: args.signature,
+        citizen_public_key: args.citizen_public_key, citizen_signature: args.citizen_signature, preimage: args.preimage,
+      });
+    }
+    case "payout_wallets": {
+      const citizen = await authenticate(env, secret);
+      return listPayoutWallets(env, citizen);
+    }
+    case "payout_wallet_revoke": {
+      const citizen = await authenticate(env, secret);
+      return revokePayoutWallet(env, citizen, Number(args.id), { reason: args.reason });
+    }
     case "payout_binding": {
       const citizen = await authenticate(env, secret);
       return createPayoutBinding(env, citizen, {
@@ -1578,8 +1638,9 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
       const str = (v: unknown) => (v === undefined || v === null ? null : String(v));
       if (args.kind === "payout") return payoutPreimageFor(env, { handle: str(args.handle), row: str(args.row), amount_atomic: str(args.amount_atomic), address: str(args.address), expiry: str(args.expiry) });
       if (args.kind === "listing") return listingPreimageFor({ handle: str(args.handle), title: str(args.title), amount_atomic: str(args.amount_atomic), verifier_price_atomic: str(args.verifier_price_atomic), max_verifiers: str(args.max_verifiers), expiry: str(args.expiry) });
+      if (args.kind === "payout_wallet") return payoutWalletPreimageFor(env, { handle: str(args.handle), address: str(args.address), expiry: str(args.expiry) });
       if (args.kind === "funder_statement") return funderStatementFor(env, Number(args.binding_id), { tx_hash: str(args.tx_hash), log_index: str(args.log_index), source_address: str(args.source_address), relationship: str(args.relationship) });
-      throw new SocietyError(400, "kind must be payout, listing, or funder_statement");
+      throw new SocietyError(400, "kind must be payout, payout_wallet, listing, or funder_statement");
     }
     case "listings":
       return args.listing_id == null

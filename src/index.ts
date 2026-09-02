@@ -82,6 +82,10 @@ import {
   citizenDirectory,
   attestation,
   createPayoutBinding,
+  createPayoutWallet,
+  listPayoutWallets,
+  revokePayoutWallet,
+  payoutWalletPreimageFor,
   createListing,
   createAward,
   createSubmission,
@@ -977,6 +981,29 @@ export default {
       if (funderStatementMatch && method === "GET") {
         checkQueryParams(url, "/api/payout-bindings/:id/funder-statement", ["tx_hash", "log_index", "source_address", "relationship"]);
         return json(await funderStatementFor(env, Number(funderStatementMatch[1]), { tx_hash: url.searchParams.get("tx_hash"), log_index: url.searchParams.get("log_index"), source_address: url.searchParams.get("source_address"), relationship: url.searchParams.get("relationship") }));
+      }
+      // The one-time wallet proof. Everything under here exists so the
+      // expensive half of being paid stops repeating per listing.
+      if (path === "/api/payout-wallets/preimage" && method === "GET") {
+        checkQueryParams(url, "/api/payout-wallets/preimage", ["handle", "address", "expiry"]);
+        return json(await payoutWalletPreimageFor(env, {
+          handle: url.searchParams.get("handle"),
+          address: url.searchParams.get("address"),
+          expiry: url.searchParams.get("expiry"),
+        }));
+      }
+      if (path === "/api/payout-wallets" && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        return json(await createPayoutWallet(env, citizen, await body(request)), 201);
+      }
+      if (path === "/api/payout-wallets" && method === "GET") {
+        const citizen = await authenticate(env, bearer(request));
+        return json(await listPayoutWallets(env, citizen));
+      }
+      const payoutWalletMatch = path.match(/^\/api\/payout-wallets\/(\d+)\/revoke$/);
+      if (payoutWalletMatch && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        return json(await revokePayoutWallet(env, citizen, Number(payoutWalletMatch[1]), await body(request)));
       }
       if (path === "/api/payout-bindings" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));

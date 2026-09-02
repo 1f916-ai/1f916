@@ -394,7 +394,14 @@ CREATE TABLE IF NOT EXISTS payout_bindings (
   token TEXT NOT NULL CHECK (token = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913'),
   payout_address TEXT NOT NULL CHECK (length(payout_address) = 42 AND payout_address = lower(payout_address)),
   expiry INTEGER NOT NULL,
-  wallet_signature TEXT NOT NULL,
+  -- Nullable since 0044, guarded by the table CHECK at the end of this table:
+  -- when present it is an EIP-191 signature over THIS row's preimage,
+  -- recoverable to payout_address, so the published verification recipe is
+  -- unchanged for every row that carries one.
+  wallet_signature TEXT,
+  -- The other authorization mode: the wallet proved itself once, in
+  -- payout_wallets, and this row's citizen signature points at that proof.
+  wallet_proof_id INTEGER REFERENCES payout_wallets(id),
   citizen_public_key TEXT NOT NULL,
   citizen_signature TEXT NOT NULL,
   citizen_key_thumbprint TEXT NOT NULL,
@@ -409,8 +416,43 @@ CREATE TABLE IF NOT EXISTS payout_bindings (
   authorization_hash TEXT NOT NULL UNIQUE,
   payload_hash TEXT NOT NULL UNIQUE,
   commit_nonce TEXT NOT NULL UNIQUE,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  -- EXACTLY ONE PROOF OF THE WALLET, ALWAYS. Zero would be a payout address
+  -- nobody ever proved; two would leave a reader asking which one authorized
+  -- the payment. Enforced here so the bad state cannot be stored at all.
+  CHECK ((wallet_signature IS NOT NULL AND wallet_proof_id IS NULL)
+      OR (wallet_signature IS NULL AND wallet_proof_id IS NOT NULL))
 );
+
+-- A payout wallet proved ONCE per citizen, so the expensive half of the
+-- ceremony (an EIP-191 signature, which usually means a human or a wallet tool)
+-- stops repeating for every listing. See migrations/0044.
+CREATE TABLE IF NOT EXISTS payout_wallets (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  citizen_id INTEGER NOT NULL REFERENCES citizens(id),
+  version TEXT NOT NULL CHECK (version = '1f916.payout-wallet.v1'),
+  chain_id INTEGER NOT NULL CHECK (chain_id = 8453),
+  address TEXT NOT NULL CHECK (length(address) = 42 AND address = lower(address)),
+  expiry INTEGER NOT NULL,
+  wallet_signature TEXT NOT NULL,
+  citizen_public_key TEXT NOT NULL,
+  citizen_signature TEXT NOT NULL,
+  citizen_key_thumbprint TEXT NOT NULL,
+  citizen_key_custody TEXT NOT NULL CHECK (citizen_key_custody = 'self'),
+  citizen_key_bound_at INTEGER NOT NULL,
+  preimage TEXT NOT NULL,
+  proof_hash TEXT NOT NULL UNIQUE,
+  payload_hash TEXT NOT NULL UNIQUE,
+  commit_nonce TEXT NOT NULL UNIQUE,
+  created_at INTEGER NOT NULL,
+  revoked_at INTEGER,
+  revoke_reason TEXT,
+  CHECK ((revoked_at IS NULL AND revoke_reason IS NULL) OR (revoked_at IS NOT NULL AND revoke_reason IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS idx_payout_wallets_citizen ON payout_wallets(citizen_id, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_payout_wallets_live
+  ON payout_wallets(citizen_id, address) WHERE revoked_at IS NULL;
+
 CREATE INDEX IF NOT EXISTS idx_payout_bindings_citizen ON payout_bindings(citizen_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_payout_bindings_docket ON payout_bindings(docket_id, id);
 

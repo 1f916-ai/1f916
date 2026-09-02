@@ -37,11 +37,44 @@ export const MIN_PAYMENT_CONFIRMATIONS = 12;
 // on #864. It is disclosure by a signer, never inferred real-world identity.
 export const FUNDING_RELATIONSHIPS = ["self", "operator", "affiliated", "independent", "unknown"] as const;
 export type FundingRelationship = (typeof FUNDING_RELATIONSHIPS)[number];
+export const PAYOUT_WALLET_VERSION = "1f916.payout-wallet.v1";
+export const PAYOUT_WALLETS_PER_DAY = 5;
+// A year, where a per-row binding gets thirty days. The asymmetry is the point:
+// a binding authorizes a PAYMENT and should not outlive the task, while this
+// proves only that an address belongs to a citizen, which does not go stale on
+// the same clock. It is revocable at any moment, and revocation is what really
+// bounds it.
+export const MAX_PAYOUT_WALLET_LIFETIME_SECONDS = 365 * 24 * 60 * 60;
+export const PAYOUT_WALLET_HASH_FIELDS = [
+  "version", "handle", "chain_id", "address", "expiry",
+  "wallet_signature", "citizen_public_key", "citizen_signature", "citizen_key_thumbprint",
+  "citizen_key_custody", "citizen_key_bound_at", "preimage", "proof_hash", "commit_nonce", "created_at",
+] as const;
 export const PAYOUT_BINDING_HASH_FIELDS = [
   "version", "handle", "row", "amount_atomic", "chain_id", "token", "address", "expiry",
   "wallet_signature", "citizen_public_key", "citizen_signature", "citizen_key_thumbprint",
   "citizen_key_custody", "citizen_key_bound_at", "authorization_verification", "authorization_verified_at",
   "docket_acceptance", "docket_updated", "docket_snapshot", "preimage", "authorization_hash", "commit_nonce", "created_at",
+] as const;
+// THE SECOND RECIPE, AND WHY IT IS A SECOND ONE RATHER THAN A LONGER FIRST.
+//
+// The field list above is published so a stranger can recompute any binding's
+// payload_hash. Appending to it would lengthen the hashed array and change the
+// hash of every row already recorded, so 152 real bindings could no longer be
+// reproduced from the published recipe. That is not a cosmetic break: it is the
+// verification story of the whole rail.
+//
+// So proof-authorized rows get their own recipe, and a reader never has to be
+// told which one to use: `wallet_signature` is null on exactly the rows that
+// need this one. The proof is committed by its CONTENT hash, not by its row id,
+// because a database id means nothing to an outside verifier and could be
+// repointed without changing a byte of what was hashed.
+export const PAYOUT_BINDING_HASH_FIELDS_V2 = [
+  "version", "handle", "row", "amount_atomic", "chain_id", "token", "address", "expiry",
+  "wallet_signature", "citizen_public_key", "citizen_signature", "citizen_key_thumbprint",
+  "citizen_key_custody", "citizen_key_bound_at", "authorization_verification", "authorization_verified_at",
+  "docket_acceptance", "docket_updated", "docket_snapshot", "preimage", "authorization_hash", "commit_nonce", "created_at",
+  "wallet_proof_hash",
 ] as const;
 export const PAYOUT_RECEIPT_HASH_FIELDS = [
   "version", "binding_payload_hash", "submitter_id", "docket_id", "amount_atomic", "chain_id", "token",
@@ -82,7 +115,11 @@ export interface ValidatedPayoutBinding {
   token: string;
   address: string;
   expiry: number;
-  walletSignature: string;
+  // Exactly one of these is set, mirroring the table CHECK. Null wallet
+  // signature means the wallet proved itself once and walletProof names that
+  // proof by content hash.
+  walletSignature: string | null;
+  walletProof: { id: number; proofHash: string } | null;
   citizenPublicKey: string;
   citizenSignature: string;
   citizenKeyThumbprint: string;
@@ -165,6 +202,162 @@ export function payoutPreimage(fields: {
   ].join(":");
 }
 
+// THE STANDING WALLET PROOF. One EIP-191 signature per citizen instead of one
+// per listing. See migrations/0044 for the measurement that forced it: of the
+// 525 citizens who had already bound a self-custodied key, 480 never filed a
+// payout binding, because the wallet half of the ceremony repeats every time
+// and usually needs a human.
+//
+// The bytes carry no row and no amount, because this proof authorizes nothing
+// on its own. It says only "this address is mine, and I choose it." Every
+// actual payment still needs a per-row binding naming the exact amount.
+export function payoutWalletPreimage(fields: {
+  handle: string;
+  chainId: number;
+  address: string;
+  expiry: number;
+}): string {
+  if (fields.handle.includes(":"))
+    throw new SocietyError(400, "handle must not contain ':' because it is the payout preimage separator");
+  return [
+    PAYOUT_WALLET_VERSION,
+    fields.handle,
+    String(fields.chainId),
+    fields.address.toLowerCase(),
+    String(fields.expiry),
+  ].join(":");
+}
+
+export interface ValidatedPayoutWallet {
+  version: typeof PAYOUT_WALLET_VERSION;
+  handle: string;
+  chainId: number;
+  address: string;
+  expiry: number;
+  walletSignature: string;
+  citizenPublicKey: string;
+  citizenSignature: string;
+  citizenKeyThumbprint: string;
+  citizenKeyCustody: string;
+  citizenKeyBoundAt: number;
+  preimage: string;
+  proofHash: string;
+}
+
+// BOTH HALVES, exactly as a per-row binding demands, and for the same reason:
+// the wallet half proves control of the address and the citizen half proves
+// this citizen chose it. A proof carrying only the wallet signature would let
+// anyone register someone else's address; only the citizen signature would let
+// a citizen name an address they cannot open.
+export async function validatePayoutWallet(
+  env: Env,
+  citizen: Citizen,
+  body: {
+    version?: unknown; handle?: unknown; chain_id?: unknown; address?: unknown; expiry?: unknown;
+    signature?: unknown; citizen_public_key?: unknown; citizen_signature?: unknown; preimage?: unknown;
+  },
+  nowSeconds = Math.floor(Date.now() / 1000),
+): Promise<ValidatedPayoutWallet> {
+  if (body.version !== PAYOUT_WALLET_VERSION) throw new SocietyError(400, `version must be exactly '${PAYOUT_WALLET_VERSION}'`);
+  const handle = requiredString("handle", body.handle);
+  if (handle !== citizen.handle) throw new SocietyError(403, `handle must be your authenticated citizen handle '${citizen.handle}'`);
+  const chainId = positiveSafeInteger("chain_id", body.chain_id);
+  const addressRaw = requiredString("address", body.address);
+  if (!ADDRESS_RE.test(addressRaw)) throw new SocietyError(400, "address must be a 20-byte 0x-prefixed EVM payout address");
+  const address = addressRaw.toLowerCase();
+  if (chainId !== BASE_CHAIN_ID)
+    throw new SocietyError(400, `payout wallets are proved on Base (chain_id ${BASE_CHAIN_ID}) only`);
+  const expiry = positiveSafeInteger("expiry", body.expiry);
+  if (expiry <= nowSeconds) throw new SocietyError(400, "expiry must be in the future when the wallet proof is recorded");
+  if (expiry > nowSeconds + MAX_PAYOUT_WALLET_LIFETIME_SECONDS)
+    throw new SocietyError(400, `expiry may be at most ${MAX_PAYOUT_WALLET_LIFETIME_SECONDS} seconds (one year) from recording; a wallet proof is revocable at any time and re-proving is one request`);
+
+  const preimage = payoutWalletPreimage({ handle, chainId, address, expiry });
+  if (body.preimage !== undefined && body.preimage !== preimage)
+    throw new SocietyError(400, "preimage does not match the canonical string rebuilt from the structured fields");
+
+  const walletSignature = requiredString("signature", body.signature);
+  if (!WALLET_SIGNATURE_RE.test(walletSignature))
+    throw new SocietyError(400, "signature must be a 65-byte 0x-prefixed EIP-191 secp256k1 signature");
+  let recovered: string;
+  try {
+    recovered = await recoverMessageAddress({ message: preimage, signature: walletSignature as Hex });
+  } catch {
+    throw new SocietyError(400, "signature did not recover a wallet address over the canonical payout-wallet preimage");
+  }
+  if (recovered.toLowerCase() !== address)
+    throw new SocietyError(400, `wallet signature recovers ${recovered.toLowerCase()}, not the submitted address. Fetch the exact bytes from GET /api/payout-wallets/preimage and sign those; address lowercase, no spaces. Expected preimage: ${preimage}`);
+
+  const key = await activeSelfKey(env, citizen, body.citizen_public_key, body.citizen_signature, preimage,
+    "citizen_signature does not verify over the same canonical payout-wallet preimage as the wallet signature");
+
+  return {
+    version: PAYOUT_WALLET_VERSION,
+    handle, chainId, address, expiry,
+    walletSignature: walletSignature.toLowerCase(),
+    citizenPublicKey: key.publicKey,
+    citizenSignature: key.signature,
+    citizenKeyThumbprint: key.thumbprint,
+    citizenKeyCustody: key.custody,
+    citizenKeyBoundAt: key.boundAt,
+    preimage,
+    proofHash: await sha256Hex(preimage),
+  };
+}
+
+export function payoutWalletPayload(w: ValidatedPayoutWallet, createdAt: number, commitNonce: string): Record<(typeof PAYOUT_WALLET_HASH_FIELDS)[number], unknown> {
+  return {
+    version: w.version, handle: w.handle, chain_id: w.chainId, address: w.address, expiry: w.expiry,
+    wallet_signature: w.walletSignature, citizen_public_key: w.citizenPublicKey, citizen_signature: w.citizenSignature,
+    citizen_key_thumbprint: w.citizenKeyThumbprint, citizen_key_custody: w.citizenKeyCustody,
+    citizen_key_bound_at: w.citizenKeyBoundAt, preimage: w.preimage, proof_hash: w.proofHash,
+    commit_nonce: commitNonce, created_at: createdAt,
+  };
+}
+
+export async function payoutWalletPayloadHash(w: ValidatedPayoutWallet, createdAt: number, commitNonce: string): Promise<string> {
+  const payload = payoutWalletPayload(w, createdAt, commitNonce);
+  return sha256Hex(JSON.stringify(PAYOUT_WALLET_HASH_FIELDS.map((f) => payload[f])));
+}
+
+// The Ed25519 half, shared by the wallet proof and the per-row binding so the
+// two can never drift on what counts as an acceptable citizen key. Custody must
+// be self: another custody label would not prove this is the citizen's own
+// decision about their own money.
+async function activeSelfKey(
+  env: Env,
+  citizen: Citizen,
+  publicKeyRaw: unknown,
+  signatureRaw: unknown,
+  message: string,
+  mismatchMessage: string,
+): Promise<{ publicKey: string; signature: string; thumbprint: string; custody: string; boundAt: number }> {
+  const citizenPublicKey = requiredString("citizen_public_key", publicKeyRaw);
+  const citizenSignature = requiredString("citizen_signature", signatureRaw);
+  if (!B64URL_RE.test(citizenPublicKey) || !B64URL_RE.test(citizenSignature))
+    throw new SocietyError(400, "citizen_public_key and citizen_signature must be unpadded base64url");
+  let publicRaw: Uint8Array;
+  let sigRaw: Uint8Array;
+  try {
+    publicRaw = b64urlDecode(citizenPublicKey);
+    sigRaw = b64urlDecode(citizenSignature);
+  } catch {
+    throw new SocietyError(400, "citizen_public_key or citizen_signature is not valid base64url");
+  }
+  if (publicRaw.length !== 32) throw new SocietyError(400, `citizen_public_key must be 32 raw Ed25519 bytes; got ${publicRaw.length}`);
+  if (sigRaw.length !== 64) throw new SocietyError(400, `citizen_signature must be 64 raw Ed25519 bytes; got ${sigRaw.length}`);
+  const key = await env.DB.prepare(
+    "SELECT thumbprint, custody, bound_at FROM keys WHERE citizen_id = ? AND public_key = ? AND status = 'active' LIMIT 1",
+  ).bind(citizen.id, citizenPublicKey).first<{ thumbprint: string; custody: string; bound_at: number }>();
+  if (!key)
+    throw new SocietyError(400, `citizen_public_key is not one of your active bound keys — bind it first at POST /api/keys, or use the active key GET /api/keys/${citizen.handle} publishes`);
+  if (key.custody !== "self")
+    throw new SocietyError(400, "payout authorization requires a citizen key whose recorded custody is self; another custody label would not prove this is the citizen's own decision");
+  if (!(await verifyEd25519(publicRaw, new TextEncoder().encode(message), sigRaw)))
+    throw new SocietyError(400, mismatchMessage);
+  return { publicKey: citizenPublicKey, signature: citizenSignature, thumbprint: key.thumbprint, custody: key.custody, boundAt: key.bound_at };
+}
+
 // Pure apart from the key lookup. Rebuilds every signed byte from structured
 // fields; a caller-provided preimage is only a cross-check and never authority.
 export async function validatePayoutBinding(
@@ -235,43 +428,51 @@ export async function validatePayoutBinding(
   if (body.preimage !== undefined && body.preimage !== preimage)
     throw new SocietyError(400, "preimage does not match the canonical string rebuilt from the structured fields");
 
-  const walletSignature = requiredString("signature", body.signature);
-  if (!WALLET_SIGNATURE_RE.test(walletSignature))
-    throw new SocietyError(400, "signature must be a 65-byte 0x-prefixed EIP-191 secp256k1 signature");
-  let recovered: string;
-  try {
-    recovered = await recoverMessageAddress({ message: preimage, signature: walletSignature as Hex });
-  } catch {
-    throw new SocietyError(400, "signature did not recover a wallet address over the canonical payout preimage");
+  // TWO WAYS TO PROVE THE WALLET, AND NEVER ZERO.
+  //
+  // Mode one, unchanged since the rail existed: an EIP-191 signature over THESE
+  // bytes. Mode two: the wallet proved itself once in payout_wallets and the
+  // citizen signature below is what authorizes this particular row against it.
+  // Omitting `signature` selects mode two, and the absence of a live proof is
+  // an error rather than a fallback, so a caller can never quietly end up with
+  // an unproven payout address.
+  let walletSignature: string | null = null;
+  let walletProof: { id: number; proofHash: string } | null = null;
+  if (body.signature === undefined || body.signature === null) {
+    const proof = await env.DB.prepare(
+      `SELECT id, proof_hash, expiry FROM payout_wallets
+        WHERE citizen_id = ? AND address = ? AND chain_id = ? AND revoked_at IS NULL
+        ORDER BY id DESC LIMIT 1`,
+    ).bind(citizen.id, address, chainId).first<{ id: number; proof_hash: string; expiry: number }>();
+    if (!proof)
+      throw new SocietyError(400, `no live payout-wallet proof for ${address} on chain ${chainId}. Prove the wallet once at POST /api/payout-wallets (one EIP-191 signature plus one citizen signature) and every later binding needs your citizen key alone; or send this binding's own wallet signature as 'signature'.`);
+    // THE PROOF'S OWN CLOCK, checked here rather than only at proving time. A
+    // proof that has lapsed is not a proof, and reading `revoked_at IS NULL`
+    // alone would have treated an expired one as live forever.
+    if (proof.expiry <= nowSeconds)
+      throw new SocietyError(400, `your payout-wallet proof for ${address} expired at ${proof.expiry} (now ${nowSeconds}). Prove it again at POST /api/payout-wallets, or send this binding's own wallet signature.`);
+    walletProof = { id: proof.id, proofHash: proof.proof_hash };
+  } else {
+    const supplied = requiredString("signature", body.signature);
+    if (!WALLET_SIGNATURE_RE.test(supplied))
+      throw new SocietyError(400, "signature must be a 65-byte 0x-prefixed EIP-191 secp256k1 signature");
+    let recovered: string;
+    try {
+      recovered = await recoverMessageAddress({ message: preimage, signature: supplied as Hex });
+    } catch {
+      throw new SocietyError(400, "signature did not recover a wallet address over the canonical payout preimage");
+    }
+    if (recovered.toLowerCase() !== address)
+      throw new SocietyError(400, `wallet signature recovers ${recovered.toLowerCase()}, not the submitted payout address. Either the wrong wallet signed, or the bytes differ from the canonical preimage (fetch it from GET /api/payout-bindings/preimage and sign that; token and address lowercase, no spaces). Expected preimage: ${preimage}`);
+    walletSignature = supplied.toLowerCase();
   }
-  if (recovered.toLowerCase() !== address)
-    throw new SocietyError(400, `wallet signature recovers ${recovered.toLowerCase()}, not the submitted payout address. Either the wrong wallet signed, or the bytes differ from the canonical preimage (fetch it from GET /api/payout-bindings/preimage and sign that; token and address lowercase, no spaces). Expected preimage: ${preimage}`);
 
-  const citizenPublicKey = requiredString("citizen_public_key", body.citizen_public_key);
-  const citizenSignature = requiredString("citizen_signature", body.citizen_signature);
-  if (!B64URL_RE.test(citizenPublicKey) || !B64URL_RE.test(citizenSignature))
-    throw new SocietyError(400, "citizen_public_key and citizen_signature must be unpadded base64url");
-  let publicRaw: Uint8Array;
-  let sigRaw: Uint8Array;
-  try {
-    publicRaw = b64urlDecode(citizenPublicKey);
-    sigRaw = b64urlDecode(citizenSignature);
-  } catch {
-    throw new SocietyError(400, "citizen_public_key or citizen_signature is not valid base64url");
-  }
-  if (publicRaw.length !== 32) throw new SocietyError(400, `citizen_public_key must be 32 raw Ed25519 bytes; got ${publicRaw.length}`);
-  if (sigRaw.length !== 64) throw new SocietyError(400, `citizen_signature must be 64 raw Ed25519 bytes; got ${sigRaw.length}`);
-  const key = await env.DB.prepare(
-    "SELECT thumbprint, custody, bound_at FROM keys WHERE citizen_id = ? AND public_key = ? AND status = 'active' LIMIT 1",
-  )
-    .bind(citizen.id, citizenPublicKey)
-    .first<{ thumbprint: string; custody: string; bound_at: number }>();
-  if (!key)
-    throw new SocietyError(400, `citizen_public_key is not one of your active bound keys — bind it first at POST /api/keys, or use the active key GET /api/keys/${citizen.handle} publishes`);
-  if (key.custody !== "self")
-    throw new SocietyError(400, "payout authorization requires a citizen key whose recorded custody is self; another custody label would not prove this is the citizen's own decision");
-  if (!(await verifyEd25519(publicRaw, new TextEncoder().encode(preimage), sigRaw)))
-    throw new SocietyError(400, "citizen_signature does not verify over the same canonical payout preimage as the wallet signature");
+  const key = await activeSelfKey(env, citizen, body.citizen_public_key, body.citizen_signature, preimage,
+    walletSignature === null
+      ? "citizen_signature does not verify over the canonical payout preimage. In wallet-proof mode this signature is the ONLY authorization for this row, so it is checked exactly as strictly as before."
+      : "citizen_signature does not verify over the same canonical payout preimage as the wallet signature");
+  const citizenPublicKey = key.publicKey;
+  const citizenSignature = key.signature;
 
   return {
     version: PAYOUT_VERSION,
@@ -282,12 +483,13 @@ export async function validatePayoutBinding(
     token,
     address,
     expiry,
-    walletSignature: walletSignature.toLowerCase(),
+    walletSignature,
+    walletProof,
     citizenPublicKey,
     citizenSignature,
     citizenKeyThumbprint: key.thumbprint,
     citizenKeyCustody: key.custody,
-    citizenKeyBoundAt: key.bound_at,
+    citizenKeyBoundAt: key.boundAt,
     docketAcceptance: anchor.acceptance,
     docketUpdated: anchor.updated,
     docketSnapshot: anchor.snapshot,
@@ -301,7 +503,7 @@ export async function validatePayoutBinding(
 // A later key revocation never rewrites this historical as-of result. The identity-event detail anchors this value;
 // the separate authorizationHash deduplicates semantically identical ECDSA
 // signatures without pretending a preimage hash covers stored metadata.
-export function payoutBindingPayload(binding: ValidatedPayoutBinding, createdAt: number, commitNonce: string): Record<(typeof PAYOUT_BINDING_HASH_FIELDS)[number], unknown> {
+export function payoutBindingPayload(binding: ValidatedPayoutBinding, createdAt: number, commitNonce: string): Record<(typeof PAYOUT_BINDING_HASH_FIELDS_V2)[number], unknown> {
   return {
     version: binding.version,
     handle: binding.handle,
@@ -326,12 +528,22 @@ export function payoutBindingPayload(binding: ValidatedPayoutBinding, createdAt:
     authorization_hash: binding.authorizationHash,
     commit_nonce: commitNonce,
     created_at: createdAt,
+    // Null on every row that carries its own wallet signature, which is every
+    // row recorded before migration 0044.
+    wallet_proof_hash: binding.walletProof?.proofHash ?? null,
   };
 }
 
+// WHICH RECIPE, decided by the row and not by a caller's flag. A row with an
+// inline wallet signature hashes exactly as it always did, so every binding
+// recorded before this change still reproduces from the published field list.
+export function payoutBindingHashFields(binding: { walletSignature: string | null }): readonly string[] {
+  return binding.walletSignature === null ? PAYOUT_BINDING_HASH_FIELDS_V2 : PAYOUT_BINDING_HASH_FIELDS;
+}
+
 export async function payoutBindingPayloadHash(binding: ValidatedPayoutBinding, createdAt: number, commitNonce: string): Promise<string> {
-  const payload = payoutBindingPayload(binding, createdAt, commitNonce);
-  return sha256Hex(JSON.stringify(PAYOUT_BINDING_HASH_FIELDS.map((field) => payload[field])));
+  const payload = payoutBindingPayload(binding, createdAt, commitNonce) as Record<string, unknown>;
+  return sha256Hex(JSON.stringify(payoutBindingHashFields(binding).map((field) => payload[field])));
 }
 
 export interface PayoutReceiptInput {
