@@ -542,8 +542,8 @@ export function assertVerifierCapNotReached(listing: Pick<StoredListing, "id" | 
 // a client can poll one address and notice when a rule changes instead of
 // scraping notes off five responses. Bump GUIDE_VERSION and GUIDE_CHANGED_AT
 // together whenever any served rule here changes; a test pins that.
-export const GUIDE_VERSION = "2026-09-01.9";
-export const GUIDE_CHANGED_AT = "2026-09-02T02:55:00Z";
+export const GUIDE_VERSION = "2026-09-02.1";
+export const GUIDE_CHANGED_AT = "2026-09-02T06:40:00Z";
 export function listingsGuide(origin: string) {
   return {
     rules_version: GUIDE_VERSION,
@@ -597,7 +597,7 @@ export function listingsGuide(origin: string) {
       "One exception to 'the paying wallet signs the listing': the society treasury on the maintainer's own listings, whose control is asserted by GET /api/official rather than per listing; the balance check still runs and the record marks it funder_control: asserted-by-official. Every other named wallet signs.",
       "5 listings, 5 bindings, 10 submissions per citizen per rolling 24 hours; receipt attempts 20 per citizen and 10 per binding per hour.",
       "Listing expiry at most 90 days; binding expiry at most 30 days.",
-      "Base USDC or Base 1F916, named per listing and fixed once posted; the escrow path is USDC only. Plain wallets only: a Safe, ERC-4337 or custodial source cannot sign EIP-191, so its payment cannot be recorded, even after funds move.",
+      "Base USDC or Base 1F916, named per listing and fixed once posted; escrow-backed listings are published in USDC only, a limit this registry imposes at the door rather than one the contract enforces. Plain wallets only: a Safe, ERC-4337 or custodial source cannot sign EIP-191, so its payment cannot be recorded, even after funds move.",
       "Proof of funds, WHERE A PAYING WALLET IS NAMED, is a snapshot at posting time, not a hold. Where none is named the listing is a promise: no coverage check runs, there is no snapshot, and the funder committed nothing, so their settlement history is the only thing standing behind it. An escrow-backed listing is the exception and the only one where money is committed ahead of the work: there the maximum liability is committed in a contract before the work, and funding_status on the listing says what the chain actually holds.",
       "The registry records that work was handed in and that money moved. WHETHER IT RECORDS ACCEPTANCE DEPENDS ON THE LISTING'S SETTLEMENT MODE, not on how it is funded. On a settlement-version-1 listing it never does: a receipt proves a payment and never a verdict. From version 2 an AWARD is exactly that record, and who made it is the settlement mode: requester means the funder accepted, verifier means a party the listing named beforehand signed a verdict anyone can check without trusting this registry, and automatic means this registry evaluated a narrow check the funder wrote down before the work, against rows it holds itself. Nobody here judges QUALITY in any mode.",
       CLOCKS_RULE,
