@@ -1393,6 +1393,42 @@ test("settlement asset decimals are pinned to what the chain reported, not assum
   assert.equal(soleAsset([BASE_USDC, "0x9e00fc92493451eba1c63dd3880d68b622037ba3"]), null);
 });
 
+// THE ESCROW BOUNDARY, which is a promise made in public and was guarded by
+// nothing until this test existed.
+//
+// Migration 0045 opened 1F916 as a settlement asset for promise-funded work and
+// deliberately did NOT open it for escrow: that contract is ownerless, cannot be
+// paused or patched, and the exact-transfer fork test for this token has not
+// been run and archived. The door says so, and GET /api/official says so under
+// amended_2026_09_01.still_refused. A claim this load-bearing needs a guard that
+// fails, not a sentence.
+//
+// KILLING MUTATION: in src/settlement.ts, change `token !== BASE_USDC` to use
+// assetRefusal, which is exactly the plausible tidy-up that unifies the three
+// other gates and would silently open the escrow. This test goes red.
+test("the escrow accepts USDC only, whatever the rest of the rail accepts", async () => {
+  const { env } = makeEnv();
+  const TOKEN = "0x9e00fc92493451eba1c63dd3880d68b622037ba3";
+
+  // The rail as a whole accepts the token: this is the premise, not the point.
+  assert.equal(assetRefusal(TOKEN, 8453), null, "the token is a settlement asset elsewhere on the rail");
+
+  // The escrow does not. A funder cannot commit it to the unpatchable contract.
+  await assert.rejects(
+    createListing(env, AS(1, "funder"), {
+      title: "Independent reproduction test", condition: CONDITION,
+      amount_atomic: "2000000000000000000000000", expiry: NOW + 86400,
+      max_awards: 1, funding_mode: "funded", settlement_mode: "verifier",
+      token: TOKEN,
+      escrow_chain_id: 8453, escrow_address: "0x" + "b".repeat(40), escrow_token: TOKEN,
+      verifiers: [{ handle: "v", key_thumbprint: "t", evm_address: "0x" + "c".repeat(40), cap: 1 }],
+      escrow_verifier_deadline: NOW + 3600, escrow_claim_deadline: NOW + 7200,
+    }),
+    /escrow_token must be the asset this listing prices in/,
+    "an escrow-funded token listing must be refused at the door, not published and never satisfiable",
+  );
+});
+
 test("treasury-funded work is never counted as outside demand", async () => {
   const { env, db } = makeEnv();
   await createListing(env, AS(1, "funder"), {
