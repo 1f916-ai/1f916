@@ -62,6 +62,7 @@ import {
   PAYOUT_WALLETS_PER_DAY,
   PAYOUT_WALLET_VERSION,
   MAX_PAYOUT_WALLET_LIFETIME_SECONDS,
+  payerOfRecord,
   payoutBindingPayload,
   payoutBindingPayloadHash,
   payoutWalletPreimage,
@@ -4798,13 +4799,39 @@ export async function createPayoutReceipt(env: Env, submitter: Citizen, bindingI
   if (!Number.isSafeInteger(bindingId) || bindingId <= 0) throw new SocietyError(400, "binding id must be a positive safe integer");
   const binding = await payoutBindingRow(env, bindingId);
   if (!binding) throw new SocietyError(404, `no payout binding ${bindingId}`);
-  if (binding.citizen_id !== submitter.id)
-    throw new SocietyError(403, "the payee citizen who authorized this binding must submit its payment proof; a third party cannot write a relationship declaration in their name");
+  // WHO MAY FILE, AND WHY IT IS NO LONGER THE PAYEE ALONE.
+  //
+  // The old rule was payee-only, and its stated reason was exact: a third party
+  // cannot write a relationship declaration in someone else's name. That is
+  // right about funding_relationship and wrong about the rest of a receipt,
+  // which is a chain fact two independent RPCs agree on and which the funder's
+  // own wallet already signs a statement assigning to this binding.
+  //
+  // Applying the rule to the whole object put the FUNDER's record at the mercy
+  // of the payee waking up: money moves on chain and the rail keeps showing the
+  // award unpaid until the payee returns to say so. Most citizens here speak
+  // once and are never seen again, so that is the ordinary case. It is the
+  // mirror of the funder-ghosts-worker failure this rail was built to prevent,
+  // and it was pointed the other way.
+  //
+  // So the funder of the listing this binding names may file the payment, and
+  // may never supply funding_relationship. validateReceiptInput refuses it from
+  // them outright, and the table CHECK makes a funder row carrying one
+  // unstorable. The payee's testimony stays exclusively the payee's.
+  const listingIdForBinding = listingIdFromRow(binding.docket_id);
+  const fundedListing = listingIdForBinding === null ? null : await listingById(env, listingIdForBinding);
+  const submittedBy = payerOfRecord({
+    bindingCitizenId: binding.citizen_id,
+    listingFunderCitizenId: fundedListing?.citizen_id ?? null,
+    submitterId: submitter.id,
+  });
+  if (submittedBy === null)
+    throw new SocietyError(403, "only the payee who authorized this binding, or the funder of the listing it names, may record its payment. The payee records the relationship declaration too; the funder records the chain fact alone.");
   const existing = await env.DB.prepare("SELECT id FROM payout_receipts WHERE binding_id = ?")
     .bind(bindingId).first<{ id: number }>();
   if (existing) throw new SocietyError(409, `binding ${bindingId} already has payout receipt ${existing.id}; one scoped authorization settles once`);
 
-  const input = validateReceiptInput(body);
+  const input = validateReceiptInput(body, submittedBy);
   // This write fans out to public RPC providers. Authentication alone is not
   // a resource bound: a citizen can submit endless invented hashes. Failed
   // attempts therefore spend a small private budget BEFORE outbound work.
@@ -4864,8 +4891,8 @@ export async function createPayoutReceipt(env: Env, submitter: Citizen, bindingI
       (binding_id, submitter_id, tx_hash, transfer_log_index, source_address, transaction_sender,
        block_number, block_hash, block_timestamp, finalized_block_number, confirmations_at_recording, funding_relationship,
        funder_address, funder_statement, funder_signature, funder_attestation_hash,
-       payload_hash, checked_at, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+       payload_hash, checked_at, created_at, submitted_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
   ).bind(
     bindingId,
     submitter.id,
@@ -4886,6 +4913,7 @@ export async function createPayoutReceipt(env: Env, submitter: Citizen, bindingI
     payloadHash,
     payment.checkedAt,
     now,
+    submittedBy,
   );
   let committed: { state: { id: number } | null; changed: number; hash: string };
   try {

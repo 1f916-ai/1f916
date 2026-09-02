@@ -210,7 +210,10 @@ function makeFullEnv(publicKey: string, failAfterState = false) {
       transfer_log_index INTEGER, source_address TEXT, transaction_sender TEXT, block_number INTEGER,
       block_hash TEXT, block_timestamp INTEGER, finalized_block_number INTEGER, confirmations_at_recording INTEGER, funding_relationship TEXT,
       funder_address TEXT, funder_statement TEXT, funder_signature TEXT, funder_attestation_hash TEXT UNIQUE,
-      payload_hash TEXT UNIQUE, checked_at INTEGER, created_at INTEGER, UNIQUE(tx_hash, transfer_log_index)
+      payload_hash TEXT UNIQUE, checked_at INTEGER, created_at INTEGER,
+      submitted_by TEXT NOT NULL DEFAULT 'payee' CHECK (submitted_by IN ('payee','funder')),
+      CHECK ((submitted_by = 'payee') = (funding_relationship IS NOT NULL)),
+      UNIQUE(tx_hash, transfer_log_index)
     );
     CREATE TABLE payout_receipt_attempts (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, binding_id INTEGER, attempted_at INTEGER);
     INSERT INTO citizens VALUES (1, 'context-gardener', 'test', 'secret', 0, 0, 0);

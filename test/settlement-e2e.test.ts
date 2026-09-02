@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "node:fs";
 import { MockSettlementAdapter, verdictPreimage } from "../src/settlement.ts";
-import { assetRefusal, soleAsset, settlementAsset, BASE_USDC } from "../src/payouts.ts";
+import { assetRefusal, soleAsset, settlementAsset, BASE_USDC, validateReceiptInput, payerOfRecord } from "../src/payouts.ts";
 import { generateKeyPairSync, sign as edSign, createHash, type KeyObject } from "node:crypto";
 import { createAward, createListing, createSubmission, getListing, latchReadiness, markAwardPayable, railCensus, settleAwardFromReceipt, sweepExpiredAwards, type Env } from "../src/society.ts";
 
@@ -58,7 +58,7 @@ function makeEnv() {
     CREATE TABLE screen_refusals (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, book TEXT, rule TEXT, screen_version INTEGER, rules_hash TEXT, created_at INTEGER);
     CREATE TABLE payload_notices (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, target_type TEXT, target_id INTEGER, payload TEXT, created_at INTEGER);
     CREATE TABLE payout_bindings (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, docket_id TEXT, amount_atomic TEXT, payout_address TEXT, expiry INTEGER, created_at INTEGER);
-    CREATE TABLE payout_receipts (id INTEGER PRIMARY KEY AUTOINCREMENT, binding_id INTEGER UNIQUE, submitter_id INTEGER, tx_hash TEXT, source_address TEXT, created_at INTEGER);
+    CREATE TABLE payout_receipts (id INTEGER PRIMARY KEY AUTOINCREMENT, binding_id INTEGER UNIQUE, submitter_id INTEGER, tx_hash TEXT, source_address TEXT, created_at INTEGER, funding_relationship TEXT, submitted_by TEXT NOT NULL DEFAULT 'payee');
     ${slice(schema, "CREATE TABLE IF NOT EXISTS listings", "CREATE INDEX IF NOT EXISTS idx_listings_expiry")}
     ${slice(schema, "CREATE TABLE IF NOT EXISTS listing_submissions", "CREATE INDEX IF NOT EXISTS idx_listing_submissions_listing")}
     ${slice(schema, "CREATE TABLE IF NOT EXISTS listing_verdicts", "CREATE INDEX IF NOT EXISTS idx_listing_verdicts_listing")}
@@ -174,7 +174,7 @@ test("the fixture: $1 x 3 funded, three reproductions paid, the fourth cannot cr
     assert.equal(released.alreadyReleased, false);
     // The receipt is a real row, so the award's foreign key and its
     // UNIQUE(receipt_id) are the ones production enforces.
-    db.prepare("INSERT INTO payout_receipts (binding_id, submitter_id, tx_hash, source_address, created_at) VALUES (?, ?, ?, '0xfunder', 0)").run(index + 1, worker.id, `0xtx${index}`);
+    db.prepare("INSERT INTO payout_receipts (funding_relationship, binding_id, submitter_id, tx_hash, source_address, created_at) VALUES ('independent', ?, ?, ?, '0xfunder', 0)").run(index + 1, worker.id, `0xtx${index}`);
     const receiptId = Number((db.prepare("SELECT last_insert_rowid() AS id").get() as { id: number }).id);
     db.prepare("UPDATE listing_awards SET state = 'paid', receipt_id = ?, paid_at = 1 WHERE id = ?").run(receiptId, Number(award.award_id));
 
@@ -814,7 +814,7 @@ test("3. an overdue funder pays late: the debt settles to PAID and stops being o
   assert.equal((db.prepare("SELECT state AS s FROM listing_awards WHERE id = ?").get(awardId) as { s: string }).s, "overdue_unpaid");
 
   // Paying late is still paying: the receipt closes the debt.
-  db.prepare("INSERT INTO payout_receipts (binding_id, submitter_id, tx_hash, source_address, created_at) VALUES (1, 2, '0xlate', '0xfunder', 0)").run();
+  db.prepare("INSERT INTO payout_receipts (funding_relationship, binding_id, submitter_id, tx_hash, source_address, created_at) VALUES ('independent', 1, 2, '0xlate', '0xfunder', 0)").run();
   const receiptId = Number((db.prepare("SELECT last_insert_rowid() AS id").get() as { id: number }).id);
   const closed = db.prepare("UPDATE listing_awards SET state = 'paid', receipt_id = ?, paid_at = ?, overdue_at = NULL WHERE id = ? AND state = 'overdue_unpaid'").run(receiptId, Date.now(), awardId);
   assert.equal(Number(closed.changes), 1, "overdue_unpaid -> paid is a reachable transition");
@@ -959,7 +959,7 @@ test("the receipt path settles an overdue debt, and settles each award at most o
   await sweepExpiredAwards(env, listingId, Date.now());
   assert.equal((db.prepare("SELECT state AS s FROM listing_awards WHERE id = ?").get(awardId) as { s: string }).s, "overdue_unpaid");
 
-  db.prepare("INSERT INTO payout_receipts (binding_id, submitter_id, tx_hash, source_address, created_at) VALUES (1, 2, '0xlate', '0xfunder', 0)").run();
+  db.prepare("INSERT INTO payout_receipts (funding_relationship, binding_id, submitter_id, tx_hash, source_address, created_at) VALUES ('independent', 1, 2, '0xlate', '0xfunder', 0)").run();
   const receiptId = Number((db.prepare("SELECT last_insert_rowid() AS id").get() as { id: number }).id);
 
   // The real path: a receipt on this listing's worker row, for this payee.
@@ -975,7 +975,7 @@ test("the receipt path settles an overdue debt, and settles each award at most o
   assert.equal(served.economics.amount_paid_atomic, "25000000");
 
   // A second receipt cannot settle the same award again.
-  db.prepare("INSERT INTO payout_receipts (binding_id, submitter_id, tx_hash, source_address, created_at) VALUES (2, 2, '0xagain', '0xfunder', 0)").run();
+  db.prepare("INSERT INTO payout_receipts (funding_relationship, binding_id, submitter_id, tx_hash, source_address, created_at) VALUES ('independent', 2, 2, '0xagain', '0xfunder', 0)").run();
   const second = Number((db.prepare("SELECT last_insert_rowid() AS id").get() as { id: number }).id);
   assert.equal(await settleAwardFromReceipt(env, { docket_id: `listing-${listingId}` }, second, 2, Date.now()), null,
     "there is no open award left to close, and the paid one cannot be paid twice");
@@ -1465,6 +1465,118 @@ test("a listing's thread names the asset it actually pays, at the right scale", 
   assert.ok(!/USDC/.test(t.title), "a token listing must not name the dollar asset anywhere in its title");
   assert.match(t.body, /28000000000000000000000000 atomic units of 1F916 \(28,000,000 1F916\)/);
   assert.ok(!/USDC/.test(t.body.split("CONDITION")[0]!), "nor in the price lines above the condition");
+});
+
+// A FUNDER MAY RECORD THAT THEY PAID. THEY MAY NEVER SAY WHO THE PAYEE IS.
+//
+// Receipts were payee-only, and the reason was right about one field and wrong
+// about the rest: funding_relationship is the payee's own testimony, everything
+// else is a chain fact the funder's wallet already signs for. Applying the rule
+// to the whole object meant a funder who paid on chain kept showing as unpaid
+// until the payee woke up — and most citizens here speak once and never return.
+//
+// KILLING MUTATION, three of them, each closing a different half:
+//   (a) restore `if (binding.citizen_id !== submitter.id) throw` in
+//       createPayoutReceipt — the funder can no longer record their own payment
+//       and the first assertion goes red.
+//   (b) drop the `submittedBy === "funder"` branch in validateReceiptInput so a
+//       funder's supplied relationship is accepted — the second goes red.
+//   (c) delete the table CHECK pairing submitted_by with funding_relationship —
+//       the third goes red, because the bad row becomes storable.
+// KILLING MUTATION: change `payerOfRecord` to return null for anyone but the
+// payee, which is exactly the pre-0046 rule. The funder assertion goes red.
+// Written because reverting that rule in the handler killed no test at all: the
+// authorization sat inside a path that needs live RPC verification, so the
+// headline guarantee was the one thing nothing covered.
+test("the funder of the listing may record a payment, and no other stranger may", () => {
+  const PAYEE = 2, FUNDER = 7, STRANGER = 9;
+
+  assert.equal(payerOfRecord({ bindingCitizenId: PAYEE, listingFunderCitizenId: FUNDER, submitterId: PAYEE }), "payee");
+  assert.equal(payerOfRecord({ bindingCitizenId: PAYEE, listingFunderCitizenId: FUNDER, submitterId: FUNDER }), "funder");
+  assert.equal(payerOfRecord({ bindingCitizenId: PAYEE, listingFunderCitizenId: FUNDER, submitterId: STRANGER }), null,
+    "a third party may not record someone else's payment");
+
+  // A docket-row binding has no listing and therefore no funder, so it stays
+  // payee-only by construction rather than by a separate rule somebody could
+  // forget to write.
+  assert.equal(payerOfRecord({ bindingCitizenId: PAYEE, listingFunderCitizenId: null, submitterId: FUNDER }), null);
+  assert.equal(payerOfRecord({ bindingCitizenId: PAYEE, listingFunderCitizenId: null, submitterId: PAYEE }), "payee");
+
+  // The payee wins the tie when a citizen is somehow both, so their own
+  // testimony is never suppressed by their other role.
+  assert.equal(payerOfRecord({ bindingCitizenId: PAYEE, listingFunderCitizenId: PAYEE, submitterId: PAYEE }), "payee");
+});
+
+test("a funder records the payment and never the payee's relationship", () => {
+  // (1) The funder mode exists and produces no testimony about the payee.
+  const asFunder = validateReceiptInput({
+    tx_hash: "0x" + "a".repeat(64), transfer_log_index: 0,
+    funder_statement: "1f916.payout-funder.v1:x", funder_signature: "0x" + "b".repeat(130),
+  }, "funder");
+  assert.equal(asFunder.fundingRelationship, null, "a funder-filed receipt declares no relationship");
+
+  // (2) A funder who supplies one is REFUSED, not silently stripped. Dropping
+  // it quietly would hide an attempt to speak for someone else.
+  assert.throws(
+    () => validateReceiptInput({
+      tx_hash: "0x" + "a".repeat(64), transfer_log_index: 0, funding_relationship: "independent",
+      funder_statement: "1f916.payout-funder.v1:x", funder_signature: "0x" + "b".repeat(130),
+    }, "funder"),
+    /a funder may not supply it/,
+  );
+
+  // (3) The payee path is unchanged and still demands the declaration.
+  assert.throws(
+    () => validateReceiptInput({
+      tx_hash: "0x" + "a".repeat(64), transfer_log_index: 0,
+      funder_statement: "1f916.payout-funder.v1:x", funder_signature: "0x" + "b".repeat(130),
+    }, "payee"),
+    /funding_relationship must be one of/,
+  );
+  assert.equal(
+    validateReceiptInput({
+      tx_hash: "0x" + "a".repeat(64), transfer_log_index: 0, funding_relationship: "independent",
+      funder_statement: "1f916.payout-funder.v1:x", funder_signature: "0x" + "b".repeat(130),
+    }, "payee").fundingRelationship,
+    "independent",
+  );
+});
+
+// The storage-level half of the same guarantee, because a rule enforced only in
+// a validator is a rule some other write path can walk around.
+// AGAINST schema.sql ITSELF, not against a fixture. The abbreviated fixtures in
+// this file omit constraints for convenience, so asserting on one would prove
+// only that I had remembered to copy the CHECK into it. The guarantee belongs to
+// the real schema, which is what production is built from.
+test("the pairing of submitted_by and funding_relationship is unstorable when wrong", () => {
+  const db = new DatabaseSync(":memory:");
+  db.exec(readFileSync(new URL("../schema.sql", import.meta.url), "utf8"));
+  db.exec("INSERT INTO citizens (id, handle, model, secret_hash, karma, created_at, last_seen_at) VALUES (2, 'p', 'm', 's', 0, 0, 0)");
+  db.exec(`INSERT INTO payout_bindings (id, citizen_id, docket_id, version, amount_atomic, chain_id, token, payout_address, expiry,
+      wallet_signature, citizen_public_key, citizen_signature, citizen_key_thumbprint, citizen_key_custody, citizen_key_bound_at,
+      authorization_verification, authorization_verified_at, docket_updated, docket_snapshot, preimage, authorization_hash,
+      payload_hash, commit_nonce, created_at)
+    VALUES (900, 2, 'listing-1', '1f916.payout.v1', '1000000', 8453, '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
+      '0x1111111111111111111111111111111111111111', 9, '0xsig', 'k', 's', 'tp', 'self', 0,
+      'valid-at-binding-event', 0, '2026-01-01', '{}', 'pre', 'ah', 'ph', 'cn', 0)`);
+
+  const ins = (by: string, rel: string | null) =>
+    db.prepare(`INSERT INTO payout_receipts
+      (binding_id, submitter_id, tx_hash, transfer_log_index, source_address, transaction_sender,
+       block_number, block_hash, block_timestamp, finalized_block_number, confirmations_at_recording,
+       funder_address, funder_statement, funder_signature, funder_attestation_hash, payload_hash,
+       checked_at, created_at, submitted_by, funding_relationship)
+      VALUES (900, 2, '0x${"a".repeat(64)}', 0, '0x${"2".repeat(40)}', '0x${"2".repeat(40)}',
+       1, '0x${"b".repeat(64)}', 0, 2, 12,
+       '0x${"2".repeat(40)}', '1f916.payout-funder.v1:x', '0x${"c".repeat(130)}', '${"d".repeat(64)}', '${"e".repeat(64)}',
+       0, 0, ?, ?)`).run(by, rel);
+
+  assert.throws(() => ins("funder", "independent"), /CHECK/, "a funder row carrying the payee's testimony must not be storable");
+  assert.throws(() => ins("payee", null), /CHECK/, "a payee row with no testimony must not be storable");
+  // And the two legitimate shapes both store.
+  ins("funder", null);
+  db.exec("DELETE FROM payout_receipts");
+  ins("payee", "independent");
 });
 
 test("treasury-funded work is never counted as outside demand", async () => {

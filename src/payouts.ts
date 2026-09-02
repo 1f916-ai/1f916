@@ -607,21 +607,54 @@ export interface PayoutReceiptInput {
   funder_signature?: unknown;
 }
 
+// WHO MAY RECORD A PAYMENT, as a named decision rather than three lines inside
+// a 200-line handler. Extracted because a mutation that reverted the rule to
+// payee-only killed no test: the authorization was reachable only through a
+// path that needs live RPC verification, so the headline guarantee was the one
+// thing not covered.
+//
+// Returns the mode, or null when the caller may not record this payment at all.
+export function payerOfRecord(input: {
+  bindingCitizenId: number;
+  listingFunderCitizenId: number | null;
+  submitterId: number;
+}): "payee" | "funder" | null {
+  if (input.bindingCitizenId === input.submitterId) return "payee";
+  // A funder may record only against a binding that names their own listing.
+  // A docket-row binding has no funder, so it stays payee-only by construction.
+  if (input.listingFunderCitizenId !== null && input.listingFunderCitizenId === input.submitterId) return "funder";
+  return null;
+}
+
 export interface ValidatedPayoutReceiptInput {
   txHash: string;
   transferLogIndex: number;
-  fundingRelationship: FundingRelationship;
+  /** Null on a funder-filed receipt: a funder may never testify about the payee. */
+  fundingRelationship: FundingRelationship | null;
   funderStatement: string;
   funderSignature: string;
 }
 
-export function validateReceiptInput(body: PayoutReceiptInput): ValidatedPayoutReceiptInput {
+// `submittedBy` decides exactly one thing: whether the relationship declaration
+// is required or forbidden. Every other field on a receipt is a chain fact and
+// is validated identically in both modes.
+export function validateReceiptInput(body: PayoutReceiptInput, submittedBy: "payee" | "funder" = "payee"): ValidatedPayoutReceiptInput {
   const txHash = requiredString("tx_hash", body.tx_hash).toLowerCase();
   if (!HASH_RE.test(txHash)) throw new SocietyError(400, "tx_hash must be a 32-byte 0x-prefixed transaction hash");
   const transferLogIndex = positiveSafeIntegerAllowZero("transfer_log_index", body.transfer_log_index);
-  const relation = typeof body.funding_relationship === "string" ? body.funding_relationship : "";
-  if (!FUNDING_RELATIONSHIPS.includes(relation as FundingRelationship))
+  // THE ONE FIELD ON A RECEIPT THAT IS NOT A CHAIN FACT. It is the payee's own
+  // disclosure of their relationship to the funder, so a funder filing a receipt
+  // must leave it out rather than guess it. Supplying it is refused as loudly as
+  // omitting it in payee mode: a funder who fills it in is speaking for someone
+  // else, and silently dropping the value would conceal the attempt.
+  const supplied = typeof body.funding_relationship === "string" ? body.funding_relationship : "";
+  if (submittedBy === "funder") {
+    if (supplied !== "")
+      throw new SocietyError(400, "funding_relationship is the payee's own disclosure and a funder may not supply it. Record the payment without it: the receipt states the relationship is undeclared until the payee declares it themselves.");
+  } else if (!FUNDING_RELATIONSHIPS.includes(supplied as FundingRelationship)) {
     throw new SocietyError(400, `funding_relationship must be one of: ${FUNDING_RELATIONSHIPS.join(", ")}. It was proposed by @alpha-altcoins in c7028 and is mandatory disclosure; even when the funder signs it, the chain cannot prove a real-world affiliation.`);
+  }
+  const relation: FundingRelationship | null = submittedBy === "funder" ? null : (supplied as FundingRelationship);
   const funderStatement = requiredString("funder_statement", body.funder_statement);
   if (funderStatement.length > 512)
     throw new SocietyError(400, "funder_statement is longer than any canonical payout-funder v1 statement");
@@ -631,7 +664,7 @@ export function validateReceiptInput(body: PayoutReceiptInput): ValidatedPayoutR
   return {
     txHash,
     transferLogIndex,
-    fundingRelationship: relation as FundingRelationship,
+    fundingRelationship: relation,
     funderStatement,
     funderSignature: funderSignature.toLowerCase(),
   };
@@ -688,7 +721,7 @@ export function payoutFunderStatement(fields: {
   sourceAddress: string;
   payoutAddress: string;
   amountAtomic: string;
-  fundingRelationship: FundingRelationship;
+  fundingRelationship: FundingRelationship | null;
 }): string {
   return [
     PAYOUT_FUNDER_VERSION,
@@ -1091,7 +1124,7 @@ export async function verifyBasePayment(
 export function payoutReceiptPayload(
   binding: StoredPayoutBinding,
   payment: VerifiedPayment,
-  fundingRelationship: FundingRelationship,
+  fundingRelationship: FundingRelationship | null,
   funder: VerifiedFunderAttestation,
   submitterId: number,
   createdAt: number,
@@ -1130,7 +1163,7 @@ export function payoutReceiptPayload(
 export async function payoutReceiptPayloadHash(
   binding: StoredPayoutBinding,
   payment: VerifiedPayment,
-  fundingRelationship: FundingRelationship,
+  fundingRelationship: FundingRelationship | null,
   funder: VerifiedFunderAttestation,
   submitterId: number,
   createdAt: number,

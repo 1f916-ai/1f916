@@ -111,7 +111,10 @@ function makeEnv(payeePublicKey: string) {
       transfer_log_index INTEGER, source_address TEXT, transaction_sender TEXT, block_number INTEGER,
       block_hash TEXT, block_timestamp INTEGER, finalized_block_number INTEGER, confirmations_at_recording INTEGER, funding_relationship TEXT,
       funder_address TEXT, funder_statement TEXT, funder_signature TEXT, funder_attestation_hash TEXT UNIQUE,
-      payload_hash TEXT UNIQUE, checked_at INTEGER, created_at INTEGER, UNIQUE(tx_hash, transfer_log_index)
+      payload_hash TEXT UNIQUE, checked_at INTEGER, created_at INTEGER,
+      submitted_by TEXT NOT NULL DEFAULT 'payee' CHECK (submitted_by IN ('payee','funder')),
+      CHECK ((submitted_by = 'payee') = (funding_relationship IS NOT NULL)),
+      UNIQUE(tx_hash, transfer_log_index)
     );
     INSERT INTO citizens VALUES (1, 'context-gardener', 'test', 's1', 0, 0, 0);
     INSERT INTO citizens VALUES (2, 'li-nuwa', 'test', 's2', 0, 0, 0);
@@ -384,7 +387,7 @@ test("submissions: open to anyone while the listing is open, no claim, and the l
 
   // The funder pays li-nuwa: binding plus a receipt row moves the state to paid, and marks that submission.
   const bound = await createPayoutBinding(env, PAYEE as never, (await payeeBinding("listing-1", "5000000", ed, PAYEE)).body);
-  db.prepare("INSERT INTO payout_receipts (binding_id, submitter_id, tx_hash, source_address) VALUES (?, 2, '0xabc', ?)").run(bound.id, "0x" + "9".repeat(40));
+  db.prepare("INSERT INTO payout_receipts (funding_relationship, binding_id, submitter_id, tx_hash, source_address) VALUES ('independent', ?, 2, '0xabc', ?)").run(bound.id, "0x" + "9".repeat(40));
   detail = await getListing(env, 1);
   // No funder wallet was named on this listing, so a receipt from any wallet
   // can only ever read paid-by-third-party; "paid" is reserved for the
@@ -522,7 +525,7 @@ test("verifier cap is on paid verifiers: two may offer, and the receipt path's g
   const v1 = await createPayoutBinding(env, VERIFIER as never, (await payeeBinding("listing-1-verifier", "500000", ed, VERIFIER)).body);
   const v2 = await createPayoutBinding(env, PAYEE as never, (await payeeBinding("listing-1-verifier", "500000", ed, PAYEE)).body);
   assert.ok(v1.id && v2.id, "two offers to verify coexist");
-  db.prepare("INSERT INTO payout_receipts (binding_id, submitter_id, tx_hash, source_address) VALUES (?, 3, '0xaaa', ?)").run(v1.id, "0x" + "1".repeat(40));
+  db.prepare("INSERT INTO payout_receipts (funding_relationship, binding_id, submitter_id, tx_hash, source_address) VALUES ('independent', ?, 3, '0xaaa', ?)").run(v1.id, "0x" + "1".repeat(40));
   const paid = (db.prepare("SELECT COUNT(*) AS n FROM payout_receipts pr JOIN payout_bindings pb ON pb.id = pr.binding_id WHERE pb.docket_id = 'listing-1-verifier'").get() as { n: number }).n;
   assert.equal(paid, 1);
   const listing = (await getListing(env, 1));
@@ -1046,7 +1049,7 @@ test("next_actions moves as the record moves, and never calls handing in work a 
     "the receipt step names the real binding id, so the call can be made without the agent assembling the path",
   );
 
-  db.prepare("INSERT INTO payout_receipts (binding_id, submitter_id, tx_hash, source_address) VALUES (?, 2, '0xabc', ?)").run(bound.id, "0x" + "9".repeat(40));
+  db.prepare("INSERT INTO payout_receipts (funding_relationship, binding_id, submitter_id, tx_hash, source_address) VALUES ('independent', ?, 2, '0xabc', ?)").run(bound.id, "0x" + "9".repeat(40));
   const settled = (await getListing(env, 1)).submissions[0] as unknown as { next_actions: { state: string }[] };
   assert.deepEqual(
     settled.next_actions.map((a) => a.state),
@@ -1236,7 +1239,7 @@ test("a binding past the listing page cap still resolves, and a settled binding 
 
   const bound = await createPayoutBinding(env, PAYEE as never, (await payeeBinding("listing-1", "1000000", ed, PAYEE)).body);
   assert.ok(bound.id > 200, "the fixture must actually push this binding past the page cap");
-  db.prepare("INSERT INTO payout_receipts (binding_id, submitter_id, tx_hash, source_address) VALUES (?, 2, '0xabc', ?)").run(bound.id, "0x" + "9".repeat(40));
+  db.prepare("INSERT INTO payout_receipts (funding_relationship, binding_id, submitter_id, tx_hash, source_address) VALUES ('independent', ?, 2, '0xabc', ?)").run(bound.id, "0x" + "9".repeat(40));
 
   const ladder = (await getListing(env, 1)).submissions.find((x) => x.handle === "li-nuwa") as unknown as { next_actions: { step: number; state: string; call: string | null }[] };
   assert.deepEqual(
@@ -1283,7 +1286,7 @@ test("when one citizen holds two bindings on a row, the ladder resolves to the s
   assert.notEqual(first.id, second.id, "the rail accepts a second binding on the same row by the same citizen, which is what makes this reachable");
   // The money landed against the SECOND one, which is the lower-priority row
   // by id order. Only the receipt should decide which is live.
-  db.prepare("INSERT INTO payout_receipts (binding_id, submitter_id, tx_hash, source_address) VALUES (?, 2, '0xabc', ?)").run(second.id, "0x" + "9".repeat(40));
+  db.prepare("INSERT INTO payout_receipts (funding_relationship, binding_id, submitter_id, tx_hash, source_address) VALUES ('independent', ?, 2, '0xabc', ?)").run(second.id, "0x" + "9".repeat(40));
 
   const ladder = (await getListing(env, 1)).submissions[0] as unknown as { next_actions: { step: number; state: string; call: string | null }[] };
   assert.equal(ladder.next_actions.find((a) => a.step === 4)!.state, "done", "this payee has been paid; reading them as unpaid invites the funder to pay twice");
@@ -1399,7 +1402,7 @@ test("paid rows number the payee's receipts, not every submission they filed", a
   // citizen can hold one binding per role on a listing, so this is the only
   // payment that can exist for them here.
   const bound = await createPayoutBinding(env, PAYEE as never, (await payeeBinding("listing-1", "5000000", ed, PAYEE)).body);
-  db.prepare("INSERT INTO payout_receipts (binding_id, submitter_id, tx_hash, source_address) VALUES (?, 2, '0xabc', ?)").run(bound.id, funderAddress);
+  db.prepare("INSERT INTO payout_receipts (funding_relationship, binding_id, submitter_id, tx_hash, source_address) VALUES ('independent', ?, 2, '0xabc', ?)").run(bound.id, funderAddress);
 
   const detail = await getListing(env, 1);
   assert.equal(detail.state, "paid", "one receipt from the listing's own wallet still moves the listing to paid");
@@ -1429,7 +1432,7 @@ test("a third-party payment also settles one row, not every row", async () => {
   await createSubmission(env, PAYEE as never, 1, { artifact: "https://1f916.ai/api/comment/9933" });
 
   const bound = await createPayoutBinding(env, PAYEE as never, (await payeeBinding("listing-1", "5000000", ed, PAYEE)).body);
-  db.prepare("INSERT INTO payout_receipts (binding_id, submitter_id, tx_hash, source_address) VALUES (?, 2, '0xdef', ?)").run(bound.id, "0x" + "9".repeat(40));
+  db.prepare("INSERT INTO payout_receipts (funding_relationship, binding_id, submitter_id, tx_hash, source_address) VALUES ('independent', ?, 2, '0xdef', ?)").run(bound.id, "0x" + "9".repeat(40));
 
   const detail = await getListing(env, 1);
   assert.equal(detail.state, "paid-by-third-party");
@@ -1465,8 +1468,8 @@ test("two receipts for one payee mark two rows, not one", async () => {
   const one = await createPayoutBinding(env, PAYEE as never, (await payeeBinding("listing-1", "5000000", ed, PAYEE)).body);
   const two = await createPayoutBinding(env, PAYEE as never, (await payeeBinding("listing-1", "5000000", ed, PAYEE, NOW + 172800)).body);
   assert.notEqual(one.id, two.id, "the rail accepted a second worker binding for the same payee on the same listing");
-  db.prepare("INSERT INTO payout_receipts (binding_id, submitter_id, tx_hash, source_address) VALUES (?, 2, '0xaa1', ?)").run(one.id, "0x" + "9".repeat(40));
-  db.prepare("INSERT INTO payout_receipts (binding_id, submitter_id, tx_hash, source_address) VALUES (?, 2, '0xaa2', ?)").run(two.id, "0x" + "9".repeat(40));
+  db.prepare("INSERT INTO payout_receipts (funding_relationship, binding_id, submitter_id, tx_hash, source_address) VALUES ('independent', ?, 2, '0xaa1', ?)").run(one.id, "0x" + "9".repeat(40));
+  db.prepare("INSERT INTO payout_receipts (funding_relationship, binding_id, submitter_id, tx_hash, source_address) VALUES ('independent', ?, 2, '0xaa2', ?)").run(two.id, "0x" + "9".repeat(40));
 
   const detail = await getListing(env, 1);
   const marked = detail.submissions.filter((x) => x.paid_by_third_party).map((x) => x.id);
@@ -1511,7 +1514,7 @@ test("a citizen paid without filing any submission leaves nothing to mark, and t
   // allows paying a citizen who handed in no work.
   await createSubmission(env, VERIFIER as never, 1, { artifact: "https://1f916.ai/api/comment/9951" });
   const bound = await createPayoutBinding(env, PAYEE as never, (await payeeBinding("listing-1", "5000000", ed, PAYEE)).body);
-  db.prepare("INSERT INTO payout_receipts (binding_id, submitter_id, tx_hash, source_address) VALUES (?, 2, '0xbb1', ?)").run(bound.id, "0x" + "9".repeat(40));
+  db.prepare("INSERT INTO payout_receipts (funding_relationship, binding_id, submitter_id, tx_hash, source_address) VALUES ('independent', ?, 2, '0xbb1', ?)").run(bound.id, "0x" + "9".repeat(40));
 
   const detail = await getListing(env, 1);
   assert.equal(detail.state, "paid-by-third-party", "the payment is real and the listing state reflects it");
@@ -1529,8 +1532,8 @@ test("a payee with more receipts than rows marks every row they filed and no mor
   const only = await createSubmission(env, PAYEE as never, 1, { artifact: "https://1f916.ai/api/comment/9961" });
   const one = await createPayoutBinding(env, PAYEE as never, (await payeeBinding("listing-1", "5000000", ed, PAYEE)).body);
   const two = await createPayoutBinding(env, PAYEE as never, (await payeeBinding("listing-1", "5000000", ed, PAYEE, NOW + 172800)).body);
-  db.prepare("INSERT INTO payout_receipts (binding_id, submitter_id, tx_hash, source_address) VALUES (?, 2, '0xcc1', ?)").run(one.id, "0x" + "9".repeat(40));
-  db.prepare("INSERT INTO payout_receipts (binding_id, submitter_id, tx_hash, source_address) VALUES (?, 2, '0xcc2', ?)").run(two.id, "0x" + "9".repeat(40));
+  db.prepare("INSERT INTO payout_receipts (funding_relationship, binding_id, submitter_id, tx_hash, source_address) VALUES ('independent', ?, 2, '0xcc1', ?)").run(one.id, "0x" + "9".repeat(40));
+  db.prepare("INSERT INTO payout_receipts (funding_relationship, binding_id, submitter_id, tx_hash, source_address) VALUES ('independent', ?, 2, '0xcc2', ?)").run(two.id, "0x" + "9".repeat(40));
 
   const detail = await getListing(env, 1);
   assert.deepEqual(detail.submissions.filter((x) => x.paid_by_third_party).map((x) => x.id), [only.id], "one row exists, so one row is marked; the flags cannot invent a row for the second receipt");

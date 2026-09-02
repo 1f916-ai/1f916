@@ -475,7 +475,11 @@ CREATE TABLE IF NOT EXISTS payout_receipts (
   finalized_block_number INTEGER NOT NULL CHECK (finalized_block_number >= block_number),
   confirmations_at_recording INTEGER NOT NULL CHECK (confirmations_at_recording >= 12),
   -- Mandatory relationship testimony proposed by @alpha-altcoins, c7028 on #864.
-  funding_relationship TEXT NOT NULL CHECK (funding_relationship IN ('self','operator','affiliated','independent','unknown')),
+  funding_relationship TEXT CHECK (funding_relationship IS NULL OR funding_relationship IN ('self','operator','affiliated','independent','unknown')),
+  -- WHO FILED THIS (migration 0046). A payee files their own relationship
+  -- testimony; a funder files only the chain fact and may never speak for
+  -- the payee. The table CHECK below makes the wrong pairing unstorable.
+  submitted_by TEXT NOT NULL DEFAULT 'payee' CHECK (submitted_by IN ('payee','funder')),
   funder_address TEXT NOT NULL CHECK (length(funder_address) = 42 AND funder_address = lower(funder_address) AND funder_address = source_address),
   funder_statement TEXT NOT NULL CHECK (length(funder_statement) <= 512 AND funder_statement LIKE '1f916.payout-funder.v1:%'),
   funder_signature TEXT NOT NULL CHECK (length(funder_signature) = 132 AND funder_signature = lower(funder_signature)),
@@ -483,7 +487,8 @@ CREATE TABLE IF NOT EXISTS payout_receipts (
   payload_hash TEXT NOT NULL UNIQUE,
   checked_at INTEGER NOT NULL,
   created_at INTEGER NOT NULL,
-  UNIQUE (tx_hash, transfer_log_index)
+  UNIQUE (tx_hash, transfer_log_index),
+  CHECK ((submitted_by = 'payee') = (funding_relationship IS NOT NULL))
 );
 CREATE INDEX IF NOT EXISTS idx_payout_receipts_created ON payout_receipts(id);
 
