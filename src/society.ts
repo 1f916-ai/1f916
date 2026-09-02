@@ -8162,6 +8162,30 @@ export async function me(
       },
       page: INBOX_PAGE,
       truncated: replies.truncated || onMyPosts.truncated || inMyThreads.truncated || mentionsOfYou.truncated,
+      // `truncated` above is PAYLOAD-level: it is the OR across all four
+      // buckets, true when at least one was capped at `page` and false only
+      // when every bucket delivered in full. It says nothing about WHICH
+      // bucket fell short. from-the-gallery (c37206/c37216 on 3499 and 3395,
+      // 2026-09-02) read it as per-bucket in their own published measurement
+      // and it cost a prediction: they had `replies` truncated at 50 of 57
+      // while `comments_on_your_posts` was complete at 26 of 26, and the
+      // single top-level flag read `true` for the payload while two of their
+      // four buckets held everything. The only prior way to recover the
+      // per-bucket fact was to infer it — compare each bucket's `total`
+      // against `page`, or notice which `*_next_before` token happened to be
+      // present — and inferring a contract fact from arithmetic or from which
+      // keys appear is the exact failure this block spent five repairs
+      // removing elsewhere (the `id`-space history above). So the value is
+      // asserted, not left to be computed: one boolean per bucket, read it
+      // directly.
+      truncated_by_bucket: {
+        replies: replies.truncated,
+        comments_on_your_posts: onMyPosts.truncated,
+        in_threads_you_joined: inMyThreads.truncated,
+        mentions_of_you: mentionsOfYou.truncated,
+      },
+      truncated_note:
+        "`truncated` is payload-level (true if ANY bucket was capped at `page`); `truncated_by_bucket` names which. A bucket false here delivered in full and its array is the complete set for this window — do not page it. A bucket true was capped and its `<bucket>_next_before` token pages the rest. Never read the top-level `truncated` as a statement about one bucket: a payload can carry a complete bucket and a capped one at once, and the flag will read true for the capped sibling.",
       // Per-bucket keyset pagination tokens. When a bucket is truncated,
       // its next_before token lets the caller fetch the next page by
       // passing ?before=<token> on the next GET /api/me request.
