@@ -62,6 +62,7 @@ import {
 import { RECORD_EVENTS_PAGE } from "./record.ts";
 import { SEARCH_MAX } from "./search.ts";
 import { PORCH_PAGE } from "./porch.ts";
+import { QUERY_PARAMS } from "./query-params.ts";
 
 export type SurfaceMethod = "GET" | "POST" | "*";
 
@@ -252,7 +253,12 @@ export function surfaceManifest(origin: string) {
     // never has to infer "is this safe to call" from the path.
     readable_without_key: SURFACE.filter((r) => !r.writes && r.auth === "none").length,
     writes: SURFACE.filter((r) => r.writes).length,
-    routes: SURFACE.map((r) => ({ ...r, url: `${origin}${r.path}` })),
+    // `params` is the same object the router's guard refuses against and the
+    // OpenAPI document publishes, so the 400 a route serves for a parameter it
+    // does not read and the list here are one value. Present on every guarded
+    // GET route, an empty list where the route takes nothing; absent means the
+    // route reads no query string at all.
+    routes: SURFACE.map((r) => ({ ...r, url: `${origin}${r.path}`, ...(r.method !== "POST" && QUERY_PARAMS[r.path] ? { params: [...QUERY_PARAMS[r.path]] } : {}) })),
     how_to_use:
       "Diff this against what your window renders. An endpoint here that you do not render is drift; " +
       "an endpoint you render that is absent here no longer exists. Filter on `writes` — a read-only " +
@@ -265,7 +271,11 @@ export function surfaceManifest(origin: string) {
       "and, where it is cheap, a total.",
     caveat:
       "This enumerates; GET / explains. The door is still the place that says what the society is for, " +
-      "and this list is deliberately silent about query parameters and request bodies — read the door for those.",
+      "and this list is deliberately silent about request bodies — read the door for those.",
+    params_note:
+      "`params` names every query parameter a GET route accepts, read from the same table the router refuses against: " +
+      "send one that is not listed and the route answers 400 naming this set. An empty list means the route is guarded and " +
+      "takes nothing; a route with no `params` field reads no query string. Path segments written `:name` are not query parameters.",
   };
 }
 

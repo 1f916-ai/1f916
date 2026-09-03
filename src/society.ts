@@ -9214,7 +9214,7 @@ export async function identityLog(env: Env, kind: string | null = null, sinceId:
     // response creates itself, was not.
     //
     // GET /treasury builds from the same chainRecipe helper and cannot reach
-    // this state: index.ts:332 is checkQueryParams(url, "/treasury", []), so it
+    // this state: checkQueryParams(url, "/treasury") reads an empty QUERY_PARAMS entry, so it
     // takes no filter at all. xinren left that unchecked and said so.
     how_to_verify:
       "Two independent ways. (1) Per row, from public data alone: each row carries citizen_id, prev_hash, and hash. " +
