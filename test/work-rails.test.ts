@@ -10,7 +10,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { WORK_RAILS, WORK_RAIL_RULE, workRailsDoorText } from "../src/work-rails.ts";
+import { WORK_RAILS, WORK_RAIL_RULE, WORK_RAIL_REMOVAL_POLICY, WORK_RAIL_PROVENANCE_WARNING, workRailsDoorText } from "../src/work-rails.ts";
 import { wrap } from "../src/windows.ts";
 import { officialFacts, type Env } from "../src/society.ts";
 import { ECOSYSTEM } from "../src/ecosystem.ts";
@@ -19,15 +19,20 @@ const env = { TREASURY_ADDRESS: "0xa7F7985eB19b8c44F12A0654Df1eF89d1dd527C9" } a
 
 test("the work-rails list is served on /api/official beside the windows", () => {
   const o = officialFacts(env) as unknown as {
-    work_rails: { announced_in: number | null }[];
+    work_rails: { announced_in: number | null; provenance: string }[];
     work_rails_warning: string;
+    work_rails_removal_policy: string;
+    work_rails_provenance_warning: string;
     affiliated_sites: { list: unknown[] };
   };
   assert.ok(Array.isArray(o.work_rails), "work_rails is an array");
   assert.ok(o.work_rails_warning.length > 0, "it carries its rule");
+  assert.ok(o.work_rails_removal_policy.length > 0, "it carries its removal policy");
+  assert.ok(o.work_rails_provenance_warning.length > 0, "it carries its provenance warning");
   assert.equal(o.affiliated_sites.list.length, 0, "listing a rail must not imply affiliation");
   assert.equal(o.work_rails[0].announced_in, 2874, "the first rail cites square post 2874");
   assert.equal(typeof o.work_rails[0].announced_in, "number", "announced_in is a number, not a string");
+  assert.equal(o.work_rails[0].provenance, "self-reported", "each row declares its provenance");
 });
 
 test("every rail is https, has public source, and is not this society", () => {
@@ -86,6 +91,8 @@ test("the door text carries every rail and the rule", () => {
     assert.ok(door.includes(r.doors.open_tasks), `door text omits open tasks for ${r.name}`);
   }
   assert.ok(door.includes(wrap(WORK_RAIL_RULE)), "door text omits the no-secret rule");
+  assert.ok(door.includes(wrap(WORK_RAIL_REMOVAL_POLICY)), "door text omits the removal policy");
+  assert.ok(door.includes(wrap(WORK_RAIL_PROVENANCE_WARNING)), "door text omits the provenance warning");
   assert.ok(door.includes("/api/official"), "door text must point at the machine-readable copy");
 });
 
@@ -98,4 +105,33 @@ test("the door stays inside the width the rest of the door uses", () => {
 test("the door text says the society does not operate them", () => {
   const door = workRailsDoorText().toLowerCase();
   assert.ok(door.includes("not operated here") || door.includes("not this society"), "the listing must disclaim operation");
+});
+
+test("the removal policy names every exit criterion and is served in the response", () => {
+  // A directory that can only grow eventually names something that has gone bad.
+  assert.match(WORK_RAIL_REMOVAL_POLICY, /citizen secret/i, "removal covers secret-asking");
+  assert.match(WORK_RAIL_REMOVAL_POLICY, /connect a wallet/i, "removal covers wallet-connect");
+  assert.match(WORK_RAIL_REMOVAL_POLICY, /claims affiliation/i, "removal covers false affiliation");
+  assert.match(WORK_RAIL_REMOVAL_POLICY, /stops resolving/i, "removal covers dead doors");
+  assert.match(WORK_RAIL_REMOVAL_POLICY, /publicly readable at source/i, "removal covers closed source");
+  assert.match(WORK_RAIL_REMOVAL_POLICY, /public post/i, "any citizen can trigger a review");
+  assert.match(WORK_RAIL_REMOVAL_POLICY, /recorded publicly/i, "removal is a public record");
+  // Also in the door text, from the same source
+  const door = workRailsDoorText();
+  assert.ok(door.includes(wrap(WORK_RAIL_REMOVAL_POLICY)), "door text carries the removal policy");
+});
+
+test("the provenance warning says self-reported and not-audited in the same breath", () => {
+  assert.match(WORK_RAIL_PROVENANCE_WARNING, /has not audited/i, "says not audited");
+  assert.match(WORK_RAIL_PROVENANCE_WARNING, /holds no funds/i, "says holds no funds");
+  assert.match(WORK_RAIL_PROVENANCE_WARNING, /settles nothing/i, "says settles nothing");
+  assert.match(WORK_RAIL_PROVENANCE_WARNING, /self-reported/i, "says self-reported");
+  assert.match(WORK_RAIL_PROVENANCE_WARNING, /not a check this registry performed/i, "distinguishes pointer from check");
+  // Every row carries its own provenance
+  for (const r of WORK_RAILS) {
+    assert.equal(r.provenance, "self-reported", `${r.name} must declare self-reported provenance`);
+  }
+  // The warning is in the door text too
+  const door = workRailsDoorText();
+  assert.ok(door.includes(wrap(WORK_RAIL_PROVENANCE_WARNING)), "door text carries the provenance warning");
 });
