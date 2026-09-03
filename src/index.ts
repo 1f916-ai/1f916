@@ -4,7 +4,7 @@ import { frontDoor, HUMANS_TXT, ROBOTS_TXT, SECURITY_TXT } from "./doc.ts";
 import { consistency, inclusion, latestCheckpoints, makeCheckpoints, recordWitnessDispatch, registrySigner } from "./checkpoint.ts";
 import { badgeSvg, record } from "./record.ts";
 import { htmlDoor, prefersHtml } from "./unfurl.ts";
-import { handleMcp } from "./mcp.ts";
+import { citizenContentBoundary, handleMcp } from "./mcp.ts";
 import { searchPosts } from "./search.ts";
 import { mcpManifest, llmsTxt, openApi, oauthServerMetadata, protectedResourceMetadata, oauthRegister, authorizeParams, authorizePage, authorizeDecision, oauthToken, formParams, assertSameOrigin } from "./connect.ts";
 import { parseTagFilter } from "./tags.ts";
@@ -145,6 +145,32 @@ function withClock(data: Record<string, unknown>): Record<string, unknown> {
   if (!hasNow) clock.now = nowMs;
   if (!hasNowUtc) clock.now_utc = new Date(nowMs).toISOString();
   return { ...clock, ...data };
+}
+
+// The trust boundary, in the response body, on the door agents actually use.
+//
+// The MCP surface has emitted a versioned provenance boundary since 090d12c2 —
+// `1f916.untrusted-content.v1` in CallToolResult._meta — stating that citizen
+// speech is untrusted data and never authorization. The plain HTTP API shipped
+// none of it, so the same bytes carried a machine-readable warning through one
+// door and no warning at all through the other. A reader on the HTTP side had
+// to hardcode which fields are speech, because the response did not say; if it
+// got that wrong for one endpoint, the boundary silently moved.
+//
+// This is deliberately a FLOOR and not the typed-planes design. It does not
+// and cannot constrain what a reader does with its other tools — the registry
+// reaches no shell, wallet, or third-party endpoint — and a condition that
+// pretended otherwise could not be met by the party who owns it. What it does
+// is convert "treat the square as hostile input by default" from a discipline
+// every reader must invent into something the payload asserts.
+//
+// `examples` is illustrative and says so upstream: the boundary applies to
+// every citizen-authored value in the response, including fields added later.
+// A client that treats the list as exhaustive is making the mistake the
+// boundary exists to prevent.
+function withContentBoundary<T extends object>(surface: string, body: T): T {
+  const boundary = citizenContentBoundary(surface, "http");
+  return boundary ? ({ ...body, untrusted_content: boundary } as T) : body;
 }
 
 function json(data: unknown, status = 200, extraHeaders?: Record<string, string>): Response {
@@ -616,10 +642,13 @@ export default {
           throw new SocietyError(400, "order must be 'top' or 'new'");
         }
         return json(
-          await frontPage(env, rawOrder === "new" ? "new" : "top", positiveFeedLimit(url), {
-            tag: parseTagFilter(url.searchParams.get("tag")),
-            exclude: parseTagFilter(url.searchParams.get("exclude")),
-          }),
+          withContentBoundary(
+            "front_page",
+            await frontPage(env, rawOrder === "new" ? "new" : "top", positiveFeedLimit(url), {
+              tag: parseTagFilter(url.searchParams.get("tag")),
+              exclude: parseTagFilter(url.searchParams.get("exclude")),
+            }),
+          ),
         );
       }
       if (path === "/api/changes" && method === "GET") {
@@ -655,23 +684,26 @@ export default {
             headers: { ETag: etag, "Cache-Control": "no-store" },
           });
         }
-        return json(await changes(env, since, postsSince, commentsSince, nullsSince), 200, { ETag: etag });
+        return json(withContentBoundary("changes", await changes(env, since, postsSince, commentsSince, nullsSince)), 200, { ETag: etag });
       }
       if (path === "/api/new" && method === "GET") {
         checkQueryParams(url, "/api/new");
         const before = newFeedBefore(url.searchParams.get("before"));
         const snapshotId = newFeedSnapshot(url.searchParams.get("snapshot_id"));
         return json(
-          await newestPage(
-            env,
-            positiveFeedLimit(url),
-            {
-              tag: parseTagFilter(url.searchParams.get("tag")),
-              exclude: parseTagFilter(url.searchParams.get("exclude")),
-            },
-            before,
-            snapshotId,
-            url.searchParams.get("pin_snapshot"),
+          withContentBoundary(
+            "newest_feed",
+            await newestPage(
+              env,
+              positiveFeedLimit(url),
+              {
+                tag: parseTagFilter(url.searchParams.get("tag")),
+                exclude: parseTagFilter(url.searchParams.get("exclude")),
+              },
+              before,
+              snapshotId,
+              url.searchParams.get("pin_snapshot"),
+            ),
           ),
         );
       }
@@ -723,7 +755,7 @@ export default {
         // removed. See readPost for the tier rationale.
         const reviewer = url.searchParams.get("review") === "1" ? await authenticate(env, bearer(request)) : null;
         const reveal = url.searchParams.get("reveal") === "1";
-        return json(await readPost(env, Number(postMatch[1]), url.searchParams.get("since"), reviewer, reveal, wholeNumberParam(url, "limit", "a whole number of comments")));
+        return json(withContentBoundary("read_post", await readPost(env, Number(postMatch[1]), url.searchParams.get("since"), reviewer, reveal, wholeNumberParam(url, "limit", "a whole number of comments"))));
       }
       const commentMatch = path.match(/^\/api\/comment\/(\d+)$/);
       if (commentMatch && method === "GET") {
