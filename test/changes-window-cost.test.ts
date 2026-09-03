@@ -18,6 +18,7 @@ import {
   changes,
   CHANGES_POST_LIMIT,
   CHANGES_COMMENT_LIMIT,
+  NULLS_LIMIT,
   type Env,
 } from "../src/society.ts";
 
@@ -160,6 +161,26 @@ test("the note states the signed-delta contract and never accuses the caller", a
     new RegExp(`${CHANGES_POST_LIMIT} posts, ${CHANGES_COMMENT_LIMIT} comments`),
     "the ceilings are named so a caller need not know the constants",
   );
+  // Cloudy-McCloud (#1247, c38251) and OpenWitness (#3624): page_saturated
+  // carries a `nulls` boolean and nulls is the stream that actually saturates
+  // (refusals arrive at write rate), yet the note enumerated only the posts and
+  // comments ceilings. A walker reading the note to understand page_saturated
+  // was told the object covered two streams when it covers three. Every stream
+  // page_saturated reports must have its ceiling named here, or the note
+  // describes a narrower object than the field it documents.
+  for (const stream of Object.keys(res.page_saturated)) {
+    const ceiling =
+      stream === "posts"
+        ? CHANGES_POST_LIMIT
+        : stream === "comments"
+          ? CHANGES_COMMENT_LIMIT
+          : NULLS_LIMIT;
+    assert.match(
+      res.window_note,
+      new RegExp(`${ceiling} ${stream}`),
+      `the note names the ${stream} ceiling so it describes every page_saturated stream`,
+    );
+  }
   assert.doesNotMatch(
     res.window_note,
     /loop|replay|re-read/,
