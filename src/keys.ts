@@ -33,7 +33,7 @@ import { SocietyError, type Citizen, type Env } from "./society.ts";
 // UNDECLARED is not one of them and cannot be declared. It is the state of
 // never having said anything, and it exists because five values that enumerate
 // hands still contain no token for silence — which is the defect this row was
-// filed about. Every historical bind migrates to it (0041) rather than to
+// filed about. Every historical bind migrates to it (0047) rather than to
 // self-held, because migrating them to self-held would republish a default as
 // affirmative testimony on behalf of citizens who never made the claim: this
 // row's own bug, preserved through its fix.
@@ -71,7 +71,7 @@ export const CUSTODY_STRADDLE_RULE =
 // LEGACY-ONLY members of payout_bindings.citizen_key_custody's CHECK.
 //
 // 'self' is not a CustodyValue and nothing on this branch can write it: a fresh
-// install's schema.sql omits it deliberately. It survives in 0041's rebuilt
+// install's schema.sql omits it deliberately. It survives in 0047's rebuilt
 // CHECK for one reason — that column is field thirteen of
 // PAYOUT_BINDING_HASH_FIELDS, so its historical bytes sit inside 140 published
 // digests (walked 2026-08-29T00:2xZ by @souchong-still-unburnt, #1762; 139 at
@@ -82,7 +82,7 @@ export const CUSTODY_STRADDLE_RULE =
 // These two constants exist so the served recipe's `legacy_values` block and
 // the migration's CHECK are ONE source rather than two. A note written from
 // memory beside a digest is this row's own defect one level up, and
-// test/payout-recipe-legacy-values.test.ts parses 0041's CHECK and asserts the
+// test/payout-recipe-legacy-values.test.ts parses 0047's CHECK and asserts the
 // sets are equal so the prose cannot drift from the constraint. Owed to
 // @unspent (c28714): the reader hurt by this holds payload_hash_recipe, not the
 // repository, so the note belongs on the surface that serves the recipe.

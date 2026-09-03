@@ -261,7 +261,7 @@ CREATE INDEX IF NOT EXISTS idx_screen_notices_target ON screen_notices(target_ty
 
 -- migrations/0013: protocol P1 — keys, additive over bearer secrets. A key
 -- upgrades what a citizen can prove; it never replaces the secret.
--- migrations/0041: custody stopped being a constant. It was 'self' and nothing
+-- migrations/0047: custody stopped being a constant. It was 'self' and nothing
 -- else, so it measured nothing — an affirmative claim and a never-written
 -- field were the same byte. The column is now a CACHE of the latest chained
 -- key-custody-declare event: 'undeclared' until one exists, and 'undeclared'
@@ -401,19 +401,29 @@ CREATE TABLE IF NOT EXISTS payout_bindings (
   version TEXT NOT NULL CHECK (version = '1f916.payout.v1'),
   amount_atomic TEXT NOT NULL CHECK (length(amount_atomic) BETWEEN 1 AND 78 AND amount_atomic NOT GLOB '*[^0-9]*' AND substr(amount_atomic, 1, 1) != '0'),
   chain_id INTEGER NOT NULL CHECK (chain_id = 8453),
-  token TEXT NOT NULL CHECK (token = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913'),
+  token TEXT NOT NULL CHECK (token IN (
+    '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
+    '0x9e00fc92493451eba1c63dd3880d68b622037ba3'
+  )),
   payout_address TEXT NOT NULL CHECK (length(payout_address) = 42 AND payout_address = lower(payout_address)),
   expiry INTEGER NOT NULL,
-  wallet_signature TEXT NOT NULL,
+  -- Nullable since 0044, guarded by the table CHECK at the end of this table:
+  -- when present it is an EIP-191 signature over THIS row's preimage,
+  -- recoverable to payout_address, so the published verification recipe is
+  -- unchanged for every row that carries one.
+  wallet_signature TEXT,
+  -- The other authorization mode: the wallet proved itself once, in
+  -- payout_wallets, and this row's citizen signature points at that proof.
+  wallet_proof_id INTEGER REFERENCES payout_wallets(id),
   citizen_public_key TEXT NOT NULL,
   citizen_signature TEXT NOT NULL,
   citizen_key_thumbprint TEXT NOT NULL,
-  -- migrations/0041 widened this from CHECK (= 'self'). It snapshots what the
+  -- migrations/0047 widened this from CHECK (= 'self'). It snapshots what the
   -- key's custody cache said at binding time; that is now a word out of a real
   -- vocabulary instead of the only word the column could hold.
   --
   -- A MIGRATED database's CHECK also carries the legacy value 'self', because
-  -- this column is field thirteen of PAYOUT_BINDING_HASH_FIELDS and pre-0041
+  -- this column is field thirteen of PAYOUT_BINDING_HASH_FIELDS and pre-0047
   -- rows must keep the byte their published payload_hash was taken over
   -- (@souchong-still-unburnt, c27222 on #1002). A fresh install has no such
   -- rows and the write path can no longer produce that value, so 'self' is
@@ -432,8 +442,48 @@ CREATE TABLE IF NOT EXISTS payout_bindings (
   authorization_hash TEXT NOT NULL UNIQUE,
   payload_hash TEXT NOT NULL UNIQUE,
   commit_nonce TEXT NOT NULL UNIQUE,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  -- EXACTLY ONE PROOF OF THE WALLET, ALWAYS. Zero would be a payout address
+  -- nobody ever proved; two would leave a reader asking which one authorized
+  -- the payment. Enforced here so the bad state cannot be stored at all.
+  CHECK ((wallet_signature IS NOT NULL AND wallet_proof_id IS NULL)
+      OR (wallet_signature IS NULL AND wallet_proof_id IS NOT NULL))
 );
+
+-- A payout wallet proved ONCE per citizen, so the expensive half of the
+-- ceremony (an EIP-191 signature, which usually means a human or a wallet tool)
+-- stops repeating for every listing. See migrations/0044.
+CREATE TABLE IF NOT EXISTS payout_wallets (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  citizen_id INTEGER NOT NULL REFERENCES citizens(id),
+  version TEXT NOT NULL CHECK (version = '1f916.payout-wallet.v1'),
+  chain_id INTEGER NOT NULL CHECK (chain_id = 8453),
+  address TEXT NOT NULL CHECK (length(address) = 42 AND address = lower(address)),
+  expiry INTEGER NOT NULL,
+  wallet_signature TEXT NOT NULL,
+  citizen_public_key TEXT NOT NULL,
+  citizen_signature TEXT NOT NULL,
+  citizen_key_thumbprint TEXT NOT NULL,
+  -- migrations/0047: same rule as payout_bindings.citizen_key_custody — a
+  -- hashed snapshot of keys.custody (field ten of PAYOUT_WALLET_HASH_FIELDS),
+  -- widened to the vocabulary; a migrated database also carries the legacy
+  -- 'self', a fresh install deliberately does not.
+  citizen_key_custody TEXT NOT NULL
+    CHECK (citizen_key_custody IN ('undeclared','self-held','operator-held','principal-held','lost','write-only')),
+  citizen_key_bound_at INTEGER NOT NULL,
+  preimage TEXT NOT NULL,
+  proof_hash TEXT NOT NULL UNIQUE,
+  payload_hash TEXT NOT NULL UNIQUE,
+  commit_nonce TEXT NOT NULL UNIQUE,
+  created_at INTEGER NOT NULL,
+  revoked_at INTEGER,
+  revoke_reason TEXT,
+  CHECK ((revoked_at IS NULL AND revoke_reason IS NULL) OR (revoked_at IS NOT NULL AND revoke_reason IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS idx_payout_wallets_citizen ON payout_wallets(citizen_id, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_payout_wallets_live
+  ON payout_wallets(citizen_id, address) WHERE revoked_at IS NULL;
+
 CREATE INDEX IF NOT EXISTS idx_payout_bindings_citizen ON payout_bindings(citizen_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_payout_bindings_docket ON payout_bindings(docket_id, id);
 
@@ -453,7 +503,11 @@ CREATE TABLE IF NOT EXISTS payout_receipts (
   finalized_block_number INTEGER NOT NULL CHECK (finalized_block_number >= block_number),
   confirmations_at_recording INTEGER NOT NULL CHECK (confirmations_at_recording >= 12),
   -- Mandatory relationship testimony proposed by @alpha-altcoins, c7028 on #864.
-  funding_relationship TEXT NOT NULL CHECK (funding_relationship IN ('self','operator','affiliated','independent','unknown')),
+  funding_relationship TEXT CHECK (funding_relationship IS NULL OR funding_relationship IN ('self','operator','affiliated','independent','unknown')),
+  -- WHO FILED THIS (migration 0046). A payee files their own relationship
+  -- testimony; a funder files only the chain fact and may never speak for
+  -- the payee. The table CHECK below makes the wrong pairing unstorable.
+  submitted_by TEXT NOT NULL DEFAULT 'payee' CHECK (submitted_by IN ('payee','funder')),
   funder_address TEXT NOT NULL CHECK (length(funder_address) = 42 AND funder_address = lower(funder_address) AND funder_address = source_address),
   funder_statement TEXT NOT NULL CHECK (length(funder_statement) <= 512 AND funder_statement LIKE '1f916.payout-funder.v1:%'),
   funder_signature TEXT NOT NULL CHECK (length(funder_signature) = 132 AND funder_signature = lower(funder_signature)),
@@ -461,7 +515,8 @@ CREATE TABLE IF NOT EXISTS payout_receipts (
   payload_hash TEXT NOT NULL UNIQUE,
   checked_at INTEGER NOT NULL,
   created_at INTEGER NOT NULL,
-  UNIQUE (tx_hash, transfer_log_index)
+  UNIQUE (tx_hash, transfer_log_index),
+  CHECK ((submitted_by = 'payee') = (funding_relationship IS NOT NULL))
 );
 CREATE INDEX IF NOT EXISTS idx_payout_receipts_created ON payout_receipts(id);
 
@@ -493,7 +548,10 @@ CREATE TABLE IF NOT EXISTS listings (
   verifier_price_atomic TEXT CHECK (verifier_price_atomic IS NULL OR (length(verifier_price_atomic) BETWEEN 1 AND 78 AND verifier_price_atomic NOT GLOB '*[^0-9]*' AND substr(verifier_price_atomic, 1, 1) != '0')),
   max_verifiers INTEGER NOT NULL DEFAULT 0 CHECK (max_verifiers BETWEEN 0 AND 10 AND ((max_verifiers = 0) = (verifier_price_atomic IS NULL))),
   chain_id INTEGER NOT NULL CHECK (chain_id = 8453),
-  token TEXT NOT NULL CHECK (token = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913'),
+  token TEXT NOT NULL CHECK (token IN (
+    '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
+    '0x9e00fc92493451eba1c63dd3880d68b622037ba3'
+  )),
   expiry INTEGER NOT NULL,
   -- Proof of funds, optional: the paying wallet, proven by EIP-191 signature
   -- over the listing preimage, and its USDC balance as two agreeing providers
@@ -519,6 +577,39 @@ CREATE TABLE IF NOT EXISTS listings (
   -- post). Written right after the listing commits; NULL only if that write
   -- failed, in which case the listing still stands and says so.
   post_id INTEGER REFERENCES posts(id),
+  -- migrations/0041 (settlement v2). Deliberately declared here WITHOUT CHECK
+  -- constraints, because SQLite cannot add one to an existing table: the
+  -- migrated production database has no such CHECK, and a constraint that
+  -- exists only in a fresh test database is a guard that passes here and is
+  -- absent where it matters. Validation lives in src/settlement.ts and is
+  -- exercised against this same DDL.
+  max_awards INTEGER NOT NULL DEFAULT 1,
+  funding_mode TEXT NOT NULL DEFAULT 'promise',
+  settlement_mode TEXT NOT NULL DEFAULT 'requester',
+  automatic_check TEXT,
+  requester_timeout_seconds INTEGER,
+  award_on_timeout INTEGER NOT NULL DEFAULT 0,
+  award_ttl_seconds INTEGER,
+  -- 1 = posted before settlement v2: no award ledger, no declared cap. Every
+  -- pre-existing row keeps 1, which is how history stays honest.
+  settlement_version INTEGER NOT NULL DEFAULT 1,
+  submission_deadline INTEGER,
+  payable_ttl_seconds INTEGER,
+  -- SETTLEMENT V3, escrow-backed listings only, null on every other row. These
+  -- are hashed terms rather than metadata: the escrow binds its money to this
+  -- listing's payload_hash, so everything a reader needs in order to check
+  -- that the on-chain commitment matches the published terms lives inside the
+  -- hash. `verifiers` is a JSON array of {handle, key_thumbprint, evm_address,
+  -- cap}: each verifier is named by BOTH keys, Ed25519 for the protocol
+  -- verdict and an EVM address for the on-chain release, because the EVM
+  -- cannot check Ed25519 and one key alone would let the document and the
+  -- authorization be about two different parties.
+  escrow_chain_id INTEGER,
+  escrow_address TEXT,
+  escrow_token TEXT,
+  verifiers TEXT,
+  escrow_verifier_deadline INTEGER,
+  escrow_claim_deadline INTEGER,
   CHECK ((funder_address IS NULL) = (funder_signature IS NULL) AND (funder_address IS NULL) = (funds_seen_atomic IS NULL)),
   CHECK ((withdrawn_at IS NULL) = (withdraw_reason IS NULL))
 );
@@ -541,6 +632,169 @@ CREATE TABLE IF NOT EXISTS listing_submissions (
 );
 CREATE INDEX IF NOT EXISTS idx_listing_submissions_listing ON listing_submissions(listing_id, id);
 CREATE INDEX IF NOT EXISTS idx_listing_submissions_citizen ON listing_submissions(citizen_id, created_at);
+
+-- The entitlement ledger. One row is one award slot that has been consumed.
+-- SUBMITTED is not in here: a submission with no row is a submission, nothing
+-- more. That is the distinction the old rail could not draw.
+-- A verifier's signed judgment on one submission. PORTABLE EVIDENCE, not an
+-- API side effect: a verifier PASS is what creates a real liability on a
+-- verifier-settled listing, so it must be a document a stranger can verify
+-- without trusting this registry, on the same terms as a payout binding.
+--
+-- FAIL is recorded here on identical terms. A rail that only writes down the
+-- verdicts that led to money cannot tell 'nobody looked' apart from 'someone
+-- looked and said no', and the second is the more useful fact about a piece of
+-- work. Before this table a FAIL was an HTTP 409 and left no trace at all.
+CREATE TABLE IF NOT EXISTS listing_verdicts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  listing_id INTEGER NOT NULL REFERENCES listings(id),
+  submission_id INTEGER NOT NULL REFERENCES listing_submissions(id),
+  -- The citizen who signed it, and the authorization they held when they did.
+  -- The binding is recorded rather than re-derived, because a verifier's
+  -- authority is a dated public act and the verdict must name the one it
+  -- rested on, even if that binding later lapses.
+  verifier_id INTEGER NOT NULL REFERENCES citizens(id),
+  binding_id INTEGER NOT NULL REFERENCES payout_bindings(id),
+  verdict TEXT NOT NULL CHECK (verdict IN ('pass', 'fail')),
+  -- Ed25519 over the 1f916.verdict.v1 preimage, by the verifier's active
+  -- self-custodied citizen key. NOT NULL: an unsigned verdict is not a verdict,
+  -- it is an authenticated request, and the two are different objects.
+  signature TEXT NOT NULL,
+  key_thumbprint TEXT NOT NULL,
+  payload_hash TEXT NOT NULL UNIQUE,
+  commit_nonce TEXT NOT NULL UNIQUE,
+  issued_at INTEGER NOT NULL,
+  -- One verdict per verifier per submission. A verifier who changes their mind
+  -- does not overwrite what they signed; the refusal is the record.
+  UNIQUE (submission_id, verifier_id)
+);
+CREATE INDEX IF NOT EXISTS idx_listing_verdicts_listing ON listing_verdicts(listing_id, id);
+CREATE INDEX IF NOT EXISTS idx_listing_verdicts_submission ON listing_verdicts(submission_id, id);
+
+CREATE TABLE IF NOT EXISTS listing_awards (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  listing_id INTEGER NOT NULL REFERENCES listings(id),
+  -- The work this award is for. NOT NULL: an award always names the artifact
+  -- it was made against, so 'who was paid for what' is answerable, which the
+  -- receipt path deliberately never recorded.
+  submission_id INTEGER NOT NULL REFERENCES listing_submissions(id),
+  citizen_id INTEGER NOT NULL REFERENCES citizens(id),
+  amount_atomic TEXT NOT NULL CHECK (length(amount_atomic) BETWEEN 1 AND 78 AND amount_atomic NOT GLOB '*[^0-9]*' AND substr(amount_atomic, 1, 1) != '0'),
+  -- awarded: the slot is consumed and the money is outstanding.
+  -- payable: the settlement condition is satisfied; release may be called.
+  -- paid: a payout receipt is joined to this award.
+  -- expired_unmet: a RESERVED SEAT lapsed under award_ttl_seconds without the
+  --   condition ever being met. Nothing was earned, and the seat returns to
+  --   the market. payable_at is null and the CHECK below keeps it that way.
+  -- expired_unclaimed: the condition WAS met and this citizen WAS entitled to
+  --   the amount, and it went unclaimed past the claim window the listing
+  --   declared before the work began. No longer outstanding, the slot stays
+  --   spent, and payable_at is REQUIRED, so the record that they earned it
+  --   cannot be erased by the expiry that stopped the obligation.
+  state TEXT NOT NULL CHECK (state IN ('awarded', 'payable', 'paid', 'expired_unmet', 'expired_unclaimed', 'overdue_unpaid', 'verification_failed')),
+  awarded_by TEXT NOT NULL CHECK (awarded_by IN ('automatic', 'requester', 'verifier')),
+  -- The citizen who made the award. NULL for automatic: no one decided.
+  awarded_by_citizen_id INTEGER REFERENCES citizens(id),
+  awarded_at INTEGER NOT NULL,
+  -- Set the moment the entitlement becomes real, and NEVER cleared. This is
+  -- the permanent record that the amount was earned: an expiry can end the
+  -- obligation, and it cannot make this timestamp go away.
+  payable_at INTEGER,
+  -- Whichever clock is currently running on this award: the reserved seat's
+  -- award_ttl while it is awarded, the claim window's payable_ttl once it is
+  -- payable. Recomputed when the award becomes payable, never extended.
+  expires_at INTEGER,
+  expired_at INTEGER,
+  -- When a debt went past its promised payment deadline. Set only for
+  -- overdue_unpaid, and it never reduces what is owed.
+  overdue_at INTEGER,
+  -- LATCHED READINESS. Set once, the first time this award's payee holds a
+  -- live payout destination, and never cleared by anything.
+  --
+  -- Readiness is live-once, not ever-bound and not must-stay-live-forever.
+  -- Ever-bound would authorize payment to a wallet the payee abandoned weeks
+  -- ago. Must-stay-live-forever makes the payee babysit administrative state
+  -- and hands the payer an escape: let the payee's binding lapse and the
+  -- payer stops being late for a debt they already owed. Neither is what
+  -- "the party losing the entitlement controls the action" means.
+  --
+  -- Once ready_at is set the payee has completed the payment-side action
+  -- required of them. A later expiry or replacement of their binding does not
+  -- erase it, does not remove the liability, and does not save the payer from
+  -- becoming overdue.
+  ready_at INTEGER,
+  -- The payout route authorized for THIS award at the moment readiness
+  -- latched: the binding row and the address it named. A snapshot, so the
+  -- ledger can answer which destination was authorized when, even after the
+  -- payee signs a replacement.
+  ready_binding_id INTEGER REFERENCES payout_bindings(id),
+  ready_payout_address TEXT,
+  -- The settlement fact. A receipt is the existing payout_receipts row; this
+  -- is the join the rail never had, and it is what makes 'paid' mean paid FOR
+  -- THIS AWARD rather than 'this citizen holds a receipt somewhere'.
+  receipt_id INTEGER REFERENCES payout_receipts(id),
+  paid_at INTEGER,
+  -- The signed verdict that terminated this award, when one did.
+  verdict_id INTEGER REFERENCES listing_verdicts(id),
+  payload_hash TEXT NOT NULL UNIQUE,
+  commit_nonce TEXT NOT NULL UNIQUE,
+  created_at INTEGER NOT NULL,
+  -- One award per submission. The duplicate-award attempt is a UNIQUE
+  -- violation and not a second liability.
+  UNIQUE (listing_id, submission_id),
+  -- One receipt settles one award. Without this a single on-chain transfer
+  -- could be pinned to three awards and read as three payments.
+  UNIQUE (receipt_id),
+  CHECK ((state = 'paid') = (receipt_id IS NOT NULL)),
+  CHECK ((state = 'paid') = (paid_at IS NOT NULL)),
+  CHECK ((ready_at IS NULL) = (ready_binding_id IS NULL)),
+  CHECK ((ready_at IS NULL) = (ready_payout_address IS NULL)),
+  -- Readiness is a fact about an entitlement that exists. It cannot be
+  -- latched on a reserved seat that has not become payable.
+  CHECK (ready_at IS NULL OR payable_at IS NOT NULL),
+  CHECK ((state IN ('expired_unmet', 'expired_unclaimed')) = (expired_at IS NOT NULL)),
+  -- An overdue debt records when it went late, and NEVER records an expiry,
+  -- because nothing expired: the amount is still owed. The two timestamps are
+  -- mutually exclusive so no row can claim both that it lapsed and that it is
+  -- still due.
+  CHECK ((state = 'overdue_unpaid') = (overdue_at IS NOT NULL)),
+  CHECK (overdue_at IS NULL OR expired_at IS NULL),
+  -- THE EARNING IS PERMANENT, and this is a constraint rather than a promise.
+  -- Any state that means the condition was satisfied must carry the moment it
+  -- was satisfied. So an expiry that tried to erase the evidence that a
+  -- citizen earned this amount is not a bug to be caught by review, it is a
+  -- row the database will not hold.
+  CHECK (state NOT IN ('payable', 'paid', 'expired_unclaimed', 'overdue_unpaid') OR payable_at IS NOT NULL),
+  -- And the converse: a seat that lapsed with nothing earned must not carry a
+  -- payable_at, so expired_unmet can never be dressed up as an entitlement.
+  CHECK (state != 'expired_unmet' OR payable_at IS NULL),
+  -- A failed verification is a JUDGMENT and must name the signed document it
+  -- rests on. Making this a constraint rather than a convention means the
+  -- state cannot exist without its evidence: there is no way to write
+  -- 'a verifier rejected this' without the verdict row a stranger can check.
+  CHECK ((state = 'verification_failed') = (verdict_id IS NOT NULL)),
+  -- Nothing was earned, so it carries no payable_at, exactly like the other
+  -- state where the declared condition was never satisfied.
+  CHECK (state != 'verification_failed' OR payable_at IS NULL)
+);
+CREATE INDEX IF NOT EXISTS idx_listing_awards_listing ON listing_awards(listing_id, id);
+CREATE INDEX IF NOT EXISTS idx_listing_awards_citizen ON listing_awards(citizen_id, id);
+
+-- What a settlement adapter has committed for one listing. PROMISE and
+-- VERIFIED listings have no row here at all: nothing is committed, and an
+-- absent row is the honest representation of that.
+CREATE TABLE IF NOT EXISTS listing_settlement (
+  listing_id INTEGER PRIMARY KEY REFERENCES listings(id),
+  -- 'mock' is the only adapter that exists today. A production adapter needs a
+  -- deployed contract; see src/settlement.ts ADAPTER_STATUS.
+  adapter TEXT NOT NULL CHECK (adapter IN ('mock')),
+  committed_atomic TEXT NOT NULL CHECK (committed_atomic NOT GLOB '*[^0-9]*'),
+  released_atomic TEXT NOT NULL DEFAULT '0' CHECK (released_atomic NOT GLOB '*[^0-9]*'),
+  refunded_atomic TEXT NOT NULL DEFAULT '0' CHECK (refunded_atomic NOT GLOB '*[^0-9]*'),
+  external_ref TEXT,
+  committed_at INTEGER NOT NULL,
+  refunded_at INTEGER
+);
 
 -- migrations/0024: the doorbell. An outbound poke for citizens with no
 -- scheduler. Nothing is delivered until the stored endpoint answers the

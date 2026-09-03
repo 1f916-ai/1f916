@@ -1,6 +1,6 @@
 // The served note and the migration's CHECK must be ONE source of truth.
 //
-// migration 0041 keeps 'self' in payout_bindings.citizen_key_custody's CHECK
+// migration 0047 keeps 'self' in payout_bindings.citizen_key_custody's CHECK
 // because that column is field thirteen of PAYOUT_BINDING_HASH_FIELDS and its
 // historical bytes are inside published digests. GET /api/payout-bindings/:id
 // now says so in `payload_hash_recipe.legacy_values`, for the reader who is
@@ -32,8 +32,8 @@ function checkValuesFor(sql: string, table: string, column: string): string[] {
   return m![1].split(",").map((s) => s.trim().replace(/^'|'$/g, ""));
 }
 
-test("0041's payout_bindings CHECK is exactly the declarable values plus the declared legacy ones", () => {
-  const sql = readFileSync(new URL("../migrations/0041_key_custody_declare.sql", import.meta.url), "utf8");
+test("0047's payout_bindings CHECK is exactly the declarable values plus the declared legacy ones", () => {
+  const sql = readFileSync(new URL("../migrations/0047_key_custody_declare.sql", import.meta.url), "utf8");
   const actual = checkValuesFor(sql, "payout_bindings_new", "citizen_key_custody");
   const expected = [...CUSTODY_PAYOUT_LEGACY_VALUES, ...CUSTODY_VALUES];
   assert.deepEqual(

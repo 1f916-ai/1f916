@@ -22,12 +22,14 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { LIVE_PROBES, LIVE_SKIP_REASON, RateLimited, liveFetch } from "./helpers/live.ts";
 import { readFileSync } from "node:fs";
+import { QUERY_PARAMS } from "../src/query-params.ts";
 
 const BASE = "https://1f916.ai";
 const source = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
 
 test("the books refuse parameters instead of ignoring them", () => {
-  assert.match(source, /checkQueryParams\(url, "\/treasury", \[\]\)/);
+  assert.match(source, /checkQueryParams\(url, "\/treasury"\)/);
+  assert.deepEqual([...QUERY_PARAMS["/treasury"]], [], "/treasury is guarded and takes nothing");
 });
 
 test("an empty allow-list produces a sentence, not a dangling 'Supported:'", () => {

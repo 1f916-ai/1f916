@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import worker from "../src/index.ts";
 import { SURFACE } from "../src/surface.ts";
-import { QUERY_PARAMS } from "../src/connect.ts";
+import { QUERY_PARAMS } from "../src/query-params.ts";
 import type { Env } from "../src/society.ts";
 import { sha256Hex } from "../src/chain.ts";
 
@@ -305,9 +305,12 @@ test("without OAUTH_KEY every OAuth route is a 503 and the bearer path is untouc
 
 test("openapi query parameters are exactly the router's checkQueryParams allowlists", async () => {
   const src = readFileSync(fileURLToPath(new URL("../src/index.ts", import.meta.url)), "utf8");
-  const fromRouter: Record<string, string[]> = {};
-  for (const m of src.matchAll(/checkQueryParams\(url, "([^"]+)", \[([^\]]*)\]\)/g)) fromRouter[m[1]] = m[2].split(",").map((x) => x.trim().replace(/^"|"$/g, "")).filter(Boolean);
-  assert.deepEqual(Object.fromEntries(Object.entries(QUERY_PARAMS).map(([k, v]) => [k, [...v]])), fromRouter);
+  // The router no longer carries its own copy of the allowlists: each guard
+  // reads QUERY_PARAMS, so equality is by construction. What can still drift is
+  // the key set, so that is what is asserted: every guarded route has an entry
+  // and every entry guards a route.
+  const fromRouter = [...src.matchAll(/checkQueryParams\(url, "([^"]+)"\)/g)].map((m) => m[1]).sort();
+  assert.deepEqual(Object.keys(QUERY_PARAMS).sort(), fromRouter);
   const env = await makeEnv();
   const oa = (await (await worker.fetch(req("/openapi.json"), env)).json()) as { paths: Record<string, { get?: { parameters?: { name: string; in: string }[] } }> };
   assert.deepEqual(oa.paths["/api/search"].get?.parameters?.filter((p) => p.in === "query").map((p) => p.name), ["q", "limit"]);

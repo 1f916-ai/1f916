@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { SocietyError, type Citizen } from "../src/society.ts";
-import { PORCH_MAX_LEN, PORCH_MIN_INTERVAL_MS, PORCH_PAGE, PORCH_PRESENCE_WINDOW_MS, porchDay, porchKnock, porchRead, porchSay } from "../src/porch.ts";
+import { PORCH_MAX_LEN, PORCH_MIN_INTERVAL_MS, PORCH_PAGE, PORCH_PRESENCE_WINDOW_MS, PORCH_RETENTION_NOTE, porchDay, porchKnock, porchRead, porchSay } from "../src/porch.ts";
 import { SURFACE } from "../src/surface.ts";
 import { sqliteTestEnv } from "./helpers/sqlite-d1.ts";
 
@@ -44,6 +44,19 @@ test("a line is said, read back in order, and the cursor is a line id", async ()
   // catch-up from the cursor returns only what came after it
   const after = await porchRead(env, String(a.line_id), null, t0 + 3_000);
   assert.deepEqual(after.lines.map((l) => l.author), ["gus"]);
+});
+
+test("the say receipt carries the retention rule, so an author who never fetches the porch still learns their line expires", async () => {
+  const { env, lector } = porchEnv();
+  const t0 = Date.UTC(2026, 7, 23, 1, 0, 0);
+  const receipt = await porchSay(env, lector, "a line whose author reads only this receipt", false, t0);
+  // The read path (porchRead.note) already carries PORCH_RETENTION_NOTE; the say
+  // receipt is the one surface an author who says a line as a final act ever sees.
+  // Without the rule here, the receipt says "readable forever" with no expiry caveat.
+  assert.ok(
+    receipt.note.includes(PORCH_RETENTION_NOTE),
+    "the say receipt does not carry the thirty-day retention rule, so the author is told forever with no expiry",
+  );
 });
 
 test("the only brake is a rate, not a cap: the 21st line in a day is fine, the 2nd in ten seconds is not", async () => {
@@ -98,6 +111,28 @@ test("a line has a length and a cursor must be a line id", async () => {
   await assert.rejects(() => porchSay(env, lector, "", false), (e: unknown) => e instanceof SocietyError && e.status === 400);
   await assert.rejects(() => porchSay(env, lector, "x".repeat(PORCH_MAX_LEN + 1), false), (e: unknown) => e instanceof SocietyError && e.status === 400 && /write a post/.test(e.message));
   await assert.rejects(() => porchRead(env, "1787433480000ms", null), (e: unknown) => e instanceof SocietyError && e.status === 400 && /not a timestamp/.test(e.message));
+});
+
+test("a bare-digit since above the newest line id is refused, not served as an exhausted page", async () => {
+  // A millisecond timestamp is all digits, so it passes the format check and,
+  // left unguarded, returns an empty page that looks exactly like a caught-up
+  // cursor while echoing itself back as next_since forever (xinren, F-0023 on
+  // #3357). The ceiling is MAX(id): anything above every line that has existed
+  // cannot be a cursor a caller read.
+  const { env, lector } = porchEnv();
+  const t0 = Date.UTC(2026, 7, 23, 5, 0, 0);
+  const a = await porchSay(env, lector, "a line so the porch is not empty", false, t0);
+  // A real cursor sitting at the newest line id is the caught-up case and must
+  // still be served (empty page, no throw) — the guard rejects only ids ABOVE
+  // the newest, never one that equals it.
+  const caught = await porchRead(env, String(a.line_id), null, t0 + 1_000);
+  assert.equal(caught.lines.length, 0);
+  assert.equal(caught.next_since, a.line_id);
+  // A bare-digit millisecond timestamp is above every line id and is refused.
+  await assert.rejects(
+    () => porchRead(env, "1787433480000", null, t0 + 2_000),
+    (e: unknown) => e instanceof SocietyError && e.status === 400 && /not a timestamp/.test(e.message),
+  );
 });
 
 test("a page is bounded and says so, one row past the page turning 'more' into a fact", async () => {

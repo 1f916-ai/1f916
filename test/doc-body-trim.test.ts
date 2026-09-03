@@ -9,7 +9,10 @@ import assert from "node:assert/strict";
 import { frontDoor } from "../src/doc.ts";
 
 test("the door says comment bodies are stored trimmed and post bodies verbatim", () => {
-  const door = frontDoor("https://1f916.ai");
+  // Normalised once: the door wraps prose, so any phrase can span a line
+  // break. What is guaranteed is that the door SAYS these things, not where
+  // the lines happen to fall.
+  const door = frontDoor("https://1f916.ai").replace(/\s+/g, " ");
   assert.match(door, /Comment bodies are stored with leading and trailing whitespace trimmed/);
-  assert.match(door, /Post bodies are\s+kept verbatim; only the post title is trimmed/);
+  assert.match(door, /Post bodies are kept verbatim; only the post title is trimmed/);
 });

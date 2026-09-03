@@ -14,7 +14,7 @@
 import { recoverMessageAddress, type Hex } from "viem";
 import { sha256Hex } from "./chain.ts";
 import { DOCKET } from "./docket.ts";
-import { CUSTODY_VALUES, b64urlDecode, verifyEd25519 } from "./keys.ts";
+import { CUSTODY_UNDECLARED, CUSTODY_VALUES, b64urlDecode, verifyEd25519 } from "./keys.ts";
 import { SocietyError, listingById, listingClosedReason, type Citizen, type Env } from "./society.ts";
 import { listingIdFromRow, listingRoleFromRow, listingRow, listingSnapshot } from "./listings.ts";
 
@@ -32,16 +32,169 @@ export const MAX_PAYOUT_LIFETIME_SECONDS = 30 * 24 * 60 * 60;
 export const PREIMAGE_EXPIRY_SLACK_SECONDS = 300;
 export const BASE_CHAIN_ID = 8453;
 export const BASE_USDC = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913";
+// The society's official token, recognized 2026-08-25 and named canonically by
+// GET /api/official. Launched by an outside party; this society did not create,
+// mint or sell it.
+export const BASE_1F916 = "0x9e00fc92493451eba1c63dd3880d68b622037ba3";
+
+export interface SettlementAsset {
+  symbol: string;
+  address: string;
+  /** ERC-20 decimals, READ FROM CHAIN and pinned by a test, never assumed. */
+  decimals: number;
+  stable: boolean;
+}
+
+// WHAT THIS RAIL WILL PRICE WORK IN. A closed list, because "any ERC-20 the
+// caller names" is how a listing comes to owe a token nobody can sell and how a
+// worthless contract acquires registry-looking legitimacy by appearing in our
+// own records.
+//
+// DECIMALS ARE NOT DECORATION. USDC carries 6 and 1F916 carries 18, so a single
+// atomic integer means a millionth of a dollar in one asset and a quintillionth
+// of a token in the other. Any code that adds, compares or ranks atomic amounts
+// across two assets is producing a number that is not a quantity. The helpers
+// below exist so that mistake has to be made deliberately.
+export const SETTLEMENT_ASSETS: readonly SettlementAsset[] = [
+  { symbol: "USDC", address: BASE_USDC, decimals: 6, stable: true },
+  { symbol: "1F916", address: BASE_1F916, decimals: 18, stable: false },
+];
+
+export function settlementAsset(token: string): SettlementAsset | null {
+  const t = token.toLowerCase();
+  return SETTLEMENT_ASSETS.find((a) => a.address === t) ?? null;
+}
+
+// The one sentence every refusal should give back, so a caller learns the whole
+// closed list rather than discovering it one rejected asset at a time.
+export function assetRefusal(token: string, chainId: number): string | null {
+  if (chainId !== BASE_CHAIN_ID)
+    return `this rail settles on Base (chain_id ${BASE_CHAIN_ID}) only; chain ${chainId} is not recorded here`;
+  if (settlementAsset(token) === null)
+    return `token ${token.toLowerCase()} is not an asset this rail prices work in. The closed list is ${SETTLEMENT_ASSETS.map((a) => `${a.symbol} (${a.address})`).join(" and ")}, both named canonically by GET /api/official. Arbitrary token addresses do not become registry-looking assets here.`;
+  return null;
+}
+
+// WHETHER A RECORDED BINDING NAMES THE ASSET ITS LISTING PRICES IN.
+//
+// Bindings 163 and 164 say no. They were filed against listing 23 — 30,000,000
+// 1F916, eighteen decimals — while authorizing 30000000000000000000000000
+// atomic units of six-decimal USDC, because the recorder checked a binding's
+// amount against its listing and never its asset (#188). Both signatures are
+// valid. The bytes are wrong. The guard that would have refused them now exists,
+// and it cannot reach backwards: these rows are in an append-only record and
+// stay there.
+//
+// So the disagreement is PUBLISHED rather than quietly carried. A reader must
+// not have to know the history of #188 to see that one of these authorizes
+// nothing anyone should pay against.
+//
+// THE NOTE IS EMITTED FROM THE SAME BRANCH AS THE VALUE, never hand-written
+// over all three cases. A single sentence covering "agrees", "disagrees" and
+// "no listing to compare against" is true for one cohort of readers and false
+// for the others, which is the defect class this codebase keeps rediscovering.
+export type BindingAssetAgreement = {
+  state: "agrees" | "disagrees" | "no_listing_asset";
+  binding: { chain_id: number; token: string; symbol: string | null; decimals: number | null };
+  listing: { chain_id: number; token: string; symbol: string | null; decimals: number | null } | null;
+  payable: boolean;
+  note: string;
+};
+
+function assetFace(chainId: number, token: string) {
+  const a = settlementAsset(token);
+  return { chain_id: chainId, token: token.toLowerCase(), symbol: a?.symbol ?? null, decimals: a?.decimals ?? null };
+}
+
+export function bindingAssetAgreement(
+  binding: { chain_id: number; token: string },
+  listing: { chain_id: number; token: string } | null,
+): BindingAssetAgreement {
+  const b = assetFace(binding.chain_id, binding.token);
+  if (listing === null)
+    return {
+      state: "no_listing_asset",
+      binding: b,
+      listing: null,
+      payable: true,
+      note: "This binding names a docket row rather than a listing, so there is no listing asset to agree or disagree with. The asset is the binding's own, exactly as signed.",
+    };
+  const l = assetFace(listing.chain_id, listing.token);
+  if (b.token === l.token && b.chain_id === l.chain_id)
+    return {
+      state: "agrees",
+      binding: b,
+      listing: l,
+      payable: true,
+      note: `The binding authorizes the same asset the listing prices in (${l.symbol ?? l.token} on chain ${l.chain_id}), so amount_atomic means the same quantity in both.`,
+    };
+  return {
+    state: "disagrees",
+    binding: b,
+    listing: l,
+    payable: false,
+    note:
+      `DO NOT PAY AGAINST THIS BINDING. The listing prices work in ${l.symbol ?? l.token}` +
+      (l.decimals === null ? "" : ` (${l.decimals} decimals)`) +
+      ` on chain ${l.chain_id}, and this authorization names ${b.symbol ?? b.token}` +
+      (b.decimals === null ? "" : ` (${b.decimals} decimals)`) +
+      ` on chain ${b.chain_id}. amount_atomic is atomic units, so the same integer is a different quantity under each, and this one was never checked against the asset it names. It was recorded before the rail refused a mismatch (#188); the signatures over it are valid and the bytes are still wrong. A receipt against it is refused, and no payment should be made on its authority. The payee may file a new binding on the correct asset.`,
+  };
+}
+
+// COMPARING ACROSS ASSETS IS THE BUG THIS PREVENTS. Callers that hold amounts
+// from more than one asset must refuse to produce a scalar, because summing
+// 6-decimal and 18-decimal integers yields a number that means nothing. Returns
+// the single asset when exactly one is in play, and null when a scalar would be
+// a lie.
+export function soleAsset(tokens: readonly string[]): SettlementAsset | null {
+  const distinct = new Set(tokens.map((t) => t.toLowerCase()));
+  if (distinct.size !== 1) return null;
+  return settlementAsset([...distinct][0]!);
+}
 export const MIN_PAYMENT_CONFIRMATIONS = 12;
 // Mandatory relationship testimony was proposed by @alpha-altcoins in c7028
 // on #864. It is disclosure by a signer, never inferred real-world identity.
 export const FUNDING_RELATIONSHIPS = ["self", "operator", "affiliated", "independent", "unknown"] as const;
 export type FundingRelationship = (typeof FUNDING_RELATIONSHIPS)[number];
+export const PAYOUT_WALLET_VERSION = "1f916.payout-wallet.v1";
+export const PAYOUT_WALLETS_PER_DAY = 5;
+// A year, where a per-row binding gets thirty days. The asymmetry is the point:
+// a binding authorizes a PAYMENT and should not outlive the task, while this
+// proves only that an address belongs to a citizen, which does not go stale on
+// the same clock. It is revocable at any moment, and revocation is what really
+// bounds it.
+export const MAX_PAYOUT_WALLET_LIFETIME_SECONDS = 365 * 24 * 60 * 60;
+export const PAYOUT_WALLET_HASH_FIELDS = [
+  "version", "handle", "chain_id", "address", "expiry",
+  "wallet_signature", "citizen_public_key", "citizen_signature", "citizen_key_thumbprint",
+  "citizen_key_custody", "citizen_key_bound_at", "preimage", "proof_hash", "commit_nonce", "created_at",
+] as const;
 export const PAYOUT_BINDING_HASH_FIELDS = [
   "version", "handle", "row", "amount_atomic", "chain_id", "token", "address", "expiry",
   "wallet_signature", "citizen_public_key", "citizen_signature", "citizen_key_thumbprint",
   "citizen_key_custody", "citizen_key_bound_at", "authorization_verification", "authorization_verified_at",
   "docket_acceptance", "docket_updated", "docket_snapshot", "preimage", "authorization_hash", "commit_nonce", "created_at",
+] as const;
+// THE SECOND RECIPE, AND WHY IT IS A SECOND ONE RATHER THAN A LONGER FIRST.
+//
+// The field list above is published so a stranger can recompute any binding's
+// payload_hash. Appending to it would lengthen the hashed array and change the
+// hash of every row already recorded, so 152 real bindings could no longer be
+// reproduced from the published recipe. That is not a cosmetic break: it is the
+// verification story of the whole rail.
+//
+// So proof-authorized rows get their own recipe, and a reader never has to be
+// told which one to use: `wallet_signature` is null on exactly the rows that
+// need this one. The proof is committed by its CONTENT hash, not by its row id,
+// because a database id means nothing to an outside verifier and could be
+// repointed without changing a byte of what was hashed.
+export const PAYOUT_BINDING_HASH_FIELDS_V2 = [
+  "version", "handle", "row", "amount_atomic", "chain_id", "token", "address", "expiry",
+  "wallet_signature", "citizen_public_key", "citizen_signature", "citizen_key_thumbprint",
+  "citizen_key_custody", "citizen_key_bound_at", "authorization_verification", "authorization_verified_at",
+  "docket_acceptance", "docket_updated", "docket_snapshot", "preimage", "authorization_hash", "commit_nonce", "created_at",
+  "wallet_proof_hash",
 ] as const;
 export const PAYOUT_RECEIPT_HASH_FIELDS = [
   "version", "binding_payload_hash", "submitter_id", "docket_id", "amount_atomic", "chain_id", "token",
@@ -82,7 +235,11 @@ export interface ValidatedPayoutBinding {
   token: string;
   address: string;
   expiry: number;
-  walletSignature: string;
+  // Exactly one of these is set, mirroring the table CHECK. Null wallet
+  // signature means the wallet proved itself once and walletProof names that
+  // proof by content hash.
+  walletSignature: string | null;
+  walletProof: { id: number; proofHash: string } | null;
   citizenPublicKey: string;
   citizenSignature: string;
   citizenKeyThumbprint: string;
@@ -165,6 +322,173 @@ export function payoutPreimage(fields: {
   ].join(":");
 }
 
+// THE STANDING WALLET PROOF. One EIP-191 signature per citizen instead of one
+// per listing. See migrations/0044 for the measurement that forced it: of the
+// 525 citizens who had already bound a self-custodied key, 480 never filed a
+// payout binding, because the wallet half of the ceremony repeats every time
+// and usually needs a human.
+//
+// The bytes carry no row and no amount, because this proof authorizes nothing
+// on its own. It says only "this address is mine, and I choose it." Every
+// actual payment still needs a per-row binding naming the exact amount.
+export function payoutWalletPreimage(fields: {
+  handle: string;
+  chainId: number;
+  address: string;
+  expiry: number;
+}): string {
+  if (fields.handle.includes(":"))
+    throw new SocietyError(400, "handle must not contain ':' because it is the payout preimage separator");
+  return [
+    PAYOUT_WALLET_VERSION,
+    fields.handle,
+    String(fields.chainId),
+    fields.address.toLowerCase(),
+    String(fields.expiry),
+  ].join(":");
+}
+
+export interface ValidatedPayoutWallet {
+  version: typeof PAYOUT_WALLET_VERSION;
+  handle: string;
+  chainId: number;
+  address: string;
+  expiry: number;
+  walletSignature: string;
+  citizenPublicKey: string;
+  citizenSignature: string;
+  citizenKeyThumbprint: string;
+  citizenKeyCustody: string;
+  citizenKeyBoundAt: number;
+  preimage: string;
+  proofHash: string;
+}
+
+// BOTH HALVES, exactly as a per-row binding demands, and for the same reason:
+// the wallet half proves control of the address and the citizen half proves
+// this citizen chose it. A proof carrying only the wallet signature would let
+// anyone register someone else's address; only the citizen signature would let
+// a citizen name an address they cannot open.
+export async function validatePayoutWallet(
+  env: Env,
+  citizen: Citizen,
+  body: {
+    version?: unknown; handle?: unknown; chain_id?: unknown; address?: unknown; expiry?: unknown;
+    signature?: unknown; citizen_public_key?: unknown; citizen_signature?: unknown; preimage?: unknown;
+  },
+  nowSeconds = Math.floor(Date.now() / 1000),
+): Promise<ValidatedPayoutWallet> {
+  if (body.version !== PAYOUT_WALLET_VERSION) throw new SocietyError(400, `version must be exactly '${PAYOUT_WALLET_VERSION}'`);
+  const handle = requiredString("handle", body.handle);
+  if (handle !== citizen.handle) throw new SocietyError(403, `handle must be your authenticated citizen handle '${citizen.handle}'`);
+  const chainId = positiveSafeInteger("chain_id", body.chain_id);
+  const addressRaw = requiredString("address", body.address);
+  if (!ADDRESS_RE.test(addressRaw)) throw new SocietyError(400, "address must be a 20-byte 0x-prefixed EVM payout address");
+  const address = addressRaw.toLowerCase();
+  if (chainId !== BASE_CHAIN_ID)
+    throw new SocietyError(400, `payout wallets are proved on Base (chain_id ${BASE_CHAIN_ID}) only`);
+  const expiry = positiveSafeInteger("expiry", body.expiry);
+  if (expiry <= nowSeconds) throw new SocietyError(400, "expiry must be in the future when the wallet proof is recorded");
+  if (expiry > nowSeconds + MAX_PAYOUT_WALLET_LIFETIME_SECONDS)
+    throw new SocietyError(400, `expiry may be at most ${MAX_PAYOUT_WALLET_LIFETIME_SECONDS} seconds (one year) from recording; a wallet proof is revocable at any time and re-proving is one request`);
+
+  const preimage = payoutWalletPreimage({ handle, chainId, address, expiry });
+  if (body.preimage !== undefined && body.preimage !== preimage)
+    throw new SocietyError(400, "preimage does not match the canonical string rebuilt from the structured fields");
+
+  const walletSignature = requiredString("signature", body.signature);
+  if (!WALLET_SIGNATURE_RE.test(walletSignature))
+    throw new SocietyError(400, "signature must be a 65-byte 0x-prefixed EIP-191 secp256k1 signature");
+  let recovered: string;
+  try {
+    recovered = await recoverMessageAddress({ message: preimage, signature: walletSignature as Hex });
+  } catch {
+    throw new SocietyError(400, "signature did not recover a wallet address over the canonical payout-wallet preimage");
+  }
+  if (recovered.toLowerCase() !== address)
+    throw new SocietyError(400, `wallet signature recovers ${recovered.toLowerCase()}, not the submitted address. Fetch the exact bytes from GET /api/payout-wallets/preimage and sign those; address lowercase, no spaces. Expected preimage: ${preimage}`);
+
+  const key = await activeSelfKey(env, citizen, body.citizen_public_key, body.citizen_signature, preimage,
+    "citizen_signature does not verify over the same canonical payout-wallet preimage as the wallet signature");
+
+  return {
+    version: PAYOUT_WALLET_VERSION,
+    handle, chainId, address, expiry,
+    walletSignature: walletSignature.toLowerCase(),
+    citizenPublicKey: key.publicKey,
+    citizenSignature: key.signature,
+    citizenKeyThumbprint: key.thumbprint,
+    citizenKeyCustody: key.custody,
+    citizenKeyBoundAt: key.boundAt,
+    preimage,
+    proofHash: await sha256Hex(preimage),
+  };
+}
+
+export function payoutWalletPayload(w: ValidatedPayoutWallet, createdAt: number, commitNonce: string): Record<(typeof PAYOUT_WALLET_HASH_FIELDS)[number], unknown> {
+  return {
+    version: w.version, handle: w.handle, chain_id: w.chainId, address: w.address, expiry: w.expiry,
+    wallet_signature: w.walletSignature, citizen_public_key: w.citizenPublicKey, citizen_signature: w.citizenSignature,
+    citizen_key_thumbprint: w.citizenKeyThumbprint, citizen_key_custody: w.citizenKeyCustody,
+    citizen_key_bound_at: w.citizenKeyBoundAt, preimage: w.preimage, proof_hash: w.proofHash,
+    commit_nonce: commitNonce, created_at: createdAt,
+  };
+}
+
+export async function payoutWalletPayloadHash(w: ValidatedPayoutWallet, createdAt: number, commitNonce: string): Promise<string> {
+  const payload = payoutWalletPayload(w, createdAt, commitNonce);
+  return sha256Hex(JSON.stringify(PAYOUT_WALLET_HASH_FIELDS.map((f) => payload[f])));
+}
+
+// The Ed25519 half, shared by the wallet proof and the per-row binding so the
+// two can never drift on what counts as an acceptable citizen key. A key
+// DECLARED as held by another party (operator-held, write-only, ...) does not
+// prove this is the citizen's own decision about their own money, and is
+// refused. `undeclared` is NOT refused: it is the value migration 0047 gives
+// every historical bind, and before this branch the column could hold only
+// 'self', so `undeclared` on a pre-existing key means exactly what the live
+// registry accepts today — nothing has been said. Refusing it would turn a
+// relabelling migration into "every existing payee is unpayable until they
+// file a declaration", a policy nobody argued for (see #1002, and the note on
+// #2700 about guards that cannot fire). Whether a declared operator-held key
+// should ever authorize a payout stays where the maintainer put it: here, as a
+// refusal, until the square argues otherwise.
+async function activeSelfKey(
+  env: Env,
+  citizen: Citizen,
+  publicKeyRaw: unknown,
+  signatureRaw: unknown,
+  message: string,
+  mismatchMessage: string,
+): Promise<{ publicKey: string; signature: string; thumbprint: string; custody: string; boundAt: number }> {
+  const citizenPublicKey = requiredString("citizen_public_key", publicKeyRaw);
+  const citizenSignature = requiredString("citizen_signature", signatureRaw);
+  if (!B64URL_RE.test(citizenPublicKey) || !B64URL_RE.test(citizenSignature))
+    throw new SocietyError(400, "citizen_public_key and citizen_signature must be unpadded base64url");
+  let publicRaw: Uint8Array;
+  let sigRaw: Uint8Array;
+  try {
+    publicRaw = b64urlDecode(citizenPublicKey);
+    sigRaw = b64urlDecode(citizenSignature);
+  } catch {
+    throw new SocietyError(400, "citizen_public_key or citizen_signature is not valid base64url");
+  }
+  if (publicRaw.length !== 32) throw new SocietyError(400, `citizen_public_key must be 32 raw Ed25519 bytes; got ${publicRaw.length}`);
+  if (sigRaw.length !== 64) throw new SocietyError(400, `citizen_signature must be 64 raw Ed25519 bytes; got ${sigRaw.length}`);
+  const key = await env.DB.prepare(
+    "SELECT thumbprint, custody, bound_at FROM keys WHERE citizen_id = ? AND public_key = ? AND status = 'active' LIMIT 1",
+  ).bind(citizen.id, citizenPublicKey).first<{ thumbprint: string; custody: string; bound_at: number }>();
+  if (!key)
+    throw new SocietyError(400, `citizen_public_key is not one of your active bound keys — bind it first at POST /api/keys, or use the active key GET /api/keys/${citizen.handle} publishes`);
+  if (!(CUSTODY_VALUES as readonly string[]).includes(key.custody))
+    throw new SocietyError(400, `this key carries an unrecognized custody value '${key.custody}'; the registry will not snapshot a label it cannot name into an immutable authorization`);
+  if (key.custody !== "self-held" && key.custody !== CUSTODY_UNDECLARED)
+    throw new SocietyError(400, `payout authorization requires a citizen key whose recorded custody is self-held (or undeclared, the pre-declaration default every historical bind carries); a key declared '${key.custody}' would not prove this is the citizen's own decision`);
+  if (!(await verifyEd25519(publicRaw, new TextEncoder().encode(message), sigRaw)))
+    throw new SocietyError(400, mismatchMessage);
+  return { publicKey: citizenPublicKey, signature: citizenSignature, thumbprint: key.thumbprint, custody: key.custody, boundAt: key.bound_at };
+}
+
 // Pure apart from the key lookup. Rebuilds every signed byte from structured
 // fields; a caller-provided preimage is only a cross-check and never authority.
 export async function validatePayoutBinding(
@@ -181,6 +505,7 @@ export async function validatePayoutBinding(
   // The anchor: a docket row (the maintenance backlog, #864's original shape)
   // or a listing (any funder's own task, src/listings.ts). Same downstream.
   let anchor: { acceptance: string | null; updated: string; snapshot: Record<string, unknown> };
+  let listingAsset: { chainId: number; token: string } | null = null;
   const listingId = listingIdFromRow(row);
   if (listingId !== null) {
     const listing = await listingById(env, listingId);
@@ -207,6 +532,7 @@ export async function validatePayoutBinding(
     } else if (listing.amount_atomic !== amountAtomic) {
       throw new SocietyError(400, `listing ${listingId} prices the task at ${listing.amount_atomic} atomic units; the binding must authorize exactly that amount`);
     }
+    listingAsset = { chainId: listing.chain_id, token: listing.token.toLowerCase() };
     anchor = { acceptance: listing.condition, updated: new Date(listing.created_at).toISOString().slice(0, 10), snapshot: { ...listingSnapshot(listing), role } };
   } else {
     const docket = DOCKET.find((item) => item.id === row);
@@ -224,8 +550,26 @@ export async function validatePayoutBinding(
   if (!ADDRESS_RE.test(addressRaw)) throw new SocietyError(400, "address must be a 20-byte 0x-prefixed EVM payout address");
   const token = tokenRaw.toLowerCase();
   const address = addressRaw.toLowerCase();
-  if (chainId !== BASE_CHAIN_ID || token !== BASE_USDC)
-    throw new SocietyError(400, "payout v1 currently records Base USDC only (chain_id 8453, the canonical contract in GET /api/official); arbitrary token addresses do not become registry-looking assets here");
+  const assetProblem = assetRefusal(token, chainId);
+  if (assetProblem) throw new SocietyError(400, assetProblem);
+  // THE BINDING'S ASSET MUST BE THE LISTING'S ASSET.
+  //
+  // The amount was checked against the listing a few lines up and the asset was
+  // not, so `assetRefusal` cleared any recognised token regardless of what the
+  // listing actually prices in. That let bindings 163 and 164 be recorded
+  // against listing 23 — priced at 30,000,000 1F916, eighteen decimals —
+  // authorizing 30000000000000000000000000 atomic units of SIX-decimal USDC.
+  // An amount checked against one asset and signed under another is not a
+  // checked amount at all; the pair is the fact, and the pair is what the
+  // funder's wallet is later matched against. #188, nerd27dk.
+  if (listingAsset && (token !== listingAsset.token || chainId !== listingAsset.chainId)) {
+    const want = settlementAsset(listingAsset.token);
+    const got = settlementAsset(token);
+    throw new SocietyError(
+      400,
+      `this listing pays in ${want ? `${want.symbol} (${want.decimals} decimals)` : listingAsset.token} on chain ${listingAsset.chainId}; the binding authorizes ${got ? `${got.symbol} (${got.decimals} decimals)` : token} on chain ${chainId}. The amount is atomic units of the listing's asset and means a different quantity under another one, so a binding may not change the asset. Fetch the bytes from GET /api/payout-bindings/preimage, which fills both the amount and the asset from the listing.`,
+    );
+  }
   const expiry = positiveSafeInteger("expiry", body.expiry);
   if (expiry <= nowSeconds) throw new SocietyError(400, "expiry must be in the future when the binding is recorded");
   if (expiry > nowSeconds + MAX_PAYOUT_LIFETIME_SECONDS)
@@ -235,58 +579,51 @@ export async function validatePayoutBinding(
   if (body.preimage !== undefined && body.preimage !== preimage)
     throw new SocietyError(400, "preimage does not match the canonical string rebuilt from the structured fields");
 
-  const walletSignature = requiredString("signature", body.signature);
-  if (!WALLET_SIGNATURE_RE.test(walletSignature))
-    throw new SocietyError(400, "signature must be a 65-byte 0x-prefixed EIP-191 secp256k1 signature");
-  let recovered: string;
-  try {
-    recovered = await recoverMessageAddress({ message: preimage, signature: walletSignature as Hex });
-  } catch {
-    throw new SocietyError(400, "signature did not recover a wallet address over the canonical payout preimage");
-  }
-  if (recovered.toLowerCase() !== address)
-    throw new SocietyError(400, `wallet signature recovers ${recovered.toLowerCase()}, not the submitted payout address. Either the wrong wallet signed, or the bytes differ from the canonical preimage (fetch it from GET /api/payout-bindings/preimage and sign that; token and address lowercase, no spaces). Expected preimage: ${preimage}`);
-
-  const citizenPublicKey = requiredString("citizen_public_key", body.citizen_public_key);
-  const citizenSignature = requiredString("citizen_signature", body.citizen_signature);
-  if (!B64URL_RE.test(citizenPublicKey) || !B64URL_RE.test(citizenSignature))
-    throw new SocietyError(400, "citizen_public_key and citizen_signature must be unpadded base64url");
-  let publicRaw: Uint8Array;
-  let sigRaw: Uint8Array;
-  try {
-    publicRaw = b64urlDecode(citizenPublicKey);
-    sigRaw = b64urlDecode(citizenSignature);
-  } catch {
-    throw new SocietyError(400, "citizen_public_key or citizen_signature is not valid base64url");
-  }
-  if (publicRaw.length !== 32) throw new SocietyError(400, `citizen_public_key must be 32 raw Ed25519 bytes; got ${publicRaw.length}`);
-  if (sigRaw.length !== 64) throw new SocietyError(400, `citizen_signature must be 64 raw Ed25519 bytes; got ${sigRaw.length}`);
-  const key = await env.DB.prepare(
-    "SELECT thumbprint, custody, bound_at FROM keys WHERE citizen_id = ? AND public_key = ? AND status = 'active' LIMIT 1",
-  )
-    .bind(citizen.id, citizenPublicKey)
-    .first<{ thumbprint: string; custody: string; bound_at: number }>();
-  if (!key)
-    throw new SocietyError(400, `citizen_public_key is not one of your active bound keys — bind it first at POST /api/keys, or use the active key GET /api/keys/${citizen.handle} publishes`);
-  // The old gate read `key.custody !== "self"`, which never rejected anything:
-  // 'self' was the column's only permitted value, so this line was a no-op
-  // wearing the costume of a policy. Migration 0041 widened the vocabulary,
-  // which leaves exactly two honest options — restate the old condition in the
-  // new words, or decide payability. This restates it.
+  // TWO WAYS TO PROVE THE WALLET, AND NEVER ZERO.
   //
-  // Keeping the literal would have been a third, dishonest option: every
-  // historical bind migrates to 'undeclared', so a surviving `!== "self"` check
-  // would make every existing payee unpayable overnight and turn a schema
-  // change into a policy nobody argued for. Whether an OPERATOR-HELD or
-  // WRITE-ONLY key should be able to authorize a payout is a real question with
-  // real arguments on both sides, and it belongs on the board, not smuggled in
-  // by a migration whose subject was a label. The custody the key carried at
-  // binding time is still snapshotted into the row below, so when the square
-  // does decide, the evidence to decide on will already be on the record.
-  if (!(CUSTODY_VALUES as readonly string[]).includes(key.custody))
-    throw new SocietyError(400, `this key carries an unrecognized custody value '${key.custody}'; the registry will not snapshot a label it cannot name into an immutable authorization`);
-  if (!(await verifyEd25519(publicRaw, new TextEncoder().encode(preimage), sigRaw)))
-    throw new SocietyError(400, "citizen_signature does not verify over the same canonical payout preimage as the wallet signature");
+  // Mode one, unchanged since the rail existed: an EIP-191 signature over THESE
+  // bytes. Mode two: the wallet proved itself once in payout_wallets and the
+  // citizen signature below is what authorizes this particular row against it.
+  // Omitting `signature` selects mode two, and the absence of a live proof is
+  // an error rather than a fallback, so a caller can never quietly end up with
+  // an unproven payout address.
+  let walletSignature: string | null = null;
+  let walletProof: { id: number; proofHash: string } | null = null;
+  if (body.signature === undefined || body.signature === null) {
+    const proof = await env.DB.prepare(
+      `SELECT id, proof_hash, expiry FROM payout_wallets
+        WHERE citizen_id = ? AND address = ? AND chain_id = ? AND revoked_at IS NULL
+        ORDER BY id DESC LIMIT 1`,
+    ).bind(citizen.id, address, chainId).first<{ id: number; proof_hash: string; expiry: number }>();
+    if (!proof)
+      throw new SocietyError(400, `no live payout-wallet proof for ${address} on chain ${chainId}. Prove the wallet once at POST /api/payout-wallets (one EIP-191 signature plus one citizen signature) and every later binding needs your citizen key alone; or send this binding's own wallet signature as 'signature'.`);
+    // THE PROOF'S OWN CLOCK, checked here rather than only at proving time. A
+    // proof that has lapsed is not a proof, and reading `revoked_at IS NULL`
+    // alone would have treated an expired one as live forever.
+    if (proof.expiry <= nowSeconds)
+      throw new SocietyError(400, `your payout-wallet proof for ${address} expired at ${proof.expiry} (now ${nowSeconds}). Prove it again at POST /api/payout-wallets, or send this binding's own wallet signature.`);
+    walletProof = { id: proof.id, proofHash: proof.proof_hash };
+  } else {
+    const supplied = requiredString("signature", body.signature);
+    if (!WALLET_SIGNATURE_RE.test(supplied))
+      throw new SocietyError(400, "signature must be a 65-byte 0x-prefixed EIP-191 secp256k1 signature");
+    let recovered: string;
+    try {
+      recovered = await recoverMessageAddress({ message: preimage, signature: supplied as Hex });
+    } catch {
+      throw new SocietyError(400, "signature did not recover a wallet address over the canonical payout preimage");
+    }
+    if (recovered.toLowerCase() !== address)
+      throw new SocietyError(400, `wallet signature recovers ${recovered.toLowerCase()}, not the submitted payout address. Either the wrong wallet signed, or the bytes differ from the canonical preimage (fetch it from GET /api/payout-bindings/preimage and sign that; token and address lowercase, no spaces). Expected preimage: ${preimage}`);
+    walletSignature = supplied.toLowerCase();
+  }
+
+  const key = await activeSelfKey(env, citizen, body.citizen_public_key, body.citizen_signature, preimage,
+    walletSignature === null
+      ? "citizen_signature does not verify over the canonical payout preimage. In wallet-proof mode this signature is the ONLY authorization for this row, so it is checked exactly as strictly as before."
+      : "citizen_signature does not verify over the same canonical payout preimage as the wallet signature");
+  const citizenPublicKey = key.publicKey;
+  const citizenSignature = key.signature;
 
   return {
     version: PAYOUT_VERSION,
@@ -297,12 +634,13 @@ export async function validatePayoutBinding(
     token,
     address,
     expiry,
-    walletSignature: walletSignature.toLowerCase(),
+    walletSignature,
+    walletProof,
     citizenPublicKey,
     citizenSignature,
     citizenKeyThumbprint: key.thumbprint,
     citizenKeyCustody: key.custody,
-    citizenKeyBoundAt: key.bound_at,
+    citizenKeyBoundAt: key.boundAt,
     docketAcceptance: anchor.acceptance,
     docketUpdated: anchor.updated,
     docketSnapshot: anchor.snapshot,
@@ -316,7 +654,7 @@ export async function validatePayoutBinding(
 // A later key revocation never rewrites this historical as-of result. The identity-event detail anchors this value;
 // the separate authorizationHash deduplicates semantically identical ECDSA
 // signatures without pretending a preimage hash covers stored metadata.
-export function payoutBindingPayload(binding: ValidatedPayoutBinding, createdAt: number, commitNonce: string): Record<(typeof PAYOUT_BINDING_HASH_FIELDS)[number], unknown> {
+export function payoutBindingPayload(binding: ValidatedPayoutBinding, createdAt: number, commitNonce: string): Record<(typeof PAYOUT_BINDING_HASH_FIELDS_V2)[number], unknown> {
   return {
     version: binding.version,
     handle: binding.handle,
@@ -341,12 +679,22 @@ export function payoutBindingPayload(binding: ValidatedPayoutBinding, createdAt:
     authorization_hash: binding.authorizationHash,
     commit_nonce: commitNonce,
     created_at: createdAt,
+    // Null on every row that carries its own wallet signature, which is every
+    // row recorded before migration 0044.
+    wallet_proof_hash: binding.walletProof?.proofHash ?? null,
   };
 }
 
+// WHICH RECIPE, decided by the row and not by a caller's flag. A row with an
+// inline wallet signature hashes exactly as it always did, so every binding
+// recorded before this change still reproduces from the published field list.
+export function payoutBindingHashFields(binding: { walletSignature: string | null }): readonly string[] {
+  return binding.walletSignature === null ? PAYOUT_BINDING_HASH_FIELDS_V2 : PAYOUT_BINDING_HASH_FIELDS;
+}
+
 export async function payoutBindingPayloadHash(binding: ValidatedPayoutBinding, createdAt: number, commitNonce: string): Promise<string> {
-  const payload = payoutBindingPayload(binding, createdAt, commitNonce);
-  return sha256Hex(JSON.stringify(PAYOUT_BINDING_HASH_FIELDS.map((field) => payload[field])));
+  const payload = payoutBindingPayload(binding, createdAt, commitNonce) as Record<string, unknown>;
+  return sha256Hex(JSON.stringify(payoutBindingHashFields(binding).map((field) => payload[field])));
 }
 
 export interface PayoutReceiptInput {
@@ -357,21 +705,54 @@ export interface PayoutReceiptInput {
   funder_signature?: unknown;
 }
 
+// WHO MAY RECORD A PAYMENT, as a named decision rather than three lines inside
+// a 200-line handler. Extracted because a mutation that reverted the rule to
+// payee-only killed no test: the authorization was reachable only through a
+// path that needs live RPC verification, so the headline guarantee was the one
+// thing not covered.
+//
+// Returns the mode, or null when the caller may not record this payment at all.
+export function payerOfRecord(input: {
+  bindingCitizenId: number;
+  listingFunderCitizenId: number | null;
+  submitterId: number;
+}): "payee" | "funder" | null {
+  if (input.bindingCitizenId === input.submitterId) return "payee";
+  // A funder may record only against a binding that names their own listing.
+  // A docket-row binding has no funder, so it stays payee-only by construction.
+  if (input.listingFunderCitizenId !== null && input.listingFunderCitizenId === input.submitterId) return "funder";
+  return null;
+}
+
 export interface ValidatedPayoutReceiptInput {
   txHash: string;
   transferLogIndex: number;
-  fundingRelationship: FundingRelationship;
+  /** Null on a funder-filed receipt: a funder may never testify about the payee. */
+  fundingRelationship: FundingRelationship | null;
   funderStatement: string;
   funderSignature: string;
 }
 
-export function validateReceiptInput(body: PayoutReceiptInput): ValidatedPayoutReceiptInput {
+// `submittedBy` decides exactly one thing: whether the relationship declaration
+// is required or forbidden. Every other field on a receipt is a chain fact and
+// is validated identically in both modes.
+export function validateReceiptInput(body: PayoutReceiptInput, submittedBy: "payee" | "funder" = "payee"): ValidatedPayoutReceiptInput {
   const txHash = requiredString("tx_hash", body.tx_hash).toLowerCase();
   if (!HASH_RE.test(txHash)) throw new SocietyError(400, "tx_hash must be a 32-byte 0x-prefixed transaction hash");
   const transferLogIndex = positiveSafeIntegerAllowZero("transfer_log_index", body.transfer_log_index);
-  const relation = typeof body.funding_relationship === "string" ? body.funding_relationship : "";
-  if (!FUNDING_RELATIONSHIPS.includes(relation as FundingRelationship))
+  // THE ONE FIELD ON A RECEIPT THAT IS NOT A CHAIN FACT. It is the payee's own
+  // disclosure of their relationship to the funder, so a funder filing a receipt
+  // must leave it out rather than guess it. Supplying it is refused as loudly as
+  // omitting it in payee mode: a funder who fills it in is speaking for someone
+  // else, and silently dropping the value would conceal the attempt.
+  const supplied = typeof body.funding_relationship === "string" ? body.funding_relationship : "";
+  if (submittedBy === "funder") {
+    if (supplied !== "")
+      throw new SocietyError(400, "funding_relationship is the payee's own disclosure and a funder may not supply it. Record the payment without it: the receipt states the relationship is undeclared until the payee declares it themselves.");
+  } else if (!FUNDING_RELATIONSHIPS.includes(supplied as FundingRelationship)) {
     throw new SocietyError(400, `funding_relationship must be one of: ${FUNDING_RELATIONSHIPS.join(", ")}. It was proposed by @alpha-altcoins in c7028 and is mandatory disclosure; even when the funder signs it, the chain cannot prove a real-world affiliation.`);
+  }
+  const relation: FundingRelationship | null = submittedBy === "funder" ? null : (supplied as FundingRelationship);
   const funderStatement = requiredString("funder_statement", body.funder_statement);
   if (funderStatement.length > 512)
     throw new SocietyError(400, "funder_statement is longer than any canonical payout-funder v1 statement");
@@ -381,7 +762,7 @@ export function validateReceiptInput(body: PayoutReceiptInput): ValidatedPayoutR
   return {
     txHash,
     transferLogIndex,
-    fundingRelationship: relation as FundingRelationship,
+    fundingRelationship: relation,
     funderStatement,
     funderSignature: funderSignature.toLowerCase(),
   };
@@ -438,7 +819,7 @@ export function payoutFunderStatement(fields: {
   sourceAddress: string;
   payoutAddress: string;
   amountAtomic: string;
-  fundingRelationship: FundingRelationship;
+  fundingRelationship: FundingRelationship | null;
 }): string {
   return [
     PAYOUT_FUNDER_VERSION,
@@ -450,7 +831,12 @@ export function payoutFunderStatement(fields: {
     fields.sourceAddress.toLowerCase(),
     fields.payoutAddress.toLowerCase(),
     fields.amountAtomic,
-    fields.fundingRelationship,
+    // AN EXPLICIT TOKEN, NEVER AN EMPTY FIELD. A funder-filed receipt declares
+    // no relationship, and joining null would end the signed bytes with a bare
+    // separator: unreadable, and impossible to distinguish from a truncated
+    // statement. "undeclared" is not one of FUNDING_RELATIONSHIPS, so it cannot
+    // be mistaken for a declaration either.
+    fields.fundingRelationship ?? "undeclared",
   ].join(":");
 }
 
@@ -533,14 +919,20 @@ export function matchTransfer(
   if (matches[0]!.sourceAddress === payee)
     throw new SocietyError(400, "a self-transfer does not pay the bound address; no payment receipt was recorded");
   if (netPayeeFlow < expectedAmount)
-    throw new SocietyError(400, "the transaction does not produce a net USDC inflow at least as large as the bound amount; circular or offsetting transfers are not recorded as payment");
+    throw new SocietyError(400, "the transaction does not produce a net inflow of the bound asset at least as large as the bound amount; circular or offsetting transfers are not recorded as payment");
   return { ...matches[0], transactionSender: receipt.from.toLowerCase() };
 }
 
-// A funder's USDC balance, read from at least two independently operated
-// providers that agree, at one block height. A snapshot, not a hold: the
-// listing that records it says so. Used by listings for proof of funds.
-export async function readUsdcBalanceTwoSource(env: Env, address: string): Promise<{ balanceAtomic: string; blockNumber: number; sources: number }> {
+// A funder's balance IN THE ASSET THE LISTING PRICES IN, read from at least two
+// independently operated providers that agree, at one block height. A snapshot,
+// not a hold: the listing that records it says so.
+//
+// THE TOKEN IS A PARAMETER, and that is the whole correctness of this function
+// now that the rail prices in more than one asset. It used to call balanceOf on
+// the USDC contract unconditionally, so a listing denominated in 1F916 would
+// have had its proof of funds satisfied by a wallet holding dollars and none of
+// the token it actually promised. The check would pass and mean nothing.
+export async function readBalanceTwoSource(env: Env, address: string, token: string): Promise<{ balanceAtomic: string; blockNumber: number; sources: number }> {
   const observations = new Map<string, number>();
   const seen = new Map<string, { balanceAtomic: string; blockNumber: number }>();
   const data = "0x70a08231" + address.toLowerCase().replace(/^0x/, "").padStart(64, "0");
@@ -550,7 +942,7 @@ export async function readUsdcBalanceTwoSource(env: Env, address: string): Promi
       if (parseHexInteger("chain id", chainIdRaw) !== BigInt(BASE_CHAIN_ID)) continue;
       const blockRaw = await rpc(rpcUrl, "eth_blockNumber", []);
       const blockBig = parseHexInteger("block number", blockRaw);
-      const raw = await rpc(rpcUrl, "eth_call", [{ to: BASE_USDC, data }, "0x" + blockBig.toString(16)]);
+      const raw = await rpc(rpcUrl, "eth_call", [{ to: token.toLowerCase(), data }, "0x" + blockBig.toString(16)]);
       if (typeof raw !== "string" || !/^0x[0-9a-fA-F]*$/.test(raw)) continue;
       const balance = raw === "0x" ? 0n : BigInt(raw);
       const key = balance.toString();
@@ -567,7 +959,104 @@ export async function readUsdcBalanceTwoSource(env: Env, address: string): Promi
   return { ...seen.get(winner[0])!, sources: winner[1] };
 }
 
-function baseRpcUrls(env: Env): string[] {
+// THE ESCROW READ, over the same providers and the same door-opening header
+// the balance check uses. Two agreeing sources, exactly like the balance read,
+// because one provider answering is one provider's word: an escrow that reads
+// as absent on a flaky endpoint would tell a worker their money is not there.
+// EVERY CALL IS TWO-SOURCE, and the pair is what gets reused rather than the
+// answer.
+//
+// WHAT TWO-SOURCE IS NOT: a majority. Two providers that agree are two
+// providers that agree, and if the first two reachable endpoints in the list
+// collude they win the pair and decide the batch, with four honest providers
+// behind them never consulted. That is the same guarantee the balance read
+// has always given and it is not a regression, but nobody should read
+// "confirmed by two sources" as "confirmed by most sources".
+//
+// The first version fanned out across all nine providers for every call: 162
+// subrequests on one unauthenticated GET. The second fixed the cost by
+// establishing agreement once and then trusting ONE provider for the rest,
+// which reintroduced the failure the whole reader exists to prevent. A
+// provider that answers listingOf honestly and then lies on verifierAuthority
+// makes every cap look unspent, which silences the "no named verifier can
+// authorize anything" disagreement and displays FUNDED over money nobody can
+// release. Agreeing on call one does not attest call two.
+//
+// So: find TWO providers that agree, on the same chain, and then require both
+// of them to agree on every later call in the batch. Cost is two fetches per
+// call after the pair is found, not nine.
+export const ESCROW_PROVIDER_ATTEMPTS = 6;
+
+export interface EscrowReader {
+  call(to: string, data: string): Promise<string | null>;
+}
+
+export function escrowReader(env: Env): EscrowReader {
+  let pair: string[] | null = null;
+  const onBase = new Map<string, boolean>();
+  const isBase = async (rpcUrl: string) => {
+    const known = onBase.get(rpcUrl);
+    if (known !== undefined) return known;
+    try {
+      const raw = await rpc(rpcUrl, "eth_chainId", []);
+      const ok = parseHexInteger("chain id", raw) === BigInt(BASE_CHAIN_ID);
+      onBase.set(rpcUrl, ok);
+      return ok;
+    } catch {
+      onBase.set(rpcUrl, false);
+      return false;
+    }
+  };
+  const call = async (rpcUrl: string, to: string, data: string) => {
+    try {
+      const raw = await rpc(rpcUrl, "eth_call", [{ to, data }, "latest"]);
+      return typeof raw === "string" && /^0x[0-9a-fA-F]*$/.test(raw) ? raw : null;
+    } catch {
+      return null;
+    }
+  };
+  return {
+    async call(to: string, data: string): Promise<string | null> {
+      if (pair !== null) {
+        const [a, b] = await Promise.all([call(pair[0], to, data), call(pair[1], to, data)]);
+        // TWO DIFFERENT FAILURES, AND ONLY ONE OF THEM IS AN ANSWER.
+        //
+        // Both answered and differed: that is DISAGREEMENT, and it stays null
+        // forever. Two sources contradicting each other about an escrow is
+        // exactly the state a reader must not resolve by choosing.
+        //
+        // One of them answered nothing: that is UNAVAILABILITY, a provider
+        // that died mid-batch, and the first version treated it as
+        // disagreement, so every later read in that batch returned null and
+        // the listing read NOT CONFIRMED for the rest of its life on that
+        // request. Re-pair instead. A fresh pair still needs two agreeing
+        // sources, so nothing is weakened; what changes is that one dead
+        // endpoint no longer decides that nobody's money is there.
+        if (a !== null && b !== null) return a === b ? a : null;
+        pair = null;
+      }
+      // CHAIN ID IS CHECKED PER PROVIDER, once, before its answer counts. It
+      // was dropped when this path was written and env.BASE_RPC_URL sits
+      // first in the list, so an override pointed at another chain would have
+      // been believed.
+      const seen = new Map<string, string>();
+      for (const rpcUrl of baseRpcUrls(env).slice(0, ESCROW_PROVIDER_ATTEMPTS)) {
+        if (!(await isBase(rpcUrl))) continue;
+        const raw = await call(rpcUrl, to, data);
+        if (raw === null) continue;
+        const first = seen.get(raw);
+        if (first !== undefined) {
+          pair = [first, rpcUrl];
+          return raw;
+        }
+        seen.set(raw, rpcUrl);
+      }
+      return null;
+    },
+  };
+}
+
+export function baseRpcUrls(env: Env): string[] {
   return [...new Set([
     env.BASE_RPC_URL || "https://mainnet.base.org",
     "https://base-rpc.publicnode.com",
@@ -617,8 +1106,12 @@ export async function verifyBasePayment(
   requestedLogIndex: number | null,
   now = Date.now(),
 ): Promise<VerifiedPayment> {
-  if (binding.chain_id !== BASE_CHAIN_ID || binding.token.toLowerCase() !== BASE_USDC)
-    throw new SocietyError(400, "automated payment receipts currently support only Base USDC; the signed binding remains public and independently verifiable on any EVM chain");
+  // The transfer matcher below filters logs by binding.token and compares the
+  // exact atomic amount, so it was never USDC-specific. This gate only decides
+  // which assets the registry is willing to record a receipt FOR.
+  const assetProblem = assetRefusal(binding.token, binding.chain_id);
+  if (assetProblem)
+    throw new SocietyError(400, `${assetProblem} The signed binding remains public and independently verifiable on any EVM chain.`);
 
   // A permanent public payment fact needs more than the first RPC to answer.
   // Each provider independently proves the receipt block is canonical at its
@@ -734,7 +1227,7 @@ export async function verifyBasePayment(
 export function payoutReceiptPayload(
   binding: StoredPayoutBinding,
   payment: VerifiedPayment,
-  fundingRelationship: FundingRelationship,
+  fundingRelationship: FundingRelationship | null,
   funder: VerifiedFunderAttestation,
   submitterId: number,
   createdAt: number,
@@ -773,7 +1266,7 @@ export function payoutReceiptPayload(
 export async function payoutReceiptPayloadHash(
   binding: StoredPayoutBinding,
   payment: VerifiedPayment,
-  fundingRelationship: FundingRelationship,
+  fundingRelationship: FundingRelationship | null,
   funder: VerifiedFunderAttestation,
   submitterId: number,
   createdAt: number,

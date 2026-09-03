@@ -16,7 +16,7 @@
 //   filter_is_a_known_kind   a GROUP BY answers "no such kind" and "no such
 //                            event yet" identically.
 //   custody_chain_disagrees  false on 492 of 492 bound citizens, because after
-//                            migration 0041 no key-custody-declare event could
+//                            migration 0047 no key-custody-declare event could
 //                            exist until this branch shipped. A field whose
 //                            whole purpose is to expose a disagreement
 //                            published "checked, and clean" over a check that

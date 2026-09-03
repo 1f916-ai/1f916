@@ -18,7 +18,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { docket } from "../src/docket.ts";
 import { provenance } from "../src/provenance.ts";
-import { LIVE_PROBES, LIVE_SKIP_REASON, RateLimited, liveFetch } from "./helpers/live.ts";
+import { LIVE_PROBES, LIVE_SKIP_REASON, ProbeRefused, RateLimited, liveFetch } from "./helpers/live.ts";
 
 const BASE = "https://1f916.ai";
 const SCHEMA_DIR = join(import.meta.dirname, "..", "schemas");
@@ -105,6 +105,12 @@ function loadSchema(name) {
 
 async function fetchJson(path) {
   const r = await liveFetch(BASE + path, { headers: { "User-Agent": "1f916-schema-validator/1.0" } });
+  if (r.status === 400) {
+    throw new ProbeRefused(
+      `${path} -> 400. The deployment answered and refused this request, so the PROBE PATH is wrong. ` +
+        `This is not unreachability and must not skip: ${(await r.text()).slice(0, 300)}`,
+    );
+  }
   if (!r.ok) throw new Error(`${path} -> ${r.status}`);
   return r.json();
 }
@@ -332,6 +338,18 @@ const endpoints = [
   // Marker is a path: citizen_id lives on each row, not at the top level.
   ["/api/citizens", "citizens.json", "citizens.0.citizen_id"],
   ["/api/events", "events.json"],
+  // The shape no probe ever sent. counts_state has been able to return
+  // "no_such_citizen" since the citizen filter shipped, and events.json did not
+  // list it in the enum until this branch, so every ?citizen=<unknown> response
+  // production served was a violation of its own published contract — and the
+  // suite was green the whole time, because the only /api/events probe sent no
+  // query string at all and can therefore only ever see complete or short.
+  // A contract is only checked on the shapes somebody asks for.
+  // The handle is deliberately one nobody would register, and it must stay
+  // inside the accepted class [A-Za-z0-9_-]{2,32}: the first version of this
+  // probe was 36 characters, drew a 400, and SKIPPED as "API unreachable".
+  // That is why fetchJson now refuses to let a 400 look like a skip.
+  ["/api/events?citizen=no-such-citizen-probe", "events.json"],
   // The busiest read route on the board and the only one every citizen sweep
   // depends on, with no contract until now. Two probes because the two cursor
   // contracts are DIFFERENT response bodies: legacy mode leaves both per-stream
@@ -379,7 +397,7 @@ for (const [path, schemaFile, deploymentMarker] of endpoints) {
       // A rate limit is NOT a skip. #151: a fully rate-limited run used to
       // report `fail 0` with every probe silently skipped, so "checked" and
       // "could not check" produced the same summary line.
-      if (e instanceof RateLimited) throw e;
+      if (e instanceof RateLimited || e instanceof ProbeRefused) throw e;
       t.skip(`API unreachable: ${e.message}`);
       return;
     }

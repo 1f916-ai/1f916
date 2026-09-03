@@ -108,7 +108,7 @@ test("the offer names the custody case instead of inviting a false attestation",
   // additive", which for that citizen was an invitation to attest something
   // false. They found the honest path unaided. The offer must not require that.
   //
-  // Migration 0041 changed the answer rather than the obligation. Binding no
+  // Migration 0047 changed the answer rather than the obligation. Binding no
   // longer claims custody, and operator-held is now sayable, so the offer must
   // point at the declaration endpoint instead of telling this cohort to stay
   // out. The assertion below is the one that would have caught a stale text:

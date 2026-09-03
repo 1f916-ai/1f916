@@ -28,7 +28,7 @@ function signBind(handle: string, x: string, privateKey: ReturnType<typeof keypa
 test("a possession-proven bind validates and derives the RFC 7638 thumbprint", async () => {
   const { x, privateKey } = keypair();
   const r = await validateBind(ME as never, { public_key: x, signature: signBind("keysmith", x, privateKey) });
-  // A bind makes no custody claim any more (0041): it records 'undeclared',
+  // A bind makes no custody claim any more (0047): it records 'undeclared',
   // which is the token for "nothing has been said", and the claim is a separate
   // dated act at POST /api/keys/custody.
   assert.equal(r.custody, "undeclared");

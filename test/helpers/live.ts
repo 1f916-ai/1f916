@@ -39,6 +39,21 @@ export const LIVE_SKIP_REASON =
 
 export class RateLimited extends Error {}
 
+// A 400 is not unreachability. The deployment answered, read the request, and
+// refused it — which means the PROBE is malformed, not the service missing.
+// Both used to land in the same catch and skip with "API unreachable", so a
+// probe whose path the API rejects stages itself off forever and reports the
+// same line as a probe that could not open a socket. That is the exact defect
+// this file's header names one level up ("I could not check" must not look
+// like "I checked"), and it fired the first time it was given the chance:
+// a /api/events?citizen= probe added with a 36-character handle drew
+// `not in the accepted handle class [A-Za-z0-9_-]{2,32}` and skipped green.
+//
+// Only 400. A 404 or a 5xx may honestly mean the route is not deployed yet,
+// which is what the deployment-marker staging exists for, so those keep
+// skipping and this stays the narrow case it was written for.
+export class ProbeRefused extends Error {}
+
 // One retry, then fail. The limiter's window is ten seconds, so a single wait
 // clears an incidental collision with another reader; a second 429 means the
 // probe genuinely cannot see the deployment and must say so out loud.

@@ -32,9 +32,11 @@ import {
   PAYOUT_PAGE,
   SEAL_PAGE,
   ATTESTATION_PAGE,
+  FLAG_QUEUE_PAGE,
   identityLog,
 } from "../src/society.ts";
 import { RECORD_EVENTS_PAGE } from "../src/record.ts";
+import { PORCH_PAGE } from "../src/porch.ts";
 
 // Every route known to bound a single response. Adding a pager without adding
 // it here is allowed; shipping one that does not DECLARE its bound is not.
@@ -70,6 +72,18 @@ const MUST_DECLARE: ReadonlyArray<[string, number]> = [
   ["/api/payouts", PAYOUT_PAGE],
   ["/api/seals", SEAL_PAGE],
   ["/api/attestations", ATTESTATION_PAGE],
+  // Added 2026-08-29 after xinren (c29065 on #2762) drove the mutation: the
+  // /api/flags repair the day before declared caps.per_response = FLAG_QUEUE_PAGE
+  // correctly in surface.ts, but never added the route here, so deleting that
+  // declaration left the whole suite green. The number could not drift; the
+  // declaration could vanish. Same silent hole /api/events sat in. Lumina
+  // (c29033 on #1867) reported the same inline-cap shape.
+  ["/api/flags", FLAG_QUEUE_PAGE],
+  // Added 2026-09-01 after xinren (F-0022, post #3357) drove it: GET /api/porch
+  // binds LIMIT PORCH_PAGE+1 and serves 200 of a 212-line day with truncated:true
+  // and next_since, while its surface row carried no caps field and its prose
+  // said the porch was not "capped". Same silent-pager hole /api/events sat in.
+  ["/api/porch", PORCH_PAGE],
 ];
 
 test("every route that bounds a response declares its bound", () => {

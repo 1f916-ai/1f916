@@ -17,24 +17,31 @@
 // validates against a list MISSING one of its real parameters starts refusing
 // callers who were doing everything right, which is a worse failure than the one
 // being fixed. So this file does not check a hand-written list of lists. It reads
-// the source, pairs each checkQueryParams call with the parameters its own
-// handler actually reads, and fails if a handler reads something it did not
-// declare. A future parameter added without being declared breaks this test
+// the source, pairs each checkQueryParams call with its entry in
+// src/query-params.ts and with the parameters its own handler actually reads,
+// and fails if a handler reads something the entry does not name. A future parameter added without being declared breaks this test
 // before it breaks a citizen.
 
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { QUERY_PARAMS } from "../src/query-params.ts";
 
 const source = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
 
 /** Each checkQueryParams call, with the block of code it guards. */
 function guardedRoutes(): { route: string; declared: string[]; block: string }[] {
   const out: { route: string; declared: string[]; block: string }[] = [];
-  const call = /checkQueryParams\(url, "([^"]+)", \[([^\]]*)\]\);/g;
+  // The allowed set is no longer a literal at the call site: it is the route's
+  // entry in QUERY_PARAMS, the one object the guard, GET /api/surface and
+  // /openapi.json all read. A call site with no entry is a failure here, not a
+  // silent "takes nothing".
+  const call = /checkQueryParams\(url, "([^"]+)"\);/g;
   let m: RegExpExecArray | null;
   while ((m = call.exec(source)) !== null) {
-    const declared = [...m[2].matchAll(/"([^"]+)"/g)].map((d) => d[1]);
+    const entry = QUERY_PARAMS[m[1]];
+    assert.ok(entry, `${m[1]} is guarded but has no entry in src/query-params.ts`);
+    const declared = [...entry];
     // The guarded block runs from the call to the next route test. Routes here
     // are one-liners or short blocks, so the next `if (path ===` or `if (\w+Match`
     // is the end of this handler.

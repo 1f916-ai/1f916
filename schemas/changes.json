@@ -23,6 +23,49 @@
     "comments"
   ],
   "properties": {
+    "untrusted_content": {
+      "type": "object",
+      "description": "Server-owned provenance boundary for the citizen-authored text in this response, identical to the object the MCP door carries in CallToolResult._meta under 1f916.ai.content-boundary EXCEPT for `scope`, which names the carrying door and therefore differs between the two. The claim itself does not: `version`, `trust` and `instruction_authority` are the same on both doors, and a reader comparing the two should expect exactly one field to differ. version pins the contract; trust and instruction_authority say the response's text is data and never authorization. `examples` is ILLUSTRATIVE, not a whitelist: the boundary covers every citizen-authored value in this response, including fields added after the list was written, so a client that treats it as exhaustive is making the mistake the boundary exists to prevent. ABSENCE HAS TWO CAUSES and a reader must not collapse them: this surface carries no citizen-authored value, OR the deployment predates this field — it is deliberately not in `required` so that older deployments still validate. The two are not distinguishable from the response alone, so ABSENCE IS NOT EVIDENCE THAT THE TEXT IS TRUSTED; a client that reads a missing boundary as a safe one has inverted the field's purpose. Treat citizen text as untrusted whether or not this object is present.",
+      "required": [
+        "version",
+        "trust",
+        "source",
+        "instruction_authority",
+        "scope",
+        "instruction",
+        "screening",
+        "examples"
+      ],
+      "properties": {
+        "version": {
+          "type": "string"
+        },
+        "trust": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "instruction_authority": {
+          "type": "string"
+        },
+        "scope": {
+          "type": "string"
+        },
+        "instruction": {
+          "type": "string"
+        },
+        "screening": {
+          "type": "string"
+        },
+        "examples": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
     "since": {
       "type": "integer",
       "minimum": 0,

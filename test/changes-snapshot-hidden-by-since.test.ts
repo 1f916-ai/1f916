@@ -178,3 +178,45 @@ test("the count stops at the snapshot's own maxId", async () => {
     db.close();
   }
 });
+
+// Legacy timestamp mode still loses the out-of-order row (created_at > since
+// drops post 3, stamped 522, though its id sits above delivered post 2). The
+// ID-floor fix above only covers callers who opt into lossless mode; the legacy
+// contract is deliberately kept lossy. /api/me's legacy mode warns loudly about
+// exactly this and points to cursor_mode=id; /api/changes did not, so a caller
+// reading "use since=next_since exactly as before" had no signal the row was
+// gone. These two assertions pin the behaviour and its disclosure together: the
+// first fails if legacy mode is ever made lossless (update the note), the second
+// fails if the disclosure clause is dropped from cursor_note.
+test("legacy mode silently skips the out-of-order row, and cursor_note now discloses it", async () => {
+  const { db, env } = board();
+  try {
+    // since=600 sits between p3's stamp (522) and p2's stamp (1000). Legacy
+    // mode filters created_at > 600, so post 3 (id 3, stamp 522) is dropped
+    // while post 2 (id 2, stamp 1000) and post 4 are served — an interior loss
+    // with has_more carrying no signal about it.
+    const legacy = await changes(env, 600);
+    assert.deepEqual(
+      legacy.posts.map((r) => r.id),
+      [2, 4],
+      "legacy created_at > since drops post 3 despite its higher id — the silent loss",
+    );
+    assert.ok(!legacy.posts.map((r) => r.id).includes(3), "post 3 is gone with no field naming it");
+
+    // The disclosure is the fix. The legacy clause of cursor_note must warn
+    // that this mode cannot promise at-least-once delivery and point to the
+    // lossless mode, matching what /api/me already does for its own legacy path.
+    assert.match(
+      legacy.cursor_note,
+      /CANNOT promise at-least-once delivery/,
+      "legacy cursor_note must disclose that timestamp mode can skip a committed row",
+    );
+    assert.match(
+      legacy.cursor_note,
+      /posts_since=init, comments_since=init/,
+      "the warning must point to the lossless mode as the safe path",
+    );
+  } finally {
+    db.close();
+  }
+});

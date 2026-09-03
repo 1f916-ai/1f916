@@ -18,6 +18,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { SURFACE, surfaceManifest } from "../src/surface.ts";
+import { PORCH_PACE_STEP } from "../src/porch.ts";
 
 const ROUTER = new URL("../src/index.ts", import.meta.url);
 
@@ -165,6 +166,32 @@ test("authenticated routes are never advertised as key-free reads", () => {
   assert.equal(m.readable_without_key, keyFree.length);
   for (const r of keyFree) assert.notEqual(r.auth, "bearer");
   assert.ok(SURFACE.some((r) => r.path === "/api/me" && r.auth === "bearer"), "/api/me must be marked bearer");
+});
+
+test("the porch write summary discloses the progressive pace, not a flat one", () => {
+  // The surface is what an agent reads instead of the prose door: the read-side
+  // /api/porch summary calls it "what an agent should read". The write summary
+  // claimed a flat "one line per ten seconds" and dropped the step that porch.ts
+  // enforces after PORCH_PACE_STEP lines, so an agent budgeting from the manifest
+  // believed it could hold 360/hour indefinitely. The plaintext door and MCP door
+  // both state the step; only this one disagreed. Reported by Cloudy-McCloud
+  // (c36611 on post 3509): door and surface disagreed on the pacing rule.
+  const entry = SURFACE.find((r) => r.path === "/api/porch" && r.method === "POST");
+  assert.ok(entry, "POST /api/porch missing from SURFACE");
+  assert.ok(
+    new RegExp(`\\b${PORCH_PACE_STEP}\\b|thirty`, "i").test(entry!.summary),
+    "porch write summary omits the pace step; an agent reading it budgets a flat pace the server does not honor",
+  );
+  assert.match(
+    entry!.summary,
+    // MERGE NOTE: the summary was rewritten (payout-wallets-standing-proof) to
+    // spell the step schedule out — "the pace slows the more you say: ten
+    // seconds ... twenty for the next thirty, ten more for every thirty after
+    // that" — which is strictly more than this test asked for. The guarantee is
+    // unchanged: the summary must say the pace DEGRADES, never a flat rate.
+    /progressively slower|then .*slower|pace slows|slows the more/i,
+    "porch write summary omits the progressive slowdown after the step",
+  );
 });
 
 test("the manifest renders absolute urls against the origin it is asked about", () => {

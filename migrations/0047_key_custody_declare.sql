@@ -1,4 +1,4 @@
--- 0041: custody becomes a dated declaration instead of a constant.
+-- 0047: custody becomes a dated declaration instead of a constant.
 --
 -- Docket row custody-label-has-one-value (claimed c14119, designed in #1002).
 -- `custody` is the key surface's only disclosure field and 'self' was its only
@@ -79,7 +79,7 @@
 -- is safe to change.
 --
 -- schema.sql does NOT carry 'self', deliberately: a fresh install has no
--- pre-0041 rows and the write path can no longer produce that value, so putting
+-- pre-0047 rows and the write path can no longer produce that value, so putting
 -- it there would add a CHECK member nothing in the universe could write — the
 -- exact dead-vocabulary defect this row's own post (#2700) is about.
 
@@ -117,6 +117,55 @@ DROP TABLE keys;
 ALTER TABLE keys_new RENAME TO keys;
 CREATE INDEX IF NOT EXISTS idx_keys_citizen ON keys(citizen_id, status);
 
+-- RENUMBERED 0041 -> 0047 on 2026-09-03 (0041 was taken by settlement_v2 in
+-- production). Between the first version of this file and now, 0044 gave
+-- payout_bindings a nullable wallet_signature plus wallet_proof_id and created
+-- payout_wallets, and 0045 widened token to two assets. Both tables snapshot
+-- keys.custody into a HASHED column with CHECK (= 'self'), so both are rebuilt
+-- here on their CURRENT shape, every column carried through by name, and the
+-- CHECKs widened to the vocabulary plus the legacy 'self'. A rebuild written
+-- against the older shape would have dropped wallet_proof_id and re-narrowed
+-- token — which is why the maintainer's review asked for this overlap to be
+-- resolved deliberately rather than mechanically.
+
+CREATE TABLE payout_wallets_new (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  citizen_id INTEGER NOT NULL REFERENCES citizens(id),
+  version TEXT NOT NULL CHECK (version = '1f916.payout-wallet.v1'),
+  chain_id INTEGER NOT NULL CHECK (chain_id = 8453),
+  address TEXT NOT NULL CHECK (length(address) = 42 AND address = lower(address)),
+  expiry INTEGER NOT NULL,
+  wallet_signature TEXT NOT NULL,
+  citizen_public_key TEXT NOT NULL,
+  citizen_signature TEXT NOT NULL,
+  citizen_key_thumbprint TEXT NOT NULL,
+  -- Same job as payout_bindings.citizen_key_custody below, same rule: field
+  -- ten of PAYOUT_WALLET_HASH_FIELDS, so 'self' stays as a LEGACY-ONLY member
+  -- and every existing row keeps its byte.
+  citizen_key_custody TEXT NOT NULL
+    CHECK (citizen_key_custody IN ('self','undeclared','self-held','operator-held','principal-held','lost','write-only')),
+  citizen_key_bound_at INTEGER NOT NULL,
+  preimage TEXT NOT NULL,
+  proof_hash TEXT NOT NULL UNIQUE,
+  payload_hash TEXT NOT NULL UNIQUE,
+  commit_nonce TEXT NOT NULL UNIQUE,
+  created_at INTEGER NOT NULL,
+  revoked_at INTEGER,
+  revoke_reason TEXT,
+  CHECK ((revoked_at IS NULL AND revoke_reason IS NULL) OR (revoked_at IS NOT NULL AND revoke_reason IS NOT NULL))
+);
+-- Verbatim copy, no literal in a value position (see the payout_bindings note).
+INSERT INTO payout_wallets_new SELECT
+  id, citizen_id, version, chain_id, address, expiry, wallet_signature,
+  citizen_public_key, citizen_signature, citizen_key_thumbprint, citizen_key_custody, citizen_key_bound_at,
+  preimage, proof_hash, payload_hash, commit_nonce, created_at, revoked_at, revoke_reason
+  FROM payout_wallets;
+DROP TABLE payout_wallets;
+ALTER TABLE payout_wallets_new RENAME TO payout_wallets;
+CREATE INDEX IF NOT EXISTS idx_payout_wallets_citizen ON payout_wallets(citizen_id, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_payout_wallets_live
+  ON payout_wallets(citizen_id, address) WHERE revoked_at IS NULL;
+
 CREATE TABLE payout_bindings_new (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   citizen_id INTEGER NOT NULL REFERENCES citizens(id),
@@ -124,10 +173,14 @@ CREATE TABLE payout_bindings_new (
   version TEXT NOT NULL CHECK (version = '1f916.payout.v1'),
   amount_atomic TEXT NOT NULL CHECK (length(amount_atomic) BETWEEN 1 AND 78 AND amount_atomic NOT GLOB '*[^0-9]*' AND substr(amount_atomic, 1, 1) != '0'),
   chain_id INTEGER NOT NULL CHECK (chain_id = 8453),
-  token TEXT NOT NULL CHECK (token = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913'),
+  token TEXT NOT NULL CHECK (token IN (
+    '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
+    '0x9e00fc92493451eba1c63dd3880d68b622037ba3'
+  )),
   payout_address TEXT NOT NULL CHECK (length(payout_address) = 42 AND payout_address = lower(payout_address)),
   expiry INTEGER NOT NULL,
-  wallet_signature TEXT NOT NULL,
+  wallet_signature TEXT,
+  wallet_proof_id INTEGER REFERENCES payout_wallets(id),
   citizen_public_key TEXT NOT NULL,
   citizen_signature TEXT NOT NULL,
   citizen_key_thumbprint TEXT NOT NULL,
@@ -155,18 +208,20 @@ CREATE TABLE payout_bindings_new (
   authorization_hash TEXT NOT NULL UNIQUE,
   payload_hash TEXT NOT NULL UNIQUE,
   commit_nonce TEXT NOT NULL UNIQUE,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  CHECK ((wallet_signature IS NOT NULL AND wallet_proof_id IS NULL)
+      OR (wallet_signature IS NULL AND wallet_proof_id IS NOT NULL))
 );
 -- Historical snapshots are copied through UNCHANGED, column for column. Every
 -- one of these columns is inside PAYOUT_BINDING_HASH_FIELDS except id,
--- citizen_id, docket_id and payload_hash itself, so the only safe copy is a
--- verbatim one: this statement must not contain a literal in a value position.
--- test/payout-binding-digest-survives-0041.test.ts asserts that, and also
--- builds a pre-0041 database, runs this file against it, and recomputes the
--- digest from the migrated row.
+-- citizen_id, docket_id, wallet_proof_id and payload_hash itself, so the only
+-- safe copy is a verbatim one: this statement must not contain a literal in a
+-- value position. test/payout-binding-digest-survives-0047.test.ts asserts
+-- that, and also builds a pre-0047 database, runs this file against it, and
+-- recomputes the digest from the migrated row.
 INSERT INTO payout_bindings_new SELECT
   id, citizen_id, docket_id, version, amount_atomic, chain_id, token, payout_address, expiry,
-  wallet_signature, citizen_public_key, citizen_signature, citizen_key_thumbprint,
+  wallet_signature, wallet_proof_id, citizen_public_key, citizen_signature, citizen_key_thumbprint,
   citizen_key_custody, citizen_key_bound_at, authorization_verification, authorization_verified_at,
   docket_acceptance, docket_updated, docket_snapshot, preimage, authorization_hash, payload_hash,
   commit_nonce, created_at

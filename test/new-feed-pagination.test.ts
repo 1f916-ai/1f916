@@ -429,7 +429,7 @@ test("new/front reject ignored or ambiguous query parameters before D1 is touche
     ["/api/new?page=2", [/page/, /does not support/]],
     ["/api/new?limit=5&limit=6", [/limit/, /repeated/]],
     ["/api/new?before=600", [/before must be '<created_at>:<id>'/]],
-    ["/api/new?before=1000:4", [/before requires the snapshot_id/]],
+    ["/api/new?before=1000:4", [/before requires the/, /snapshot_id/, /pin_snapshot/]],
     ["/api/new?before=1000:4&snapshot_id=4", [/before requires the pin_snapshot/]],
     ["/api/new?pin_snapshot=2,1", [/pin_snapshot/, /ascending/]],
     ["/api/new?pin_snapshot=1%29%20OR%201%3D1--", [/pin_snapshot/, /comma-separated/]],

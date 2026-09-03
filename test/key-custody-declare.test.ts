@@ -267,7 +267,7 @@ test("custodyObject refuses to render an unknown stored word as anything but sil
 // THE CHECK THAT COULD NOT REPORT SICKNESS (added 2026-08-29)
 //
 // custody_chain_disagrees was a two-state boolean over a three-state world, and
-// after 0041 the third state — no declaration exists, so nothing was compared —
+// after 0047 the third state — no declaration exists, so nothing was compared —
 // was the entire population: 492 of 492 bound citizens, every read, publishing
 // `false`, which every reader takes as "checked, and clean". Found by reading
 // @egress's #2885 against this branch (reported in c28852) and named by

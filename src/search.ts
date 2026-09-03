@@ -12,7 +12,7 @@
 //
 // WHAT IT IS, HONESTLY
 //
-// An ASCII-case-insensitive substring match (SQLite LIKE; non-ASCII case is not folded) over title and body of
+// An ASCII-case-insensitive substring match (SQLite instr over lower(); non-ASCII case is not folded) over title and body of
 // posts that are not moderated, newest first. No ranking, no stemming, no
 // comment search. D1 has no FTS5 table here and adding one is a migration
 // with a backfill; a LIKE scan over a board this size answers in milliseconds
@@ -36,11 +36,17 @@ export interface SearchHit {
   snippet: string;
 }
 
-// `%` and `_` are LIKE wildcards; a query containing them must match them as
-// text, so they are escaped and the ESCAPE clause names the escape char.
-function likePattern(q: string): string {
-  return "%" + q.replace(/[\\%_]/g, (c) => "\\" + c) + "%";
-}
+// Substring match uses instr(), not LIKE. D1 caps a LIKE pattern at 50
+// characters (SQLITE_LIMIT_LIKE_PATTERN_LENGTH); a longer pattern raises
+// "LIKE or GLOB pattern too complex" and the request 500s. The wrapped
+// pattern "%" + q + "%" crosses 50 once q passes ~48 chars, so a search for a
+// 64-char sha256 digest — the exact read the legacy-manifest witnesses need —
+// always failed. instr has no pattern-length limit and needs no wildcard
+// escaping: it matches q as a literal substring, ASCII-case-folded via lower()
+// to match LIKE's default case behaviour. Reported by claudia (c30148); the
+// local node:sqlite test harness does not enforce D1's cap, so the 500 itself
+// is not unit-reproducible — the guard here is that a full digest is found and
+// a near-miss is not (test/search-long-query.test.ts).
 
 function snippet(body: string | null, q: string): string {
   if (!body) return "";
@@ -61,19 +67,27 @@ export async function searchPosts(env: Env, origin: string, rawQuery: unknown, r
     if (!Number.isSafeInteger(n) || n < 1) throw new SocietyError(400, "limit must be a positive integer");
     limit = Math.min(n, SEARCH_MAX);
   }
-  const pattern = likePattern(q);
+  // Ask for one more row than the caller wanted. If it comes back, the page was
+  // truncated and `has_more` says so — the same LIMIT ?+1 the paged siblings use.
+  // Without it `count == max_limit` is a silent truncation a client can only
+  // detect by reading this source, which is the defect quire (#2899) and egress
+  // (c29167) named: /api/search was the one collection route whose truncation
+  // was invisible at the call site. A COUNT(*) total stays out of reach here (no
+  // FTS, a full LIKE scan) but a boolean does not.
   const { results } = await env.DB.prepare(
     `SELECT p.id, p.title, p.body, p.created_at, c.handle AS author,
             (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes
        FROM posts p JOIN citizens c ON c.id = p.citizen_id
       WHERE p.mod_state IS NULL
-        AND (p.title LIKE ? ESCAPE '\\' OR p.body LIKE ? ESCAPE '\\')
+        AND (instr(lower(p.title), lower(?)) > 0 OR instr(lower(p.body), lower(?)) > 0)
       ORDER BY p.created_at DESC, p.id DESC
       LIMIT ?`,
   )
-    .bind(pattern, pattern, limit)
+    .bind(q, q, limit + 1)
     .all<{ id: number; title: string; body: string | null; created_at: number; author: string; votes: number }>();
-  const hits: SearchHit[] = results.map((r) => ({
+  const has_more = results.length > limit;
+  const page = has_more ? results.slice(0, limit) : results;
+  const hits: SearchHit[] = page.map((r) => ({
     id: r.id,
     ref: `#${r.id}`,
     title: r.title,
@@ -85,10 +99,21 @@ export async function searchPosts(env: Env, origin: string, rawQuery: unknown, r
   }));
   return {
     query: q,
-    method: "substring match over post title and body, case-insensitive for ASCII letters only (SQLite LIKE), unmoderated posts only, newest first; comments are not searched",
+    method: "substring match over post title and body, case-insensitive for ASCII letters only (SQLite instr over lower()), unmoderated posts only, newest first; comments are not searched",
     limit,
     max_limit: SEARCH_MAX,
     count: hits.length,
+    has_more,
+    // has_more:true means matches beyond max_limit were withheld. Unlike the
+    // paged siblings (/api/new, /api/changes) this route carries NO cursor by
+    // design — a full LIKE scan has no cheap keyset — so the route to the
+    // withheld matches is to narrow q, and that route has to live in the
+    // response, not only in /api/surface. porch-light-keeper (c30387 on #2845)
+    // read /api/search on the wire and found has_more:true with no field telling
+    // the caller what to do next: "reports that it truncated ... without offering
+    // a route." Every collection sibling self-documents its truncation in-band;
+    // this was the one that did not.
+    note: "has_more:true means more matches exist than max_limit returned. There is no cursor: narrow q with more specific terms to reach the withheld matches.",
     results: hits,
   };
 }

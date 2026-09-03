@@ -1,7 +1,7 @@
 // A migration about a LABEL must not silently invalidate published digests.
 //
 // Found by @souchong-still-unburnt (#1762) in c27222 on #1002, reading the
-// branch at 2ba5b7c. The first version of migration 0041 rewrote
+// branch at 2ba5b7c. The first version of migration 0047 rewrote
 // payout_bindings.citizen_key_custody from 'self' to 'undeclared' on every
 // historical row while copying payload_hash through unchanged, under a comment
 // asserting "this column was never inside the signed bytes." The comment is
@@ -31,12 +31,15 @@ import { DatabaseSync } from "node:sqlite";
 import { sha256Hex } from "../src/chain.ts";
 import { PAYOUT_BINDING_HASH_FIELDS } from "../src/payouts.ts";
 
-const migration = readFileSync(new URL("../migrations/0041_key_custody_declare.sql", import.meta.url), "utf8");
+const migration = readFileSync(new URL("../migrations/0047_key_custody_declare.sql", import.meta.url), "utf8");
 
-// The pre-0041 shape, as it stood on main. Written out here rather than
-// derived from anything in the tree, because the whole point is to migrate a
-// database this branch did not create.
-const PRE_0041 = `
+// The pre-0047 shape, as it stood on main AFTER 0044-0046 (nullable
+// wallet_signature, wallet_proof_id, and the payout_wallets table). Written out
+// here rather than derived from anything in the tree, because the whole point
+// is to migrate a database this branch did not create.
+const PRE_0047 = `
+CREATE TABLE citizens (id INTEGER PRIMARY KEY, handle TEXT);
+INSERT INTO citizens (id, handle) VALUES (1, 'a-citizen-who-bound-before-this-existed');
 CREATE TABLE keys (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   citizen_id INTEGER NOT NULL,
@@ -58,7 +61,8 @@ CREATE TABLE payout_bindings (
   token TEXT NOT NULL,
   payout_address TEXT NOT NULL,
   expiry INTEGER NOT NULL,
-  wallet_signature TEXT NOT NULL,
+  wallet_signature TEXT,
+  wallet_proof_id INTEGER REFERENCES payout_wallets(id),
   citizen_public_key TEXT NOT NULL,
   citizen_signature TEXT NOT NULL,
   citizen_key_thumbprint TEXT NOT NULL,
@@ -74,6 +78,27 @@ CREATE TABLE payout_bindings (
   payload_hash TEXT NOT NULL UNIQUE,
   commit_nonce TEXT NOT NULL UNIQUE,
   created_at INTEGER NOT NULL
+);
+CREATE TABLE payout_wallets (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  citizen_id INTEGER NOT NULL,
+  version TEXT NOT NULL,
+  chain_id INTEGER NOT NULL,
+  address TEXT NOT NULL,
+  expiry INTEGER NOT NULL,
+  wallet_signature TEXT NOT NULL,
+  citizen_public_key TEXT NOT NULL,
+  citizen_signature TEXT NOT NULL,
+  citizen_key_thumbprint TEXT NOT NULL,
+  citizen_key_custody TEXT NOT NULL CHECK (citizen_key_custody = 'self'),
+  citizen_key_bound_at INTEGER NOT NULL,
+  preimage TEXT NOT NULL,
+  proof_hash TEXT NOT NULL UNIQUE,
+  payload_hash TEXT NOT NULL UNIQUE,
+  commit_nonce TEXT NOT NULL UNIQUE,
+  created_at INTEGER NOT NULL,
+  revoked_at INTEGER,
+  revoke_reason TEXT
 );
 `;
 
@@ -119,9 +144,9 @@ function digestOf(row: Record<string, unknown>): Promise<string> {
   return sha256Hex(JSON.stringify(values));
 }
 
-test("0041 copies every hashed payout_bindings column verbatim — no literal in a value position", () => {
+test("0047 copies every hashed payout_bindings column verbatim — no literal in a value position", () => {
   const insert = migration.match(/INSERT INTO payout_bindings_new SELECT([\s\S]*?)FROM payout_bindings;/);
-  assert.ok(insert, "0041 no longer has the payout_bindings copy this test guards");
+  assert.ok(insert, "0047 no longer has the payout_bindings copy this test guards");
   const values = insert[1].split(",").map((v) => v.trim()).filter(Boolean);
   const literals = values.filter((v) => /^'.*'$/.test(v));
   assert.deepEqual(
@@ -139,11 +164,16 @@ test("0041 copies every hashed payout_bindings column verbatim — no literal in
     if (!column) continue;
     assert.ok(values.includes(column), `the copy does not carry ${column}, which is inside the digest`);
   }
+  // wallet_proof_id (0044) is outside the digest and inside the row: a copy
+  // that drops it turns every wallet-proof-backed binding into one with no
+  // proof of its wallet at all, which the table CHECK then refuses to store.
+  assert.ok(values.includes("wallet_proof_id"), "the copy does not carry wallet_proof_id");
+  assert.ok(!values.includes("NULL"), "a NULL in a value position drops a stored column");
 });
 
-test("a pre-0041 binding still recomputes its own published digest after the migration runs", async () => {
+test("a pre-0047 binding still recomputes its own published digest after the migration runs", async () => {
   const db = new DatabaseSync(":memory:");
-  db.exec(PRE_0041);
+  db.exec(PRE_0047);
   db.exec("INSERT INTO keys (citizen_id, public_key, thumbprint, custody, bound_at) VALUES (1, 'pub', 'thumb', 'self', 1000)");
 
   const row: Record<string, unknown> = {
@@ -206,4 +236,39 @@ test("'self' survives in payout_bindings' CHECK and is gone from keys'", () => {
   const keysCheck = migration.match(/custody TEXT NOT NULL DEFAULT 'undeclared'\s*\n\s*CHECK \(custody IN \(([^)]*)\)\)/);
   assert.ok(keysCheck, "the keys custody CHECK is not where this test looks for it");
   assert.doesNotMatch(keysCheck[1], /'self'(?!-held)/, "keys.custody must not keep the value that was never a claim");
+});
+
+test("0047 copies every hashed payout_wallets column verbatim too, and a pre-0047 wallet proof keeps its digest", async () => {
+  const insert = migration.match(/INSERT INTO payout_wallets_new SELECT([\s\S]*?)FROM payout_wallets;/);
+  assert.ok(insert, "0047 no longer has the payout_wallets copy this test guards");
+  const values = insert[1].split(",").map((v) => v.trim()).filter(Boolean);
+  assert.deepEqual(values.filter((v) => /^'.*'$/.test(v)), [], "a literal in the payout_wallets copy rewrites a hashed column");
+  for (const col of ["citizen_key_custody", "citizen_public_key", "citizen_signature", "citizen_key_thumbprint", "citizen_key_bound_at", "preimage", "proof_hash", "commit_nonce", "created_at", "wallet_signature", "address", "expiry", "chain_id", "version"])
+    assert.ok(values.includes(col), `the payout_wallets copy does not carry ${col}`);
+
+  const db = new DatabaseSync(":memory:");
+  db.exec(PRE_0047);
+  db.exec("INSERT INTO keys (citizen_id, public_key, thumbprint, custody, bound_at) VALUES (1, 'pub', 'thumb', 'self', 1000)");
+  db.prepare(
+    `INSERT INTO payout_wallets (citizen_id, version, chain_id, address, expiry, wallet_signature, citizen_public_key, citizen_signature,
+       citizen_key_thumbprint, citizen_key_custody, citizen_key_bound_at, preimage, proof_hash, payload_hash, commit_nonce, created_at)
+     VALUES (1, '1f916.payout-wallet.v1', 8453, ?, 1787000000, ?, 'pub', 'sig', 'thumb', 'self', 1000, 'pre', ?, ?, ?, 1787000002)`,
+  ).run("0x" + "ab".repeat(20), "0x" + "cd".repeat(65), "p".repeat(64), "h".repeat(64), "n".repeat(32));
+  // A wallet-proof-backed binding written BEFORE the migration, so the rebuild
+  // has to carry wallet_proof_id through rather than merely accept it afterwards.
+  db.prepare("INSERT INTO payout_bindings (citizen_id, docket_id, version, amount_atomic, chain_id, token, payout_address, expiry, wallet_proof_id, citizen_public_key, citizen_signature, citizen_key_thumbprint, citizen_key_custody, citizen_key_bound_at, authorization_verification, authorization_verified_at, docket_updated, docket_snapshot, preimage, authorization_hash, payload_hash, commit_nonce, created_at) VALUES (1, 'r0', '1f916.payout.v1', '1', 8453, '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', ?, 1, 1, 'pub', 'sig', 'thumb', 'self', 1000, 'valid-at-binding-event', 1, 'd', '{}', 'p0', ?, ?, ?, 2)")
+    .run("0x" + "ab".repeat(20), "e".repeat(64), "f".repeat(64), "q".repeat(32));
+  db.exec(migration);
+  const pre = db.prepare("SELECT wallet_proof_id, wallet_signature, citizen_key_custody FROM payout_bindings WHERE docket_id = 'r0'").get() as { wallet_proof_id: number; wallet_signature: null; citizen_key_custody: string };
+  assert.equal(pre.wallet_proof_id, 1, "a pre-0047 binding lost its wallet_proof_id in the rebuild");
+  assert.equal(pre.citizen_key_custody, "self");
+  const w = db.prepare("SELECT citizen_key_custody, payload_hash FROM payout_wallets WHERE id = 1").get() as { citizen_key_custody: string; payload_hash: string };
+  assert.equal(w.citizen_key_custody, "self", "a historical wallet proof's custody snapshot was rewritten; it is inside payload_hash");
+  assert.equal(w.payload_hash, "h".repeat(64));
+  // And a binding that pointed at the proof still does.
+  db.prepare("INSERT INTO payout_bindings (citizen_id, docket_id, version, amount_atomic, chain_id, token, payout_address, expiry, wallet_proof_id, citizen_public_key, citizen_signature, citizen_key_thumbprint, citizen_key_custody, citizen_key_bound_at, authorization_verification, authorization_verified_at, docket_updated, docket_snapshot, preimage, authorization_hash, payload_hash, commit_nonce, created_at) VALUES (1, 'r', '1f916.payout.v1', '1', 8453, '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', ?, 1, 1, 'pub', 'sig', 'thumb', 'undeclared', 1000, 'valid-at-binding-event', 1, 'd', '{}', 'p', ?, ?, ?, 2)")
+    .run("0x" + "ab".repeat(20), "b".repeat(64), "c".repeat(64), "m".repeat(32));
+  const b = db.prepare("SELECT wallet_proof_id, wallet_signature FROM payout_bindings WHERE id = 1").get() as { wallet_proof_id: number; wallet_signature: null };
+  assert.equal(b.wallet_proof_id, 1, "wallet_proof_id did not survive the rebuild");
+  assert.equal(b.wallet_signature, null);
 });
