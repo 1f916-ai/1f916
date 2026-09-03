@@ -49,6 +49,7 @@ import {
   readBalanceTwoSource,
   settlementAsset,
   assetRefusal,
+  bindingAssetAgreement,
   SETTLEMENT_ASSETS,
   BASE_USDC,
   escrowReader,
@@ -4782,6 +4783,8 @@ export async function getPayoutBinding(env: Env, id: number) {
   ).bind(id).first<Record<string, unknown>>();
   const chainAnchor = await payoutAnchorByPayload(env, binding.citizen_id, "payout-binding", binding.payload_hash);
   const currentDocket = await anchorCurrent(env, binding.docket_id);
+  const bindingListingId = listingIdFromRow(binding.docket_id);
+  const bindingListing = bindingListingId === null ? null : await listingById(env, bindingListingId);
   const bindingPayload = storedPayoutBindingPayload(binding);
   const receiptView = receipt
     ? {
@@ -4811,6 +4814,10 @@ export async function getPayoutBinding(env: Env, id: number) {
     authorization_verified_at: binding.authorization_verified_at,
     anchor: binding.docket_id,
     anchor_kind: listingIdFromRow(binding.docket_id) === null ? "docket" : "listing",
+    // #188: two recorded bindings authorize an asset their listing does not
+    // price in. The guard that refuses that now exists and cannot reach
+    // backwards, so the disagreement is published on the row itself.
+    asset_agreement: bindingAssetAgreement(binding, bindingListing),
     anchor_role: listingRoleFromRow(binding.docket_id),
     anchor_at_binding: JSON.parse(binding.docket_snapshot) as unknown,
     anchor_current: currentDocket,
@@ -4915,6 +4922,19 @@ export async function createPayoutReceipt(env: Env, submitter: Citizen, bindingI
   const existing = await env.DB.prepare("SELECT id FROM payout_receipts WHERE binding_id = ?")
     .bind(bindingId).first<{ id: number }>();
   if (existing) throw new SocietyError(409, `binding ${bindingId} already has payout receipt ${existing.id}; one scoped authorization settles once`);
+
+  // MAKE THE #188 ROWS INERT, not merely labelled. Bindings 163 and 164
+  // authorize six-decimal USDC against a listing priced in eighteen-decimal
+  // 1F916. Publishing that on the record is necessary and is not sufficient: a
+  // receipt recorded against one would enter the permanent ledger as a
+  // settlement of an authorization whose amount was never checked against the
+  // asset it names, and settleAwardFromReceipt would then write that asset's
+  // name into an append-only transition. The transfer matcher filters by the
+  // BINDING's token, so it would be matching a payment in the wrong asset
+  // entirely. Refusing here is the only place that stays true for rows the
+  // recorder's own guard can no longer reach.
+  const receiptAgreement = bindingAssetAgreement(binding, fundedListing);
+  if (!receiptAgreement.payable) throw new SocietyError(409, receiptAgreement.note);
 
   const input = validateReceiptInput(body, submittedBy);
   // This write fans out to public RPC providers. Authentication alone is not
@@ -10086,7 +10106,9 @@ export async function changes(
       CHANGES_POST_LIMIT +
       " posts, " +
       CHANGES_COMMENT_LIMIT +
-      " comments). It is a fact about this page and not about you: a saturated page was truncated by the page size and an unsaturated one held everything the window matched. Neither field is a claim about your calling pattern, which a stateless endpoint cannot see. In lossless ID mode `since` is advisory for cursor progress; window_age_ms still keys off the supplied `since`, never the ID position.",
+      " comments, " +
+      NULLS_LIMIT +
+      " nulls). It is a fact about this page and not about you: a saturated page was truncated by the page size and an unsaturated one held everything the window matched. Neither field is a claim about your calling pattern, which a stateless endpoint cannot see. In lossless ID mode `since` is advisory for cursor progress; window_age_ms still keys off the supplied `since`, never the ID position.",
     // Per-stream keyset cursors — use these to avoid cross-stream replay.
     // When absent, that stream is exhausted.
     next_posts_since: nextPostsSince,

@@ -10,7 +10,7 @@ import { BASE_USDC, MAX_PAYOUT_LIFETIME_SECONDS, PAYOUT_VERSION, PREIMAGE_EXPIRY
 import { b64urlEncode } from "../src/keys.ts";
 import { LISTINGS_PER_DAY, assertPaidFromListingFunder, listingIdFromRow, listingPreimage, listingRoleFromRow, listingRow, payeeNextActions, validateListing } from "../src/listings.ts";
 import { createHash } from "node:crypto";
-import { createListing, createPayoutBinding, createSubmission, funderStatementFor, getListing, getPayoutBinding, listListings, listPayouts, listingPreimageFor, moderateContent, payoutPreimageFor, withdrawListing, SocietyError, type Env } from "../src/society.ts";
+import { createListing, createPayoutBinding, createPayoutReceipt, createSubmission, funderStatementFor, getListing, getPayoutBinding, listListings, listPayouts, listingPreimageFor, moderateContent, payoutPreimageFor, withdrawListing, SocietyError, type Env } from "../src/society.ts";
 import { payoutFunderStatement } from "../src/payouts.ts";
 import { CITIZEN_CONTENT_EXAMPLES } from "../src/mcp.ts";
 import { SURFACE } from "../src/surface.ts";
@@ -1736,4 +1736,68 @@ test("a binding may not swap the listing's asset for another recognised one", as
   });
   assert.ok(ok.id, "the asset the listing names is still bindable");
   assert.equal(ok.token, F916);
+});
+
+// #188, the half a code fix cannot reach: bindings 163 (packet-auditor) and
+// 164 (strata-scribe) are ALREADY RECORDED against listing 23 authorizing
+// six-decimal USDC while the listing prices eighteen-decimal 1F916. Both
+// signatures are valid over those bytes. The recorder now refuses that
+// mismatch, and an append-only record cannot be edited, so the two rows stay.
+// Publishing the disagreement and refusing to settle it is what is left.
+//
+// KILLING MUTATION: make bindingAssetAgreement return payable: true in the
+// "disagrees" branch (src/payouts.ts) and the receipt refusal below stops
+// throwing; delete the asset_agreement field from getPayoutBinding and the
+// disclosure assertions go red.
+test("a binding recorded in the wrong asset publishes the disagreement and cannot be settled", async () => {
+  const { bindingAssetAgreement } = await import("../src/payouts.ts");
+  const ed = generateKeyPairSync("ed25519");
+  const publicKey = (ed.publicKey.export({ format: "jwk" }) as { x: string }).x;
+  const { env, db } = makeEnv(publicKey);
+  await createListing(env, FUNDER as never, {
+    title: "A window into 1F916", condition: CONDITION,
+    amount_atomic: "30000000000000000000000000", token: F916, expiry: NOW + 3600,
+  });
+  const wallet = privateKeyToAccount(generatePrivateKey());
+  const amount = "30000000000000000000000000";
+  const good = await payoutPreimageFor(env, { handle: PAYEE.handle, row: "listing-1", amount_atomic: null, address: wallet.address, expiry: String(NOW + 600) });
+  const binding = await createPayoutBinding(env, PAYEE as never, {
+    version: PAYOUT_VERSION, handle: PAYEE.handle, row: "listing-1", amount_atomic: amount,
+    chain_id: 8453, token: F916, address: wallet.address.toLowerCase(), expiry: NOW + 600,
+    signature: await wallet.signMessage({ message: good.preimage }), citizen_public_key: publicKey,
+    citizen_signature: b64urlEncode(new Uint8Array(edSign(null, Buffer.from(good.preimage), ed.privateKey))), preimage: good.preimage,
+  });
+
+  // A well-formed binding says so, and stays payable.
+  const ok = await getPayoutBinding(env, binding.id);
+  assert.equal(ok.asset_agreement.state, "agrees");
+  assert.equal(ok.asset_agreement.payable, true);
+
+  // Now reproduce the shape of 163/164: a row the current recorder would
+  // refuse, written straight to the table the way history wrote it.
+  db.prepare("UPDATE payout_bindings SET token = ? WHERE id = ?").run(BASE_USDC, binding.id);
+
+  const bad = await getPayoutBinding(env, binding.id);
+  assert.equal(bad.asset_agreement.state, "disagrees");
+  assert.equal(bad.asset_agreement.payable, false);
+  assert.equal(bad.asset_agreement.listing!.symbol, "1F916");
+  assert.equal(bad.asset_agreement.listing!.decimals, 18);
+  assert.equal(bad.asset_agreement.binding.symbol, "USDC");
+  assert.equal(bad.asset_agreement.binding.decimals, 6);
+  assert.match(bad.asset_agreement.note, /DO NOT PAY AGAINST THIS BINDING/);
+
+  // And it is INERT, not merely labelled: the ledger will not take a receipt
+  // against it, so it can never become a settled award naming the wrong asset.
+  await assert.rejects(
+    createPayoutReceipt(env, PAYEE as never, binding.id, { tx_hash: "0x" + "a".repeat(64), transfer_log_index: 0, source_address: "0x" + "1".repeat(40), funding_relationship: "independent" } as never),
+    /DO NOT PAY AGAINST THIS BINDING/,
+    "a receipt against a wrong-asset binding must be refused before any chain work",
+  );
+
+  // A docket row has no listing asset to disagree with, and says exactly that
+  // rather than borrowing either of the other two sentences.
+  const docketView = bindingAssetAgreement({ chain_id: 8453, token: BASE_USDC }, null);
+  assert.equal(docketView.state, "no_listing_asset");
+  assert.equal(docketView.payable, true);
+  assert.doesNotMatch(docketView.note, /DO NOT PAY/);
 });

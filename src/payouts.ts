@@ -75,6 +75,73 @@ export function assetRefusal(token: string, chainId: number): string | null {
   return null;
 }
 
+// WHETHER A RECORDED BINDING NAMES THE ASSET ITS LISTING PRICES IN.
+//
+// Bindings 163 and 164 say no. They were filed against listing 23 — 30,000,000
+// 1F916, eighteen decimals — while authorizing 30000000000000000000000000
+// atomic units of six-decimal USDC, because the recorder checked a binding's
+// amount against its listing and never its asset (#188). Both signatures are
+// valid. The bytes are wrong. The guard that would have refused them now exists,
+// and it cannot reach backwards: these rows are in an append-only record and
+// stay there.
+//
+// So the disagreement is PUBLISHED rather than quietly carried. A reader must
+// not have to know the history of #188 to see that one of these authorizes
+// nothing anyone should pay against.
+//
+// THE NOTE IS EMITTED FROM THE SAME BRANCH AS THE VALUE, never hand-written
+// over all three cases. A single sentence covering "agrees", "disagrees" and
+// "no listing to compare against" is true for one cohort of readers and false
+// for the others, which is the defect class this codebase keeps rediscovering.
+export type BindingAssetAgreement = {
+  state: "agrees" | "disagrees" | "no_listing_asset";
+  binding: { chain_id: number; token: string; symbol: string | null; decimals: number | null };
+  listing: { chain_id: number; token: string; symbol: string | null; decimals: number | null } | null;
+  payable: boolean;
+  note: string;
+};
+
+function assetFace(chainId: number, token: string) {
+  const a = settlementAsset(token);
+  return { chain_id: chainId, token: token.toLowerCase(), symbol: a?.symbol ?? null, decimals: a?.decimals ?? null };
+}
+
+export function bindingAssetAgreement(
+  binding: { chain_id: number; token: string },
+  listing: { chain_id: number; token: string } | null,
+): BindingAssetAgreement {
+  const b = assetFace(binding.chain_id, binding.token);
+  if (listing === null)
+    return {
+      state: "no_listing_asset",
+      binding: b,
+      listing: null,
+      payable: true,
+      note: "This binding names a docket row rather than a listing, so there is no listing asset to agree or disagree with. The asset is the binding's own, exactly as signed.",
+    };
+  const l = assetFace(listing.chain_id, listing.token);
+  if (b.token === l.token && b.chain_id === l.chain_id)
+    return {
+      state: "agrees",
+      binding: b,
+      listing: l,
+      payable: true,
+      note: `The binding authorizes the same asset the listing prices in (${l.symbol ?? l.token} on chain ${l.chain_id}), so amount_atomic means the same quantity in both.`,
+    };
+  return {
+    state: "disagrees",
+    binding: b,
+    listing: l,
+    payable: false,
+    note:
+      `DO NOT PAY AGAINST THIS BINDING. The listing prices work in ${l.symbol ?? l.token}` +
+      (l.decimals === null ? "" : ` (${l.decimals} decimals)`) +
+      ` on chain ${l.chain_id}, and this authorization names ${b.symbol ?? b.token}` +
+      (b.decimals === null ? "" : ` (${b.decimals} decimals)`) +
+      ` on chain ${b.chain_id}. amount_atomic is atomic units, so the same integer is a different quantity under each, and this one was never checked against the asset it names. It was recorded before the rail refused a mismatch (#188); the signatures over it are valid and the bytes are still wrong. A receipt against it is refused, and no payment should be made on its authority. The payee may file a new binding on the correct asset.`,
+  };
+}
+
 // COMPARING ACROSS ASSETS IS THE BUG THIS PREVENTS. Callers that hold amounts
 // from more than one asset must refuse to produce a scalar, because summing
 // 6-decimal and 18-decimal integers yields a number that means nothing. Returns
