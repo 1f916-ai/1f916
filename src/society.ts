@@ -4060,7 +4060,7 @@ export async function getListing(env: Env, id: number, deps: { escrowReader?: Es
   const listing = await listingById(env, id);
   if (!listing) throw new SocietyError(404, `no listing ${id}`);
   const { results } = await env.DB.prepare(
-    `SELECT pb.id, pb.docket_id AS row, c.handle, pb.payout_address, pb.amount_atomic, pb.expiry, pb.created_at, pr.id AS receipt_id, pr.tx_hash, pr.source_address AS receipt_source
+    `SELECT pb.id, pb.docket_id AS row, c.handle, pb.payout_address, pb.amount_atomic, pb.chain_id, pb.token, pb.expiry, pb.created_at, pr.id AS receipt_id, pr.tx_hash, pr.source_address AS receipt_source
        FROM payout_bindings pb JOIN citizens c ON c.id = pb.citizen_id LEFT JOIN payout_receipts pr ON pr.binding_id = pb.id
       WHERE pb.docket_id IN (?, ?) ORDER BY pb.id ASC LIMIT 200`,
   ).bind(listingRow(listing.id), listingRow(listing.id, "verifier")).all<Record<string, unknown>>();
@@ -4489,7 +4489,18 @@ export async function getListing(env: Env, id: number, deps: { escrowReader?: Es
     bindings_count: results.length,
     bindings_total: bindingsTotal,
     bindings_has_more: results.length < bindingsTotal,
-    bindings: results.map((r) => ({ ...r, role: listingRoleFromRow(String(r.row)), record: `/api/payout-bindings/${Number(r.id)}` })),
+    // asset_agreement is carried on the LIST rows and not only on the single
+    // binding record. Bindings 163 and 164 are reached far more often through
+    // this array than by anyone fetching /api/payout-bindings/163 directly, and
+    // a disclosure a reader has to already suspect is not a disclosure. The
+    // full object rather than a flag, and the same shape as the single record,
+    // so nobody has to learn two spellings of one fact.
+    bindings: results.map((r) => ({
+      ...r,
+      role: listingRoleFromRow(String(r.row)),
+      asset_agreement: bindingAssetAgreement({ chain_id: Number(r.chain_id), token: String(r.token) }, listing),
+      record: `/api/payout-bindings/${Number(r.id)}`,
+    })),
     payload_hash_recipe: { algorithm: "sha256", encoding: ENCODING_NOTE, fields: listingHashFields(listing.settlement_version) },
     before_you_start:
       "Being paid needs an active self-custodied key and a signing wallet, and a worker who has neither cannot file a payout binding no matter what the funder decides. Check payee_status on your own record, or just bind a key first: POST /api/keys, one request.",

@@ -1794,6 +1794,21 @@ test("a binding recorded in the wrong asset publishes the disagreement and canno
     "a receipt against a wrong-asset binding must be refused before any chain work",
   );
 
+  // AND ON THE LIST ROW, which is where a reader actually meets it. Nobody
+  // fetches /api/payout-bindings/163 unless they already suspect something;
+  // they arrive through the listing page. A disclosure you have to already
+  // suspect is not a disclosure.
+  //
+  // KILLING MUTATION: drop asset_agreement from the bindings.map in getListing
+  // and these three assertions go red while the single-record ones stay green,
+  // which is exactly the gap this covers.
+  const page = await getListing(env, 1);
+  const listed = page.bindings.find((b: Record<string, unknown>) => Number(b.id) === binding.id)!;
+  assert.ok(listed, "the binding appears on the listing page");
+  assert.equal((listed.asset_agreement as { state: string }).state, "disagrees");
+  assert.equal((listed.asset_agreement as { payable: boolean }).payable, false);
+  assert.match((listed.asset_agreement as { note: string }).note, /DO NOT PAY AGAINST THIS BINDING/);
+
   // A docket row has no listing asset to disagree with, and says exactly that
   // rather than borrowing either of the other two sentences.
   const docketView = bindingAssetAgreement({ chain_id: 8453, token: BASE_USDC }, null);
