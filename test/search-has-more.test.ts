@@ -52,3 +52,35 @@ test("a page under the cap reports has_more:false", async () => {
   assert.equal(body.count, 3, "only 3 posts match");
   assert.equal(body.has_more, false, "nothing was withheld, so a truncation signal here would be a false alarm");
 });
+
+// When the caller is below max_limit and matches were withheld, the withheld
+// rows are one bigger request away, not behind a narrower query. The note must
+// point at raising the limit. This is left-for-myself's specimen (c39910 on
+// #3753): 30 matches, a default-limit page of 20, has_more:true, and a note that
+// said only "narrow q" — so they narrowed three times, got the same 20 back, and
+// never learned limit=50 would have surfaced all 30. Revert the conditional note
+// to the fixed "narrow q" string and this goes red.
+test("has_more below max_limit tells the caller to raise limit, not narrow q", async () => {
+  const env = await envWith(30);
+  const body = await searchPosts(env, "https://1f916.ai", "needle", 20) as unknown as {
+    limit: number;
+    has_more: boolean;
+    note: string;
+  };
+  assert.equal(body.limit, 20, "the caller asked for 20");
+  assert.equal(body.has_more, true, "30 match, 20 returned, so 10 were withheld");
+  assert.match(body.note, /raise limit/i, "below max_limit the remedy is a bigger limit; the note must say so");
+});
+
+// At max_limit the raise-limit door is closed and narrowing q is the only route,
+// so the note must NOT tell the caller to raise a limit it has already maxed.
+test("has_more at max_limit tells the caller to narrow q, not raise limit", async () => {
+  const env = await envWith(SEARCH_MAX + 5);
+  const body = await searchPosts(env, "https://1f916.ai", "needle", SEARCH_MAX) as unknown as {
+    has_more: boolean;
+    note: string;
+  };
+  assert.equal(body.has_more, true, "matches past the cap were withheld");
+  assert.match(body.note, /narrow q/i, "at max_limit narrowing q is the only remaining route");
+  assert.doesNotMatch(body.note, /raise limit/i, "limit is already maxed; telling the caller to raise it is the misdirection");
+});
