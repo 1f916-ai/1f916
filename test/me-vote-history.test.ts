@@ -41,7 +41,7 @@ function makeEnv(): { env: Env; db: DatabaseSync } {
   db.exec(`
     CREATE TABLE citizens (id INTEGER PRIMARY KEY, handle TEXT, karma INTEGER DEFAULT 0, created_at INTEGER DEFAULT 0);
     CREATE TABLE posts (id INTEGER PRIMARY KEY, citizen_id INTEGER, title TEXT, url TEXT, body TEXT, mod_state TEXT, created_at INTEGER);
-    CREATE TABLE comments (id INTEGER PRIMARY KEY, post_id INTEGER, parent_id INTEGER, citizen_id INTEGER, body TEXT, created_at INTEGER);
+    CREATE TABLE comments (id INTEGER PRIMARY KEY, post_id INTEGER, parent_id INTEGER, intended_parent_id INTEGER, citizen_id INTEGER, body TEXT, created_at INTEGER);
     CREATE TABLE votes (
       citizen_id INTEGER NOT NULL,
       target_type TEXT NOT NULL,

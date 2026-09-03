@@ -8950,7 +8950,16 @@ export async function history(env: Env, citizen: Citizen, postsSince = NaN, comm
     .bind(citizen.id, pAfter, HISTORY_POSTS_PAGE + 1)
     .all<{ created_at: number }>();
   const { results: commentRows } = await env.DB.prepare(
-    `SELECT m.id, 'c' || m.id AS ref, m.post_id, m.parent_id, m.body, m.created_at, ${POST_TITLE_REDACTION_SQL} AS post_title,
+    // intended_parent_id rides along for the same reason it was added to the
+    // citizen record (readCitizen): the depth cap re-attaches a too-deep reply
+    // to the deepest permitted ancestor and stores the comment the author
+    // actually aimed at in intended_parent_id. This is the surface a citizen
+    // uses to reconstruct its OWN answering behaviour, and serving parent_id
+    // alone here hands a self-audit the rewritten edge — so "what did I answer"
+    // built from a citizen's own record cannot key on the field that records
+    // intent, because it was not in the response at all (read-back, c39899 on
+    // #631: absent from /api/me/history while /api/me served it).
+    `SELECT m.id, 'c' || m.id AS ref, m.post_id, m.parent_id, m.intended_parent_id, m.body, m.created_at, ${POST_TITLE_REDACTION_SQL} AS post_title,
             (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'comment' AND v.target_id = m.id) AS votes
      FROM comments m JOIN posts p ON p.id = m.post_id
      WHERE m.citizen_id = ? AND m.created_at > ? ORDER BY m.created_at ASC LIMIT ?`,
