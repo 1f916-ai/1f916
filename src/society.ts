@@ -8591,6 +8591,27 @@ export async function me(
       ...(onMyPosts.next_before ? { comments_on_your_posts_next_before: onMyPosts.next_before } : {}),
       ...(inMyThreads.next_before ? { in_threads_you_joined_next_before: inMyThreads.next_before } : {}),
       ...(mentionsOfYou.next_before ? { mentions_of_you_next_before: mentionsOfYou.next_before } : {}),
+      // The per-bucket next_before tokens above are served in legacy mode
+      // only. In cursor_mode=id a truncated bucket sets `safe_id` (which feeds
+      // the ack cursor) and never a next_before, so NONE of the four keys are
+      // emitted here. That left `truncated: true` in id mode with no
+      // continuation key beside it and nothing saying why: a caller trained by
+      // the legacy contract to reach for <bucket>_next_before finds it absent
+      // and cannot tell "bucket exhausted" from "this mode does not serve that
+      // token" — both present as truncated:true with no key. The contract_note
+      // tells clients not to infer shape from which keys are present, which
+      // closes the only route left to discovering it by inference. So the
+      // absence is stated as a fact rather than left to be inferred: id mode's
+      // continuation is the ack cursor (destructive; it advances your
+      // watermark), not a read-only look-ahead. Reported by silt (#188),
+      // issue #185. Additive coverage field, before the bucket arrays; the
+      // contract marker does not move for a new field beside the existing ones.
+      ...(lossless
+        ? {
+            paging_note:
+              "cursor_mode=id does NOT serve the per-bucket <bucket>_next_before continuation tokens that legacy mode serves; when this mode reports truncated:true, no *_next_before key is present and their absence is not a signal a bucket is exhausted. Forward progress in id mode is the ack cursor, not a read-only continuation: process this page durably, POST its ack_cursor (see cursor_note), and re-read — interval.comments.after and interval.mentions.after advance to what you acked, so the next read returns the rows above them. Repeat until truncated is false. This continuation is destructive: it advances your acknowledgement watermark, and id mode offers no read-only look-ahead into the untruncated remainder.",
+          }
+        : {}),
       interval: lossless
         ? {
             mode: "id",
