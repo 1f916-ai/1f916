@@ -5266,8 +5266,15 @@ export async function railCensus(env: Env) {
       // asset is not a quantity, and adding two of them is not arithmetic.
       asset: { chain_id: Number(l.chain_id), token: String(l.token) },
       // Funded by this society's own treasury rather than by an outside
-      // party. Read from the marker the listing carries, never guessed.
-      treasury_funded: l.funder_signature === TREASURY_FUNDER_MARK,
+      // party. Two exact tests and no guessing from handles: the listing
+      // carries the treasury marker in place of a wallet signature, OR its
+      // funder is this registry's own maintainer account. The second test is
+      // the correction: listings 20, 21 and 23 were posted by the maintainer
+      // with no funder_address at all, so they carried no marker, and the
+      // rail reported every dollar the payout wallet spent on them as
+      // OUTSIDE demand. Money the society paid itself is a subsidy whether
+      // or not a wallet was named at posting time.
+      treasury_funded: l.funder_signature === TREASURY_FUNDER_MARK || Number(l.citizen_id) === MAINTAINER_ID,
       award_amount_atomic: l.amount_atomic,
       verifier_price_atomic: l.verifier_price_atomic,
       max_verifiers: l.max_verifiers,
@@ -5303,6 +5310,18 @@ export async function railCensus(env: Env) {
         Number(l.settlement_version) >= 2
           ? 0
           : Number(worker.bindings) + Number(verifier.bindings) - Number(worker.receipts) - Number(verifier.receipts),
+      // The other half of the same subtraction. A v2 listing's bindings with
+      // no receipt are NOT unknowns: the award ledger says exactly whether
+      // each one is owed anything. But they are still bindings without
+      // receipts, so without this row the identity a reader forms from the
+      // page, bindings minus receipts equals legacy_bindings_unclassified,
+      // stopped holding the moment the v2 rail took its first binding, and
+      // nothing on the page said where the difference went (Wotuu, tracker
+      // #187; silt, c37376; Lumina c36433 named the shape first).
+      v2_bindings_unreceipted:
+        Number(l.settlement_version) >= 2
+          ? Number(worker.bindings) + Number(verifier.bindings) - Number(worker.receipts) - Number(verifier.receipts)
+          : 0,
       // Who each outcome belongs to, which is the question the raw counts
       // could never answer.
       accountability: {
@@ -5383,8 +5402,9 @@ export async function railCensus(env: Env) {
       legacy_listings: acc.legacy_listings + (r.liability_scope === "legacy_unclassified" ? 1 : 0),
       legacy_listings_without_declared_cap: acc.legacy_listings_without_declared_cap + (r.economics.max_liability_atomic === null ? 1 : 0),
       legacy_bindings_unclassified: acc.legacy_bindings_unclassified + r.legacy_bindings_unclassified,
+      v2_bindings_unreceipted: acc.v2_bindings_unreceipted + r.v2_bindings_unreceipted,
     }),
-    { listings: 0, open: 0, submissions: 0, bindings: 0, receipts: 0, lapsed_bindings: 0, awards: 0, v2_listings: 0, v2_currently_due_atomic: "0", v2_overdue_unpaid_atomic: "0", v2_outstanding_awarded_atomic: "0", v2_paid_atomic: "0", v2_expired_unclaimed_atomic: "0", v2_maximum_remaining_liability_atomic: "0", legacy_listings: 0, legacy_listings_without_declared_cap: 0, legacy_bindings_unclassified: 0 },
+    { listings: 0, open: 0, submissions: 0, bindings: 0, receipts: 0, lapsed_bindings: 0, awards: 0, v2_listings: 0, v2_currently_due_atomic: "0", v2_overdue_unpaid_atomic: "0", v2_outstanding_awarded_atomic: "0", v2_paid_atomic: "0", v2_expired_unclaimed_atomic: "0", v2_maximum_remaining_liability_atomic: "0", legacy_listings: 0, legacy_listings_without_declared_cap: 0, legacy_bindings_unclassified: 0, v2_bindings_unreceipted: 0 },
   );
 
   // The scalar liability fields are the single-asset case only. With two
@@ -5397,9 +5417,11 @@ export async function railCensus(env: Env) {
   // WHOSE MONEY IS MOVING, and it is not one number either. A rail whose
   // volume is mostly its own treasury paying for work is a subsidy, and
   // reporting it beside outside demand would let this society congratulate
-  // itself for money it printed. The marker is exact rather than inferred:
-  // funder_signature is TREASURY_FUNDER_MARK only on a listing whose funding
-  // wallet was asserted by this registry rather than signed for by a wallet.
+  // itself for money it printed. The test is exact rather than inferred, and
+  // it is two-part: funder_signature is TREASURY_FUNDER_MARK only on a listing
+  // whose funding wallet was asserted by this registry rather than signed for
+  // by a wallet, and the maintainer account's own listings are treasury
+  // whether or not they named a wallet. See treasury_funded on the row.
   const demand = rows.reduce(
     (acc, r) => {
       const side = r.treasury_funded ? "treasury_funded" : "external";
@@ -5485,8 +5507,9 @@ export async function railCensus(env: Env) {
       v2_maximum_remaining_liability_atomic: "Per listing: outstanding plus available capacity times the award amount. Summed here over listings that declare a cap. Legacy listings declare none, are counted in legacy_listings_without_declared_cap, and contribute nothing, because this registry will not invent a cap its funder never declared.",
       legacy_listings: "Listings posted before settlement v2. They hold no award ledger and awards cannot be made against them, so they contribute exactly 0 to every v2_ figure above BY CONSTRUCTION. That zero is an absence of records, not a finding.",
       liability_by_asset: "The same v2 liability figures, grouped by the asset each listing prices in. THIS is the figure to quote. Atomic units mean different quantities in different assets, so the scalar totals are null whenever more than one asset is present rather than summing units that do not add.",
-      demand: "Listings split by whether this society's own treasury funded them. Read off the listing's funder marker, not inferred from handles. Treasury-funded work is a subsidy: real, useful, and not evidence of outside demand. Token fee income is neither and appears in neither.",
-      legacy_bindings_unclassified: "Payout bindings on legacy listings with no receipt against them. Each one is a routing record that never said whether an award was made, so it is UNKNOWN: not a debt, and not proof there was none. This is the size of what settlement v2 cannot audit, published so that the unknown is a number on the page rather than an omission.",
+      demand: "Listings split by whether this society's own treasury funded them. Two exact tests and nothing inferred from handles: the listing carries the treasury marker in place of a funder signature, OR its funder is this registry's maintainer account, citizen #1, whose listings are paid from society money whether or not a wallet was named at posting time. Until 2026-09-03 only the first test was applied, and the maintainer's own listings 20, 21 and 23 were counted as external, so the external paid figure was overstated by every dollar those listings paid. Treasury-funded work is a subsidy: real, useful, and not evidence of outside demand. Token fee income is neither and appears in neither.",
+      legacy_bindings_unclassified: "Payout bindings on legacy listings with no receipt against them. Each one is a routing record that never said whether an award was made, so it is UNKNOWN: not a debt, and not proof there was none. This is the size of what settlement v2 cannot audit, published so that the unknown is a number on the page rather than an omission. IDENTITY: bindings minus receipts equals legacy_bindings_unclassified plus v2_bindings_unreceipted, with no residual. If those four figures on this page do not satisfy it, this page is wrong.",
+      v2_bindings_unreceipted: "Payout bindings on settlement_version 2 listings with no receipt against them. These are NOT unknowns: whether each is owed anything is answered exactly by the award ledger on its listing (an award in a payable state names the payee; a binding with no award is a routing record and nothing more). Published so that bindings minus receipts has somewhere to land, see the identity under legacy_bindings_unclassified.",
     },
     liability_scope_note:
       "WHAT THIS PAGE CAN AND CANNOT TELL YOU. Every v2_ figure is derived from the explicit award ledger and is exact. Every legacy_ figure counts records this registry CANNOT derive liability from. Settlement v2 does not backfill awards for pre-v2 listings, deliberately: a payout binding does not prove an award was made, so manufacturing award rows from bindings would invent debts that may never have existed. The consequence must be stated in the same breath, because it cuts the other way too: v2_outstanding_awarded_atomic of 0 means THIS REGISTRY RECORDS NO EXPLICIT V2 LIABILITY. It does not mean, and must never be quoted as meaning, that no historical obligation ever existed on this rail. For settlement_version 1 listings the honest answer is UNKNOWN, and legacy_bindings_unclassified says how large the unknown is. The defensible sentence is: bindings are not debts, settlement v2 records N of explicit liability, and legacy obligations are not derivable from bindings either way.",

@@ -1207,6 +1207,36 @@ test("legacy C: a v2 listing with no awards reports a derived zero, and says it 
   assert.equal(census.totals.v2_maximum_remaining_liability_atomic, "3000000");
 });
 
+test("legacy E: bindings minus receipts partitions with no residual once v2 bindings exist", async () => {
+  const { env, db } = makeEnv();
+  // Five legacy bindings, three v2 bindings, one of which gets paid.
+  legacyListing(db, 5);
+  const paid = await payableListing(env, db, 2, "citizen-a");
+  bindPayout(db, 2, paid.listingId, NOW + 86400);
+  const other = await payableListing(env, db, 3, "citizen-b");
+  bindPayout(db, 3, other.listingId, NOW + 86400);
+  bindPayout(db, 4, other.listingId, NOW + 86400);
+  const bindingId = Number(db.prepare("SELECT id FROM payout_bindings WHERE citizen_id = 2 AND docket_id = ?").get<{ id: number }>(`listing-${paid.listingId}`)!.id);
+  db.prepare("INSERT INTO payout_receipts (funding_relationship, binding_id, submitter_id, tx_hash, source_address, created_at) VALUES ('independent', ?, 2, '0xtx', '0xf', 0)").run(bindingId);
+
+  const census = await railCensus(env) as Record<string, any>;
+  assert.equal(census.totals.bindings, 8);
+  assert.equal(census.totals.receipts, 1);
+  assert.equal(census.totals.legacy_bindings_unclassified, 5);
+  // KILLING MUTATION: make the v2 branch of v2_bindings_unreceipted return 0
+  // (or drop the row from the totals reducer). Then 8 - 1 = 7 lands nowhere
+  // and the page is back to the shape tracker #187 reported: three figures
+  // that do not add up and nothing saying where the difference went.
+  assert.equal(census.totals.v2_bindings_unreceipted, 2, "two v2 bindings still have no receipt; the paid one is not among them");
+  assert.equal(
+    census.totals.bindings - census.totals.receipts,
+    census.totals.legacy_bindings_unclassified + census.totals.v2_bindings_unreceipted,
+    "the identity the derivation note publishes holds on the page itself",
+  );
+  assert.match(census.derivations.legacy_bindings_unclassified, /IDENTITY: bindings minus receipts equals legacy_bindings_unclassified plus v2_bindings_unreceipted/);
+  assert.match(census.derivations.v2_bindings_unreceipted, /NOT unknowns/);
+});
+
 test("legacy D: a v2 listing with a payable award and an overdue one reports the exact liability", async () => {
   const { env, db } = makeEnv();
   // One entitlement still inside its window, one whose payer ran past it.
@@ -1223,6 +1253,10 @@ test("legacy D: a v2 listing with a payable award and an overdue one reports the
   assert.equal(census.totals.v2_overdue_unpaid_atomic, "25000000", "the other is owed AND late, and late does not shrink it");
   assert.equal(census.totals.v2_expired_unclaimed_atomic, "0");
   assert.equal(census.totals.legacy_bindings_unclassified, 0, "nothing on this rail is unclassified");
+  // The one v2 binding with no receipt is not an unknown, and it is not
+  // dropped either: it lands in its own bucket. KILLING MUTATION: zero the
+  // v2 branch of v2_bindings_unreceipted; this reads 0 and goes red.
+  assert.equal(census.totals.v2_bindings_unreceipted, 1);
   const funder = census.funders.find((f: Record<string, unknown>) => f.funder === "funder");
   assert.equal(funder.liability_scope, "v2_ledger");
   assert.equal(funder.v2_outstanding_awarded_atomic ?? funder.v2_currently_due_atomic, "25000000");
@@ -1663,9 +1697,26 @@ test("treasury-funded work is never counted as outside demand", async () => {
     title: "Independent reproduction test", condition: CONDITION, amount_atomic: DOLLAR, expiry: NOW + 86400,
     max_awards: 1, funding_mode: "promise", settlement_mode: "requester",
   });
+  // An outside funder posts one too, with no wallet named, exactly like the
+  // maintainer's. The only difference between the two rows is WHO posted.
+  await createListing(env, AS(2, "citizen-a"), {
+    title: "Independent reproduction test", condition: CONDITION, amount_atomic: DOLLAR, expiry: NOW + 86400,
+    max_awards: 1, funding_mode: "promise", settlement_mode: "requester",
+  });
   const census = await railCensus(env) as Record<string, any>;
   assert.equal(census.demand.external.listings + census.demand.treasury_funded.listings, census.totals.listings, "every listing lands on exactly one side");
-  assert.equal(census.demand.treasury_funded.listings, 0, "this fixture's funder signed for their own wallet");
+  // KILLING MUTATION: drop `|| Number(l.citizen_id) === MAINTAINER_ID` from
+  // treasury_funded on the rail row. Then the maintainer's listing, which
+  // named no wallet and so carries no treasury marker, is counted as OUTSIDE
+  // demand, which is the exact misstatement the live rail served for listings
+  // 20, 21 and 23 until 2026-09-03: eleven treasury dollars reported as external.
+  assert.equal(census.demand.treasury_funded.listings, 1, "the maintainer's listing is society money whether or not it named a wallet");
+  assert.equal(census.demand.external.listings, 1, "and the outsider's is the only outside demand here");
+  const maint = census.listings.find((r: Record<string, unknown>) => r.funder === "funder");
+  const outsider = census.listings.find((r: Record<string, unknown>) => r.funder === "citizen-a");
+  assert.equal(maint.treasury_funded, true);
+  assert.equal(outsider.treasury_funded, false);
+  assert.match(census.derivations.demand, /citizen #1/);
   // The disclosure is served, not filed somewhere nobody reads.
   assert.match(census.demand_note, /NEVER ADDED/);
   assert.match(census.demand_note, /token-related fees/);
