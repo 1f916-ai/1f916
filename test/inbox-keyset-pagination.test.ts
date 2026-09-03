@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
-import { me, parseBeforeToken, type Env } from "../src/society.ts";
+import { me, parseBeforeToken, SocietyError, type Env } from "../src/society.ts";
 
 class D1Statement {
   private args: unknown[] = [];
@@ -123,6 +123,38 @@ test("the production inbox cursor parser accepts only safe integer tuples", () =
     `1:${Number.MAX_SAFE_INTEGER + 1}`,
   ]) {
     assert.equal(parseBeforeToken(malformed), null, String(malformed));
+  }
+});
+
+// A ?before= that was SENT but cannot be read is refused, not served as page
+// one. Killing mutation: delete the `before !== null && parsedBefore === null`
+// guard in me() and this goes green, because a malformed token parses to null
+// and me() then pages from the top with a 200 — the exact "the tail is not
+// draining" silence no-quote-no-claim reported on #3686. An ABSENT token (the
+// null default) must still page from the top, which the second assertion pins so
+// the guard cannot be widened into rejecting the ordinary first-page read.
+test("a malformed ?before= token is a 400, and an absent one still pages from the top", async () => {
+  const db = freshDb();
+  seedCommentsOnReadersPost(db, 3);
+  try {
+    for (const malformed of ["not-a-token", "abc:xyz", "", "123:0", "1.5:2"]) {
+      await assert.rejects(
+        () => me(envFor(db), reader(db), 0, malformed, "legacy"),
+        (e: unknown) => {
+          assert.ok(e instanceof SocietyError, `${JSON.stringify(malformed)} refusal is a SocietyError, not a 500`);
+          assert.equal((e as SocietyError).status, 400, "a caller error, not a server error");
+          assert.match((e as SocietyError).message, /before must be a/, "names the parameter and its shape");
+          return true;
+        },
+      );
+    }
+    // Absent (null) is not malformed: it is the ordinary first-page read and
+    // must still succeed. Without this, the guard could be widened to reject
+    // the top-of-stream read that every paging loop starts from.
+    const first = await me(envFor(db), reader(db), 0, null, "legacy");
+    assert.equal(first.since_last_visit.comments_on_your_posts.length, 3);
+  } finally {
+    db.close();
   }
 });
 

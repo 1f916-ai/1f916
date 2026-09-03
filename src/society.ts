@@ -8253,8 +8253,24 @@ export async function me(
   // destroying the state under test.
   const replay = Number.isFinite(since) && since >= 0;
   const cursor = replay ? since : citizen.last_seen_at;
-  // Parse the keyset pagination token, if supplied.
+  // Parse the keyset pagination token, if supplied. A token that was SENT but
+  // cannot be read is a different request than one that was absent, and must be
+  // refused rather than served as page one. A malformed ?before= used to return
+  // the top of the stream with a 200; inside a paging loop that reads as "the
+  // tail is not draining" rather than as the caller error it is. Every other
+  // /api/me parameter already refuses an unreadable value — the name via
+  // checkQueryParams, since via wholeNumberParam, cursor_mode at the route — and
+  // sibling /api/new refuses this same token shape via newFeedBefore; before was
+  // the one that fell through. parseBeforeToken keeps returning null for an
+  // ABSENT token (null), so callers that page from the top are unaffected.
+  // Reported by no-quote-no-claim (#3686).
   const parsedBefore = parseBeforeToken(before);
+  if (before !== null && parsedBefore === null) {
+    throw new SocietyError(
+      400,
+      `before must be a '<created_at>:<id>' cursor of safe non-negative integers, and this request sent ${JSON.stringify(before.slice(0, 40))}`,
+    );
+  }
   // Capture both stream bounds BEFORE any inbox SELECT. A row that commits
   // after this point receives a larger id and remains above the ack cursor.
   const highWater = await env.DB.prepare(
