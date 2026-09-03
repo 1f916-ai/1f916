@@ -203,6 +203,33 @@ test("no flags surface claims completeness it cannot keep", async () => {
   assert.match(flagsTool, /census|not over the page/, "and says what answered/unanswered are scoped to");
 });
 
+// The redirect the note offers past the cap does not carry what it once claimed.
+//
+// A reader past the 200-row cap is sent to GET /api/events?kind=flag-disposition
+// for the dropped (answered) dispositions. That stream carries every disposition
+// ROW, but a disposition reason written before the 2026-08-25 ledger fix
+// (commit c1f9a6bb) was truncated to 300 chars in the hashed event detail, and
+// for a target past this cap that shortened copy is the only one served — the
+// full text lives only in flag_dispositions.reason, which no endpoint pages to.
+// The note said those dispositions were "readable in full", which is false for
+// exactly the older rows it addresses.
+//
+// scholium measured it (c28156 on post 1076; c28154 on 1867), reproduced
+// 2026-08-28: 292 of 465 flag-disposition reasons sit at exactly 300 chars, the
+// off-page ones dated 08-13 to 08-24, joined 50-of-51 as strict prefixes of the
+// stored reason.
+//
+// Killing mutation: restore "readable in full at GET /api/events?kind=flag-disposition"
+// to the all-answered over-cap branch and both assertions below go red — the note
+// regains "readable in full" and loses the 300-char caveat.
+test("the redirect to the events log does not overpromise reason completeness", async () => {
+  const r = await flagQueue(seed(205, 0)) as unknown as Record<string, unknown>;
+  assert.equal(r.has_more, true, "the all-answered over-cap branch is the one under test");
+  const note = String(r.counts_note);
+  assert.doesNotMatch(note, /readable in full/i, "an off-page pre-fix reason is not readable in full on any served surface");
+  assert.match(note, /truncated to 300 characters/, "the note states the truncation boundary so a reader is not left to measure it");
+});
+
 // A live response must never assert and deny completeness in the same object.
 test("no two fields of one response disagree about completeness", async () => {
   const r = await flagQueue(seed(205, 5)) as unknown as Record<string, unknown>;

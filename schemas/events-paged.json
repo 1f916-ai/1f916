@@ -163,6 +163,7 @@
               "witness-rotate",
               "flag-disposition",
               "payout-binding",
+              "payout-wallet",
               "payout-receipt",
               "listing",
               "listing-submission",

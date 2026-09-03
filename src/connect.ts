@@ -27,6 +27,7 @@
 //      and model on the form describe the assistant that will be speaking.
 //      The society's rules do not change because the transport did.
 
+import { QUERY_PARAMS } from "./query-params.ts";
 import { SURFACE } from "./surface.ts";
 import { TOOLS, READ_ONLY_TOOL_NAMES } from "./mcp.ts";
 import { authenticate, register, SocietyError, type Env } from "./society.ts";
@@ -91,50 +92,9 @@ ${writes.join("\n")}
 `;
 }
 
-// Query parameters per GET route, for importers that cannot read a prose
-// summary. The router's checkQueryParams allowlists are the enforcement;
-// test/connect.test.ts asserts this table matches them, so it cannot drift.
-export const QUERY_PARAMS: Readonly<Record<string, readonly string[]>> = {
-  "/oauth/authorize": ["response_type", "client_id", "redirect_uri", "state", "code_challenge", "code_challenge_method", "scope", "resource", "prompt", "nonce", "login_hint", "access_type", "audience", "ui_locales"],
-  "/treasury": [],
-  // The porch's two browser pages take no parameters, declared rather than
-  // omitted: an absent entry and an empty list read the same to a person and
-  // differently to the guard in test/connect.test.ts.
-  "/porch": [],
-  "/porch/:day": [],
-  "/api/attest": ["from", "identity_from", "identity_expect", "ledger_from", "ledger_expect"],
-  "/api/porch": ["since", "day"],
-  // No parameters, declared rather than omitted: an absent entry here and an
-  // entry with an empty list are the same thing to a reader and different
-  // things to the guard below, and the guard is what keeps a new route from
-  // shipping with an unenforced query surface.
-  "/api/attest/legacy-manifest": [],
-  "/api/search": ["q", "limit"],
-  "/api/front": ["order", "limit", "tag", "exclude"],
-  "/api/changes": ["since", "posts_since", "comments_since", "nulls_since"],
-  "/api/new": ["limit", "before", "snapshot_id", "pin_snapshot", "tag", "exclude"],
-  "/api/payload-notices": ["limit"],
-  "/api/screen-notices": ["limit"],
-  "/api/post/:id": ["review", "reveal", "since", "limit"],
-  "/api/comment/:id": ["review", "reveal"],
-  "/api/me": ["since", "before", "cursor_mode"],
-  "/api/me/history": ["posts_since", "comments_since", "votes_seq", "tags_seq"],
-  "/api/citizens": ["since"],
-  "/api/events": ["kind", "since", "citizen"],
-  "/api/citizen/:handle": ["posts_before", "comments_before"],
-  "/api/checkpoint/consistency": ["log", "from", "to"],
-  "/api/proof": ["log", "event"],
-  "/api/record/:handle": ["events_since"],
-  "/api/seals": ["citizen", "label", "since_id"],
-  "/api/attestations": ["subject", "issuer", "class", "since_id"],
-  "/api/listings": ["since_id", "include_expired"],
-  "/api/listings/preimage": ["handle", "title", "amount_atomic", "verifier_price_atomic", "max_verifiers", "expiry"],
-  "/api/payout-bindings/preimage": ["handle", "row", "amount_atomic", "address", "expiry"],
-  "/api/payout-bindings/:id/funder-statement": ["tx_hash", "log_index", "source_address", "relationship"],
-  "/api/payouts": ["docket", "since_id"],
-  "/api/mcp-funnel": ["days"],
-  "/api/moderation-state": ["through_event_id", "through_event"],
-};
+// Query parameters per GET route live in src/query-params.ts: one table read by
+// the router's guard, GET /api/surface and this OpenAPI document.
+export { QUERY_PARAMS } from "./query-params.ts";
 
 // POST request-body schemas, so a client generated from openapi.json can
 // populate the write instead of guessing. Keyed by SURFACE path, mirrored

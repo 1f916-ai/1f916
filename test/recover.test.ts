@@ -703,7 +703,7 @@ test("the cancel window is 48 hours as a NUMBER, and every sentence that names i
   // every one of these files still says 48 hours; that is what fails here.
   const hours = RECOVERY_WINDOW_MS / 3_600_000;
   const promise = new RegExp(`\\b${hours}[- ]hours?\\b`);
-  const files = ["src/doc.ts", "src/surface.ts", "src/society.ts", "schema.sql", "migrations/0041_recover_by_bound_key.sql"];
+  const files = ["src/doc.ts", "src/surface.ts", "src/society.ts", "schema.sql", "migrations/0047_recover_by_bound_key.sql"];
   for (const file of files) {
     const text = readFileSync(fileURLToPath(new URL(`../${file}`, import.meta.url)), "utf8");
     assert.match(text, promise, `${file} promises a window to citizens and must name ${RECOVERY_WINDOW_TEXT}`);
@@ -1092,16 +1092,16 @@ test("the migration produces exactly the tables and indexes schema.sql declares"
   // schema.sql and a live database gets the migration, so a difference between
   // them is a difference between two running squares.
   const { DatabaseSync } = await import("node:sqlite");
-  // BOTH files, in order, because that is what a live square runs. 0042
+  // BOTH files, in order, because that is what a live square runs. 0048
   // rebuilds `recoveries` to add the hold columns, and a test that replayed
-  // only 0041 would go on passing while the upgraded and the freshly installed
+  // only 0047 would go on passing while the upgraded and the freshly installed
   // square drifted apart — which is the exact difference this test exists to
   // catch, so it has to grow a line every time a migration touches this table.
-  const NAMES = ["0041_recover_by_bound_key", "0042_recovery_hold", "0043_identity_event_typed_fields"];
+  const NAMES = ["0047_recover_by_bound_key", "0048_recovery_hold", "0049_identity_event_typed_fields"];
   const sources = new Map(NAMES.map((name) =>
     [name, readFileSync(fileURLToPath(new URL(`../migrations/${name}.sql`, import.meta.url)), "utf8")] as const,
   ));
-  // 0043 ALTERs a table this square did not create, so it is replayed against
+  // 0049 ALTERs a table this square did not create, so it is replayed against
   // identity_events separately below rather than against the bare citizens
   // stub these two build on.
   const migrations = [sources.get(NAMES[0])!, sources.get(NAMES[1])!];
@@ -1118,7 +1118,7 @@ test("the migration produces exactly the tables and indexes schema.sql declares"
       if (!/_new$|_old$/.test(m[1])) touched.add(m[1]);
 
   // A table may leave the byte-parity comparison ONLY with a reason written
-  // here. 0043 adds its two columns by ALTER, which appends to the stored
+  // here. 0049 adds its two columns by ALTER, which appends to the stored
   // CREATE, while schema.sql declares them inline with comments no ALTER can
   // reproduce -- so a migrated square and a fresh install hold the same columns
   // under different stored text. Rebuilding a hash-chained log table to make
@@ -1127,7 +1127,7 @@ test("the migration produces exactly the tables and indexes schema.sql declares"
   // written down HERE, in the test, rather than only in the migration's prose,
   // because an exception that lives in prose is one nothing checks.
   const ACCEPTED_TEXT_DIVERGENCE = new Map<string, string>([
-    ["identity_events", "0043 adds subject_thumbprint and proof_mode by ALTER; the columns match and only the stored DDL text differs. Asserted below, both halves."],
+    ["identity_events", "0049 adds subject_thumbprint and proof_mode by ALTER; the columns match and only the stored DDL text differs. Asserted below, both halves."],
   ]);
 
   const fromMigration = new DatabaseSync(":memory:");
@@ -1152,15 +1152,15 @@ test("the migration produces exactly the tables and indexes schema.sql declares"
       .map((r) => `${r.type} ${r.name}: ${(r.sql ?? "").replace(/\s+/g, " ")}`);
 
   assert.deepEqual(shape(fromMigration), shape(fromSchema), "the migrations and schema.sql must build the same thing, byte for byte");
-  assert.ok(shape(fromSchema).some((s) => s.includes("holds INTEGER NOT NULL DEFAULT 0")), "0042's columns, in the shape a fresh install gets them");
+  assert.ok(shape(fromSchema).some((s) => s.includes("holds INTEGER NOT NULL DEFAULT 0")), "0048's columns, in the shape a fresh install gets them");
   assert.ok(shape(fromSchema).some((s) => s.includes("idx_recovery_challenges_ip")), "the per-IP meter's index");
   assert.ok(shape(fromSchema).some((s) => s.includes("idx_recovery_challenges_citizen") && s.includes("created_at")), "the per-citizen index serves created_at, which is what is queried");
   assert.ok(shape(fromSchema).some((s) => s.includes("ip_hash")), "the meter's column");
 });
 
-test("0043's accepted divergence is real, and is confined to the stored text", async () => {
+test("0049's accepted divergence is real, and is confined to the stored text", async () => {
   // The other half of sundial's finding. An accepted exception that nothing
-  // measures is prose, and prose goes stale silently: if 0043 were ever changed
+  // measures is prose, and prose goes stale silently: if 0049 were ever changed
   // to a rebuild, the entry in ACCEPTED_TEXT_DIVERGENCE above would keep
   // excusing a table that no longer needs excusing, and the byte-parity check
   // would stay switched off for it forever.
@@ -1172,9 +1172,9 @@ test("0043's accepted divergence is real, and is confined to the stored text", a
   // second half is the whole reason the exception is tolerable, and it was the
   // half stated only in prose.
   const { DatabaseSync } = await import("node:sqlite");
-  const migration = readFileSync(fileURLToPath(new URL("../migrations/0043_identity_event_typed_fields.sql", import.meta.url)), "utf8");
+  const migration = readFileSync(fileURLToPath(new URL("../migrations/0049_identity_event_typed_fields.sql", import.meta.url)), "utf8");
 
-  // What schema.sql said before 0043: its identity_events block with the two
+  // What schema.sql said before 0049: its identity_events block with the two
   // typed columns and the comment that introduces them taken back out. This is
   // reconstructed rather than pasted so it cannot rot away from the real file.
   const block = /CREATE TABLE IF NOT EXISTS identity_events \([\s\S]*?\n\);/.exec(SCHEMA);
@@ -1183,7 +1183,7 @@ test("0043's accepted divergence is real, and is confined to the stored text", a
     .split("\n")
     .filter((line) => !/^\s*(subject_thumbprint|proof_mode)\b/.test(line) && !/Typed beside detail rather than inside it/.test(line))
     .join("\n");
-  assert.ok(!/subject_thumbprint|proof_mode/.test(before), "the reconstruction must not already carry 0043's columns, or it proves nothing");
+  assert.ok(!/subject_thumbprint|proof_mode/.test(before), "the reconstruction must not already carry 0049's columns, or it proves nothing");
   assert.ok(before.split("\n").length + 3 === block[0].split("\n").length, "exactly three lines removed: two columns and the comment above them");
 
   const upgraded = new DatabaseSync(":memory:");
@@ -1199,14 +1199,14 @@ test("0043's accepted divergence is real, and is confined to the stored text", a
     (db.prepare("SELECT name, type, \"notnull\", dflt_value FROM pragma_table_info('identity_events') ORDER BY name").all() as Record<string, unknown>[])
       .map((c) => `${c.name} ${c.type} ${c["notnull"]} ${c.dflt_value ?? ""}`);
 
-  // KILLING MUTATION: change 0043 to rebuild the table instead of ALTERing it
+  // KILLING MUTATION: change 0049 to rebuild the table instead of ALTERing it
   // -> this reds, and the accepted-divergence entry must then be deleted.
   assert.notEqual(ddl(upgraded), ddl(fresh), "the divergence this test accepts must actually exist; if it does not, remove the exception rather than keeping a dead excuse");
 
-  // KILLING MUTATION: have 0043 add a third column, or a differently typed one
+  // KILLING MUTATION: have 0049 add a third column, or a differently typed one
   // -> this reds, because the divergence would stop being cosmetic.
   assert.deepEqual(columns(upgraded), columns(fresh), "and it must be confined to the stored text: the two squares must hold the same columns, or the exception is not cosmetic and is not tolerable");
-  assert.ok(columns(fresh).some((c) => c.startsWith("subject_thumbprint ")), "both squares carry 0043's first column");
+  assert.ok(columns(fresh).some((c) => c.startsWith("subject_thumbprint ")), "both squares carry 0049's first column");
   assert.ok(columns(fresh).some((c) => c.startsWith("proof_mode ")), "and its second");
 });
 

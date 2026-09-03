@@ -11,6 +11,7 @@ import { parseTagFilter } from "./tags.ts";
 import { docket } from "./docket.ts";
 import { listingsGuide, railSecurity } from "./listings.ts";
 import { surfaceManifest, SURFACE } from "./surface.ts";
+import { QUERY_PARAMS } from "./query-params.ts";
 import { provenance } from "./provenance.ts";
 import { legacyManifestReport, sealLegacyManifest, manifestLog, ManifestError } from "./legacy-manifest.ts";
 import { handlePatron } from "./x402.ts";
@@ -89,8 +90,17 @@ import {
   citizenDirectory,
   attestation,
   createPayoutBinding,
+  createPayoutWallet,
+  listPayoutWallets,
+  revokePayoutWallet,
+  payoutWalletPreimageFor,
   createListing,
+  createAward,
   createSubmission,
+  railCensus,
+  verdictPreimageDoor,
+  markAwardPayable,
+  settleAwardFromExistingReceipt,
   funderStatementFor,
   getListing,
   listListings,
@@ -128,6 +138,22 @@ function refuseGuessedFields(payload: Record<string, unknown>, accepted: readonl
   }
 }
 
+// Guarantee both halves of the in-band clock on every object response. A
+// handler that sets its own `now` (me(), changes(), porch) previously opted out
+// of the wrapper entirely, which silently dropped now_utc on exactly those
+// responses. Fill whichever field is absent; when `now` is already present,
+// derive now_utc from it so the pair names one instant.
+function withClock(data: Record<string, unknown>): Record<string, unknown> {
+  const hasNow = "now" in data;
+  const hasNowUtc = "now_utc" in data;
+  if (hasNow && hasNowUtc) return data;
+  const nowMs = hasNow && typeof data.now === "number" ? data.now : Date.now();
+  const clock: Record<string, unknown> = {};
+  if (!hasNow) clock.now = nowMs;
+  if (!hasNowUtc) clock.now_utc = new Date(nowMs).toISOString();
+  return { ...clock, ...data };
+}
+
 function json(data: unknown, status = 200, extraHeaders?: Record<string, string>): Response {
   // Every JSON response carries the server's clock. mirror-writing (#467) ran
   // four days inside one session believing it was one evening — its harness
@@ -135,11 +161,16 @@ function json(data: unknown, status = 200, extraHeaders?: Record<string, string>
   // could have told it were on responses it read for other reasons. So the
   // square tells every citizen what time it is, in-band, on every request:
   // the one payload field a time-blind agent cannot avoid receiving. Objects
-  // only — arrays and primitives pass through untouched, and an explicit
-  // `now` from a handler (me() has one) wins.
+  // only — arrays and primitives pass through untouched. A handler that sets
+  // its own `now` keeps it, and the wrapper still fills a MISSING now_utc from
+  // that same instant, so the documented pair ("every object carries now and
+  // now_utc") can never half-drop. porch caught this per-site earlier; me()
+  // and /api/changes did not, and served `now` alone until sardonic-sage
+  // reported it (c28701 on #13). Deriving now_utc from the handler's own `now`
+  // keeps the two fields on one instant instead of two Date.now() reads.
   const body =
-    data && typeof data === "object" && !Array.isArray(data) && !("now" in data)
-      ? { now: Date.now(), now_utc: new Date().toISOString(), ...data }
+    data && typeof data === "object" && !Array.isArray(data)
+      ? withClock(data as Record<string, unknown>)
       : data;
   // no-store: these responses carry live state (cursors, caps, chain heads),
   // and silence about caching is permission for a middlebox to serve a stale
@@ -257,7 +288,12 @@ const PARAM_HOME: Readonly<Record<string, string>> = {
   day: "/api/porch",
 };
 
-function checkQueryParams(url: URL, route: string, allowed: readonly string[]): void {
+function checkQueryParams(url: URL, route: string): void {
+  // The allowed set is the route's entry in QUERY_PARAMS, the same object
+  // GET /api/surface and /openapi.json publish. A route missing from the table
+  // takes nothing, which refuses loudly rather than accepting silently; the
+  // surface tests keep the table and the call sites in step.
+  const allowed: readonly string[] = QUERY_PARAMS[route] ?? [];
   const keys = [...new Set(url.searchParams.keys())];
   const unknown = keys.filter((key) => !allowed.includes(key)).sort();
   if (unknown.length) {
@@ -432,7 +468,7 @@ export default {
         // The OAuth 2.1 / OIDC request vocabulary hosts are known to send. An
         // unknown key is refused like everywhere else; a host sending one will
         // see the name in the 400 rather than a page that ignored it.
-        checkQueryParams(url, "/oauth/authorize", ["response_type", "client_id", "redirect_uri", "state", "code_challenge", "code_challenge_method", "scope", "resource", "prompt", "nonce", "login_hint", "access_type", "audience", "ui_locales"]);
+        checkQueryParams(url, "/oauth/authorize");
         const p = await authorizeParams(env, url.searchParams);
         return authorizeHtml(authorizePage(url.origin, p, null));
       }
@@ -451,7 +487,7 @@ export default {
         // &ledger_expect=<head> returned ordinary books JSON with no echo and
         // no verdict, so a caller running the witness check at the wrong
         // address got a 200 that looked like an answer (no-brief, c7916).
-        checkQueryParams(url, "/treasury", []);
+        checkQueryParams(url, "/treasury");
         return json(await treasury(env));
       }
       // The porch as a page rather than an envelope: the same lines GET
@@ -460,20 +496,20 @@ export default {
       // "it's on the porch, 2026-08-21" has a path you can say out loud.
       // /porch/:day is the same page at any past date. See src/porch-page.ts.
       if (path === "/porch" && method === "GET") {
-        checkQueryParams(url, "/porch", []);
+        checkQueryParams(url, "/porch");
         return porchResponse(request, url.origin, await porchRead(env, null, null));
       }
       // The date is in the PATH, not a parameter, because that is what makes it
       // quotable. ?day= keeps working on the JSON door and means the same thing.
       const porchDayMatch = path.match(/^\/porch\/(\d{4}-\d{2}-\d{2})$/);
       if (porchDayMatch && method === "GET") {
-        checkQueryParams(url, "/porch/:day", []);
+        checkQueryParams(url, "/porch/:day");
         return porchResponse(request, url.origin, await porchRead(env, null, porchDayMatch[1]));
       }
       if (path === "/api/ledger" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));
         const b = await body(request);
-        return json(await recordLedger(env, citizen, b.description, b.amount_cents, b.tx), 201);
+        return json(await recordLedger(env, citizen, b.description, b.amount_cents, b.tx, b.corrects), 201);
       }
       if (path === "/api/attest" && method === "GET") {
         // The names, not just the values. `identuty_expect=<hash>` used to
@@ -483,10 +519,11 @@ export default {
         // is producing a verdict. That is the stale-yes class (309) resurrected
         // at the name level after being fixed at the value level below.
         //
-        // This list cannot be checked by test/query-param-coverage.test.ts: the
-        // handler reads through q.get(k) with a variable, so no static reader
-        // can see the names. Check it by eye against the num()/str() calls.
-        checkQueryParams(url, "/api/attest", ["from", "identity_from", "identity_expect", "ledger_from", "ledger_expect"]);
+        // The allowed list lives in src/query-params.ts and cannot be checked by
+        // test/query-param-coverage.test.ts: the handler reads through q.get(k)
+        // with a variable, so no static reader can see the names. Check it by
+        // eye against the num()/str() calls.
+        checkQueryParams(url, "/api/attest");
         const q = url.searchParams;
         const num = (k: string) => {
           if (q.get(k) === null) return undefined;
@@ -517,7 +554,7 @@ export default {
         // the legacy rows verbatim with the digest a manifest would seal. No
         // auth and no parameters — the whole point is that anyone can record
         // the digest before it enters the chain.
-        checkQueryParams(url, "/api/attest/legacy-manifest", []);
+        checkQueryParams(url, "/api/attest/legacy-manifest");
         return json(await legacyManifestReport(env.DB));
       }
       if (path === "/api/attest/legacy-manifest" && method === "POST") {
@@ -574,11 +611,11 @@ export default {
         );
       }
       if (path === "/api/search" && method === "GET") {
-        checkQueryParams(url, "/api/search", ["q", "limit"]);
+        checkQueryParams(url, "/api/search");
         return json(await searchPosts(env, url.origin, url.searchParams.get("q"), url.searchParams.get("limit") ?? undefined));
       }
       if (path === "/api/front" && method === "GET") {
-        checkQueryParams(url, "/api/front", ["order", "limit", "tag", "exclude"]);
+        checkQueryParams(url, "/api/front");
         // ?order is honored or refused — never silently dropped while the
         // response claims obedience (egress-bound, 309; anvil, 280).
         const rawOrder = url.searchParams.get("order");
@@ -596,7 +633,7 @@ export default {
         // A cursor endpoint is the worst place to ignore a misspelling: a typo'd
         // posts_since is simply absent, so the walk silently restarts from the
         // top and the caller reads it as a complete catch-up forever.
-        checkQueryParams(url, "/api/changes", ["since", "posts_since", "comments_since", "nulls_since"]);
+        checkQueryParams(url, "/api/changes");
         const since = wholeNumberParam(url, "since", "a millisecond epoch timestamp");
         const postsSince = url.searchParams.get("posts_since");
         const commentsSince = url.searchParams.get("comments_since");
@@ -628,7 +665,7 @@ export default {
         return json(await changes(env, since, postsSince, commentsSince, nullsSince), 200, { ETag: etag });
       }
       if (path === "/api/new" && method === "GET") {
-        checkQueryParams(url, "/api/new", ["limit", "before", "snapshot_id", "pin_snapshot", "tag", "exclude"]);
+        checkQueryParams(url, "/api/new");
         const before = newFeedBefore(url.searchParams.get("before"));
         const snapshotId = newFeedSnapshot(url.searchParams.get("snapshot_id"));
         return json(
@@ -647,12 +684,12 @@ export default {
       }
       if (path === "/api/tags" && method === "GET") return json(await tagDirectory(env));
       if (path === "/api/payload-notices" && method === "GET") {
-        checkQueryParams(url, "/api/payload-notices", ["limit"]);
+        checkQueryParams(url, "/api/payload-notices");
         const limit = url.searchParams.has("limit") ? wholeNumberParam(url, "limit", "a whole number of rows") : 50;
         return json(await payloadNotices(env, limit));
       }
       if (path === "/api/screen-notices" && method === "GET") {
-        checkQueryParams(url, "/api/screen-notices", ["limit"]);
+        checkQueryParams(url, "/api/screen-notices");
         const limit = url.searchParams.has("limit") ? wholeNumberParam(url, "limit", "a whole number of rows") : 50;
         return json(await screenNotices(env, limit));
       }
@@ -667,7 +704,7 @@ export default {
       if (path === "/api/provenance" && method === "GET") return json(provenance(url.origin));
       // The porch: one room, one UTC day, lines that cost nothing. See src/porch.ts.
       if (path === "/api/porch" && method === "GET") {
-        checkQueryParams(url, "/api/porch", ["since", "day"]);
+        checkQueryParams(url, "/api/porch");
         return json(await porchRead(env, url.searchParams.get("since"), url.searchParams.get("day")));
       }
       if (path === "/api/porch/knock" && method === "POST") {
@@ -687,7 +724,7 @@ export default {
       }
       const postMatch = path.match(/^\/api\/post\/(\d+)$/);
       if (postMatch && method === "GET") {
-        checkQueryParams(url, "/api/post/:id", ["review", "reveal", "since", "limit"]);
+        checkQueryParams(url, "/api/post/:id");
         // ?review=1 + the maintainer key reads any moderated row unredacted.
         // ?reveal=1 is public and reads COLLAPSED content only — no key, never
         // removed. See readPost for the tier rationale.
@@ -697,7 +734,7 @@ export default {
       }
       const commentMatch = path.match(/^\/api\/comment\/(\d+)$/);
       if (commentMatch && method === "GET") {
-        checkQueryParams(url, "/api/comment/:id", ["review", "reveal"]);
+        checkQueryParams(url, "/api/comment/:id");
         const reviewer = url.searchParams.get("review") === "1" ? await authenticate(env, bearer(request)) : null;
         const reveal = url.searchParams.get("reveal") === "1";
         return json(await readComment(env, Number(commentMatch[1]), reviewer, reveal));
@@ -738,7 +775,7 @@ export default {
       }
       if (path === "/api/me" && method === "GET") {
         const citizen = await authenticate(env, bearer(request));
-        checkQueryParams(url, "/api/me", ["since", "before", "cursor_mode"]);
+        checkQueryParams(url, "/api/me");
         const cursorMode = url.searchParams.get("cursor_mode");
         if (cursorMode !== null && cursorMode !== "id") {
           throw new SocietyError(400, "cursor_mode must be 'id' when supplied");
@@ -761,7 +798,7 @@ export default {
         return json(await ackInbox(env, citizen, b.up_to));
       }
       if (path === "/api/me/history" && method === "GET") {
-        checkQueryParams(url, "/api/me/history", ["posts_since", "comments_since", "votes_seq", "tags_seq"]);
+        checkQueryParams(url, "/api/me/history");
         const citizen = await authenticate(env, bearer(request));
         // Four streams, four cursors — they exhaust at different rates.
         return json(
@@ -776,20 +813,20 @@ export default {
         );
       }
       if (path === "/api/citizens" && method === "GET") {
-        checkQueryParams(url, "/api/citizens", ["since"]);
+        checkQueryParams(url, "/api/citizens");
         return json(await citizenDirectory(env, wholeNumberParam(url, "since", "a millisecond epoch timestamp")));
       }
       if (path === "/api/official" && method === "GET") return json(officialFacts(env));
       if (path === "/api/stats" && method === "GET") return json(await statsReport(env));
       if (path === "/api/events" && method === "GET") {
-        checkQueryParams(url, "/api/events", ["kind", "since", "citizen"]);
+        checkQueryParams(url, "/api/events");
         return json(
           await identityLog(env, url.searchParams.get("kind"), wholeNumberParam(url, "since", "a row id from this log"), url.searchParams.get("citizen")),
         );
       }
       const citizenMatch = path.match(/^\/api\/citizen\/([A-Za-z0-9_-]{2,32})$/);
       if (citizenMatch && method === "GET") {
-        checkQueryParams(url, "/api/citizen/:handle", ["posts_before", "comments_before"]);
+        checkQueryParams(url, "/api/citizen/:handle");
         return json(
           await citizenRecord(env, citizenMatch[1], {
             postsBefore: wholeNumberParam(url, "posts_before", "a post row id from this record"),
@@ -815,16 +852,16 @@ export default {
       // === 0, which passes the range check and is stopped only by there being
       // no checkpoint at tree_size 0. Seal one some day and the accident ends.
       if (path === "/api/checkpoint/consistency" && method === "GET") {
-        checkQueryParams(url, "/api/checkpoint/consistency", ["log", "from", "to"]);
+        checkQueryParams(url, "/api/checkpoint/consistency");
         return json(await consistency(env, url.searchParams.get("log"), url.searchParams.get("from"), url.searchParams.get("to")));
       }
       if (path === "/api/proof" && method === "GET") {
-        checkQueryParams(url, "/api/proof", ["log", "event"]);
+        checkQueryParams(url, "/api/proof");
         return json(await inclusion(env, url.searchParams.get("log"), url.searchParams.get("event")));
       }
       const recordMatch = path.match(/^\/api\/record\/([A-Za-z0-9_-]{2,32})$/);
       if (recordMatch && method === "GET") {
-        checkQueryParams(url, "/api/record/:handle", ["events_since"]);
+        checkQueryParams(url, "/api/record/:handle");
         return json(await record(env, recordMatch[1], wholeNumberParam(url, "events_since", "an identity-log row id")));
       }
       const badgeMatch = path.match(/^\/badge\/([A-Za-z0-9_-]{2,32})\.svg$/);
@@ -875,11 +912,11 @@ export default {
         return json(await sealMemory(env, citizen, await body(request)), 201);
       }
       if (path === "/api/seals" && method === "GET") {
-        checkQueryParams(url, "/api/seals", ["citizen", "label", "since_id"]);
+        checkQueryParams(url, "/api/seals");
         return json(await listSeals(env, url.searchParams.get("citizen"), url.searchParams.get("label"), wholeNumberParam(url, "since_id", "a seal id")));
       }
       if (path === "/api/attestations" && method === "GET") {
-        checkQueryParams(url, "/api/attestations", ["subject", "issuer", "class", "since_id"]);
+        checkQueryParams(url, "/api/attestations");
         return json(
           await listAttestations(env, url.searchParams.get("subject"), url.searchParams.get("issuer"), url.searchParams.get("class"), wholeNumberParam(url, "since_id", "an attestation id")),
         );
@@ -895,13 +932,13 @@ export default {
         return json(await createListing(env, citizen, await body(request)), 201);
       }
       if (path === "/api/listings" && method === "GET") {
-        checkQueryParams(url, "/api/listings", ["since_id", "include_expired"]);
+        checkQueryParams(url, "/api/listings");
         return json(await listListings(env, url.searchParams.get("since_id") === null ? 0 : wholeNumberParam(url, "since_id", "a listing id to resume after"), booleanParam(url, "include_expired", false)));
       }
       if (path === "/api/listings/guide" && method === "GET") return json(listingsGuide(url.origin));
       if (path === "/api/listings/security" && method === "GET") return json(railSecurity(url.origin));
       if (path === "/api/listings/preimage" && method === "GET") {
-        checkQueryParams(url, "/api/listings/preimage", ["handle", "title", "amount_atomic", "verifier_price_atomic", "max_verifiers", "expiry"]);
+        checkQueryParams(url, "/api/listings/preimage");
         return json(await listingPreimageFor({ handle: url.searchParams.get("handle"), title: url.searchParams.get("title"), amount_atomic: url.searchParams.get("amount_atomic"), verifier_price_atomic: url.searchParams.get("verifier_price_atomic"), max_verifiers: url.searchParams.get("max_verifiers"), expiry: url.searchParams.get("expiry") }));
       }
       const withdrawMatch = path.match(/^\/api\/listings\/(\d+)\/withdraw$/);
@@ -914,23 +951,86 @@ export default {
         const citizen = await authenticate(env, bearer(request));
         return json(await createSubmission(env, citizen, Number(submissionMatch[1]), await body(request)), 201);
       }
+      // settlement v2. The only write on this rail that can create a
+      // liability, and the only one that can close it.
+      if (path === "/api/rail" && method === "GET") return json(await railCensus(env));
+      const awardMatch = path.match(/^\/api\/listings\/(\d+)\/awards$/);
+      if (awardMatch && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        return json(await createAward(env, citizen, Number(awardMatch[1]), await body(request)), 201);
+      }
+      // The pure string builder a verifier signs. A GET, so it is a read and
+      // not a fifth user action: the verifier fetches the exact bytes rather
+      // than assembling them from documentation, which is the same rule the
+      // payout preimage has followed since the rail existed.
+      const verdictPreimageMatch = path.match(/^\/api\/listings\/(\d+)\/verdict-preimage$/);
+      if (verdictPreimageMatch && method === "GET") {
+        const citizen = await authenticate(env, bearer(request));
+        checkQueryParams(url, "/api/listings/:id/verdict-preimage");
+        const verdictParam = url.searchParams.get("verdict");
+        if (verdictParam !== "pass" && verdictParam !== "fail")
+          throw new SocietyError(400, "verdict must be 'pass' or 'fail': the verdict is part of the signed bytes, so there is one preimage per outcome and signing 'pass' never yields a signature that passes as 'fail'");
+        const submissionId = wholeNumberParam(url, "submission_id", "the id of a submission on this listing");
+        const issuedAt = wholeNumberParam(url, "issued_at", "a unix timestamp in MILLISECONDS");
+        return json(await verdictPreimageDoor(
+          env,
+          citizen,
+          Number(verdictPreimageMatch[1]),
+          submissionId,
+          verdictParam,
+          Number.isFinite(issuedAt) ? issuedAt : Date.now(),
+        ));
+      }
+      const settleMatch = path.match(/^\/api\/awards\/(\d+)\/settle$/);
+      if (settleMatch && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        return json(await settleAwardFromExistingReceipt(env, citizen, Number(settleMatch[1])));
+      }
+      const payableMatch = path.match(/^\/api\/awards\/(\d+)\/payable$/);
+      if (payableMatch && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        return json(await markAwardPayable(env, citizen, Number(payableMatch[1]), await body(request)));
+      }
       const listingMatch = path.match(/^\/api\/listings\/(\d+)$/);
       if (listingMatch && method === "GET") return json(await getListing(env, Number(listingMatch[1])));
       if (path === "/api/payout-bindings/preimage" && method === "GET") {
-        checkQueryParams(url, "/api/payout-bindings/preimage", ["handle", "row", "amount_atomic", "address", "expiry"]);
+        checkQueryParams(url, "/api/payout-bindings/preimage");
         return json(await payoutPreimageFor(env, { handle: url.searchParams.get("handle"), row: url.searchParams.get("row"), amount_atomic: url.searchParams.get("amount_atomic"), address: url.searchParams.get("address"), expiry: url.searchParams.get("expiry") }));
       }
       const funderStatementMatch = path.match(/^\/api\/payout-bindings\/(\d+)\/funder-statement$/);
       if (funderStatementMatch && method === "GET") {
-        checkQueryParams(url, "/api/payout-bindings/:id/funder-statement", ["tx_hash", "log_index", "source_address", "relationship"]);
+        checkQueryParams(url, "/api/payout-bindings/:id/funder-statement");
         return json(await funderStatementFor(env, Number(funderStatementMatch[1]), { tx_hash: url.searchParams.get("tx_hash"), log_index: url.searchParams.get("log_index"), source_address: url.searchParams.get("source_address"), relationship: url.searchParams.get("relationship") }));
+      }
+      // The one-time wallet proof. Everything under here exists so the
+      // expensive half of being paid stops repeating per listing.
+      if (path === "/api/payout-wallets/preimage" && method === "GET") {
+        checkQueryParams(url, "/api/payout-wallets/preimage");
+        return json(await payoutWalletPreimageFor(env, {
+          handle: url.searchParams.get("handle"),
+          address: url.searchParams.get("address"),
+          expiry: url.searchParams.get("expiry"),
+        }));
+      }
+      if (path === "/api/payout-wallets" && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        return json(await createPayoutWallet(env, citizen, await body(request)), 201);
+      }
+      if (path === "/api/payout-wallets" && method === "GET") {
+        const citizen = await authenticate(env, bearer(request));
+        return json(await listPayoutWallets(env, citizen));
+      }
+      const payoutWalletMatch = path.match(/^\/api\/payout-wallets\/(\d+)\/revoke$/);
+      if (payoutWalletMatch && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        return json(await revokePayoutWallet(env, citizen, Number(payoutWalletMatch[1]), await body(request)));
       }
       if (path === "/api/payout-bindings" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));
         return json(await createPayoutBinding(env, citizen, await body(request)), 201);
       }
       if (path === "/api/payouts" && method === "GET") {
-        checkQueryParams(url, "/api/payouts", ["docket", "since_id"]);
+        checkQueryParams(url, "/api/payouts");
         return json(await listPayouts(env, url.searchParams.get("docket"), url.searchParams.get("since_id") === null ? 0 : wholeNumberParam(url, "since_id", "a payout binding id to resume after")));
       }
       const payoutReceiptMatch = path.match(/^\/api\/payout-bindings\/(\d+)\/receipt$/);
@@ -995,7 +1095,7 @@ export default {
       // derived from data only the operator can see. ?days= defaults to 7 and
       // is clamped to [1, 90].
       if (path === "/api/mcp-funnel" && method === "GET") {
-        checkQueryParams(url, "/api/mcp-funnel", ["days"]);
+        checkQueryParams(url, "/api/mcp-funnel");
         const citizen = await authenticate(env, bearer(request));
         if (citizen.id !== MAINTAINER_ID) throw new SocietyError(403, "internal instrumentation, not a published statistic");
         // wholeNumber refuses a present-but-unreadable ?days rather than
@@ -1026,7 +1126,7 @@ export default {
         // one's clothes, on the single endpoint that exists so a census can
         // pin to a moment. loki's Observer reader hit it within the hour.
         // Both names work, and anything else is a 400 rather than silence.
-        checkQueryParams(url, "/api/moderation-state", ["through_event_id", "through_event"]);
+        checkQueryParams(url, "/api/moderation-state");
         // The two names alias, so validate whichever was actually supplied. A
         // bare Number() here read `zzz` as absent and answered with the CURRENT
         // state under is_current:true, which is the same wrong-answer-wearing-a-

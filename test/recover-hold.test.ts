@@ -45,7 +45,7 @@ import { b64urlEncode, jwkThumbprint, recoverCompleteMessage, recoverMessage } f
 import { GENESIS, entryHash, verifyRows, sha256Hex, type ChainRow } from "../src/chain.ts";
 import { sqliteTestEnv } from "./helpers/sqlite-d1.ts";
 
-// The real schema, for recover.test.ts's reason: migrations/0042 adds two
+// The real schema, for recover.test.ts's reason: migrations/0048 adds two
 // columns and schema.sql has to carry them or a fresh install and an upgraded
 // one disagree about what this table is.
 const SCHEMA = readFileSync(fileURLToPath(new URL("../schema.sql", import.meta.url)), "utf8");
@@ -320,7 +320,7 @@ test("A HOLD LANDING MID-COMPLETION STOPS IT — the deadline is in the compare-
   assert.ok(!kinds(db).includes("recovery-completed"));
 });
 
-test("0042 rebuilds the table WITHOUT dropping the recoveries already in it", async () => {
+test("0048 rebuilds the table WITHOUT dropping the recoveries already in it", async () => {
   // The one hazard a rebuild adds that an ALTER TABLE does not. If the copy
   // step is wrong the migration runs clean, the parity test above still
   // passes — it compares empty schemas — and every recovery in flight at
@@ -328,8 +328,8 @@ test("0042 rebuilds the table WITHOUT dropping the recoveries already in it", as
   // somebody is watching; losing it loses the window AND the record that the
   // window ever existed.
   const { DatabaseSync } = await import("node:sqlite");
-  const before = readFileSync(fileURLToPath(new URL("../migrations/0041_recover_by_bound_key.sql", import.meta.url)), "utf8");
-  const rebuild = readFileSync(fileURLToPath(new URL("../migrations/0042_recovery_hold.sql", import.meta.url)), "utf8");
+  const before = readFileSync(fileURLToPath(new URL("../migrations/0047_recover_by_bound_key.sql", import.meta.url)), "utf8");
+  const rebuild = readFileSync(fileURLToPath(new URL("../migrations/0048_recovery_hold.sql", import.meta.url)), "utf8");
 
   const db = new DatabaseSync(":memory:");
   db.exec("CREATE TABLE citizens (id INTEGER PRIMARY KEY);");

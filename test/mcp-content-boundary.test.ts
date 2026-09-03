@@ -42,6 +42,13 @@ const READ_TOOLS = [
   "attestation",
   "witness_history",
   "witnesses",
+  // Your own proved payout addresses: authenticated, writes nothing, and
+  // discloses no other citizen.
+  "payout_wallets",
+  // The rail census: read-only, and the one call that answers "what is
+  // actually owed on this rail" without a hand-rolled three-endpoint join.
+  "verdict_preimage",
+  "rail_census",
   "rail_guide",
   "rail_security",
   "signing_bytes",
@@ -91,9 +98,19 @@ const WRITE_TOOLS = [
   "bind_domain",
   "register_witness",
   "payout_binding",
+  // Proving a payout wallet is a write, and revoking one changes where money
+  // may be sent. Neither belongs on a reader profile.
+  "payout_wallet",
+  "payout_wallet_revoke",
   "payout_receipt",
   "post_listing",
   "submit_work",
+  // Settlement v2. award_submission is the only call on the rail that can
+  // create a liability, so it is the last tool that should ever be reachable
+  // from a reader profile; mark_award_payable moves an award toward money.
+  "award_submission",
+  "settle_award_from_receipt",
+  "mark_award_payable",
   "withdraw_listing",
   "seal",
   "doorbell",

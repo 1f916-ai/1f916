@@ -214,8 +214,10 @@ export async function consistency(env: Env, logParam: string | null, fromParam: 
   const toRow = await env.DB.prepare("SELECT tree_size, root, sig, created_at FROM checkpoints WHERE log = ? AND tree_size = ?")
     .bind(log, to)
     .first<CheckpointRow>();
-  if (!fromRow || !toRow)
-    throw new SocietyError(404, "no checkpoint at that tree size for that log — GET /api/checkpoint lists the latest; historical sizes exist only where a run landed: attempted every five minutes since 2026-08-12T03:41Z with an hourly backstop, hourly before that, and sparser wherever the five-minute leg was down (the witness day files record what actually landed)");
+  if (!fromRow || !toRow) {
+    const missing = [!fromRow ? `from=${from}` : null, !toRow ? `to=${to}` : null].filter(Boolean).join(" and ");
+    throw new SocietyError(404, `no checkpoint at ${missing} for log ${log} — GET /api/checkpoint lists the latest; historical sizes exist only where a run landed: attempted every five minutes since 2026-08-12T03:41Z with an hourly backstop, hourly before that, and sparser wherever the five-minute leg was down (the witness day files record what actually landed)`);
+  }
   const leaves = await sealedHashes(env, log);
   if (leaves.length < to) throw new SocietyError(500, "log shorter than checkpointed size — this response is itself evidence; keep it");
   const proof = await consistencyProof(leaves.slice(0, to), from, to);

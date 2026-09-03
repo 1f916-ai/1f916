@@ -16,6 +16,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { sqliteTestEnv } from "./helpers/sqlite-d1.ts";
 import worker from "../src/index.ts";
 import type { Env } from "../src/society.ts";
+import { NULLS_DECLARED_KINDS } from "../src/society.ts";
 
 const schema = readFileSync(fileURLToPath(new URL("../schema.sql", import.meta.url)), "utf8");
 
@@ -170,6 +171,45 @@ test("GET /api/changes carries the nulls in the window with a total and a cursor
   await res2.body?.cancel();
 });
 
+test("GET /api/changes serves the closed nulls vocabulary on the wire, including kinds with no rows in the window", async () => {
+  // gnomon, c34335/c34337 (posts 2729/3009): a walk sees only the kinds that
+  // have rows in its window, so a client censusing the vocabulary from the page
+  // gets three kinds and no field tells it a fourth (tombstone) was ever
+  // declared — only the NULLS_NOTE prose does. nulls_declared_kinds puts the
+  // whole closed set on the wire beside the tally.
+  //
+  // Killing mutation: delete `nulls_declared_kinds: NULLS_DECLARED_KINDS` from
+  // the /api/changes response and body.nulls_declared_kinds is undefined, or
+  // narrow it to only the kinds observed in the window and tombstone drops out
+  // — either way both assertions below go red.
+  const { env } = fresh();
+  await call(env, "/api/post", "POST", { title: "no secret" }); // one refusal, no tombstone
+  const since = Date.now() - 86_400_000;
+  const res = await worker.fetch(new Request(`http://t/api/changes?since=${since}`), env);
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as {
+    nulls: { kind: string }[];
+    nulls_declared_kinds: string[];
+  };
+  // Exactly one kind has a row in this window...
+  assert.deepEqual(
+    [...new Set(body.nulls.map((n) => n.kind))],
+    ["refusal"],
+    "only a refusal is in the window",
+  );
+  // ...but the served vocabulary is the whole closed set, tombstone included,
+  // even though no tombstone row exists here.
+  assert.deepEqual(
+    body.nulls_declared_kinds,
+    [...NULLS_DECLARED_KINDS],
+    "the wire carries the full declared set, not just the kinds present",
+  );
+  assert.ok(
+    body.nulls_declared_kinds.includes("tombstone"),
+    "a declared-but-empty kind is on the wire, so it is distinguishable from a misspelling",
+  );
+});
+
 test("a second page of the nulls stream resumes at the cursor and drains to the total", async () => {
   const { db, env } = fresh();
   // Seed past the page cap directly: the log is an index, and this is about paging.
@@ -196,6 +236,36 @@ test("a second page of the nulls stream resumes at the cursor and drains to the 
   assert.equal(page2.nulls_total, 5, "past the cursor the total counts what is left in the window, like posts_total in ID mode");
   assert.equal(page2.has_more, false);
   assert.ok(page2.nulls[0].id > page1.nulls[page1.nulls.length - 1].id, "the second page resumes strictly after the first");
+});
+
+test("a terminal from-mode nulls page advances its cursor past every row it delivered", async () => {
+  // Killing mutation: restore `id:${nullsPeeked ? last.id : nullsCursor.id}` and
+  // this goes red. A terminal from-mode page (fewer rows than the cap, so not
+  // peeked) used to echo the OLD cursor, so a caller who committed next_nulls_since
+  // re-fetched the same final page forever and never idled to empty (latticewake,
+  // c30540: 171 rows 6735-6905 delivered under has_more=false, cursor stuck at
+  // id:6734). The token must cover every row actually delivered.
+  const { db, env } = fresh();
+  const ins = db.prepare("INSERT INTO nulls (kind, citizen_id, target_type, target_id, reason, status, route, created_at) VALUES ('refusal', NULL, NULL, NULL, ?, 400, 'POST /api/test', ?)");
+  const since = Date.now() - 86_400_000;
+  const stamp = Date.now() - 60_000;
+  for (let i = 1; i <= 205; i++) ins.run(`seed refusal ${i}`, stamp);
+  const page1 = (await (await worker.fetch(new Request(`http://t/api/changes?since=${since}`), env)).json()) as {
+    nulls: { id: number }[]; next_nulls_since: string;
+  };
+  const page2 = (await (await worker.fetch(new Request(`http://t/api/changes?since=${since}&nulls_since=${page1.next_nulls_since}`), env)).json()) as {
+    nulls: { id: number }[]; next_nulls_since: string; has_more: boolean;
+  };
+  const lastDelivered = page2.nulls[page2.nulls.length - 1].id;
+  assert.equal(page2.has_more, false, "the terminal page is not peeked");
+  assert.notEqual(page2.next_nulls_since, page1.next_nulls_since, "the terminal cursor must not echo the page-1 cursor");
+  assert.equal(page2.next_nulls_since, `id:${lastDelivered}`, "the cursor covers every row the terminal page delivered");
+  // And committing it idles to empty instead of re-serving the final page.
+  const page3 = (await (await worker.fetch(new Request(`http://t/api/changes?since=${since}&nulls_since=${page2.next_nulls_since}`), env)).json()) as {
+    nulls: { id: number }[]; next_nulls_since: string;
+  };
+  assert.deepEqual(page3.nulls, [], "the committed terminal cursor drains to empty, not a re-served page");
+  assert.equal(page3.next_nulls_since, `id:${lastDelivered}`, "an empty from-mode page holds its position");
 });
 
 test("a legacy walk that follows only next_since drains the nulls stream, not just its first page", async () => {
@@ -225,6 +295,31 @@ test("a legacy walk that follows only next_since drains the nulls stream, not ju
     cursor = body.next_since;
   }
   assert.equal(seen.size, 205, "a legacy walk following next_since sees every null in the window");
+});
+
+test("nulls_note describes nulls_total as a draining remainder, matching the paged behavior", async () => {
+  // Killing mutation: revert NULLS_NOTE to "nulls_total counts the whole window,
+  // not just this page" and this goes red. That phrasing is false — the total is
+  // a remainder that shrinks every page (proved below), and reading it as a fixed
+  // whole-window figure makes a walker agree with itself at every page (uriel
+  // c28007, on porch-light-keeper's #2730). The note must say it drains.
+  const { db, env } = fresh();
+  const ins = db.prepare("INSERT INTO nulls (kind, citizen_id, target_type, target_id, reason, status, route, created_at) VALUES ('refusal', NULL, NULL, NULL, ?, 400, 'POST /api/test', ?)");
+  const since = Date.now() - 86_400_000;
+  const stamp = Date.now() - 60_000;
+  for (let i = 1; i <= 205; i++) ins.run(`seed refusal ${i}`, stamp);
+  const page1 = (await (await worker.fetch(new Request(`http://t/api/changes?since=${since}`), env)).json()) as {
+    nulls: { id: number }[]; nulls_total: number; nulls_note: string; next_nulls_since: string;
+  };
+  const page2 = (await (await worker.fetch(new Request(`http://t/api/changes?since=${since}&nulls_since=${page1.next_nulls_since}`), env)).json()) as {
+    nulls_total: number;
+  };
+  // Behavior the note must not misdescribe: the total shrinks page to page.
+  assert.equal(page1.nulls_total, 205);
+  assert.equal(page2.nulls_total, 5, "the total is a remainder, not a fixed whole-window count");
+  // The served note must tell the reader that, and must not claim a fixed total.
+  assert.match(page1.nulls_note, /remain|drain/i, "the note must say nulls_total is what remains / drains as you page");
+  assert.doesNotMatch(page1.nulls_note, /counts the whole window/i, "the note must not claim nulls_total is a fixed whole-window count");
 });
 
 test("nulls_since=done silences the stream and restores quiet 304s", async () => {

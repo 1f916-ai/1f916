@@ -239,3 +239,91 @@ test("naming the token is drawn as a record, not a recommendation", () => {
     assert.match(p, /official_token/, `${c}: and it must point at the field it is reconciling with`);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Fourth layer, added 2026-08-31. The STALE list above is a list of SENTENCES,
+// and it only ever catches a denial phrased the way a past defect phrased it.
+//
+// WHAT GOT THROUGH. src/doc.ts:104, the route-table line for /api/official on
+// the front page, read "(real addresses; there is no token — check scams
+// against this)" from the day that endpoint existed until 2026-08-31. It was
+// corrected once, by ae045f94 on 2026-08-24, which was reverted eleven minutes
+// later in 49e19e9e for a reason that had nothing to do with this line: the
+// recognition decision was the owner's and had not been taken. The re-land the
+// next day, 8f76510e, was written fresh against the treasury paragraph further
+// down this same file and never picked the route-table line back up. So for six
+// days the index line pointing AT /api/official denied what /api/official
+// served, one screen above it, in the same response.
+//
+// Every guard above was green throughout. Not one STALE pattern matches the
+// words "there is no token": they all require "official" or "the society" next
+// to the denial, and this sentence carries neither. A list of remembered
+// sentences cannot catch the phrasing nobody wrote down yet.
+//
+// So this layer matches the SHAPE instead: a denial of a token's existence,
+// flagged only when the surrounding 140 characters are talking about the coin
+// (official, contract, scam, treasury, Base, an address) rather than about a
+// credential or a pagination cursor. That distinction is what keeps it quiet:
+// "no token of any other kind is minted" (doc.ts, about access tokens), "Window
+// mode emits no token until" (society.ts, about cursors) and connect.ts's
+// "There is no token" (about the host secret) are all real, correct sentences,
+// and a guard that shouts at them is a guard that gets bypassed.
+//
+// KILLING MUTATION, measured: restore the reverted doc.ts:104 wording and this
+// goes red while every other test in this file stays green.
+const TOKEN_DENIAL = /\b(?:there is (?:still )?no|has no|owns no|society has no|is no)\s+(?:official\s+)?token\b/gi;
+const COIN_CONTEXT = /official|contract|scam|coin|\bbase\b|treasury|0x[0-9a-fA-F]{6}/i;
+
+function denialsInCoinContext(text: string): string[] {
+  const hits: string[] = [];
+  TOKEN_DENIAL.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = TOKEN_DENIAL.exec(text))) {
+    const window = text.slice(Math.max(0, m.index - 140), m.index + 140);
+    if (COIN_CONTEXT.test(window)) hits.push(window);
+  }
+  return hits;
+}
+
+test("no served sentence denies the token's existence while talking about the coin", () => {
+  const files = sourceFiles();
+  assert.ok(files.length > 5, "the scan must actually be reading the source tree");
+  const hits: string[] = [];
+  for (const file of files) {
+    const { served } = splitSource(readFileSync(file, "utf8"));
+    for (const w of denialsInCoinContext(served)) hits.push(`${file}: ...${w}...`);
+  }
+  assert.deepEqual(hits, [], `served prose denies the official token's existence:\n${hits.join("\n")}`);
+});
+
+test("the shape scan catches the exact line that shipped for six days", () => {
+  // Not a hypothetical. This is doc.ts:104 as it was served until 2026-08-31.
+  const reverted =
+    "What is official:  GET ${origin}/api/official  (real addresses; there is no token — check scams against this)";
+  assert.equal(
+    denialsInCoinContext(reverted).length,
+    1,
+    "the route-table line that contradicted /api/official for six days must be caught",
+  );
+  // And it must be caught by SHAPE, not because someone added it to STALE.
+  assert.ok(
+    !STALE.some((p) => p.test(reverted)),
+    "if a STALE sentence now matches this line, this test is no longer proving the shape scan works",
+  );
+});
+
+test("the shape scan stays silent on tokens that are not the coin", () => {
+  // These are the real sentences in src/ that a blunt /no token/ would flag.
+  // A guard with false positives is a guard that gets switched off.
+  for (const benign of [
+    "the access token the host receives is that citizen's secret, unchanged. No token of any other kind is minted or stored; revoke by rotating the secret",
+    "Window mode emits no token until a live row exists, like the id cursors",
+    "Nothing new is stored. There is no token to leak, and nothing to revoke separately",
+  ]) {
+    assert.deepEqual(
+      denialsInCoinContext(benign),
+      [],
+      `the shape scan must not fire on a sentence about credentials or cursors: ${benign}`,
+    );
+  }
+});
