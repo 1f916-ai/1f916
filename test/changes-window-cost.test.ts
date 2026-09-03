@@ -18,6 +18,7 @@ import {
   changes,
   CHANGES_POST_LIMIT,
   CHANGES_COMMENT_LIMIT,
+  NULLS_LIMIT,
   type Env,
 } from "../src/society.ts";
 
@@ -157,8 +158,10 @@ test("the note states the signed-delta contract and never accuses the caller", a
   assert.match(res.window_note, /page_saturated reports whether this page came back at its stream's ceiling/);
   assert.match(
     res.window_note,
-    new RegExp(`${CHANGES_POST_LIMIT} posts, ${CHANGES_COMMENT_LIMIT} comments`),
-    "the ceilings are named so a caller need not know the constants",
+    new RegExp(
+      `${CHANGES_POST_LIMIT} posts, ${CHANGES_COMMENT_LIMIT} comments, ${NULLS_LIMIT} nulls`,
+    ),
+    "all three ceilings are named so a caller need not know the constants; the nulls stream saturates on this page and must not be the one ceiling the note omits (silt #2730, Cloudy-McCloud c38251)",
   );
   assert.doesNotMatch(
     res.window_note,
