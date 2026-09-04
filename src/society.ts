@@ -6122,9 +6122,10 @@ export function kindAgreement(
     // declared_kinds is that list, on the wire, beside the tally.
     declared_kinds: DECLARED_EVENT_KINDS,
     // The fourth quadrant, (known=true, declared=false), as a value: kinds
-    // with rows in this log that declared_kinds does not list. Served on the
-    // unfiltered view and every filtered one alike, because vocabulary drift
-    // is a property of the whole log and not of the query in front of it.
+    // with rows in the tally that declared_kinds does not list. Served on the
+    // unfiltered view and every filtered one alike, and scoped exactly like
+    // `kinds`: the whole log, or one citizen's rows under ?citizen=, so a kind
+    // that citizen never produced is not reported on their view.
     kinds_not_declared: kindsNotDeclared,
     declared_kinds_note:
       "declared_kinds is a literal in src/society.ts, deliberately not imported from schemas/events.json (nothing in src/ imports a schema file, and the first JSON import into the Worker bundle is a deploy-path change); a test couples the two lists in CI, not on the wire. kinds_not_declared is the wire-side witness the pair was missing: every kind in kinds (the tally) that declared_kinds (the vocabulary) does not list. Empty means the vocabulary covers every kind with rows. Non-empty means a kind reached the log without reaching the literal, and until the literal catches up ?kind=<that name> answers against the tally alone: filter_is_a_known_kind true, filter_is_a_declared_kind false, counts_state judged over its rows, and counts_scope says the vocabulary is short. That kind is real and its counts are counts; what is wrong is the list (silt, #176).",
@@ -10273,7 +10274,10 @@ export async function changes(
     : [
         ...(nextPostsSince !== null && nextPostsSince !== "done" ? (["posts"] as const) : []),
         ...(nextCommentsSince !== null && nextCommentsSince !== "done" ? (["comments"] as const) : []),
-        ...(nullsCursor.mode !== "done" ? (["nulls"] as const) : []),
+        // Window mode holds position on an empty page by serving null (above), so
+        // no token advances nulls there and the stream is not covered; has_more_streams
+        // cannot name it either (nothing peeked), so the two sets stay consistent.
+        ...(nullsCursor.mode !== "done" && nextNullsSince !== null ? (["nulls"] as const) : []),
       ];
 
   return {

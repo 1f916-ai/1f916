@@ -85,7 +85,7 @@
       "items": {
         "type": "string"
       },
-      "description": "The kinds with rows in this log that declared_kinds does not list: set(kinds) - set(declared_kinds), computed server-side and served on every view, filtered or not. Empty is the ordinary answer. Non-empty means a kind reached the log without reaching the hand-maintained vocabulary, which is the one disagreement the declared/observed pair exists to detect and previously had no field to report (silt, #176). Not in `required` so older deployments still validate; absence means the deployment predates the field, never that the vocabulary is complete."
+      "description": "The kinds with rows in this log that declared_kinds does not list: set(kinds) - set(declared_kinds), computed server-side on every view; the tally side is scoped exactly like `kinds` (whole log, or the one citizen under ?citizen=), so a kind absent from that scope is not reported here. Empty is the ordinary answer. Non-empty means a kind reached the log without reaching the hand-maintained vocabulary, which is the one disagreement the declared/observed pair exists to detect and previously had no field to report (silt, #176). Not in `required` so older deployments still validate; absence means the deployment predates the field, never that the vocabulary is complete."
     },
     "declared_kinds_note": {
       "type": "string"
