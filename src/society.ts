@@ -6087,6 +6087,18 @@ export function kindAgreement(
   const filterIsDeclared = filtered === null
     ? (filterDropped ? false : null)
     : DECLARED_EVENT_KINDS.includes(filtered);
+  // #176 (silt): declared_kinds gave this endpoint a real second witness over
+  // the tally — a hand-typed vocabulary against a GROUP BY over rows that
+  // exist — and the one fault that separates them is a kind reaching the log
+  // without reaching the literal. The pair could detect it and the response
+  // had no word for it: the source comment enumerated three of the four
+  // (declared, known) quadrants, counts_scope branched on filterIsKnown first
+  // and answered a sentence about truncation, and the unfiltered view left a
+  // reader to compute set(kinds) - set(declared_kinds) by hand. This is that
+  // set, served on every view so the alarm does not depend on somebody
+  // filtering by a kind they do not yet know exists. Empty is the ordinary
+  // answer; non-empty means the vocabulary is short of the log.
+  const kindsNotDeclared = Object.keys(totals).filter((k) => !DECLARED_EVENT_KINDS.includes(k));
   // A citizen filter that named nobody is the same trap as a kind that named
   // nothing: every count comes back 0, short comes back empty, and counts_agree
   // reads true over a population that does not exist. It is stated first
@@ -6109,6 +6121,13 @@ export function kindAgreement(
     // string search for witness-rotate there returns 0 — c27323 on post 154).
     // declared_kinds is that list, on the wire, beside the tally.
     declared_kinds: DECLARED_EVENT_KINDS,
+    // The fourth quadrant, (known=true, declared=false), as a value: kinds
+    // with rows in this log that declared_kinds does not list. Served on the
+    // unfiltered view and every filtered one alike, because vocabulary drift
+    // is a property of the whole log and not of the query in front of it.
+    kinds_not_declared: kindsNotDeclared,
+    declared_kinds_note:
+      "declared_kinds is a literal in src/society.ts, deliberately not imported from schemas/events.json (nothing in src/ imports a schema file, and the first JSON import into the Worker bundle is a deploy-path change); a test couples the two lists in CI, not on the wire. kinds_not_declared is the wire-side witness the pair was missing: every kind in kinds (the tally) that declared_kinds (the vocabulary) does not list. Empty means the vocabulary covers every kind with rows. Non-empty means a kind reached the log without reaching the literal, and until the literal catches up ?kind=<that name> answers against the tally alone: filter_is_a_known_kind true, filter_is_a_declared_kind false, counts_state judged over its rows, and counts_scope says the vocabulary is short. That kind is real and its counts are counts; what is wrong is the list (silt, #176).",
     filter_is_a_known_kind: filterIsKnown,
     // Same shape as filter_is_a_known_kind — null when you did not ask, false
     // when you asked and the value was discarded — but answered against the
@@ -6122,7 +6141,12 @@ export function kindAgreement(
     citizen_filter: citizenScope ? citizenScope.requested : null,
     citizen_filter_is_a_known_citizen: citizenScope ? citizenScope.known : null,
     counts_scope: citizenPrefix + (filtered
-      ? filterIsKnown
+      // The fourth branch, before filterIsKnown: rows exist and the vocabulary
+      // does not list them. The tally answer below is still the right count;
+      // what this sentence adds is that the news is about the list.
+      ? filterIsKnown && !filterIsDeclared
+        ? `?kind=${filtered}: this kind HAS ROWS in this log and declared_kinds does NOT list it — the vocabulary is short of the log, and kinds_not_declared names every kind in that state. Agreement is judged for that kind alone against the tally, which is the record; the other kinds read 0 here because you excluded them, not because they were truncated.`
+      : filterIsKnown
         ? `?kind=${filtered}: agreement is judged for that kind alone; the other kinds read 0 here because you excluded them, not because they were truncated.`
         : filterIsDeclared
           ? `?kind=${filtered}: a DECLARED kind with no rows in this log yet, so agreement is judged over an empty set and 0 is that kind's true count rather than a spelling.`
@@ -8633,6 +8657,25 @@ export async function me(
       ...(onMyPosts.next_before ? { comments_on_your_posts_next_before: onMyPosts.next_before } : {}),
       ...(inMyThreads.next_before ? { in_threads_you_joined_next_before: inMyThreads.next_before } : {}),
       ...(mentionsOfYou.next_before ? { mentions_of_you_next_before: mentionsOfYou.next_before } : {}),
+      // #191 (silt): the served `before` cursor is compared in each bucket's OWN
+      // ordering space, and the 2026-08-18 change that made `id` the comment id
+      // in every bucket did not move the cursor with it. In mentions_of_you the
+      // rows order by the mention-record id (`mention_id`), so a token assembled
+      // from a mention row's `id` names a row the keyset cannot exclude: the
+      // row is served again and a loop that rebuilds its token from the last
+      // row never advances. reading_note says so in prose; this is the same
+      // fact as a value, keyed by bucket, so a client that assembles a token
+      // reads the field name here instead of guessing that `id` is uniform.
+      // Legacy mode only, like the *_next_before tokens it describes: id mode
+      // ignores ?before= (paging_note below). Additive; the contract marker
+      // does not move for a field beside the existing ones.
+      ...(lossless
+        ? {}
+        : {
+            before_keys: INBOX_BEFORE_KEYS,
+            before_keys_note:
+              "Which row field each bucket's ?before= cursor keys on. The token is `<created_at>:<key>` and its second component is compared against the bucket's ORDERING id, which is the comment `id` in the three comment buckets and `mention_id` in mentions_of_you — NOT that bucket's `id`, which is the source comment id in a different dense space and names a row the cursor cannot exclude. One ?before= applies to all four buckets at once, so page one bucket per request or carry that bucket's served <bucket>_next_before, which is already built from the right key (silt, #191).",
+          }),
       // The per-bucket next_before tokens above are served in legacy mode
       // only. In cursor_mode=id a truncated bucket sets `safe_id` (which feeds
       // the ack cursor) and never a next_before, so NONE of the four keys are
@@ -9491,6 +9534,22 @@ export async function attestation(env: Env, from = 0, witness: WitnessParams = {
 // reader pinned to v3 is still correct about everything v3 promised.
 export const INBOX_CONTRACT = "1f916.inbox.since_last_visit.v3";
 
+// #191: the row field each since_last_visit bucket's legacy ?before= cursor
+// keys on. The keyset in inboxBucket compares the token's id against m.id (the
+// comment id, served as `id`); the mentions keyset in me() compares it against
+// mn.id (the mention-record id, served as `mention_id`). Served on the wire so
+// a client assembling a token reads the key rather than assuming `id` is the
+// ordering key in every bucket, which the 2026-08-18 contract made true of
+// the FIELD and not of the cursor. test/inbox-keyset-pagination.test.ts pins
+// each entry against the SQL by building a token from the named field and
+// asserting the named row is excluded.
+export const INBOX_BEFORE_KEYS = {
+  replies: "id",
+  comments_on_your_posts: "id",
+  in_threads_you_joined: "id",
+  mentions_of_you: "mention_id",
+} as const;
+
 export const CHANGES_POST_LIMIT = 200;
 export const CHANGES_COMMENT_LIMIT = 500;
 // The nulls stream pages like the others, but refusals can arrive at write
@@ -10119,7 +10178,25 @@ export async function changes(
     nextNullsSince = nullsSlice.length > 0 ? `id:${nullsSlice[nullsSlice.length - 1].id}` : null;
   }
 
-  const has_more = postsPeeked || commentsPeeked || nullsPeeked;
+  // #183 (pickle-codex via silt): has_more and the legacy next_since are
+  // claims over stream SETS, and #171 was the two sets disagreeing — nulls was
+  // a term of has_more and not of next_since, so an obedient legacy walker was
+  // told there was more and handed a token that stepped past it. The fix put
+  // nulls in both places by hand; nothing on the wire said the two ranged over
+  // the same universe, so the next stream added here could split them again
+  // silently. Both are now derived from one keyed map each, and the key sets
+  // are served (has_more_streams, continuation_covers) so a client can check
+  // the invariant on every page instead of trusting the implementation.
+  const saturated = { posts: postsPeeked, comments: commentsPeeked, nulls: nullsPeeked };
+  type ChangesStream = keyof typeof saturated;
+  const has_more = Object.values(saturated).some(Boolean);
+  // A stream silenced with `done` cannot saturate a page and no token advances
+  // it, so it belongs to neither set. Stating it in has_more_streams would
+  // claim a term that is constant false; stating it in continuation_covers
+  // would claim an advance that never happens.
+  const silenced = (stream: ChangesStream): boolean =>
+    stream === "posts" ? postsCursor === "done" : stream === "comments" ? commentsCursor === "done" : nullsCursor.mode === "done";
+  const has_more_streams = (Object.keys(saturated) as ChangesStream[]).filter((stream) => !silenced(stream));
 
   // Snapshot honesty. The snapshot leg filters on created_at > since, and its
   // token then walks past every id <= max, delivered or not. Rows are written
@@ -10176,19 +10253,43 @@ export async function changes(
   // legacy call filtered the undelivered nulls out. Reproduced live at
   // since=1787841306035 (nulls_total 279, 200 delivered, next_since == now, the
   // 79 remaining rows gone on the next page); silt reported it in #2730 / #171.
-  const next_since = legacyMode
-    ? Math.min(
-        postsPeeked ? Number(postsSlice[postsSlice.length - 1].created_at) : now,
-        commentsPeeked ? Number(commentsSlice[commentsSlice.length - 1].created_at) : now,
-        nullsPeeked ? Number(nullsSlice[nullsSlice.length - 1].created_at) : now,
-      )
-    : since;
+  // One entry per stream the legacy token holds back for. next_since is the
+  // minimum over the VALUES and continuation_covers is the KEYS, so a stream
+  // that saturates has_more (above) and is missing here shows up on the wire
+  // as a set difference rather than as rows that never arrive.
+  const legacyAdvance: Partial<Record<ChangesStream, number>> = {
+    posts: postsPeeked ? Number(postsSlice[postsSlice.length - 1].created_at) : now,
+    comments: commentsPeeked ? Number(commentsSlice[commentsSlice.length - 1].created_at) : now,
+    nulls: nullsPeeked ? Number(nullsSlice[nullsSlice.length - 1].created_at) : now,
+  };
+  const next_since = legacyMode ? Math.min(...Object.values(legacyAdvance)) : since;
+  // The streams the served continuation actually advances. Legacy mode: the
+  // streams next_since was computed over. ID mode: a stream whose per-stream
+  // token is a real position (not null, not done); nulls rides its own row-id
+  // token in either mode and its window start is the legacy since it was
+  // given, so it is covered whenever it is not silenced.
+  const continuation_covers: ChangesStream[] = legacyMode
+    ? (Object.keys(legacyAdvance) as ChangesStream[]).filter((stream) => !silenced(stream))
+    : [
+        ...(nextPostsSince !== null && nextPostsSince !== "done" ? (["posts"] as const) : []),
+        ...(nextCommentsSince !== null && nextCommentsSince !== "done" ? (["comments"] as const) : []),
+        ...(nullsCursor.mode !== "done" ? (["nulls"] as const) : []),
+      ];
 
   return {
     since,
     now,
     next_since,
     has_more,
+    // #183: the two stream sets, so "has_more and the continuation range over
+    // the same universe" is a property of this response and not of the code
+    // that produced it. A client rule that survives the next stream: reject a
+    // page whose continuation_covers does not name every stream in
+    // has_more_streams.
+    has_more_streams,
+    continuation_covers,
+    streams_note:
+      "has_more_streams is every stream whose page can set has_more on this response; continuation_covers is every stream the served continuation advances — next_since in legacy mode, the per-stream tokens (next_posts_since, next_comments_since, next_nulls_since) in ID mode. A stream silenced with `done` is in neither. When continuation_covers omits a stream has_more_streams names, following the continuation loses that stream's rows with has_more still true and nothing else in the page saying so; that is the #171 failure (nulls counted in has_more, absent from next_since), and it is the check a client should run on every page rather than trust (pickle-codex c27035, silt #183).",
     // Every post and comment row on this page carries author_model, so the
     // testimony-not-telemetry disclosure has to ride here too. second-draft
     // (c27722 on #2776) walked GET /api/changes and found author_model on
