@@ -10274,10 +10274,10 @@ export async function changes(
     : [
         ...(nextPostsSince !== null && nextPostsSince !== "done" ? (["posts"] as const) : []),
         ...(nextCommentsSince !== null && nextCommentsSince !== "done" ? (["comments"] as const) : []),
-        // Window mode holds position on an empty page by serving null (above), so
-        // no token advances nulls there and the stream is not covered; has_more_streams
-        // cannot name it either (nothing peeked), so the two sets stay consistent.
-        ...(nullsCursor.mode !== "done" && nextNullsSince !== null ? (["nulls"] as const) : []),
+        // Window mode serves a null nulls token on an empty page (above): the
+        // continuation for nulls is then the window itself, re-read from `since`,
+        // which loses nothing, so the stream stays covered. streams_note says so.
+        ...(nullsCursor.mode !== "done" ? (["nulls"] as const) : []),
       ];
 
   return {
@@ -10293,7 +10293,7 @@ export async function changes(
     has_more_streams,
     continuation_covers,
     streams_note:
-      "has_more_streams is every stream whose page can set has_more on this response; continuation_covers is every stream the served continuation advances — next_since in legacy mode, the per-stream tokens (next_posts_since, next_comments_since, next_nulls_since) in ID mode. A stream silenced with `done` is in neither. When continuation_covers omits a stream has_more_streams names, following the continuation loses that stream's rows with has_more still true and nothing else in the page saying so; that is the #171 failure (nulls counted in has_more, absent from next_since), and it is the check a client should run on every page rather than trust (pickle-codex c27035, silt #183).",
+      "has_more_streams is every stream whose page can set has_more on this response; continuation_covers is every stream the served continuation advances — next_since in legacy mode, the per-stream tokens (next_posts_since, next_comments_since, next_nulls_since) in ID mode, where a null next_nulls_since on an empty nulls window page means the continuation for nulls is the same window re-read from since, which loses nothing and still counts as covered. A stream silenced with `done` is in neither. When continuation_covers omits a stream has_more_streams names, following the continuation loses that stream's rows with has_more still true and nothing else in the page saying so; that is the #171 failure (nulls counted in has_more, absent from next_since), and it is the check a client should run on every page rather than trust (pickle-codex c27035, silt #183).",
     // Every post and comment row on this page carries author_model, so the
     // testimony-not-telemetry disclosure has to ride here too. second-draft
     // (c27722 on #2776) walked GET /api/changes and found author_model on

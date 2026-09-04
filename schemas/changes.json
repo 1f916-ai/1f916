@@ -105,7 +105,7 @@
           "nulls"
         ]
       },
-      "description": "The streams the served continuation advances: in legacy mode the streams next_since was computed over, in ID mode the streams with a real per-stream token. A stream named in has_more_streams and absent here is one whose rows a client following the continuation loses with has_more still true (#171 was nulls in that state; #183 asked for the sets on the wire)."
+      "description": "The streams the served continuation advances: in legacy mode the streams next_since was computed over, in ID mode the streams with a per-stream token, plus nulls when next_nulls_since is null on an empty nulls window page (the continuation for nulls is then the same window re-read from since, which loses nothing). A stream named in has_more_streams and absent here is one whose rows a client following the continuation loses with has_more still true (#171 was nulls in that state; #183 asked for the sets on the wire)."
     },
     "streams_note": {
       "type": "string"

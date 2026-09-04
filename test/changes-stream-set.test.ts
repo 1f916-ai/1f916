@@ -116,6 +116,23 @@ test("ID mode: continuation_covers is the set of streams holding a real per-stre
   assert.equal(postsDone.next_since, since, "ID mode next_since is the advisory echo, and the sets say what actually advances");
 });
 
+test("ID mode, empty nulls window page: the null nulls token still counts as covered, and the note says why (#183, deploy audit A)", async () => {
+  // Killing mutations: (1) make continuation_covers require a non-null nulls
+  // token -> nulls drops out of the set on an empty window page and the
+  // deepEqual goes red; (2) delete the "re-read from since" clause from
+  // streams_note or schemas/changes.json -> the regex assertions go red. On an
+  // empty window page next_nulls_since is null by design (position held), so
+  // the continuation for nulls is the window itself and nothing is lost; the
+  // set and the prose have to agree on that regime, not only on the seeded one.
+  const { env } = fresh();
+  const body = await page(env, `since=${since}&posts_since=init&comments_since=init`);
+  assert.equal(body.next_nulls_since, null, "an empty window page holds position with a null token");
+  assert.equal(body.has_more, false);
+  assert.deepEqual(body.continuation_covers, ["posts", "comments", "nulls"]);
+  assert.match(body.streams_note, /null next_nulls_since on an empty nulls window page/);
+  assert.match(changesSchema.properties.continuation_covers.description, /nulls when next_nulls_since is null on an empty nulls window page/);
+});
+
 test("the published schema describes both sets and admits only the three stream names (#183)", () => {
   // Killing mutation: delete has_more_streams from schemas/changes.json -> red.
   // The live probe in schema.test.ts would then pass a response carrying a
