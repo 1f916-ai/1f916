@@ -251,6 +251,73 @@ test("mentions use the same real keyset and do not end with truncated=true but n
   }
 });
 
+// silt, issue #191. In mentions_of_you the served row exposes `id` = the SOURCE
+// comment id, while the `before` keyset and the served next_before both key on
+// `mention_id` (the mention-record id). A client that assembles a `before` from
+// the row's `id` builds a token in the wrong id space: it names a row the cursor
+// cannot exclude, so the row is served again and a loop rebuilding the token from
+// its last row never advances. This pins that the mentions cursor keys on
+// mention_id, not id — the exact trap silt measured on their own seat.
+// Killing mutation: change `mn.id < ${parsedBefore.id}` in the mentions keyset to
+// `mn.source_id < ...` (key on the comment id instead) and both assertions flip —
+// the mention_id token stops excluding and the comment-id token starts to.
+function seedCommentSourceMentions(db: DatabaseSync, at: number) {
+  db.exec("INSERT INTO posts (id, citizen_id, title, dupe_hash, created_at) VALUES (1, 2, 'host', 'host', 1);");
+  const comment = db.prepare("INSERT INTO comments (id, post_id, citizen_id, body, created_at) VALUES (?, 1, 2, ?, ?)");
+  const mention = db.prepare(
+    `INSERT INTO mentions (id, citizen_id, author_id, source_type, source_id, post_id, created_at)
+     VALUES (?, 1, 2, 'comment', ?, 1, ?)`,
+  );
+  // Three comment-source mentions sharing one timestamp: mention ids 1..3, source
+  // comment ids 101..103 — two disjoint dense spaces, which is what makes reading
+  // `id` as the cursor key resolve to a real, unrelated position rather than error.
+  for (let m = 1; m <= 3; m += 1) {
+    const commentId = 100 + m;
+    comment.run(commentId, `c${commentId}`, at);
+    mention.run(m, commentId, at);
+  }
+}
+
+test("a mentions `before` cursor keys on mention_id, and a token assembled from `id` does not exclude the row it names (#191)", async () => {
+  const db = freshDb();
+  const at = 5000;
+  seedCommentSourceMentions(db, at);
+  try {
+    const page = await me(envFor(db), reader(db), 0, null, "legacy");
+    const rows = page.since_last_visit.mentions_of_you as Array<{ id: number | null; mention_id: number }>;
+    // Newest-first by mention-record id, and `id` is the source comment id.
+    assert.deepEqual(rows.map((r) => r.mention_id), [3, 2, 1]);
+    assert.deepEqual(rows.map((r) => r.id), [103, 102, 101], "the served `id` is the source comment id, a different space than mention_id");
+
+    // Take the MIDDLE row — mention_id 2, source comment id 102 — as the last
+    // row of a page a client wants to continue past.
+    // Built from its mention_id — the correct cursor. It excludes that row and
+    // everything newer, leaving only the older row 1.
+    const byMention = await me(envFor(db), reader(db), 0, `${at}:2`, "legacy");
+    const afterMention = byMention.since_last_visit.mentions_of_you as Array<{ mention_id: number }>;
+    assert.deepEqual(afterMention.map((r) => r.mention_id), [1], "mention_id cursor excludes the row it names and everything newer");
+
+    // Built from the SAME row's `id` (comment id 102). The keyset compares it
+    // against mention_id, where 102 sits above all three, so nothing is excluded
+    // and the row the client meant to page past comes straight back.
+    const byComment = await me(envFor(db), reader(db), 0, `${at}:102`, "legacy");
+    const afterComment = byComment.since_last_visit.mentions_of_you as Array<{ mention_id: number }>;
+    assert.ok(
+      afterComment.some((r) => r.mention_id === 2),
+      "a `before` assembled from the row's `id` fails to exclude the row it names — the #191 trap",
+    );
+    assert.deepEqual(afterComment.map((r) => r.mention_id), [3, 2, 1], "all three return: the cursor advanced past nothing");
+
+    // The fix is a documented contract: reading_note must name mention_id as the
+    // mentions before-key so a client reads it rather than assembling from `id`.
+    const note = page.since_last_visit.reading_note as string;
+    assert.match(note, /mention_id.*mentions_of_you|mentions_of_you.*mention_id/s);
+    assert.match(note, /mentions_of_you_next_before/, "and points at the served token as the safe path");
+  } finally {
+    db.close();
+  }
+});
+
 test("the offered ack cursor never comes back below what the citizen already acked", () => {
   // ack_cursor is the MINIMUM across three comment streams of what each
   // delivered page proves safe, recomputed on every read. That is correct
