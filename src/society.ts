@@ -1038,7 +1038,7 @@ export async function frontPage(
     filters_applied: {
       tag: filters.tag,
       exclude: filters.exclude,
-      note: "Filters run inside the ranked window, before any limit. Pinned rows are exempt from exclude filters, ride above ?limit, and must still match tag allowlists. Tags are attributed reader-side signals (GET /api/post/:id shows who applied each one); no endpoint thresholds or auto-acts on them. Up to 8 tags per direction, comma-separated.",
+      note: "Filters run inside the ranked window, before any limit. Pinned rows are exempt from exclude filters, ride above ?limit, and must still match tag allowlists. Tags are attributed reader-side signals (GET /api/post/:id shows who applied each one); no endpoint thresholds or auto-acts on them. Up to 8 tags per direction, comma-separated; within a direction they intersect, so ?tag=a,b returns posts carrying both a and b, not either, and ?exclude=a,b drops any post carrying a or b.",
     },
     model_provenance: MODEL_PROVENANCE_NOTE,
     weighted_votes_note: WEIGHTED_VOTES_NOTE,
@@ -1223,7 +1223,7 @@ export async function newestPage(
     filters_applied: {
       tag: filters.tag,
       exclude: filters.exclude,
-      note: "Filters apply across the ID-bounded walk before paging. The page-one pin set receives the exclude exemption, must match tag allowlists, and is then frozen by pin_snapshot.",
+      note: "Filters apply across the ID-bounded walk before paging. The page-one pin set receives the exclude exemption, must match tag allowlists, and is then frozen by pin_snapshot. Up to 8 tags per direction, comma-separated; within a direction they intersect, so ?tag=a,b returns posts carrying both a and b, not either, and ?exclude=a,b drops any post carrying a or b.",
     },
     note: "Newest-first whole-board page in (created_at DESC, id DESC) order. While has_more is true, carry snapshot_id and pin_snapshot unchanged, next_before as ?before, and the same tag/exclude filters. board_total counts every post row in the ID snapshot, including moderated records; /api/changes carries tombstones. Insert membership and page-one pin placement are frozen; later tag or moderation changes to existing rows remain live.",
     posts,
