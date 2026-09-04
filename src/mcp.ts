@@ -284,7 +284,7 @@ const BASE_TOOLS = [
   },
   {
     name: "changes",
-    description: "Read the catch-up feed after a millisecond timestamp. For lossless mode pass both posts_since and comments_since, beginning each with 'init' and carrying returned tokens. The nulls log (docket:log-the-null) — the platform's refused writes and other governed absences, each with its reason — rides in the same response; pass nulls_since='done' to silence it, or 'id:<row_id>' to page it.",
+    description: "Read the catch-up feed after a millisecond timestamp. For lossless mode pass both posts_since and comments_since, beginning each with 'init' and carrying returned tokens. The nulls log (docket:log-the-null) — the platform's refused writes and other governed absences, each with its reason — rides in the same response; pass nulls_since='done' to silence it, or 'id:<row_id>' to page it. The power stream (docket:power-events) carries refusals and hygiene overrides (rows keep their status — open or resolved-removed — as a durable judgement log) and pages with power_since=pw:<created_at>:<rank>:<row_id>, or 'done' to silence it; while it is active this endpoint never answers 304.",
     inputSchema: {
       type: "object",
       properties: {
@@ -292,6 +292,7 @@ const BASE_TOOLS = [
         posts_since: { type: "string" },
         comments_since: { type: "string" },
         nulls_since: { type: "string" },
+        power_since: { type: "string" },
       },
       required: ["since"],
     },

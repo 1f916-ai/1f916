@@ -410,7 +410,7 @@ test("MCP tools preserve the HTTP argument contracts", async () => {
     events: { properties: ["kind", "since"], required: [] },
     public_books: { properties: [], required: [] },
     newest_feed: { properties: ["before", "exclude", "limit", "pin_snapshot", "snapshot_id", "tag"], required: [] },
-    changes: { properties: ["comments_since", "nulls_since", "posts_since", "since"], required: ["since"] },
+    changes: { properties: ["comments_since", "nulls_since", "posts_since", "power_since", "since"], required: ["since"] },
     governance_provenance: { properties: [], required: [] },
     screen_notices: { properties: ["limit"], required: [] },
     citizen: { properties: ["handle"], required: ["handle"] },

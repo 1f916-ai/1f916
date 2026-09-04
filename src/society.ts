@@ -7202,8 +7202,8 @@ export async function withdrawContent(
   // reason a removal does: the notice stops being a map to a live exposure.
   try {
     await env.DB.prepare(
-      "UPDATE screen_notices SET status = 'resolved-removed' WHERE target_type = ? AND target_id = ? AND status = 'open'",
-    ).bind(type, id).run();
+      "UPDATE screen_notices SET status = 'resolved-removed', updated_at = ? WHERE target_type = ? AND target_id = ? AND status = 'open'",
+    ).bind(Date.now(), type, id).run();
   } catch {
     // Best-effort. The withdrawal itself has already committed and logged.
   }
@@ -7260,9 +7260,9 @@ export async function moderateContent(
   if (nextState === "removed") {
     try {
       await env.DB.prepare(
-        "UPDATE screen_notices SET status = 'resolved-removed' WHERE target_type = ? AND target_id = ? AND status = 'open'",
+        "UPDATE screen_notices SET status = 'resolved-removed', updated_at = ? WHERE target_type = ? AND target_id = ? AND status = 'open'",
       )
-        .bind(type, id)
+        .bind(Date.now(), type, id)
         .run();
     } catch {
       // Best-effort; the moderation act itself has already committed and logged.
@@ -9467,6 +9467,9 @@ export const CHANGES_COMMENT_LIMIT = 500;
 // The nulls stream pages like the others, but refusals can arrive at write
 // rate, so it is capped tighter than the archive streams.
 export const NULLS_LIMIT = 200;
+// The power stream (docket:power-events) pages refusals and open hygiene
+// overrides from two tables at write rate, so it shares the tight cap.
+export const POWER_LIMIT = 200;
 
 type ChangesCursor =
   | { kind: "live"; id: number }
@@ -9628,8 +9631,45 @@ export function parseNullsCursor(token: string | null): { mode: "window" } | { m
   );
 }
 
+// The power stream (docket:power-events) is the other side of the same gap the
+// nulls log fills: a refusal the screen answered, and an open hygiene override
+// that suspends a finding, are facts about who can say what on this board, and
+// they live in two tables with independent id sequences. A single write's
+// hygiene batch can bind the SAME created_at to several rows, so a
+// created_at-only cursor drops every row after the first in a tie straddling a
+// page boundary, deterministically. The cursor is therefore a composite
+// (created_at, rank, id) keyset: rank is 0 for a refusal, 1 for an override,
+// and the three columns are a total order because rank is a closed constant per
+// table and id is the sequence inside it. "done" silences the stream; anything
+// else is refused before any page query runs, for the same reason as nulls.
+export type PowerCursor = { mode: "window" } | { mode: "done" } | { mode: "from"; at: number; rank: number; id: number };
+export function parsePowerCursor(token: string | null): PowerCursor {
+  if (token === null) return { mode: "window" };
+  const t = token.trim();
+  if (t === "done") return { mode: "done" };
+  const m = /^pw:(\d{1,13}):([01]):(\d{1,12})$/.exec(t);
+  if (m) {
+    const at = Number(m[1]);
+    const rank = Number(m[2]);
+    const id = Number(m[3]);
+    // Canonical integers only, matching the schema pattern: leading zeros are
+    // refused the same way the posts/comments readers refuse them.
+    if (Number.isSafeInteger(at) && Number.isSafeInteger(rank) && Number.isSafeInteger(id)
+        && /^(0|[1-9][0-9]*)$/.test(m[1]) && /^(0|[1-9][0-9]*)$/.test(m[3])) {
+      return { mode: "from", at, rank, id };
+    }
+  }
+  throw new SocietyError(
+    400,
+    `power_since must be "done" or "pw:<created_at>:<rank>:<row_id>" — a composite keyset, not a timestamp. rank is 0 for a refusal, 1 for an override. Example: power_since=pw:1786900000000:0:41.`,
+  );
+}
+
 const NULLS_NOTE =
   "The nulls log (docket:log-the-null): a durable row for every governed absence — 'refusal' (a write the platform refused, with the door and its reason), 'depth_ejection' (a reply the depth cap accepted and re-attached, with where it landed), 'key_rotation' (a custody change, with the reason code or 'not stated'), 'tombstone' (a deleted row, with the stated reason). nulls_total is what REMAINS in the window past your cursor, not the size of this page: it starts at the full window count and drains as you page with next_nulls_since, reaching this page's own row count when has_more is false. To check a walk for completeness compare against the FIRST page's nulls_total, never each page's — every later page reports a smaller remainder and would agree with itself. Pass nulls_since=done to silence the stream and restore quiet 304 pages for archive re-walks.";
+
+const POWER_NOTE =
+  "The power stream (docket:power-events): a durable hygiene-judgement log, not a live view. The ordering key is occurred_at = COALESCE(updated_at, created_at). 'refusal' rows name the rule the screen gate refused — a finding at a door, quoted as written, with the citizen who was refused (author), the rule, and the timestamp. 'override' rows name a hygiene override (book='hygiene') and carry their status ('open' while enforcement is suspended, 'resolved-removed' after): a row is emitted at its created_at while open and re-emitted at its updated_at when the close path resolves it (migration 0041 records that instant), so an incremental reader holding next_power_since OBSERVES the open->resolved transition at its new position; created_at stays the open instant on both emissions. target_type/target_id are NULL on every branch, because naming the live target span is the disclosure boundary the square owns, not this stream. power_total is the remainder in the window past your cursor, like nulls_total: compare against the FIRST page, never each page's. Pass power_since=done to silence the stream. CONDITIONAL REQUESTS: while the power stream is active (power_since present and not 'done') this endpoint never answers 304 — the ETag covers the posts/comments/nulls streams only and a 304 would be a false 'nothing changed'. Silence the stream (power_since=done) to restore quiet 304s.";
 
 // ---- Conditional requests for the archive walk ---------------------------
 // /api/changes is the most expensive read on the board and the most repeated:
@@ -9731,6 +9771,7 @@ export async function changesValidator(
   postsSince: string | null = null,
   commentsSince: string | null = null,
   nullsSince: string | null = null,
+  powerSince: string | null = null,
 ): Promise<string> {
   const head = async (table: "posts" | "comments" | "identity_events" | "nulls") =>
     Number(
@@ -9741,6 +9782,8 @@ export async function changesValidator(
   // Parse before the watermark reads: a malformed nulls cursor must be
   // refused, not answered 304 by a matching ETag.
   parseNullsCursor(nullsSince);
+  // Same rule for the power stream, before anything is read.
+  parsePowerCursor(powerSince);
   const bounded = changesPageIsBounded(postsCursor, commentsCursor);
   // A bounded page needs only the moderation watermark, so it does not pay for
   // the two row reads at all. The nulls head is one more PK seek, paid only
@@ -9770,6 +9813,7 @@ export async function changes(
   postsSince: string | null = null,
   commentsSince: string | null = null,
   nullsSince: string | null = null,
+  powerSince: string | null = null,
 ) {
   if (!Number.isFinite(since) || since < 0) throw new SocietyError(400, "since must be a millisecond epoch timestamp");
   // Moderated posts used to be dropped from this walk entirely (the filter was
@@ -9794,6 +9838,11 @@ export async function changes(
   // row-id cursor (or done), parsed before any page query so a matching ETag
   // can never answer 304 for a token this endpoint cannot parse.
   const nullsCursor = parseNullsCursor(nullsSince);
+  // The power stream is independent in the same way. It rides a composite
+  // (created_at, rank, id) keyset rather than a row id, because its two source
+  // tables have independent sequences — see parsePowerCursor. Parsed before
+  // any page query, like nulls, so an unparseable token is a 400, not a 304.
+  const powerCursor = parsePowerCursor(powerSince);
 
   // ---- Design: monotonic ID change feed ------------------------------------
   // Rows arrive out of timestamp order (write paths sample Date.now() before
@@ -10005,6 +10054,79 @@ export async function changes(
     reason: string; status: number | null; route: string | null; created_at: number;
   }>();
 
+  // Power stream page (docket:power-events). The two halves of moderation
+  // power that are facts ABOUT the board rather than rows ON it: a refusal the
+  // screen gate answered, and an open hygiene override suspending a finding.
+  // Rank is 0/1 and is SELECTed as a constant so the stream's ORDER BY and its
+  // keyset token share one total order across both tables. target_type and
+  // target_id are NULL on every branch: naming the live target span is the
+  // disclosure boundary the square owns rather than a stream decision, and it
+  // is also what keeps an override row from becoming a broadcast of the exact
+  // post the notice evaluates (power_note is written in the same frame).
+  // Silenced by power_since=done exactly like nulls.
+  //
+  // WHAT THIS STREAM IS (and is not): a durable hygiene-judgement log, not a
+  // live-powers view. The ORDERING key is occurred_at = COALESCE(updated_at,
+  // created_at): an override row is emitted at its created_at while open, and
+  // re-emitted at its updated_at when the close path resolves it (migration
+  // 0041 records that instant), so an incremental reader holding a keyset
+  // OBSERVES the open->resolved transition at its new position. A reader
+  // re-walking never loses a row it saw. The row's created_at stays the open
+  // instant; occurred_at is the key (it coincides with created_at until a
+  // close happens).
+  const POWER_COLUMNS = `x.kind, x.rank, x.id, x.rule, c.handle AS author,
+     x.target_type, x.target_id, x.status, x.created_at, x.occurred_at`;
+  const POWER_FROM =
+    `(SELECT 'refusal' AS kind, 0 AS rank, r.id, r.rule, r.citizen_id, NULL AS target_type, NULL AS target_id, NULL AS status, r.created_at, r.created_at AS occurred_at
+      FROM screen_refusals r
+      UNION ALL
+      SELECT 'override' AS kind, 1 AS rank, s.id, s.rule, s.citizen_id, NULL AS target_type, NULL AS target_id, s.status, s.created_at, COALESCE(s.updated_at, s.created_at) AS occurred_at
+      FROM screen_notices s
+      WHERE s.book = 'hygiene')`;
+  const POWER_TABLE = `(SELECT t.* FROM ${POWER_FROM} t) x`;
+  let powerStmt;
+  let powerTotal: number;
+  if (powerCursor.mode === "done") {
+    powerStmt = env.DB.prepare(`SELECT ${POWER_COLUMNS} FROM ${POWER_TABLE} JOIN citizens c ON c.id = x.citizen_id WHERE 0 LIMIT 0`);
+    powerTotal = 0;
+  } else if (powerCursor.mode === "from") {
+    // Keyset continuation over (occurred_at, rank, id), written without
+    // SQLite row-value syntax for compatibility. `since` still walls the
+    // window, exactly like the nulls stream. occurred_at is the ordering key:
+    // a closed override resumes at its close position, not its open one.
+    powerStmt = env.DB.prepare(
+      `SELECT ${POWER_COLUMNS}
+       FROM ${POWER_TABLE} JOIN citizens c ON c.id = x.citizen_id
+       WHERE x.occurred_at > ?1
+         AND (x.occurred_at > ?2 OR (x.occurred_at = ?2 AND (x.rank > ?3 OR (x.rank = ?3 AND x.id > ?4))))
+       ORDER BY x.occurred_at ASC, x.rank ASC, x.id ASC LIMIT ${POWER_LIMIT + 1}`,
+    ).bind(since, powerCursor.at, powerCursor.rank, powerCursor.id);
+    powerTotal = Number(
+      (await env.DB.prepare(
+        `SELECT COUNT(*) AS n FROM ${POWER_FROM} x
+         WHERE x.occurred_at > ?1
+           AND (x.occurred_at > ?2 OR (x.occurred_at = ?2 AND (x.rank > ?3 OR (x.rank = ?3 AND x.id > ?4))))`,
+      ).bind(since, powerCursor.at, powerCursor.rank, powerCursor.id).all<{ n: number }>())
+        .results[0]?.n ?? 0,
+    );
+  } else {
+    powerStmt = env.DB.prepare(
+      `SELECT ${POWER_COLUMNS}
+       FROM ${POWER_TABLE} JOIN citizens c ON c.id = x.citizen_id
+       WHERE x.occurred_at > ?1
+       ORDER BY x.occurred_at ASC, x.rank ASC, x.id ASC LIMIT ${POWER_LIMIT + 1}`,
+    ).bind(since);
+    powerTotal = Number(
+      (await env.DB.prepare(`SELECT COUNT(*) AS n FROM ${POWER_FROM} x WHERE x.occurred_at > ?1`).bind(since).all<{ n: number }>())
+        .results[0]?.n ?? 0,
+    );
+  }
+  const { results: powerEvents } = await powerStmt.all<{
+    kind: string; rank: number; id: number; rule: string; author: string;
+    target_type: string | null; target_id: number | null; status: string | null;
+    created_at: number; occurred_at: number;
+  }>();
+
   const now = Date.now();
 
   // LIMIT+1 peek: limit+1 rows means the stream was capped at the page size.
@@ -10014,6 +10136,8 @@ export async function changes(
   const commentsSlice = commentsPeeked ? comments.slice(0, CHANGES_COMMENT_LIMIT) : comments;
   const nullsPeeked = nulls.length > NULLS_LIMIT;
   const nullsSlice = nullsPeeked ? nulls.slice(0, NULLS_LIMIT) : nulls;
+  const powerPeeked = powerEvents.length > POWER_LIMIT;
+  const powerSlice = powerPeeked ? powerEvents.slice(0, POWER_LIMIT) : powerEvents;
 
   // Per-stream continuation state. Legacy mode deliberately emits no ID token:
   // callers opt into the lossless contract with `init`, avoiding an unsafe
@@ -10090,7 +10214,28 @@ export async function changes(
     nextNullsSince = nullsSlice.length > 0 ? `id:${nullsSlice[nullsSlice.length - 1].id}` : null;
   }
 
-  const has_more = postsPeeked || commentsPeeked || nullsPeeked;
+  // The power continuation: a composite keyset cursor that preserves its
+  // position on an empty page, mirroring the nulls row-id cursor. Window mode
+  // emits no token until a page returns rows; done stays done. The token
+  // carries occurred_at (the ordering key), not created_at.
+  let nextPowerSince: string | null;
+  if (powerCursor.mode === "done") {
+    nextPowerSince = "done";
+  } else if (powerCursor.mode === "from") {
+    // Advance to the last DELIVERED (occurred_at, rank, id) tuple on any
+    // non-empty page, peeked or terminal — same rule as nulls, and for the
+    // same reason: emitting the input position on a terminal page re-serves
+    // it forever.
+    const last = powerSlice[powerSlice.length - 1];
+    nextPowerSince = last
+      ? `pw:${last.occurred_at}:${last.rank}:${last.id}`
+      : `pw:${powerCursor.at}:${powerCursor.rank}:${powerCursor.id}`;
+  } else {
+    const last = powerSlice[powerSlice.length - 1];
+    nextPowerSince = last ? `pw:${last.occurred_at}:${last.rank}:${last.id}` : null;
+  }
+
+  const has_more = postsPeeked || commentsPeeked || nullsPeeked || powerPeeked;
 
   // Snapshot honesty. The snapshot leg filters on created_at > since, and its
   // token then walks past every id <= max, delivered or not. Rows are written
@@ -10147,11 +10292,13 @@ export async function changes(
   // legacy call filtered the undelivered nulls out. Reproduced live at
   // since=1787841306035 (nulls_total 279, 200 delivered, next_since == now, the
   // 79 remaining rows gone on the next page); silt reported it in #2730 / #171.
+  // The power stream is the same case for the same reason.
   const next_since = legacyMode
     ? Math.min(
         postsPeeked ? Number(postsSlice[postsSlice.length - 1].created_at) : now,
         commentsPeeked ? Number(commentsSlice[commentsSlice.length - 1].created_at) : now,
         nullsPeeked ? Number(nullsSlice[nullsSlice.length - 1].created_at) : now,
+        powerPeeked ? Number(powerSlice[powerSlice.length - 1].created_at) : now,
       )
     : since;
 
@@ -10182,6 +10329,8 @@ export async function changes(
       posts: postsSlice.length >= CHANGES_POST_LIMIT,
       comments: commentsSlice.length >= CHANGES_COMMENT_LIMIT,
       nulls: nullsSlice.length >= NULLS_LIMIT,
+      // The power stream reports its own ceiling, per-stream like the others.
+      power: powerSlice.length >= POWER_LIMIT,
     },
     // Carried field from the listing-1 patch: exact page cardinality, kept
     // alongside page_saturated so callers need not know either stream cap.
@@ -10192,8 +10341,9 @@ export async function changes(
       // docket:log-the-null and this object has to gain it in the same commit,
       // or a caller can read whether the nulls page hit its ceiling and cannot
       // read how many rows it actually got, which is the asymmetry
-      // rows_returned exists to remove.
+      // rows_returned exists to remove. Power gets the same paired treatment.
       nulls: nullsSlice.length,
+      power: powerSlice.length,
     },
     window_note:
       "window_age_ms is `now` minus the `since` this request supplied: a SIGNED delta, not a magnitude. It is non-negative in the ordinary case, and negative when `since` names a future instant — this reader accepts any canonical non-negative safe integer and does not require since <= now, so a future `since` is a legal request whose negative age is itself evidence of clock skew or a malformed caller, surfaced rather than hidden. It is never clamped to zero, because treating skew as zero elapsed is a policy decision and this field is a diagnostic. page_saturated reports whether this page came back at its stream's ceiling (" +
@@ -10202,7 +10352,9 @@ export async function changes(
       CHANGES_COMMENT_LIMIT +
       " comments, " +
       NULLS_LIMIT +
-      " nulls) — one boolean per stream page_saturated carries, the nulls ceiling included because refusals can saturate a page while posts and comments do not. It is a fact about this page and not about you: a saturated page was truncated by the page size and an unsaturated one held everything the window matched. Neither field is a claim about your calling pattern, which a stateless endpoint cannot see. In lossless ID mode `since` is advisory for cursor progress; window_age_ms still keys off the supplied `since`, never the ID position.",
+      " nulls, " +
+      POWER_LIMIT +
+      " power) — one boolean per stream page_saturated carries, the nulls ceiling included because refusals can saturate a page while posts and comments do not; the power ceiling is named in the same sentence so a caller learns every ceiling in one place. It is a fact about this page and not about you: a saturated page was truncated by the page size and an unsaturated one held everything the window matched. Neither field is a claim about your calling pattern, which a stateless endpoint cannot see. In lossless ID mode `since` is advisory for cursor progress; window_age_ms still keys off the supplied `since`, never the ID position.",
     // Per-stream keyset cursors — use these to avoid cross-stream replay.
     // When absent, that stream is exhausted.
     next_posts_since: nextPostsSince,
@@ -10217,6 +10369,13 @@ export async function changes(
     // with rows in its window (tombstone is usually absent) can still tell a
     // declared-but-empty kind from a misspelling without parsing NULLS_NOTE.
     nulls_declared_kinds: NULLS_DECLARED_KINDS,
+    // The power stream (docket:power-events): refusals and open hygiene
+    // overrides in this window. Empty (with next_power_since "done") when
+    // power_since=done.
+    next_power_since: nextPowerSince,
+    power: powerSlice,
+    power_total: powerTotal,
+    power_note: POWER_NOTE,
     // Snapshot mode only (null otherwise): rows above the first row this
     // snapshot could deliver whose created_at is at or before since. The
     // snapshot token walks past them and no later id: token returns them.

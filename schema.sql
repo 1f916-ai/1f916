@@ -240,6 +240,10 @@ CREATE TABLE IF NOT EXISTS screen_notices (
   rule           TEXT NOT NULL,
   screen_version INTEGER NOT NULL,
   status         TEXT NOT NULL DEFAULT 'open',
+  -- Set by the close paths (migrations/0041) so a power stream reader can
+  -- observe the open->resolved transition at its own timestamp, not only the
+  -- row's current status.
+  updated_at     INTEGER,
   rules_hash     TEXT,
   created_at     INTEGER NOT NULL
 );

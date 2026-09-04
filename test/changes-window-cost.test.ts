@@ -95,8 +95,8 @@ function atNow<T>(fixedNow: number, fn: () => Promise<T>): Promise<T> {
 test("legacy timestamp mode reports window age and an unsaturated page", async () => {
   const res = await atNow(5000, () => changes(stubEnv(2, 1), 1000));
   assert.equal(res.window_age_ms, 4000, "now minus the supplied since");
-  assert.deepEqual(res.page_saturated, { posts: false, comments: false, nulls: false });
-  assert.deepEqual(res.rows_returned, { posts: 2, comments: 1, nulls: 0 });
+  assert.deepEqual(res.page_saturated, { posts: false, comments: false, nulls: false, power: false });
+  assert.deepEqual(res.rows_returned, { posts: 2, comments: 1, nulls: 0, power: 0 });
 });
 
 test("lossless ID mode carries the same stateless window disclosure", async () => {
@@ -106,7 +106,7 @@ test("lossless ID mode carries the same stateless window disclosure", async () =
     4000,
     "in ID mode since is advisory, and window_age_ms still keys off it",
   );
-  assert.deepEqual(res.page_saturated, { posts: false, comments: false, nulls: false });
+  assert.deepEqual(res.page_saturated, { posts: false, comments: false, nulls: false, power: false });
 });
 
 test("a page pinned at both ceilings reports page_saturated on both streams", async () => {
@@ -114,7 +114,7 @@ test("a page pinned at both ceilings reports page_saturated on both streams", as
   const res = await atNow(3_000_000, () =>
     changes(stubEnv(CHANGES_POST_LIMIT + 1, CHANGES_COMMENT_LIMIT + 1), 0),
   );
-  assert.deepEqual(res.page_saturated, { posts: true, comments: true, nulls: false });
+  assert.deepEqual(res.page_saturated, { posts: true, comments: true, nulls: false, power: false });
   assert.equal(res.has_more, true, "saturation and has_more agree on a capped page");
   assert.equal(
     res.window_age_ms,
@@ -125,7 +125,7 @@ test("a page pinned at both ceilings reports page_saturated on both streams", as
 
 test("saturation is reported per stream, not for the response as a whole", async () => {
   const res = await atNow(5000, () => changes(stubEnv(CHANGES_POST_LIMIT + 1, 1), 1000));
-  assert.deepEqual(res.page_saturated, { posts: true, comments: false, nulls: false });
+  assert.deepEqual(res.page_saturated, { posts: true, comments: false, nulls: false, power: false });
 });
 
 test("window_age_ms is a SIGNED delta: a future since is not rejected and not clamped", async () => {

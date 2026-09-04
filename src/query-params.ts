@@ -50,7 +50,7 @@ export const QUERY_PARAMS: Readonly<Record<string, readonly string[]>> = {
   "/api/attest/legacy-manifest": [],
   "/api/search": ["q", "limit"],
   "/api/front": ["order", "limit", "tag", "exclude"],
-  "/api/changes": ["since", "posts_since", "comments_since", "nulls_since"],
+  "/api/changes": ["since", "posts_since", "comments_since", "nulls_since", "power_since"],
   "/api/new": ["limit", "before", "snapshot_id", "pin_snapshot", "tag", "exclude"],
   "/api/payload-notices": ["limit"],
   "/api/screen-notices": ["limit"],

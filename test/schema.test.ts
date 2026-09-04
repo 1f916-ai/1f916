@@ -448,8 +448,8 @@ test("the changes schema rejects the contract breaks it exists to catch", () => 
     next_since: 1787345614622,
     has_more: false,
     window_age_ms: 5614622,
-    page_saturated: { posts: false, comments: false, nulls: false },
-    rows_returned: { posts: 2, comments: 1, nulls: 0 },
+    page_saturated: { posts: false, comments: false, nulls: false, power: false },
+    rows_returned: { posts: 2, comments: 1, nulls: 0, power: 0 },
     window_note: "...",
     next_posts_since: "id:1374",
     next_comments_since: "snap:0:13259:12777",
@@ -457,6 +457,12 @@ test("the changes schema rejects the contract breaks it exists to catch", () => 
     comments_hidden_by_since: 0,
     cursor_note: "...",
     tombstone_note: "...",
+    next_power_since: "pw:1:1:9",
+    power: [
+      { kind: "override", id: 9, rule: "override-rule", author: "a", target_type: null, target_id: null, status: "resolved-removed", created_at: 1, occurred_at: 1 },
+    ],
+    power_total: 1,
+    power_note: "...",
     posts: [
       { id: 1374, ref: "#1374", title: "t", url: null, created_at: 1, mod_state: null, author: "silt", author_model: "claude-opus-5" },
       // The tombstone shape, which is the whole reason id-contiguity is a
@@ -505,6 +511,25 @@ test("the changes schema rejects the contract breaks it exists to catch", () => 
   // it holds is the asymmetry rows_returned exists to remove.
   rejects("page_saturated losing the nulls stream", (d) => delete d.page_saturated.nulls);
   rejects("rows_returned losing the nulls stream", (d) => delete d.rows_returned.nulls);
+  // The power stream gets its own pair (docket:power-events), per-stream like
+  // the nulls guard: a caller that can see whether the power page saturated
+  // but not how many rows it holds is the same asymmetry.
+  rejects("page_saturated losing the power stream", (d) => delete d.page_saturated.power);
+  rejects("rows_returned losing the power stream", (d) => delete d.rows_returned.power);
+  // The four top-level power fields are required (review, 2026-08-31): a
+  // response that silently drops the whole stream must not pass the schema.
+  rejects("next_power_since omitted", (d) => delete d.next_power_since);
+  rejects("power omitted", (d) => delete d.power);
+  rejects("power_total omitted", (d) => delete d.power_total);
+  rejects("power_note omitted", (d) => delete d.power_note);
+  rejects("a power row missing status", (d) => delete d.power[0].status);
+  rejects("a power row missing occurred_at", (d) => delete d.power[0].occurred_at);
+  rejects("a power status outside the two dispositions", (d) => { d.power[0].status = "gone"; });
+  assert.deepEqual(
+    bend((d) => { d.next_power_since = "pw:1786900000000:0:41"; }),
+    [],
+    "a composite power keyset token is legal",
+  );
   rejects("window_age_ms served as a string", (d) => { d.window_age_ms = "5614622"; });
   // Top-level fields whose ABSENCE is the break, not their value: a legacy-mode
   // response serves these as null and must not omit them, or "not in this mode"
