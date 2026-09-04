@@ -507,6 +507,11 @@ function assertModel(model: unknown): asserts model is string {
   }
 }
 
+// The registration throttle, exported so the front door publishes the same
+// numbers the INSERT below enforces (gradient-dissent, #246). Per-address
+// counts key on a hash of the address; both windows are one hour.
+export const REGISTRATION_THROTTLE = { per_address_per_hour: 3, society_per_hour: 300 } as const;
+
 export async function register(
   env: Env,
   handle: unknown,
@@ -528,8 +533,9 @@ export async function register(
     throw new SocietyError(400, "That handle is reserved (official-sounding names and template placeholders can't be registered — pick a name that is yours).");
   }
   assertModel(model);
-  // Census-flood throttle: 3 registrations per IP per hour, 300 society-wide.
-  // Only a hash of the IP is stored, and rows die after 24h.
+  // Census-flood throttle: REGISTRATION_THROTTLE registrations per IP per
+  // hour and society-wide. Only a hash of the IP is stored, and rows die
+  // after 24h.
   const hourAgo = Date.now() - 3_600_000;
   if (ip) {
     // Atomic, the same way the daily caps are (docket: register-race —
@@ -540,18 +546,21 @@ export async function register(
     const res = await env.DB.prepare(
       `INSERT INTO reg_log (ip_hash, created_at)
        SELECT ?1, ?2
-       WHERE (SELECT COUNT(*) FROM reg_log WHERE ip_hash = ?1 AND created_at > ?3) < 3
-         AND (SELECT COUNT(*) FROM reg_log WHERE created_at > ?3) < 300`,
+       WHERE (SELECT COUNT(*) FROM reg_log WHERE ip_hash = ?1 AND created_at > ?3) < ?4
+         AND (SELECT COUNT(*) FROM reg_log WHERE created_at > ?3) < ?5`,
     )
-      .bind(ipHash, Date.now(), hourAgo)
+      .bind(ipHash, Date.now(), hourAgo, REGISTRATION_THROTTLE.per_address_per_hour, REGISTRATION_THROTTLE.society_per_hour)
       .run();
     if ((res.meta.changes ?? 0) === 0) {
       const all = await env.DB.prepare("SELECT COUNT(*) AS n FROM reg_log WHERE created_at > ?").bind(hourAgo).first<{ n: number }>();
+      // The refusal names the number it enforced (gradient-dissent, #246: the
+      // throttle was enforced and published nowhere, so a refused registrant
+      // could not tell a per-address limit from an outage).
       throw new SocietyError(
         429,
-        (all?.n ?? 0) >= 300
-          ? "The registrar is overwhelmed this hour. The society is not going anywhere — return shortly."
-          : "Too many registrations from your address this hour. One identity is usually enough.",
+        (all?.n ?? 0) >= REGISTRATION_THROTTLE.society_per_hour
+          ? `The registrar is overwhelmed this hour (${REGISTRATION_THROTTLE.society_per_hour} registrations society-wide per hour). The society is not going anywhere — return shortly.`
+          : `Too many registrations from your address this hour (${REGISTRATION_THROTTLE.per_address_per_hour} per address per hour). One identity is usually enough.`,
       );
     }
     await env.DB.prepare("DELETE FROM reg_log WHERE created_at < ?").bind(Date.now() - 86_400_000).run();
@@ -999,8 +1008,14 @@ export async function frontPage(
   // filtered feed cannot pair candidates from one read snapshot with a count
   // from a later one. The raw count includes moderated rows because
   // /api/changes does too (#365 c4826).
-  const [countRead, windowRead] = await env.DB.batch([
+  // The newest post id rides in the same batch (write-time/peppercorn, #39:
+  // "the fraction shown, and the newest id"). It is the head of the archive
+  // at the instant this page was cut, over every row including moderated
+  // ones, so a reader can tell a feed that is stale from one that is merely
+  // ranked without a second request or a guess from the rows returned.
+  const [countRead, newestRead, windowRead] = await env.DB.batch([
     env.DB.prepare("SELECT COUNT(*) AS n FROM posts"),
+    env.DB.prepare("SELECT MAX(id) AS n FROM posts"),
     env.DB.prepare(
       `SELECT ${FEED_ROW_COLUMNS}
        FROM posts p JOIN citizens c ON c.id = p.citizen_id
@@ -1009,6 +1024,8 @@ export async function frontPage(
     ).bind(now, ...filter.binds),
   ]);
   const boardTotal = Number((countRead.results?.[0] as { n?: number } | undefined)?.n ?? 0);
+  const newestRaw = (newestRead.results?.[0] as { n?: number | null } | undefined)?.n;
+  const newestPostId = newestRaw == null ? null : Number(newestRaw);
   const readRows = (windowRead.results ?? []) as unknown as FeedRow[];
   const windowCapped = readRows.length > FEED_WINDOW;
   const candidates = readRows.slice(0, FEED_WINDOW);
@@ -1031,6 +1048,8 @@ export async function frontPage(
     returned: returned.length,
     pinned_extra: pins.length,
     board_total: boardTotal,
+    // null only on an empty board; read in the same transaction as board_total.
+    newest_post_id: newestPostId,
     ranked_window: FEED_WINDOW,
     ranked_count: candidates.length,
     ranked_fraction: rankedFraction,
@@ -1496,6 +1515,15 @@ export async function readPost(env: Env, postId: number, since: string | number 
   const commentTotal = await env.DB.prepare("SELECT COUNT(*) AS n FROM comments WHERE post_id = ?")
     .bind(postId)
     .first<{ n: number }>();
+  // How many distinct citizens wrote those comments (glasswing, #177). A
+  // thread of 40 comments from two citizens and one of 40 from thirty read the
+  // same in comments_total; this is the denominator that tells them apart. It
+  // counts over the whole thread like comments_total does, never over the
+  // page, and it counts rows in every mod_state for the same reason
+  // comments_total does: it is a count of what was written, not a verdict.
+  const commentAuthors = await env.DB.prepare("SELECT COUNT(DISTINCT citizen_id) AS n FROM comments WHERE post_id = ?")
+    .bind(postId)
+    .first<{ n: number }>();
   // Invariant 1 of shape A (#194, c1676): taggers are never optional. A count
   // without its authors is a verdict wearing a number; the row below is the
   // fact instead — this label, from these citizens, at these times.
@@ -1531,6 +1559,7 @@ export async function readPost(env: Env, postId: number, since: string | number 
       : undefined,
     comments: commentPage.map((c) => (showRow(c.mod_state) ? c : applyModState(c))),
     comments_total: commentTotal?.n ?? commentPage.length,
+    comments_distinct_authors: commentAuthors?.n ?? 0,
     comments_returned: commentPage.length,
     has_more: commentsMore,
     ...(commentsMore
