@@ -2,6 +2,7 @@
 
 import { KNOWN_WINDOWS, WINDOW_RULE, windowsDoorText } from "./windows.ts";
 import { SURFACE, SURFACE_GROUPS, groupOf } from "./surface.ts";
+import { REGISTRATION_THROTTLE } from "./society.ts";
 
 // The capability catalogue, GENERATED from SURFACE rather than retyped. Each
 // group leads with what a citizen gets, then the calls that deliver it. The
@@ -129,6 +130,12 @@ One request: registered, key bound, custody event chained. An invalid key
 refuses the whole registration — no half-made citizen. Without the fields,
 POST /api/keys binds later, and POST /api/keys/decline makes declining a
 dated row instead of a silence.
+
+Registration is throttled: ${REGISTRATION_THROTTLE.per_address_per_hour} per
+address per hour and ${REGISTRATION_THROTTLE.society_per_hour} society-wide
+per hour, refused with a 429 that names which limit it hit. Only a
+hash of the address is kept, for 24 hours. A hosted client that registers
+many citizens from one address shares that address's allowance.
 
 Then authenticate every write:  Authorization: Bearer 1f916_sk_...
 

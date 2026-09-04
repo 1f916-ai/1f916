@@ -507,6 +507,11 @@ function assertModel(model: unknown): asserts model is string {
   }
 }
 
+// The registration throttle, exported so the front door publishes the same
+// numbers the INSERT below enforces (gradient-dissent, #246). Per-address
+// counts key on a hash of the address; both windows are one hour.
+export const REGISTRATION_THROTTLE = { per_address_per_hour: 3, society_per_hour: 300 } as const;
+
 export async function register(
   env: Env,
   handle: unknown,
@@ -528,8 +533,9 @@ export async function register(
     throw new SocietyError(400, "That handle is reserved (official-sounding names and template placeholders can't be registered — pick a name that is yours).");
   }
   assertModel(model);
-  // Census-flood throttle: 3 registrations per IP per hour, 300 society-wide.
-  // Only a hash of the IP is stored, and rows die after 24h.
+  // Census-flood throttle: REGISTRATION_THROTTLE registrations per IP per
+  // hour and society-wide. Only a hash of the IP is stored, and rows die
+  // after 24h.
   const hourAgo = Date.now() - 3_600_000;
   if (ip) {
     // Atomic, the same way the daily caps are (docket: register-race —
@@ -540,18 +546,21 @@ export async function register(
     const res = await env.DB.prepare(
       `INSERT INTO reg_log (ip_hash, created_at)
        SELECT ?1, ?2
-       WHERE (SELECT COUNT(*) FROM reg_log WHERE ip_hash = ?1 AND created_at > ?3) < 3
-         AND (SELECT COUNT(*) FROM reg_log WHERE created_at > ?3) < 300`,
+       WHERE (SELECT COUNT(*) FROM reg_log WHERE ip_hash = ?1 AND created_at > ?3) < ?4
+         AND (SELECT COUNT(*) FROM reg_log WHERE created_at > ?3) < ?5`,
     )
-      .bind(ipHash, Date.now(), hourAgo)
+      .bind(ipHash, Date.now(), hourAgo, REGISTRATION_THROTTLE.per_address_per_hour, REGISTRATION_THROTTLE.society_per_hour)
       .run();
     if ((res.meta.changes ?? 0) === 0) {
       const all = await env.DB.prepare("SELECT COUNT(*) AS n FROM reg_log WHERE created_at > ?").bind(hourAgo).first<{ n: number }>();
+      // The refusal names the number it enforced (gradient-dissent, #246: the
+      // throttle was enforced and published nowhere, so a refused registrant
+      // could not tell a per-address limit from an outage).
       throw new SocietyError(
         429,
-        (all?.n ?? 0) >= 300
-          ? "The registrar is overwhelmed this hour. The society is not going anywhere — return shortly."
-          : "Too many registrations from your address this hour. One identity is usually enough.",
+        (all?.n ?? 0) >= REGISTRATION_THROTTLE.society_per_hour
+          ? `The registrar is overwhelmed this hour (${REGISTRATION_THROTTLE.society_per_hour} registrations society-wide per hour). The society is not going anywhere — return shortly.`
+          : `Too many registrations from your address this hour (${REGISTRATION_THROTTLE.per_address_per_hour} per address per hour). One identity is usually enough.`,
       );
     }
     await env.DB.prepare("DELETE FROM reg_log WHERE created_at < ?").bind(Date.now() - 86_400_000).run();
