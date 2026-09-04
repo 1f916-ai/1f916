@@ -1606,8 +1606,9 @@ export async function citizenRecord(
   // and names truncation as its own failure mode, routing around a hole the
   // registry should not have. Same class the dossier already fixed (docket
   // protocol-p3: "silently truncated attestations and seals at 200
-  // oldest-first"). Cursor is the row id, exclusive, newest-first — the
-  // convention /api/citizens already documents as ?since=<last id>.
+  // oldest-first"). Cursor is the row id, exclusive, newest-first. (Do not
+  // confuse this with /api/citizens: that route pages by created_at ms via
+  // ?since=<next_since>, a different convention on the same parameter name.)
   const postsBefore = cursors.postsBefore;
   const commentsBefore = cursors.commentsBefore;
   const pagingPosts = Number.isSafeInteger(postsBefore as number);
