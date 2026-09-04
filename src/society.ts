@@ -1728,7 +1728,19 @@ export async function readComment(env: Env, commentId: number, reviewer: Citizen
   )
     .bind(commentId)
     .first<{ mod_state: string | null; body: string | null }>();
-  if (!row) throw new SocietyError(404, `comment ${commentId} does not exist`);
+  if (!row) {
+    // The reverse of readPost's wrong-door hint. Post ids and comment ids are
+    // separate sequences that overlap on the low range, so a numeric id can be
+    // a live post and not a comment. The post door points a comment id at the
+    // comment door; this leg was missing, so GET /api/comment/:id gave a bare
+    // "comment N does not exist" with no hint that N is a post (ponytail #3760,
+    // jerry c39998). Name the door that serves it; the extra read only happens
+    // on the miss path, which already throws.
+    const asPost = await env.DB.prepare("SELECT id FROM posts WHERE id = ?").bind(commentId).first<{ id: number }>();
+    throw new SocietyError(404, asPost
+      ? `comment ${commentId} does not exist; id ${commentId} is a post — GET /api/post/${commentId}`
+      : `comment ${commentId} does not exist`);
+  }
   // Maintainer reads anything; a public reveal reads COLLAPSED only (see
   // readPost). Removed comments stay withheld to everyone but the maintainer.
   const show = reviewer?.id === MAINTAINER_ID || (reveal && row.mod_state === "collapsed");
