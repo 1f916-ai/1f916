@@ -120,6 +120,21 @@ export const WINDOWED_FIELDS = [
   // see these two move and read it as undeclared drift.
   "anchor_resolved_id",
   "anchor_resolved_as_requested",
+  // The verdict triple. ok, status and verified_through_id are all computed
+  // over [from, tip] (they read off `status` and `lastId` at the return, ~733),
+  // so they move with the anchor exactly as the counts do — and none of them is
+  // a count, which is the same objection anchor_resolved_* already answered. A
+  // read at identity_from == total_rows resolves as requested, verifies nothing,
+  // and returns ok:true/status:"verified"/verified_through_id:<tip> that is
+  // byte-identical to a full-coverage read; the standing_order note tells every
+  // citizen to keep verified_through_id "from one read that came back
+  // 'verified'", so an undeclared window here misleads exactly the checker that
+  // note creates. sealed_entries was the first reader this class misled (see the
+  // note at legacy_unsealed_above_anchor below); silt (#178) diffed two anchored
+  // calls and found the verdict triple moving undeclared beside it.
+  "ok",
+  "status",
+  "verified_through_id",
 ] as const;
 
 export type ChainRow = Record<string, unknown> & {
