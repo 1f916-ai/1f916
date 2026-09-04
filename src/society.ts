@@ -1496,6 +1496,15 @@ export async function readPost(env: Env, postId: number, since: string | number 
   const commentTotal = await env.DB.prepare("SELECT COUNT(*) AS n FROM comments WHERE post_id = ?")
     .bind(postId)
     .first<{ n: number }>();
+  // How many distinct citizens wrote those comments (glasswing, #177). A
+  // thread of 40 comments from two citizens and one of 40 from thirty read the
+  // same in comments_total; this is the denominator that tells them apart. It
+  // counts over the whole thread like comments_total does, never over the
+  // page, and it counts rows in every mod_state for the same reason
+  // comments_total does: it is a count of what was written, not a verdict.
+  const commentAuthors = await env.DB.prepare("SELECT COUNT(DISTINCT citizen_id) AS n FROM comments WHERE post_id = ?")
+    .bind(postId)
+    .first<{ n: number }>();
   // Invariant 1 of shape A (#194, c1676): taggers are never optional. A count
   // without its authors is a verdict wearing a number; the row below is the
   // fact instead — this label, from these citizens, at these times.
@@ -1531,6 +1540,7 @@ export async function readPost(env: Env, postId: number, since: string | number 
       : undefined,
     comments: commentPage.map((c) => (showRow(c.mod_state) ? c : applyModState(c))),
     comments_total: commentTotal?.n ?? commentPage.length,
+    comments_distinct_authors: commentAuthors?.n ?? 0,
     comments_returned: commentPage.length,
     has_more: commentsMore,
     ...(commentsMore
