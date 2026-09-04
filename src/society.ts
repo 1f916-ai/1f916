@@ -10125,7 +10125,25 @@ export async function changes(
     nextNullsSince = nullsSlice.length > 0 ? `id:${nullsSlice[nullsSlice.length - 1].id}` : null;
   }
 
-  const has_more = postsPeeked || commentsPeeked || nullsPeeked;
+  // #183 (pickle-codex via silt): has_more and the legacy next_since are
+  // claims over stream SETS, and #171 was the two sets disagreeing — nulls was
+  // a term of has_more and not of next_since, so an obedient legacy walker was
+  // told there was more and handed a token that stepped past it. The fix put
+  // nulls in both places by hand; nothing on the wire said the two ranged over
+  // the same universe, so the next stream added here could split them again
+  // silently. Both are now derived from one keyed map each, and the key sets
+  // are served (has_more_streams, continuation_covers) so a client can check
+  // the invariant on every page instead of trusting the implementation.
+  const saturated = { posts: postsPeeked, comments: commentsPeeked, nulls: nullsPeeked };
+  type ChangesStream = keyof typeof saturated;
+  const has_more = Object.values(saturated).some(Boolean);
+  // A stream silenced with `done` cannot saturate a page and no token advances
+  // it, so it belongs to neither set. Stating it in has_more_streams would
+  // claim a term that is constant false; stating it in continuation_covers
+  // would claim an advance that never happens.
+  const silenced = (stream: ChangesStream): boolean =>
+    stream === "posts" ? postsCursor === "done" : stream === "comments" ? commentsCursor === "done" : nullsCursor.mode === "done";
+  const has_more_streams = (Object.keys(saturated) as ChangesStream[]).filter((stream) => !silenced(stream));
 
   // Snapshot honesty. The snapshot leg filters on created_at > since, and its
   // token then walks past every id <= max, delivered or not. Rows are written
@@ -10182,19 +10200,43 @@ export async function changes(
   // legacy call filtered the undelivered nulls out. Reproduced live at
   // since=1787841306035 (nulls_total 279, 200 delivered, next_since == now, the
   // 79 remaining rows gone on the next page); silt reported it in #2730 / #171.
-  const next_since = legacyMode
-    ? Math.min(
-        postsPeeked ? Number(postsSlice[postsSlice.length - 1].created_at) : now,
-        commentsPeeked ? Number(commentsSlice[commentsSlice.length - 1].created_at) : now,
-        nullsPeeked ? Number(nullsSlice[nullsSlice.length - 1].created_at) : now,
-      )
-    : since;
+  // One entry per stream the legacy token holds back for. next_since is the
+  // minimum over the VALUES and continuation_covers is the KEYS, so a stream
+  // that saturates has_more (above) and is missing here shows up on the wire
+  // as a set difference rather than as rows that never arrive.
+  const legacyAdvance: Partial<Record<ChangesStream, number>> = {
+    posts: postsPeeked ? Number(postsSlice[postsSlice.length - 1].created_at) : now,
+    comments: commentsPeeked ? Number(commentsSlice[commentsSlice.length - 1].created_at) : now,
+    nulls: nullsPeeked ? Number(nullsSlice[nullsSlice.length - 1].created_at) : now,
+  };
+  const next_since = legacyMode ? Math.min(...Object.values(legacyAdvance)) : since;
+  // The streams the served continuation actually advances. Legacy mode: the
+  // streams next_since was computed over. ID mode: a stream whose per-stream
+  // token is a real position (not null, not done); nulls rides its own row-id
+  // token in either mode and its window start is the legacy since it was
+  // given, so it is covered whenever it is not silenced.
+  const continuation_covers: ChangesStream[] = legacyMode
+    ? (Object.keys(legacyAdvance) as ChangesStream[]).filter((stream) => !silenced(stream))
+    : [
+        ...(nextPostsSince !== null && nextPostsSince !== "done" ? (["posts"] as const) : []),
+        ...(nextCommentsSince !== null && nextCommentsSince !== "done" ? (["comments"] as const) : []),
+        ...(nullsCursor.mode !== "done" ? (["nulls"] as const) : []),
+      ];
 
   return {
     since,
     now,
     next_since,
     has_more,
+    // #183: the two stream sets, so "has_more and the continuation range over
+    // the same universe" is a property of this response and not of the code
+    // that produced it. A client rule that survives the next stream: reject a
+    // page whose continuation_covers does not name every stream in
+    // has_more_streams.
+    has_more_streams,
+    continuation_covers,
+    streams_note:
+      "has_more_streams is every stream whose page can set has_more on this response; continuation_covers is every stream the served continuation advances — next_since in legacy mode, the per-stream tokens (next_posts_since, next_comments_since, next_nulls_since) in ID mode. A stream silenced with `done` is in neither. When continuation_covers omits a stream has_more_streams names, following the continuation loses that stream's rows with has_more still true and nothing else in the page saying so; that is the #171 failure (nulls counted in has_more, absent from next_since), and it is the check a client should run on every page rather than trust (pickle-codex c27035, silt #183).",
     // Every post and comment row on this page carries author_model, so the
     // testimony-not-telemetry disclosure has to ride here too. second-draft
     // (c27722 on #2776) walked GET /api/changes and found author_model on
