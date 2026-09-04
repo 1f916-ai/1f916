@@ -127,3 +127,88 @@ test("counts_state values are all declared by the published schema", () => {
     assert.ok(declared.includes(state), `counts_state can return ${state} and schemas/events.json does not declare it`);
   }
 });
+
+// #176 (silt). declared_kinds made the vocabulary a second witness over the
+// tally, and the one fault the pair exists to detect — a kind with rows that
+// the vocabulary does not list, (known=true, declared=false) — had no field.
+// counts_scope branched on filterIsKnown first and talked about truncation;
+// the unfiltered view left set(kinds) - set(declared_kinds) to the reader.
+// kinds_not_declared is that set, served on every view.
+//
+// Killing mutation: in kindAgreement change
+//   Object.keys(totals).filter((k) => !DECLARED_EVENT_KINDS.includes(k))
+// to drop the `!` -> kinds_not_declared becomes the DECLARED kinds with rows
+// and both the empty-case and the drift-case assertions go red. A second,
+// independent one: delete the `filterIsKnown && !filterIsDeclared` branch from
+// counts_scope -> the counts_scope assertion on the drift case goes red.
+
+// A tally with one kind the vocabulary does not list. "phantom-kind" is the
+// row a future write path adds before anyone edits DECLARED_EVENT_KINDS.
+const DRIFTED = { ...TOTALS, "phantom-kind": 3 };
+
+test("kinds_not_declared is empty on every view when the vocabulary covers the tally (#176)", () => {
+  for (const [label, r] of [
+    ["unfiltered", kindAgreement(TOTALS, [{ kind: "key-bind" }])],
+    ["filtered and populated", kindAgreement(TOTALS, [{ kind: "key-bind" }], "key-bind", "key-bind")],
+    ["filtered and unexercised", kindAgreement(TOTALS, [], "witness-rotate", "witness-rotate")],
+    ["filter naming nothing", kindAgreement(TOTALS, [], "zzzz", "zzzz")],
+    ["filter discarded", kindAgreement(TOTALS, [], null, "NOT IN THE CLASS")],
+    ["citizen naming nobody", kindAgreement(TOTALS, [], null, null, { requested: "nobody", known: false })],
+  ] as const) {
+    assert.deepEqual(r.kinds_not_declared, [], `${label}: every kind with rows is declared`);
+    assert.equal(typeof r.declared_kinds_note, "string", `${label}: the note travels with the field`);
+  }
+});
+
+test("a kind with rows that the vocabulary does not list is named in kinds_not_declared on the unfiltered view (#176)", () => {
+  // The alarm must not depend on somebody thinking to filter by a kind they
+  // do not yet know exists: it is on the whole-log response.
+  const r = kindAgreement(DRIFTED, [{ kind: "key-bind" }, { kind: "phantom-kind" }]);
+  assert.deepEqual(r.kinds_not_declared, ["phantom-kind"]);
+  assert.ok(r.kinds.includes("phantom-kind"), "it is in the tally");
+  assert.ok(!r.declared_kinds.includes("phantom-kind"), "and not in the vocabulary");
+  // The declared-but-unexercised direction is unchanged and is NOT drift.
+  assert.ok(r.declared_kinds.includes("witness-rotate") && !r.kinds.includes("witness-rotate"));
+  assert.ok(!r.kinds_not_declared.includes("witness-rotate"), "declared-and-empty is the benign direction, not this field");
+});
+
+test("?kind=<undeclared kind with rows> says the vocabulary is short, and its counts are still counts (#176)", () => {
+  const r = kindAgreement(DRIFTED, [{ kind: "phantom-kind" }, { kind: "phantom-kind" }, { kind: "phantom-kind" }], "phantom-kind", "phantom-kind");
+  // The fourth quadrant, as the two booleans already served.
+  assert.equal(r.filter_is_a_known_kind, true);
+  assert.equal(r.filter_is_a_declared_kind, false);
+  // The new field carries it on the filtered view too.
+  assert.deepEqual(r.kinds_not_declared, ["phantom-kind"]);
+  // counts_scope takes the fourth branch, before filterIsKnown, and says what
+  // the news is: the list, not the window.
+  assert.match(r.counts_scope, /HAS ROWS in this log and declared_kinds does NOT list it/);
+  assert.match(r.counts_scope, /kinds_not_declared/);
+  assert.doesNotMatch(r.counts_scope, /^\?kind=phantom-kind: agreement is judged/, "not the plain known-kind sentence");
+  // counts_state is deliberately UNCHANGED: the enum clients switch on stays
+  // at five values, and the tally answer for this kind is a true count. All 3
+  // of 3 rows are here, so it is complete; the vocabulary drift is carried by
+  // kinds_not_declared beside it, not by widening the enum.
+  assert.equal(r.counts_state, "complete");
+  assert.equal(r.totals_by_kind["phantom-kind"], 3);
+  assert.equal(r.in_this_response_by_kind["phantom-kind"], 3);
+  // Filtering by a DIFFERENT, declared kind still reports the drift, because
+  // it is a property of the log and not of the query.
+  const other = kindAgreement(DRIFTED, [{ kind: "key-bind" }], "key-bind", "key-bind");
+  assert.deepEqual(other.kinds_not_declared, ["phantom-kind"]);
+  assert.match(other.counts_scope, /^\?kind=key-bind: agreement is judged/, "the declared kind's own sentence is unchanged");
+});
+
+test("both published event schemas describe kinds_not_declared without requiring it (#176)", () => {
+  // Killing mutation: delete the kinds_not_declared entry from either schema
+  // -> red here, and test/events-since-past-the-end.test.ts also goes red
+  // because a served key is then undocumented.
+  for (const file of ["events.json", "events-paged.json"]) {
+    const sch = JSON.parse(readFileSync(new URL(`../schemas/${file}`, import.meta.url), "utf8"));
+    const prop = sch.properties.kinds_not_declared;
+    assert.ok(prop, `${file} describes kinds_not_declared`);
+    assert.equal(prop.type, "array");
+    assert.equal(prop.items.type, "string");
+    assert.ok(!sch.required.includes("kinds_not_declared"), `${file}: additive, older deployments still validate`);
+    assert.equal(sch.properties.declared_kinds_note.type, "string", `${file} describes declared_kinds_note`);
+  }
+});

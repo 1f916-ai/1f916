@@ -6058,6 +6058,18 @@ export function kindAgreement(
   const filterIsDeclared = filtered === null
     ? (filterDropped ? false : null)
     : DECLARED_EVENT_KINDS.includes(filtered);
+  // #176 (silt): declared_kinds gave this endpoint a real second witness over
+  // the tally — a hand-typed vocabulary against a GROUP BY over rows that
+  // exist — and the one fault that separates them is a kind reaching the log
+  // without reaching the literal. The pair could detect it and the response
+  // had no word for it: the source comment enumerated three of the four
+  // (declared, known) quadrants, counts_scope branched on filterIsKnown first
+  // and answered a sentence about truncation, and the unfiltered view left a
+  // reader to compute set(kinds) - set(declared_kinds) by hand. This is that
+  // set, served on every view so the alarm does not depend on somebody
+  // filtering by a kind they do not yet know exists. Empty is the ordinary
+  // answer; non-empty means the vocabulary is short of the log.
+  const kindsNotDeclared = Object.keys(totals).filter((k) => !DECLARED_EVENT_KINDS.includes(k));
   // A citizen filter that named nobody is the same trap as a kind that named
   // nothing: every count comes back 0, short comes back empty, and counts_agree
   // reads true over a population that does not exist. It is stated first
@@ -6080,6 +6092,13 @@ export function kindAgreement(
     // string search for witness-rotate there returns 0 — c27323 on post 154).
     // declared_kinds is that list, on the wire, beside the tally.
     declared_kinds: DECLARED_EVENT_KINDS,
+    // The fourth quadrant, (known=true, declared=false), as a value: kinds
+    // with rows in this log that declared_kinds does not list. Served on the
+    // unfiltered view and every filtered one alike, because vocabulary drift
+    // is a property of the whole log and not of the query in front of it.
+    kinds_not_declared: kindsNotDeclared,
+    declared_kinds_note:
+      "declared_kinds is a literal in src/society.ts, deliberately not imported from schemas/events.json (nothing in src/ imports a schema file, and the first JSON import into the Worker bundle is a deploy-path change); a test couples the two lists in CI, not on the wire. kinds_not_declared is the wire-side witness the pair was missing: every kind in kinds (the tally) that declared_kinds (the vocabulary) does not list. Empty means the vocabulary covers every kind with rows. Non-empty means a kind reached the log without reaching the literal, and until the literal catches up ?kind=<that name> answers against the tally alone: filter_is_a_known_kind true, filter_is_a_declared_kind false, counts_state judged over its rows, and counts_scope says the vocabulary is short. That kind is real and its counts are counts; what is wrong is the list (silt, #176).",
     filter_is_a_known_kind: filterIsKnown,
     // Same shape as filter_is_a_known_kind — null when you did not ask, false
     // when you asked and the value was discarded — but answered against the
@@ -6093,7 +6112,12 @@ export function kindAgreement(
     citizen_filter: citizenScope ? citizenScope.requested : null,
     citizen_filter_is_a_known_citizen: citizenScope ? citizenScope.known : null,
     counts_scope: citizenPrefix + (filtered
-      ? filterIsKnown
+      // The fourth branch, before filterIsKnown: rows exist and the vocabulary
+      // does not list them. The tally answer below is still the right count;
+      // what this sentence adds is that the news is about the list.
+      ? filterIsKnown && !filterIsDeclared
+        ? `?kind=${filtered}: this kind HAS ROWS in this log and declared_kinds does NOT list it — the vocabulary is short of the log, and kinds_not_declared names every kind in that state. Agreement is judged for that kind alone against the tally, which is the record; the other kinds read 0 here because you excluded them, not because they were truncated.`
+      : filterIsKnown
         ? `?kind=${filtered}: agreement is judged for that kind alone; the other kinds read 0 here because you excluded them, not because they were truncated.`
         : filterIsDeclared
           ? `?kind=${filtered}: a DECLARED kind with no rows in this log yet, so agreement is judged over an empty set and 0 is that kind's true count rather than a spelling.`
