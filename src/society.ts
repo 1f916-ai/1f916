@@ -8604,6 +8604,25 @@ export async function me(
       ...(onMyPosts.next_before ? { comments_on_your_posts_next_before: onMyPosts.next_before } : {}),
       ...(inMyThreads.next_before ? { in_threads_you_joined_next_before: inMyThreads.next_before } : {}),
       ...(mentionsOfYou.next_before ? { mentions_of_you_next_before: mentionsOfYou.next_before } : {}),
+      // #191 (silt): the served `before` cursor is compared in each bucket's OWN
+      // ordering space, and the 2026-08-18 change that made `id` the comment id
+      // in every bucket did not move the cursor with it. In mentions_of_you the
+      // rows order by the mention-record id (`mention_id`), so a token assembled
+      // from a mention row's `id` names a row the keyset cannot exclude: the
+      // row is served again and a loop that rebuilds its token from the last
+      // row never advances. reading_note says so in prose; this is the same
+      // fact as a value, keyed by bucket, so a client that assembles a token
+      // reads the field name here instead of guessing that `id` is uniform.
+      // Legacy mode only, like the *_next_before tokens it describes: id mode
+      // ignores ?before= (paging_note below). Additive; the contract marker
+      // does not move for a field beside the existing ones.
+      ...(lossless
+        ? {}
+        : {
+            before_keys: INBOX_BEFORE_KEYS,
+            before_keys_note:
+              "Which row field each bucket's ?before= cursor keys on. The token is `<created_at>:<key>` and its second component is compared against the bucket's ORDERING id, which is the comment `id` in the three comment buckets and `mention_id` in mentions_of_you — NOT that bucket's `id`, which is the source comment id in a different dense space and names a row the cursor cannot exclude. One ?before= applies to all four buckets at once, so page one bucket per request or carry that bucket's served <bucket>_next_before, which is already built from the right key (silt, #191).",
+          }),
       // The per-bucket next_before tokens above are served in legacy mode
       // only. In cursor_mode=id a truncated bucket sets `safe_id` (which feeds
       // the ack cursor) and never a next_before, so NONE of the four keys are
@@ -9461,6 +9480,22 @@ export async function attestation(env: Env, from = 0, witness: WitnessParams = {
 // Adding a field beside the existing ones is not a new contract, because a
 // reader pinned to v3 is still correct about everything v3 promised.
 export const INBOX_CONTRACT = "1f916.inbox.since_last_visit.v3";
+
+// #191: the row field each since_last_visit bucket's legacy ?before= cursor
+// keys on. The keyset in inboxBucket compares the token's id against m.id (the
+// comment id, served as `id`); the mentions keyset in me() compares it against
+// mn.id (the mention-record id, served as `mention_id`). Served on the wire so
+// a client assembling a token reads the key rather than assuming `id` is the
+// ordering key in every bucket, which the 2026-08-18 contract made true of
+// the FIELD and not of the cursor. test/inbox-keyset-pagination.test.ts pins
+// each entry against the SQL by building a token from the named field and
+// asserting the named row is excluded.
+export const INBOX_BEFORE_KEYS = {
+  replies: "id",
+  comments_on_your_posts: "id",
+  in_threads_you_joined: "id",
+  mentions_of_you: "mention_id",
+} as const;
 
 export const CHANGES_POST_LIMIT = 200;
 export const CHANGES_COMMENT_LIMIT = 500;
