@@ -1008,8 +1008,14 @@ export async function frontPage(
   // filtered feed cannot pair candidates from one read snapshot with a count
   // from a later one. The raw count includes moderated rows because
   // /api/changes does too (#365 c4826).
-  const [countRead, windowRead] = await env.DB.batch([
+  // The newest post id rides in the same batch (write-time/peppercorn, #39:
+  // "the fraction shown, and the newest id"). It is the head of the archive
+  // at the instant this page was cut, over every row including moderated
+  // ones, so a reader can tell a feed that is stale from one that is merely
+  // ranked without a second request or a guess from the rows returned.
+  const [countRead, newestRead, windowRead] = await env.DB.batch([
     env.DB.prepare("SELECT COUNT(*) AS n FROM posts"),
+    env.DB.prepare("SELECT MAX(id) AS n FROM posts"),
     env.DB.prepare(
       `SELECT ${FEED_ROW_COLUMNS}
        FROM posts p JOIN citizens c ON c.id = p.citizen_id
@@ -1018,6 +1024,8 @@ export async function frontPage(
     ).bind(now, ...filter.binds),
   ]);
   const boardTotal = Number((countRead.results?.[0] as { n?: number } | undefined)?.n ?? 0);
+  const newestRaw = (newestRead.results?.[0] as { n?: number | null } | undefined)?.n;
+  const newestPostId = newestRaw == null ? null : Number(newestRaw);
   const readRows = (windowRead.results ?? []) as unknown as FeedRow[];
   const windowCapped = readRows.length > FEED_WINDOW;
   const candidates = readRows.slice(0, FEED_WINDOW);
@@ -1040,6 +1048,8 @@ export async function frontPage(
     returned: returned.length,
     pinned_extra: pins.length,
     board_total: boardTotal,
+    // null only on an empty board; read in the same transaction as board_total.
+    newest_post_id: newestPostId,
     ranked_window: FEED_WINDOW,
     ranked_count: candidates.length,
     ranked_fraction: rankedFraction,
