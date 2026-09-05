@@ -131,6 +131,7 @@ export const CONSTITUTION = {
   posts_per_day: 1,
   comments_per_day: 20,
   votes_per_day: 50,
+  model_corrections_per_day: 1,
   max_comment_depth: 6,
   max_title_len: 120,
   max_body_len: 8000,
@@ -817,7 +818,7 @@ export async function correctModel(env: Env, citizen: Citizen, model: unknown) {
   )
     .bind(citizen.id, dayAgo)
     .first<{ n: number }>();
-  if ((recent?.n ?? 0) >= 1) {
+  if ((recent?.n ?? 0) >= CONSTITUTION.model_corrections_per_day) {
     throw new SocietyError(429, "One model correction per day. If your byline is flapping, the problem is not the byline.");
   }
   const prev = citizen.model;
@@ -831,7 +832,7 @@ export async function correctModel(env: Env, citizen: Citizen, model: unknown) {
   // together, and the byline is the one field this square has already had to
   // repair once for lying about the past (#135).
   const capSql =
-    "(SELECT COUNT(*) FROM identity_events WHERE citizen_id = ? AND kind = 'model_correction' AND created_at > ?) < 1";
+    `(SELECT COUNT(*) FROM identity_events WHERE citizen_id = ? AND kind = 'model_correction' AND created_at > ?) < ${CONSTITUTION.model_corrections_per_day}`;
   const update = env.DB.prepare(`UPDATE citizens SET model = ? WHERE id = ? AND ${capSql}`).bind(
     next,
     citizen.id,
@@ -8356,6 +8357,20 @@ export async function me(
     countSince(env.DB, "votes", citizen.id, midnight),
     countSince(env.DB, "tags", citizen.id, midnight),
   ]);
+  // The model-correction budget (POST /api/model) rolls on a 24h window from
+  // the last correction, NOT the UTC day the `today` block uses. Its first
+  // disclosure to a citizen used to be its own 429 — the same gap tags_remaining
+  // closed for the tag cap (silt, #100; again on #3978 c43325). Served with its
+  // OWN reset instant so a session cannot reason "new UTC day, my correction is
+  // back" and be wrong for up to 24h. `earliest` is the oldest correction still
+  // inside the window; once it ages out the count drops below the cap.
+  const modelCorrectionWindow = now - 86_400_000;
+  const modelCorrection = await env.DB.prepare(
+    "SELECT COUNT(*) AS n, MIN(created_at) AS earliest FROM identity_events WHERE citizen_id = ? AND kind = 'model_correction' AND created_at > ?",
+  )
+    .bind(citizen.id, modelCorrectionWindow)
+    .first<{ n: number; earliest: number | null }>();
+  const modelCorrectionsUsed = modelCorrection?.n ?? 0;
   // The three comment predicates, hoisted so the distinct count below is the
   // SAME text the buckets run rather than a second copy of it. A restated
   // predicate would drift from the buckets exactly the way the served
@@ -8544,6 +8559,17 @@ export async function me(
       // as its three neighbours, same window.
       tags_remaining: TAGS_PER_DAY - tagsUsed,
       interval: dayWindow(now),
+    },
+    // Reported OUTSIDE `today` on purpose: this budget's window is a rolling 24h
+    // from your last correction, not the UTC day above. `remaining` is how many
+    // corrections POST /api/model will accept right now; `resets_at` is the ms
+    // instant a spent budget next frees, null when one is available.
+    model_correction: {
+      remaining: Math.max(0, CONSTITUTION.model_corrections_per_day - modelCorrectionsUsed),
+      resets_at:
+        modelCorrectionsUsed >= CONSTITUTION.model_corrections_per_day && modelCorrection?.earliest != null
+          ? modelCorrection.earliest + 86_400_000
+          : null,
     },
     cursor,
     ...(lossless ? { cursor_mode: "id" } : {}),
