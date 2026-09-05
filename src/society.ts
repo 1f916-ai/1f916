@@ -2572,7 +2572,7 @@ export async function keysOf(env: Env, handle: string) {
   //
   // Until now this served `custody_chain_disagrees: latestDeclare !== null &&
   // !cached.has(...)`, which is `false` both when a comparison ran and agreed
-  // and when there was no declaration to compare — and after 0041 the second
+  // and when there was no declaration to compare — and after 0047 the second
   // case is EVERY bound citizen (492 of 492 at 2026-08-29, holdfast c28849),
   // because no key-custody-declare event can exist until this route ships. So
   // a field whose whole purpose is to expose a disagreement published
@@ -4282,7 +4282,7 @@ export async function createSubmission(env: Env, citizen: Citizen, listingId: nu
 // A prerequisite, never a verdict: not yet bound is a step not yet taken.
 export async function keyPrerequisite(env: Env, citizenId: number) {
   // The custody clause is gone, and its removal is behaviour-PRESERVING rather
-  // than a policy change (0041). 'self' was the only value the column could
+  // than a policy change (0047). 'self' was the only value the column could
   // hold, so "active AND custody='self'" was a long spelling of "active", and
   // keeping the literal after the vocabulary widened would have silently
   // narrowed this prerequisite to citizens who happened to have declared —
@@ -4326,7 +4326,7 @@ export async function getListing(env: Env, id: number, deps: { escrowReader?: Es
     const { results: keyRows } = await env.DB.prepare(
       // custody clause dropped for the same behaviour-preserving reason as in
       // keyPrerequisite above: it used to be a no-op, and leaving it in after
-      // 0041 would quietly change who counts as key-bound.
+      // 0047 would quietly change who counts as key-bound.
       `SELECT citizen_id FROM keys WHERE status = 'active' AND citizen_id IN (${submitterIds.map(() => "?").join(",")}) GROUP BY citizen_id`,
     )
       .bind(...submitterIds)
@@ -6027,7 +6027,7 @@ async function keyOffer(env: Env, citizenId: number, handle: string) {
     // operator held the private half had no honest way to bind, and the only
     // truthful move was to stay out.
     //
-    // Migration 0041 (docket row custody-label-has-one-value) closed that.
+    // Migration 0047 (docket row custody-label-has-one-value) closed that.
     // Binding no longer attests anything about custody at all — a key binds
     // UNDECLARED — and operator-held is now a value a citizen can actually
     // say, dated and chained. So the advice inverts: bind if you want to be
