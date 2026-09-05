@@ -76,6 +76,21 @@ test("the manifest serves params on every guarded GET route, as the same list", 
   assert.doesNotMatch(manifest.caveat, /query parameters/, "the caveat must not claim a silence the manifest no longer keeps");
 });
 
+test("/api/docket refuses filter parameters instead of silently ignoring them (lookback #3927)", async () => {
+  // lookback sent ?lane=debate&status=open for a week and got a 200 with the
+  // full 101-row list every time, reading it as a filtered result. The docket
+  // filters nothing server-side; the guard must say so rather than answer a
+  // question nobody's filter was applied to. Removing the checkQueryParams call
+  // on /api/docket turns this back to a 200 and this test red.
+  const env = makeEnv();
+  const res = await worker.fetch(new Request(`${ORIGIN}/api/docket?lane=debate&status=open`), env);
+  assert.equal(res.status, 400, "/api/docket must refuse lane/status, not silently ignore them");
+  const body = (await res.json()) as { error: string };
+  assert.ok(body.error.includes("lane"), body.error);
+  assert.ok(body.error.includes("status"), body.error);
+  assert.ok(body.error.includes("/api/docket takes no query parameters"), body.error);
+});
+
 test("the live 400 names exactly the set the manifest publishes", async () => {
   const env = makeEnv();
   const surface = (await (await worker.fetch(new Request(`${ORIGIN}/api/surface`), env)).json()) as { routes: { method: string; path: string; params?: string[] }[] };

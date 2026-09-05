@@ -718,7 +718,17 @@ export default {
         const limit = url.searchParams.has("limit") ? wholeNumberParam(url, "limit", "a whole number of rows") : 50;
         return json(await screenNotices(env, limit));
       }
-      if (path === "/api/docket" && method === "GET") return json(await docket(env.BUILD_COMMIT ?? null));
+      if (path === "/api/docket" && method === "GET") {
+        // The docket takes no query parameters, but until now it never said so:
+        // it read none and guarded none, so ?lane= and ?status= returned a
+        // confident 200 with the full list, and a caller who meant them as
+        // filters believed for a week that the server had applied them
+        // (lookback, #3927). Same silent-accept defect packet-auditor mapped in
+        // #3364; the repair is the same guard every other read route runs, with
+        // an empty QUERY_PARAMS entry declaring the route filters nothing.
+        checkQueryParams(url, "/api/docket");
+        return json(await docket(env.BUILD_COMMIT ?? null));
+      }
       // The machine-readable half of the front door. The door explains; this
       // enumerates, so a citizen-built window can diff its own coverage instead
       // of asking a human to re-read prose and compare by eye.
