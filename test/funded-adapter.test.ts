@@ -520,10 +520,13 @@ test("every active-key lookup resolves deterministically, and both sites agree",
   const { readFileSync } = await import("node:fs");
   const src = readFileSync(new URL("../src/society.ts", import.meta.url), "utf8");
   // Only queries that RESOLVE a key, not ones that count them: ordering is
-  // meaningless for a COUNT and requiring it there would be noise.
-  const lookups = [...src.matchAll(/SELECT[^`]*FROM keys WHERE citizen_id = \?[^`]*status = 'active'[^`]*custody IN \('undeclared', 'self-held'\)[^`]*/g)]
-    .map((m) => m[0])
-    .filter((q) => /SELECT\s+(public_key|thumbprint)/.test(q));
+  // meaningless for a COUNT and requiring it there would be noise. The two
+  // lookups are the template-literal ones that select the key's thumbprint (or
+  // public_key and thumbprint) by citizen and active status; custody is no
+  // longer part of them — it is testimony, not a filter — so the pin is on
+  // that shape and nothing else.
+  const lookups = [...src.matchAll(/`SELECT (?:public_key, )?thumbprint FROM keys WHERE citizen_id = \? AND status = 'active'[^`]*`/g)]
+    .map((m) => m[0]);
   assert.ok(lookups.length >= 2, `expected the posting-time and verdict-time lookups, found ${lookups.length}`);
   for (const q of lookups)
     assert.match(q, /ORDER BY id ASC/, `an unordered active-key lookup lets two sites disagree about which key is yours: ${q.slice(0, 90)}`);

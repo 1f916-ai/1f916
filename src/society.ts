@@ -2730,7 +2730,7 @@ export async function createPayoutWallet(env: Env, citizen: Citizen, body: Recor
        commit_nonce, created_at)
      SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
       WHERE (SELECT COUNT(*) FROM payout_wallets WHERE citizen_id = ? AND created_at > ?) < ?
-        AND EXISTS (SELECT 1 FROM keys WHERE citizen_id = ? AND public_key = ? AND custody IN ('undeclared', 'self-held') AND status = 'active')
+        AND EXISTS (SELECT 1 FROM keys WHERE citizen_id = ? AND public_key = ? AND status = 'active')
         AND ? > unixepoch()
      RETURNING id`,
   ).bind(
@@ -2753,7 +2753,7 @@ export async function createPayoutWallet(env: Env, citizen: Citizen, body: Recor
     { sql: "EXISTS (SELECT 1 FROM payout_wallets WHERE commit_nonce = ?)", binds: [commitNonce] },
   );
   if (!committed.state)
-    throw new SocietyError(429, `at most ${PAYOUT_WALLETS_PER_DAY} payout-wallet proofs a day, the citizen key must still be active and self-custodied, and the expiry must still be in the future`);
+    throw new SocietyError(429, `at most ${PAYOUT_WALLETS_PER_DAY} payout-wallet proofs a day, the citizen key must still be active, and the expiry must still be in the future`);
 
   return {
     id: committed.state.id,
@@ -3140,7 +3140,7 @@ export async function createListing(
       // sites now order explicitly and this one refuses ambiguity at posting
       // time, when it is still free to fix.
       const { results: activeKeys } = await env.DB.prepare(
-        `SELECT thumbprint FROM keys WHERE citizen_id = ? AND status = 'active' AND custody IN ('undeclared', 'self-held') ORDER BY id ASC`,
+        `SELECT thumbprint FROM keys WHERE citizen_id = ? AND status = 'active' ORDER BY id ASC`,
       ).bind(who.id).all<{ thumbprint: string }>();
       if (activeKeys.length > 1)
         throw new SocietyError(409, `${v.handle} holds ${activeKeys.length} active self-custodied keys, so which one signs their verdicts is not decidable, and a listing that guessed could strand the payment: posted under one key and refused at verdict time under another. They must revoke the ones they no longer use before being named as a verifier.`);
@@ -3656,7 +3656,7 @@ export async function recordVerdict(
   // and those two answers deciding whether a verdict is accepted is how a
   // payment gets stranded with every layer believing it behaved.
   const key = await env.DB.prepare(
-    `SELECT public_key, thumbprint FROM keys WHERE citizen_id = ? AND status = 'active' AND custody IN ('undeclared', 'self-held') ORDER BY id ASC LIMIT 1`,
+    `SELECT public_key, thumbprint FROM keys WHERE citizen_id = ? AND status = 'active' ORDER BY id ASC LIMIT 1`,
   ).bind(citizen.id).first<{ public_key: string; thumbprint: string }>();
   // ON AN ESCROW-BACKED LISTING, THE VERIFIER IS NAMED BY BOTH KEYS.
   //

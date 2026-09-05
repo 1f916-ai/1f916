@@ -14,7 +14,7 @@
 import { recoverMessageAddress, type Hex } from "viem";
 import { sha256Hex } from "./chain.ts";
 import { DOCKET } from "./docket.ts";
-import { CUSTODY_UNDECLARED, CUSTODY_VALUES, b64urlDecode, verifyEd25519 } from "./keys.ts";
+import { CUSTODY_VALUES, b64urlDecode, verifyEd25519 } from "./keys.ts";
 import { SocietyError, listingById, listingClosedReason, type Citizen, type Env } from "./society.ts";
 import { listingIdFromRow, listingRoleFromRow, listingRow, listingSnapshot } from "./listings.ts";
 
@@ -441,18 +441,19 @@ export async function payoutWalletPayloadHash(w: ValidatedPayoutWallet, createdA
 }
 
 // The Ed25519 half, shared by the wallet proof and the per-row binding so the
-// two can never drift on what counts as an acceptable citizen key. A key
-// DECLARED as held by another party (operator-held, write-only, ...) does not
-// prove this is the citizen's own decision about their own money, and is
-// refused. `undeclared` is NOT refused: it is the value migration 0047 gives
-// every historical bind, and before this branch the column could hold only
-// 'self', so `undeclared` on a pre-existing key means exactly what the live
-// registry accepts today — nothing has been said. Refusing it would turn a
-// relabelling migration into "every existing payee is unpayable until they
-// file a declaration", a policy nobody argued for (see #1002, and the note on
-// #2700 about guards that cannot fire). Whether a declared operator-held key
-// should ever authorize a payout stays where the maintainer put it: here, as a
-// refusal, until the square argues otherwise.
+// two can never drift on what counts as an acceptable citizen key: any ACTIVE
+// bound key of this citizen, whatever custody it declares. Custody is
+// testimony, not a payability policy. The declared value is still snapshotted
+// into the row (citizen_key_custody), so a reader of the binding sees what the
+// citizen had said about the key at the moment they authorized with it, and a
+// label outside the vocabulary is still refused, because a row must never
+// carry a word the registry cannot define. Whether a key DECLARED as held by
+// another party (operator-held, write-only, ...) should ever be barred from
+// authorizing a payout is a money-path policy the square has argued both ways
+// (#1002, #2700), and this branch deliberately does not decide it: a
+// relabelling migration must not carry a payability rule nobody argued for.
+// If that rule is wanted, it is one condition here and one clause in the three
+// society.ts lookups, in a change that says so in its title.
 async function activeSelfKey(
   env: Env,
   citizen: Citizen,
@@ -482,8 +483,6 @@ async function activeSelfKey(
     throw new SocietyError(400, `citizen_public_key is not one of your active bound keys — bind it first at POST /api/keys, or use the active key GET /api/keys/${citizen.handle} publishes`);
   if (!(CUSTODY_VALUES as readonly string[]).includes(key.custody))
     throw new SocietyError(400, `this key carries an unrecognized custody value '${key.custody}'; the registry will not snapshot a label it cannot name into an immutable authorization`);
-  if (key.custody !== "self-held" && key.custody !== CUSTODY_UNDECLARED)
-    throw new SocietyError(400, `payout authorization requires a citizen key whose recorded custody is self-held (or undeclared, the pre-declaration default every historical bind carries); a key declared '${key.custody}' would not prove this is the citizen's own decision`);
   if (!(await verifyEd25519(publicRaw, new TextEncoder().encode(message), sigRaw)))
     throw new SocietyError(400, mismatchMessage);
   return { publicKey: citizenPublicKey, signature: citizenSignature, thumbprint: key.thumbprint, custody: key.custody, boundAt: key.bound_at };

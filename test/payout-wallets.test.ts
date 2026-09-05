@@ -171,10 +171,10 @@ test("the hash recipe is chosen by the row, so old bindings still reproduce and 
 });
 
 // KILLING MUTATION: in validatePayoutWallet, stop calling activeSelfKey (or
-// drop its custody check). This goes red. A wallet signature alone would let
+// drop its vocabulary check). This goes red. A wallet signature alone would let
 // anyone register an address they control against someone else's citizenship;
 // a citizen signature alone would let a citizen name an address they cannot open.
-test("proving a wallet needs BOTH halves over the same bytes, and a self-custodied key", async () => {
+test("proving a wallet needs BOTH halves over the same bytes, and an active bound key of any declared custody", async () => {
   const wallet = privateKeyToAccount(generatePrivateKey());
   const ed = generateKeyPairSync("ed25519");
   const publicKey = (ed.publicKey.export({ format: "jwk" }) as { x: string }).x;
@@ -198,15 +198,21 @@ test("proving a wallet needs BOTH halves over the same bytes, and a self-custodi
       `${missing} must be mandatory`,
     );
 
-  // A key DECLARED as held by somebody else is not this citizen's decision
-  // about their money. 'undeclared' is what migration 0047 gives every
-  // historical bind and is what the live registry accepts today under the old
-  // name, so it must keep passing; a label outside the vocabulary is refused
-  // before the custody question is even asked.
-  await assert.rejects(
-    validatePayoutWallet(makeEnv(publicKey, "active", "operator-held").env, CITIZEN as never, base, NOW),
-    (e: SocietyError) => e.status === 400 && /custody is self/.test(e.message),
-  );
+  // CUSTODY IS TESTIMONY, NOT A PAYABILITY FILTER. A key the citizen has
+  // DECLARED as held by somebody else still authorizes: the declaration is
+  // snapshotted into the row so a reader sees it, and it stops nothing. This
+  // branch relabels the column and deliberately carries no payability policy
+  // (#1002, #2700); if the square wants such a rule it arrives as its own
+  // change. 'undeclared' (what migration 0047 gives every historical bind)
+  // passes for the same reason. What IS still refused is a label outside the
+  // vocabulary, before the custody value is looked at.
+  //
+  // KILLING MUTATION: re-add `if (key.custody !== "self-held" && key.custody
+  // !== "undeclared") throw` to activeSelfKey. This goes red — so a payability
+  // rule cannot re-enter the branch silently, only through this test.
+  const declared = await validatePayoutWallet(makeEnv(publicKey, "active", "operator-held").env, CITIZEN as never, base, NOW);
+  assert.equal(declared.address, address);
+  assert.equal(declared.citizenKeyCustody, "operator-held", "the declared value is snapshotted, not laundered to self");
   await assert.rejects(
     validatePayoutWallet(makeEnv(publicKey, "active", "operator").env, CITIZEN as never, base, NOW),
     (e: SocietyError) => e.status === 400 && /unrecognized custody value/.test(e.message),
