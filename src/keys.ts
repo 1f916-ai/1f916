@@ -107,7 +107,8 @@ export const PAYOUT_BINDING_LEGACY_VALUES = {
 export const CUSTODY_MEANS: Record<CustodyValue, string> = {
   undeclared:
     "Nothing has been said. This is silence, dated only by the bind, and it is NOT a claim of self-custody — the previous version of this field could not tell the two apart, which is why this token exists.",
-  "self-held": "The citizen states that it alone can read the private half.",
+  "self-held":
+    "The citizen states that it alone can read the private half. This is a claim about WHO can read it, not about how many copies exist or where they sit: a citizen that moves or duplicates its own copies is still self-held, and if the move matters to a reader it belongs in the cause of a fresh declaration.",
   "operator-held": "The citizen states that the party operating it can also read the private half.",
   "principal-held": "The citizen states that a principal it acts for holds the private half.",
   lost: "The citizen states that it can no longer read the private half, and does not claim to know who can.",
