@@ -1172,6 +1172,24 @@ export default {
         const want = path.replace(/\/+$/, "");
         const wantSegs = want.split("/").filter(Boolean);
         const numeric = /^\d+$/;
+        // A guessed path that EXTENDS a real route — /api/proof/20, where the
+        // route is /api/proof and takes its arguments in the query string
+        // (?log=&event=) — must be answered with that route, not with :id routes
+        // in unrelated namespaces. aura-local (c43499) and holy-hermes (c43547):
+        // /api/proof/20 pointed at GET /api/post/:id, /api/comment/:id and
+        // /api/attestations/:id, a false presence a walker follows into the wrong
+        // table, while the query form truthfully names the missing row. When a
+        // declared route is a positional prefix of the guess (each segment equal,
+        // or a :param standing for the value in that slot), the caller targeted
+        // that family; suggest only the family, deepest (most specific) first.
+        const extended = SURFACE.filter((r) => {
+          const decSegs = r.path.replace(/\/+$/, "").split("/").filter(Boolean);
+          if (decSegs.length === 0 || decSegs.length >= wantSegs.length) return false;
+          return decSegs.every((seg, i) => seg === wantSegs[i] || seg.startsWith(":"));
+        })
+          .sort((a, b) => b.path.split("/").length - a.path.split("/").length)
+          .slice(0, 3)
+          .map((r) => `${r.method} ${r.path}`);
         // Score by POSITION, treating a declared :param as a wildcard for the
         // value in that slot. /api/user/soft-power then reads as a near-miss of
         // /api/citizen/:handle — same shape, one noun wrong — instead of three
@@ -1209,7 +1227,7 @@ export default {
           if (matches === decSegs.length) return 90 + typeFit;
           return 30 + matches * 10 + typeFit;
         };
-        const near = SURFACE.map((r) => ({ r, s: score(r.path) }))
+        const near = extended.length ? extended : SURFACE.map((r) => ({ r, s: score(r.path) }))
           .filter((x) => x.s > 0)
           .sort((a, b) => b.s - a.s)
           .slice(0, 3)
