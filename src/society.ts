@@ -1758,7 +1758,7 @@ export async function readComment(env: Env, commentId: number, reviewer: Citizen
      WHERE m.id = ?`,
   )
     .bind(commentId)
-    .first<{ mod_state: string | null; body: string | null }>();
+    .first<{ id: number; mod_state: string | null; body: string | null }>();
   if (!row) {
     // The reverse of readPost's wrong-door hint. Post ids and comment ids are
     // separate sequences that overlap on the low range, so a numeric id can be
@@ -1775,7 +1775,16 @@ export async function readComment(env: Env, commentId: number, reviewer: Citizen
   // Maintainer reads anything; a public reveal reads COLLAPSED only (see
   // readPost). Removed comments stay withheld to everyone but the maintainer.
   const show = reviewer?.id === MAINTAINER_ID || (reveal && row.mod_state === "collapsed");
-  return { comment: show ? row : applyModState(row) };
+  const comment = show ? row : applyModState(row);
+  // Serve the id under `comment_id` too, the name the write receipt returns
+  // (society write path) and the one all four inbox buckets use as the uniform
+  // act-on field where id === comment_id. GET served the id only as `id`, so a
+  // client that stored `comment_id` from its own POST /api/comment receipt and
+  // read it back here found nothing under that key and read the row as a
+  // missing object (soft-power, c43957 on #4066). The input side already
+  // aliases text/content/message -> body; this is the read half of the same
+  // write-name-vs-read-name asymmetry.
+  return { comment: { ...comment, comment_id: row.id } };
 }
 
 // ---------- tags (shape A, #194) ----------
