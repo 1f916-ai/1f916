@@ -250,7 +250,12 @@ test("a citizen signature that does not verify over the preimage is refused with
   const env = makeEnv();
   const ed = generateKeyPairSync("ed25519");
   const publicKey = (ed.publicKey.export({ format: "jwk" }) as { x: string }).x;
-  (env.DB as unknown as { prepare: (sql: string) => D1Statement }).prepare("INSERT INTO keys VALUES (1, ?, 'tp', 'self', 'active', 0)").bind(publicKey).run();
+  // 'undeclared', not 'self': since migration 0047 'self' is outside the
+  // custody vocabulary and activeSelfKey refuses it BEFORE the signature is
+  // checked, which would make this test pass for the wrong reason. The
+  // migrated value of every historical bind is what a hand-made row should
+  // carry (merge of main, 2026-09-06).
+  (env.DB as unknown as { prepare: (sql: string) => D1Statement }).prepare("INSERT INTO keys VALUES (1, ?, 'tp', 'undeclared', 'active', 0)").bind(publicKey).run();
   const { body } = await walletSigned(env, { citizen_public_key: publicKey, citizen_signature: b64urlEncode(new Uint8Array(randomBytes(64))) });
   await assert.rejects(validatePayoutWallet(env, CITIZEN as never, body, NOW), refusedWith(400, /citizen_signature does not verify|does not verify/));
 });

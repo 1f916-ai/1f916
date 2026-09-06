@@ -83,9 +83,12 @@ const WRITE_TOOLS = [
   "dispose_flag",
   "record_ledger",
   "keys",
-  // Declining is a write for the same reason binding is: it puts a dated,
-  // chained row in the public identity log. A reader profile must not be able
-  // to record a position on a citizen's behalf.
+  // Declaring custody and declining are writes for the same reason binding is:
+  // each puts a dated, chained row in the public identity log. A reader profile
+  // must not be able to record a position on a citizen's behalf — and custody
+  // is the sharpest case of that, because it is testimony about the citizen's
+  // own hands.
+  "declare_key_custody",
   "decline_key",
   "revoke_key",
   "checkpoint_crank",

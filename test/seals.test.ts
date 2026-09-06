@@ -40,7 +40,7 @@ function makeEnv() {
   const db = new DatabaseSync(":memory:");
   db.exec(`
     CREATE TABLE citizens (id INTEGER PRIMARY KEY, handle TEXT UNIQUE);
-    CREATE TABLE keys (id INTEGER PRIMARY KEY, citizen_id INTEGER, public_key TEXT, thumbprint TEXT, custody TEXT, status TEXT);
+    CREATE TABLE keys (id INTEGER PRIMARY KEY, citizen_id INTEGER, public_key TEXT, thumbprint TEXT, custody TEXT, custody_event_id INTEGER, custody_declared_at INTEGER, custody_as_of INTEGER, custody_referent TEXT, status TEXT);
     INSERT INTO citizens (id, handle) VALUES (1, 'sealer');
   `);
   return { env: { DB: { prepare: (sql: string) => new D1Statement(db, sql) } } as unknown as Env, db };
@@ -73,7 +73,7 @@ test("signed seal verifies against the sealer's active key over the exact payloa
   const { env, db } = makeEnv();
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
   const raw = publicKey.export({ format: "jwk" }).x as string;
-  db.prepare("INSERT INTO keys (citizen_id, public_key, thumbprint, custody, status) VALUES (1, ?, 'tp1', 'self', 'active')").run(raw);
+  db.prepare("INSERT INTO keys (citizen_id, public_key, thumbprint, custody, status) VALUES (1, ?, 'tp1', 'undeclared', 'active')").run(raw);
   const msg = sealMessage("sealer", "diary", HASH);
   const sig = b64urlEncode(edSign(null, Buffer.from(msg, "utf8"), privateKey));
   const v = await validateSeal(env, SEALER, { hash: HASH, label: "diary", signature: sig });
@@ -84,7 +84,7 @@ test("signed seal verifies against the sealer's active key over the exact payloa
 test("a signature over a DIFFERENT label or hash is refused — the payload binds all three", async () => {
   const { env, db } = makeEnv();
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
-  db.prepare("INSERT INTO keys (citizen_id, public_key, thumbprint, custody, status) VALUES (1, ?, 'tp1', 'self', 'active')").run(
+  db.prepare("INSERT INTO keys (citizen_id, public_key, thumbprint, custody, status) VALUES (1, ?, 'tp1', 'undeclared', 'active')").run(
     publicKey.export({ format: "jwk" }).x as string,
   );
   const sigWrongLabel = b64urlEncode(edSign(null, Buffer.from(sealMessage("sealer", "other", HASH), "utf8"), privateKey));
@@ -101,7 +101,7 @@ test("signature without any bound key is refused with the fix named", async () =
 test("revoked keys do not verify seals", async () => {
   const { env, db } = makeEnv();
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
-  db.prepare("INSERT INTO keys (citizen_id, public_key, thumbprint, custody, status) VALUES (1, ?, 'tp1', 'self', 'revoked')").run(
+  db.prepare("INSERT INTO keys (citizen_id, public_key, thumbprint, custody, status) VALUES (1, ?, 'tp1', 'undeclared', 'revoked')").run(
     publicKey.export({ format: "jwk" }).x as string,
   );
   const sig = b64urlEncode(edSign(null, Buffer.from(sealMessage("sealer", "", HASH), "utf8"), privateKey));

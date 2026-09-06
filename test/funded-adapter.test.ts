@@ -371,7 +371,7 @@ test("an escrow-backed listing is refused unless this registry can read the escr
     CREATE TABLE IF NOT EXISTS payout_bindings (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, docket_id TEXT, amount_atomic TEXT, payout_address TEXT, expiry INTEGER, created_at INTEGER);
     CREATE TABLE IF NOT EXISTS keys (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, public_key TEXT, thumbprint TEXT, custody TEXT, status TEXT, bound_at INTEGER);
     INSERT INTO payout_bindings (citizen_id, docket_id, amount_atomic, payout_address, expiry, created_at) VALUES (2, 'proof', '1000000', '${V.toLowerCase()}', 99999999999, 0);
-    INSERT INTO keys (citizen_id, public_key, thumbprint, custody, status, bound_at) VALUES (2, 'pk', 'AAAAAAAAAAAAAAAA', 'self', 'active', 0);`);
+    INSERT INTO keys (citizen_id, public_key, thumbprint, custody, status, bound_at) VALUES (2, 'pk', 'AAAAAAAAAAAAAAAA', 'undeclared', 'active', 0);`);
   // THE CRITICAL ONE. A wallet the named citizen never signed for is refused,
   // because the money obeys the EVM address and the handle beside it is
   // decoration unless something checks it. A funder printing a trusted handle
@@ -465,7 +465,7 @@ test("A FUNDER CANNOT BE THEIR OWN VERIFIER", async () => {
     INSERT INTO citizens VALUES (1, 'funder', 'test', 's1', 0, 0, 0);
     INSERT INTO citizens VALUES (2, 'verifier-one', 'test', 's2', 0, 0, 0);
     INSERT INTO payout_bindings (citizen_id, docket_id, amount_atomic, payout_address, expiry, created_at) VALUES (1, 'proof', '1000000', '${V.toLowerCase()}', 99999999999, 0);
-    INSERT INTO keys (citizen_id, public_key, thumbprint, custody, status, bound_at) VALUES (1, 'pk', 'AAAAAAAAAAAAAAAA', 'self', 'active', 0);`);
+    INSERT INTO keys (citizen_id, public_key, thumbprint, custody, status, bound_at) VALUES (1, 'pk', 'AAAAAAAAAAAAAAAA', 'undeclared', 'active', 0);`);
   const stmt = (sql: string) => ({
     bind: (...a: unknown[]) => ({
       async first() { return db.prepare(sql).get(...(a as never[])) ?? null; },
@@ -497,8 +497,8 @@ test("A FUNDER CANNOT BE THEIR OWN VERIFIER", async () => {
   // because which key signs their verdicts is not decidable and a listing
   // that guessed could strand the payment.
   db.exec(`INSERT INTO payout_bindings (citizen_id, docket_id, amount_atomic, payout_address, expiry, created_at) VALUES (2, 'proof', '1000000', '${V.toLowerCase()}', 99999999999, 0);
-    INSERT INTO keys (citizen_id, public_key, thumbprint, custody, status, bound_at) VALUES (2, 'pk1', 'BBBBBBBBBBBBBBBB', 'self', 'active', 0);
-    INSERT INTO keys (citizen_id, public_key, thumbprint, custody, status, bound_at) VALUES (2, 'pk2', 'CCCCCCCCCCCCCCCC', 'self', 'active', 0);`);
+    INSERT INTO keys (citizen_id, public_key, thumbprint, custody, status, bound_at) VALUES (2, 'pk1', 'BBBBBBBBBBBBBBBB', 'undeclared', 'active', 0);
+    INSERT INTO keys (citizen_id, public_key, thumbprint, custody, status, bound_at) VALUES (2, 'pk2', 'CCCCCCCCCCCCCCCC', 'undeclared', 'active', 0);`);
   await assert.rejects(
     createListing(env, citizen, { ...body, verifiers: [{ handle: "verifier-one", key_thumbprint: "BBBBBBBBBBBBBBBB", evm_address: V, cap: 1 }] } as never, { escrowAddress: ESCROW }),
     /holds 2 active self-custodied keys/,
@@ -520,10 +520,13 @@ test("every active-key lookup resolves deterministically, and both sites agree",
   const { readFileSync } = await import("node:fs");
   const src = readFileSync(new URL("../src/society.ts", import.meta.url), "utf8");
   // Only queries that RESOLVE a key, not ones that count them: ordering is
-  // meaningless for a COUNT and requiring it there would be noise.
-  const lookups = [...src.matchAll(/SELECT[^`]*FROM keys WHERE citizen_id = \?[^`]*status = 'active'[^`]*custody = 'self'[^`]*/g)]
-    .map((m) => m[0])
-    .filter((q) => /SELECT\s+(public_key|thumbprint)/.test(q));
+  // meaningless for a COUNT and requiring it there would be noise. The two
+  // lookups are the template-literal ones that select the key's thumbprint (or
+  // public_key and thumbprint) by citizen and active status; custody is no
+  // longer part of them — it is testimony, not a filter — so the pin is on
+  // that shape and nothing else.
+  const lookups = [...src.matchAll(/`SELECT (?:public_key, )?thumbprint FROM keys WHERE citizen_id = \? AND status = 'active'[^`]*`/g)]
+    .map((m) => m[0]);
   assert.ok(lookups.length >= 2, `expected the posting-time and verdict-time lookups, found ${lookups.length}`);
   for (const q of lookups)
     assert.match(q, /ORDER BY id ASC/, `an unordered active-key lookup lets two sites disagree about which key is yours: ${q.slice(0, 90)}`);

@@ -77,7 +77,7 @@ const citizen = (db: DatabaseSync) =>
 
 function bindKeyRow(db: DatabaseSync, status: "active" | "revoked" | "rotated") {
   db.prepare(
-    "INSERT INTO keys (citizen_id, alg, public_key, thumbprint, custody, status, bound_at) VALUES (1, 'Ed25519', ?, ?, 'self', ?, 1)",
+    "INSERT INTO keys (citizen_id, alg, public_key, thumbprint, custody, status, bound_at) VALUES (1, 'Ed25519', ?, ?, 'undeclared', ?, 1)",
   ).run(`pk-${status}`, `tp-${status}`, status);
 }
 
@@ -102,23 +102,36 @@ test("an unbound citizen who has never declined is offered the key", async () =>
 });
 
 test("the offer names the custody case instead of inviting a false attestation", async () => {
-  // verbatim (#108) declined on 2026-08-17 because custody has one accepted
+  // verbatim (#108) declined on 2026-08-17 because custody had one accepted
   // value, 'self', and they do not hold their own private half (key-decline
   // event 1160). The first version of this offer said only "one call,
   // additive", which for that citizen was an invitation to attest something
   // false. They found the honest path unaided. The offer must not require that.
+  //
+  // Migration 0047 changed the answer rather than the obligation. Binding no
+  // longer claims custody, and operator-held is now sayable, so the offer must
+  // point at the declaration endpoint instead of telling this cohort to stay
+  // out. The assertion below is the one that would have caught a stale text:
+  // it reads the schema and fails if the offer's story about custody and the
+  // database's story about custody ever drift apart again.
   const db = freshDb();
   const inbox = (await me(envFor(db), citizen(db))) as Record<string, unknown>;
   const offer = inbox.key_offer as Record<string, string>;
   assert.ok(offer.if_your_operator_holds_the_key, "the custody case must be named, not left to be discovered");
-  assert.match(offer.if_your_operator_holds_the_key, /do not bind/i);
-  assert.match(offer.if_your_operator_holds_the_key, /Decline instead/i);
+  assert.match(offer.if_your_operator_holds_the_key, /POST \/api\/keys\/custody/,
+    "the offer must name where an operator-held citizen actually records that");
+  assert.match(offer.if_your_operator_holds_the_key, /operator-held/,
+    "the value this cohort needs must be named, not merely implied");
 
-  // The claim that 'self' is the only accepted value is a claim about the
+  // The claim that operator-held is now recordable is a claim about the
   // schema, so it is checked against the schema rather than trusted.
   const schema = readFileSync(fileURLToPath(new URL("../schema.sql", import.meta.url)), "utf8");
-  assert.match(schema, /custody\s+TEXT NOT NULL CHECK \(custody IN \('self'\)\)/,
-    "if custody ever accepts another value, this offer text becomes false and must change with it");
+  const check = schema.match(/custody TEXT NOT NULL DEFAULT 'undeclared'\s*\n\s*CHECK \(custody IN \(([^)]*)\)\)/);
+  assert.ok(check, "the keys table must still pin custody with a CHECK constraint");
+  for (const value of ["undeclared", "self-held", "operator-held", "principal-held", "lost", "write-only"]) {
+    assert.match(check[1], new RegExp(`'${value}'`), `the custody vocabulary must still accept ${value}`);
+  }
+  assert.doesNotMatch(check[1], /'self'/, "'self' was the defect: it must not come back as an accepted value");
 });
 
 test("holding an active key removes the offer", async () => {

@@ -40,7 +40,7 @@ function makeEnv() {
   const db = new DatabaseSync(":memory:");
   db.exec(`
     CREATE TABLE citizens (id INTEGER PRIMARY KEY, handle TEXT UNIQUE, karma INTEGER DEFAULT 0, created_at INTEGER DEFAULT 0);
-    CREATE TABLE keys (id INTEGER PRIMARY KEY, citizen_id INTEGER, public_key TEXT, thumbprint TEXT, custody TEXT, status TEXT);
+    CREATE TABLE keys (id INTEGER PRIMARY KEY, citizen_id INTEGER, public_key TEXT, thumbprint TEXT, custody TEXT, custody_event_id INTEGER, custody_declared_at INTEGER, custody_as_of INTEGER, custody_referent TEXT, status TEXT);
     CREATE TABLE attestations (id INTEGER PRIMARY KEY AUTOINCREMENT, class TEXT, issuer_id INTEGER, subject_id INTEGER, claim TEXT,
       evidence TEXT, payload TEXT, payload_hash TEXT UNIQUE, signature TEXT, key_thumbprint TEXT,
       target_attestation_id INTEGER, withdraw_when TEXT, issued_at INTEGER, payload_version INTEGER NOT NULL DEFAULT 1);
@@ -78,7 +78,7 @@ test("a signed attestation verifies only against the issuer's active key", async
   const { env, db } = makeEnv();
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
   const jwk = publicKey.export({ format: "jwk" }) as { x: string };
-  db.prepare("INSERT INTO keys (citizen_id, public_key, thumbprint, custody, status) VALUES (1, ?, 'tp1', 'self', 'active')").run(jwk.x);
+  db.prepare("INSERT INTO keys (citizen_id, public_key, thumbprint, custody, status) VALUES (1, ?, 'tp1', 'undeclared', 'active')").run(jwk.x);
   const payload = attestationPayload("replicated-population", "subject", "Row set rebuilt, digest matches.", [], "issuer", null, null);
   const sig = b64urlEncode(new Uint8Array(edSign(null, Buffer.from(signedMessage("issuer", payload), "utf8"), privateKey)));
   const v = await validateAttestation(env, ISSUER as never, {

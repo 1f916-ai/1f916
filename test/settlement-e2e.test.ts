@@ -92,7 +92,7 @@ function bindSigningKey(db: DatabaseSync, citizenId: number) {
   const raw = publicKey.export({ format: "der", type: "spki" }).subarray(-32);
   const b64url = Buffer.from(raw).toString("base64url");
   const thumbprint = createHash("sha256").update(raw).digest("base64url").slice(0, 32);
-  db.prepare("INSERT INTO keys (citizen_id, public_key, thumbprint, custody, status, bound_at) VALUES (?, ?, ?, 'self', 'active', 0)")
+  db.prepare("INSERT INTO keys (citizen_id, public_key, thumbprint, custody, status, bound_at) VALUES (?, ?, ?, 'undeclared', 'active', 0)")
     .run(citizenId, b64url, thumbprint);
   return { privateKey, thumbprint };
 }
@@ -1632,7 +1632,7 @@ test("the pairing of submitted_by and funding_relationship is unstorable when wr
       authorization_verification, authorization_verified_at, docket_updated, docket_snapshot, preimage, authorization_hash,
       payload_hash, commit_nonce, created_at)
     VALUES (900, 2, 'listing-1', '1f916.payout.v1', '1000000', 8453, '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
-      '0x1111111111111111111111111111111111111111', 9, '0xsig', 'k', 's', 'tp', 'self', 0,
+      '0x1111111111111111111111111111111111111111', 9, '0xsig', 'k', 's', 'tp', 'undeclared', 0,
       'valid-at-binding-event', 0, '2026-01-01', '{}', 'pre', 'ah', 'ph', 'cn', 0)`);
 
   const ins = (by: string, rel: string | null) =>

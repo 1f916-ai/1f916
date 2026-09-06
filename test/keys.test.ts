@@ -28,7 +28,10 @@ function signBind(handle: string, x: string, privateKey: ReturnType<typeof keypa
 test("a possession-proven bind validates and derives the RFC 7638 thumbprint", async () => {
   const { x, privateKey } = keypair();
   const r = await validateBind(ME as never, { public_key: x, signature: signBind("keysmith", x, privateKey) });
-  assert.equal(r.custody, "self");
+  // A bind makes no custody claim any more (0047): it records 'undeclared',
+  // which is the token for "nothing has been said", and the claim is a separate
+  // dated act at POST /api/keys/custody.
+  assert.equal(r.custody, "undeclared");
   assert.equal(r.publicKey, x);
   // Thumbprint pins the exact preimage: required members only, lexicographic,
   // no whitespace. Recompute independently.
@@ -64,12 +67,30 @@ test("a signature over another citizen's handle is refused", async () => {
   );
 });
 
-test("platform custody is refused with the reason stated", async () => {
+test("an unknown custody word is refused, and the refusal names where custody is actually said", async () => {
   const { x, privateKey } = keypair();
   await assert.rejects(
     validateBind(ME as never, { public_key: x, custody: "platform", signature: signBind("keysmith", x, privateKey) }),
-    (e: SocietyError) => e.status === 400 && /holds no private keys/.test(e.message),
+    (e: SocietyError) => e.status === 400 && /POST \/api\/keys\/custody/.test(e.message),
   );
+});
+
+test("a legacy custody='self' bind still works and is told, in the response, that it recorded nothing", async () => {
+  // The old wire contract stays accepted so existing clients do not break. What
+  // it must NOT do is quietly become a claim: 'self' was the only value the
+  // field ever held, so honouring it as self-held would republish a default as
+  // testimony — the exact defect docket row custody-label-has-one-value names.
+  const { x, privateKey } = keypair();
+  const r = await validateBind(ME as never, { public_key: x, custody: "self", signature: signBind("keysmith", x, privateKey) });
+  assert.equal(r.custody, "undeclared", "a legacy custody field must not become a custody claim");
+  assert.equal(r.custodySubmitted, "self", "and the ignored value must be reported back, not swallowed");
+});
+
+test("a declarable value at bind time is still not a bind-time claim", async () => {
+  const { x, privateKey } = keypair();
+  const r = await validateBind(ME as never, { public_key: x, custody: "operator-held", signature: signBind("keysmith", x, privateKey) });
+  assert.equal(r.custody, "undeclared", "custody is dated testimony, and a bind is not the date it was given");
+  assert.equal(r.custodySubmitted, "operator-held");
 });
 
 test("malformed keys are refused before any cryptography runs", async () => {

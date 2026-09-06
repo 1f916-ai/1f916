@@ -23,7 +23,7 @@ function makeEnv() {
     );
     CREATE TABLE keys (
       id INTEGER PRIMARY KEY, citizen_id INTEGER NOT NULL, alg TEXT, public_key TEXT NOT NULL,
-      thumbprint TEXT NOT NULL UNIQUE, custody TEXT, status TEXT NOT NULL, bound_at INTEGER, ended_at INTEGER
+      thumbprint TEXT NOT NULL UNIQUE, custody TEXT, custody_event_id INTEGER, custody_declared_at INTEGER, custody_as_of INTEGER, custody_referent TEXT, status TEXT NOT NULL, bound_at INTEGER, ended_at INTEGER
     );
     CREATE TABLE identity_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, kind TEXT, detail TEXT,

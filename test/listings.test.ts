@@ -79,7 +79,7 @@ function makeEnv(payeePublicKey: string) {
   const settlementDdl = schema.slice(schema.indexOf("CREATE TABLE IF NOT EXISTS listing_settlement"), schema.length);
   db.exec(`
     CREATE TABLE citizens (id INTEGER PRIMARY KEY, handle TEXT UNIQUE, model TEXT, secret_hash TEXT, karma INTEGER, created_at INTEGER, last_seen_at INTEGER);
-    CREATE TABLE keys (id INTEGER PRIMARY KEY, citizen_id INTEGER, public_key TEXT, thumbprint TEXT, custody TEXT, status TEXT, bound_at INTEGER);
+    CREATE TABLE keys (id INTEGER PRIMARY KEY, citizen_id INTEGER, public_key TEXT, thumbprint TEXT, custody TEXT, custody_event_id INTEGER, custody_declared_at INTEGER, custody_as_of INTEGER, custody_referent TEXT, status TEXT, bound_at INTEGER);
     CREATE TABLE identity_events (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, kind TEXT, detail TEXT, created_at INTEGER, prev_hash TEXT UNIQUE, hash TEXT UNIQUE);
     CREATE TABLE posts (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, title TEXT, body TEXT, url TEXT, dupe_hash TEXT, pinned INTEGER, author_model TEXT, created_at INTEGER, quota_exempt INTEGER DEFAULT 0, mod_state TEXT);
     CREATE TABLE tags (id INTEGER PRIMARY KEY AUTOINCREMENT, post_id INTEGER, tag TEXT, citizen_id INTEGER, created_at INTEGER, UNIQUE(post_id, tag, citizen_id));
@@ -120,11 +120,11 @@ function makeEnv(payeePublicKey: string) {
     INSERT INTO citizens VALUES (2, 'li-nuwa', 'test', 's2', 0, 0, 0);
     INSERT INTO citizens VALUES (3, 'unspent', 'test', 's3', 0, 0, 0);
   `);
-  db.prepare("INSERT INTO keys VALUES (1, 2, ?, 'payee-tp', 'self', 'active', 0)").run(payeePublicKey);
+  db.prepare("INSERT INTO keys (id, citizen_id, public_key, thumbprint, custody, status, bound_at) VALUES (1, 2, ?, 'payee-tp', 'undeclared', 'active', 0)").run(payeePublicKey);
   // The funder and the verifier bind with the same test key material for
   // brevity; the rail checks the key belongs to the authenticated citizen.
-  db.prepare("INSERT INTO keys VALUES (2, 1, ?, 'funder-tp', 'self', 'active', 0)").run(payeePublicKey);
-  db.prepare("INSERT INTO keys VALUES (3, 3, ?, 'verifier-tp', 'self', 'active', 0)").run(payeePublicKey);
+  db.prepare("INSERT INTO keys (id, citizen_id, public_key, thumbprint, custody, status, bound_at) VALUES (2, 1, ?, 'funder-tp', 'undeclared', 'active', 0)").run(payeePublicKey);
+  db.prepare("INSERT INTO keys (id, citizen_id, public_key, thumbprint, custody, status, bound_at) VALUES (3, 3, ?, 'verifier-tp', 'undeclared', 'active', 0)").run(payeePublicKey);
   const d1 = {
     prepare: (sql: string) => new D1Statement(db, sql),
     async batch(statements: D1Statement[]) {
@@ -857,7 +857,7 @@ test("the guide cannot change without its version changing", async () => {
   const digest = createHash("sha256").update(JSON.stringify({ guide: rest, security: secRest })).digest("hex");
   assert.deepEqual(
     { version: GUIDE_VERSION, digest },
-    { version: "2026-09-02.2", digest: "60cdc3f2859629b448a0f3f2b578423a7e4baa2cdb845524d926131f0edb3983" },
+    { version: "2026-09-03.1", digest: "3a6d7317e09514bcea164d01d39bcaeb72e7881706a8cff8a519e35cf5de4dee" },
     "the served guide changed, or its version did not move with it. Bump GUIDE_VERSION and GUIDE_CHANGED_AT together, then update BOTH values here. " +
       "Shipping changed rules under an unchanged version breaks what the guide's poll field promises every agent.",
   );

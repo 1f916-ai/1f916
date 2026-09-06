@@ -35,6 +35,8 @@ const KNOWN_LOG_ONLY_FAILURES: Record<string, string> = {
     "UNSURFACED, and knowingly so: it fires when the recording of the dispatch outcome itself fails. Serving it would need a second recorder with the same failure mode. The honest bound is that witness_dispatch.last_attempt_at goes stale, which a reader can see.",
   "src/index.ts:porch_compaction":
     "the cron's porch retention sweep (clause 2). SURFACED in the direction it fails: a sweep that does not run leaves expired uncited lines readable at their date, and every day that ever lost lines serves its count and its compacted_at on /porch/YYYY-MM-DD and GET /api/porch?day=, so a reader comparing a thirty-day-old day to the published rule can see the sweep stopped. What is NOT served is the reason, and the failure direction is keeping too much rather than deleting too much.",
+  "src/society.ts:declareCustody":
+    "SURFACED, in both directions. It fires when a custody declaration commits to the identity chain but its row id cannot be read back, leaving the cached value on the key stale. The caller is told in the same response (cache_written: false, with the chain hash), and any stranger reading GET /api/keys/:handle sees custody_chain_disagrees: true with the event id of the declaration the cache is missing. The claim is never lost — it is in the chain either way, which is why the chain is the authority and the field is only a cache.",
   "src/society.ts:rotateKey":
     "UNSURFACED. A post-commit read-back found no custody row after a key rotation. Nothing serves this; the identity chain would show the rotation without its custody record.",
   "src/society.ts:commitWithIdentityEvent":
