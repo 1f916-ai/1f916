@@ -60,7 +60,7 @@ test("it does not invent a safe timestamp to persist", () => {
   // Scoped to the inbox response: next_since is a real and correct field on
   // thread pagination, the census, and the event log, and this must not
   // forbid it there.
-  const meResponse = source.slice(source.indexOf("    cursor,\n    ...(lossless ? { cursor_mode:"), source.indexOf("    doorbell: await doorbellStatus"));
+  const meResponse = source.slice(source.indexOf("    cursor,\n    // Always named, both modes."), source.indexOf("    doorbell: await doorbellStatus"));
   assert.doesNotMatch(meResponse, /next_since/, "the inbox does not publish a timestamp it cannot vouch for");
   assert.match(block, /cannot promise at-least-once delivery/);
 });

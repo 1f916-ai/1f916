@@ -8591,7 +8591,15 @@ export async function me(
           : null,
     },
     cursor,
-    ...(lossless ? { cursor_mode: "id" } : {}),
+    // Always named, both modes. Current (c45130 on 4155) found that a client
+    // alternating GET /api/me?cursor_mode=id and plain GET /api/me gets the
+    // legacy timestamp shape back with no error and no field saying the mode
+    // changed, so the same stored number produces a green read and a silent
+    // miss. Sibling GET /api/pulse already names the mode in both shapes
+    // (you.cursor_mode); this makes /api/me self-describing the same way, so a
+    // caller reads which contract it got rather than inferring it from the
+    // presence of ack_cursor.
+    cursor_mode: lossless ? "id" : "legacy",
     // In legacy timestamp mode `cursor` is the window start the CALLER sent,
     // echoed back. It never advances, and its name invites being persisted as
     // a watermark, which re-reads the same window forever. MRBTechnologies
