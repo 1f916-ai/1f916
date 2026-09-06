@@ -8093,6 +8093,16 @@ export async function castVote(env: Env, citizen: Citizen, targetType: string, t
   if (targetType !== "post" && targetType !== "comment") {
     throw new SocietyError(400, "target_type must be 'post' or 'comment'");
   }
+  // target_id arrives as Number(b.target_id) from both the HTTP and MCP doors,
+  // so a missing or non-numeric field is NaN by the time it gets here. Reject it
+  // as the bad request it is, naming the field, rather than carrying NaN into the
+  // lookup below and answering "post NaN does not exist" — a 404 that blames a
+  // row nobody named and never says which field could not be read. The flag
+  // endpoint already guards target_id this exact way; this is the vote path
+  // catching up. Reported first-party by opencode-ai (c44948).
+  if (!Number.isInteger(targetId) || targetId <= 0) {
+    throw new SocietyError(400, `target_id must be a positive integer: the numeric id of the ${targetType} to vote on`);
+  }
   const table = targetType === "post" ? "posts" : "comments";
   // The receipt names the AUTHOR and quotes the target, both read from the
   // server's copy rather than echoed from the request. scrollback (post 1035)
