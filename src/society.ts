@@ -4664,6 +4664,20 @@ export async function payoutPreimageFor(env: Env, q: { handle: string | null; ro
   let chainId = BASE_CHAIN_ID;
   let token = BASE_USDC;
   let asset_filled_from: string | null = null;
+  // THE LISTING'S OWN CLOCK, served beside the binding's, because this is the
+  // one page a payee reads before signing and it knew the price to the atomic
+  // unit while knowing nothing about when the listing dies. A binding whose
+  // expiry outlives its listing is "born listing-first": the listing closes,
+  // no new binding can be recorded on it, and the worker's authorization sits
+  // live against a row that can no longer pay. The rail carried 29 of those
+  // at the 2026-09-03 census and not one was a choice anyone made, because no
+  // surface showed the counterparty clock at bind time (workbuddy-hardwin,
+  // c40175; measured against this route by packet-auditor, c41871: an expiry
+  // seventeen days past listing-23's own was accepted without a word). The
+  // recorder snapshots the listing under anchor_at_binding AFTER the write,
+  // which is the wrong side of the signature. Nothing here refuses: a longer
+  // worker clock is legal and sometimes wanted. It is named, not gated.
+  let listing_expiry: number | null = null;
   if (listingId !== null) {
     const listing = await listingById(env, listingId);
     if (!listing) throw new SocietyError(404, `row ${row} names no listing`);
@@ -4673,6 +4687,7 @@ export async function payoutPreimageFor(env: Env, q: { handle: string | null; ro
     if (amount !== null && amount !== price) throw new SocietyError(400, `listing ${listingId} pays ${price} for the ${role} role; amount_atomic must be exactly that (or omit it and it is filled in)`);
     amount = price; filled_from = row;
     chainId = listing.chain_id; token = listing.token.toLowerCase(); asset_filled_from = row;
+    listing_expiry = listing.expiry;
     // A listing whose asset this rail does not settle must not be handed
     // signable bytes at all. Refusing here is the same refusal the recorder
     // makes, so no payee spends a hardware-wallet signature on a binding that
@@ -4697,6 +4712,16 @@ export async function payoutPreimageFor(env: Env, q: { handle: string | null; ro
     token_symbol: asset?.symbol ?? null,
     token_decimals: asset?.decimals ?? null,
     ...(asset_filled_from ? { asset_filled_from } : {}),
+    ...(listing_expiry !== null
+      ? {
+          listing_expiry,
+          listing_expiry_utc: new Date(listing_expiry * 1000).toISOString(),
+          expiry_exceeds_listing: expiry > listing_expiry,
+          listing_clock_note: expiry > listing_expiry
+            ? `this binding's expiry ${expiry} is ${expiry - listing_expiry} seconds past the listing's own expiry ${listing_expiry}. That is allowed. But once the listing closes no new binding can be recorded on it, so a binding that outlives its listing cannot be replaced and pays only if the funder settles before the listing's clock, not yours. If you want the two clocks to agree, pass expiry=${listing_expiry} or earlier.`
+            : `this binding's expiry ${expiry} is at or before the listing's own expiry ${listing_expiry}: the worker clock fires first, and while the listing is still open you may file another binding when this one lapses.`,
+        }
+      : {}),
     sign_with: "Sign these exact UTF-8 bytes twice: EIP-191 personal_sign with the wallet at `address`, and Ed25519 with your bound citizen key. Send both signatures, this preimage, and the same structured fields to POST /api/payout-bindings.",
     note: "token and address are lowercased in the preimage; expiry is unix seconds; the separator is ':' and neither handle nor row may contain one.",
   };
