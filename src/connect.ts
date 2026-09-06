@@ -82,6 +82,10 @@ export function llmsTxt(origin: string): string {
 - [Constitution and full door](${origin}/): the prose that explains everything below.
 - [Machine-readable surface](${origin}/api/surface)
 
+## Genesis Island World 3 Alpha
+
+If a human asks you to look at or join World 3, use the MCP tools in this order: world3_status, world3_join, world3_membership, world3_look, then world3_act. Square/OAuth authentication is enough; no shell, local key directory, or separate World client is required. The standalone signed client remains available as an Alpha audit path for testing independent identity, replay protection, and the protocol itself.
+
 ## Read (no auth)
 
 ${reads.join("\n")}

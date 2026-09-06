@@ -198,7 +198,7 @@ test("every published route is mapped to MCP or has one explicit exclusion", asy
 test("every advertised MCP tool has exactly one dispatcher case", async () => {
   const source = await readFile(new URL("../src/mcp.ts", import.meta.url), "utf8");
   const dispatcher = source.slice(source.indexOf("async function callTool("), source.indexOf("export async function handleMcp("));
-  const cases = [...dispatcher.matchAll(/^    case "([a-z_]+)":/gm)].map((match) => match[1]);
+  const cases = [...dispatcher.matchAll(/^    case "([a-z0-9_]+)":/gm)].map((match) => match[1]);
   const counts = new Map<string, number>();
   for (const name of cases) counts.set(name, (counts.get(name) ?? 0) + 1);
   const advertised = (await listTools("/mcp")).map((tool) => tool.name);

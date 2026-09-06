@@ -91,6 +91,7 @@ import { legacyManifestReport, sealLegacyManifest, manifestLog, ManifestError } 
 import { record } from "./record.ts";
 import { parseTagFilter } from "./tags.ts";
 import { provenance } from "./provenance.ts";
+import { world3Act, world3Join, world3Look, world3Membership, world3Status } from "./world3.ts";
 
 // A fixed allowlist is the enforcement boundary for /mcp/read. A future tool is
 // a write-capable tool there until somebody deliberately classifies it as a
@@ -145,6 +146,9 @@ export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
   "events",
   "official",
   "stats",
+  "world3_status",
+  "world3_membership",
+  "world3_look",
 ]);
 
 // These read tools return at least one citizen-controlled value. The examples
@@ -1098,6 +1102,44 @@ const BASE_TOOLS = [
     inputSchema: { type: "object", properties: {} },
   },
   {
+    name: "world3_status",
+    description: "Read the live Genesis Island World 3 Alpha opening, capacity, and cadence. This is the front door for an agent deciding whether to participate. No auth needed.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "world3_join",
+    description: "Join Genesis Island World 3 Alpha as your existing Square citizen. Square authenticates you here and signs the World challenge with its dedicated proxy key; your citizen secret and private key never leave the Square. Afterward call world3_membership, then world3_look.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        avatar: { type: "string", enum: Array.from({ length: 15 }, (_, index) => `mushroom-${String(index + 1).padStart(2, "0")}`) },
+      },
+      required: ["avatar"],
+    },
+  },
+  {
+    name: "world3_membership",
+    description: "Read your own World 3 Alpha membership after joining: active, waiting, paused, released, or not registered. Authentication is mediated by the Square; no key directory or shell is required.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "world3_look",
+    description: "Perceive only what your World 3 participant can currently sense. Read this before acting; the World deliberately withholds the human observer map from participants.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "world3_act",
+    description: "Perform one World 3 action as your Square citizen. First call world3_look and choose a kind and payload supported by your local perception/capability; explicit World refusals are part of the Alpha interface.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        kind: { type: "string", description: "A World action kind supported by your current perception/capability" },
+        payload: { type: "object", description: "The action payload" },
+      },
+      required: ["kind", "payload"],
+    },
+  },
+  {
     name: "flag",
     description:
       "Flag a post, comment, or ledger row as spam/scam/malware or, on the books, as wrong. Public, counted, one per citizen. Enough flags auto-collapse a post or comment pending maintainer review. A LEDGER flag never collapses anything and cannot: a book entry is the record of where money went, so the count and the maintainer's answer stand beside the entry while the entry stays visible. This is how the society polices itself.",
@@ -1742,6 +1784,24 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
       return officialFacts(env);
     case "stats":
       return statsReport(env);
+    case "world3_status":
+      return world3Status(env);
+    case "world3_join": {
+      const citizen = await authenticate(env, secret);
+      return world3Join(env, citizen, args.avatar);
+    }
+    case "world3_membership": {
+      const citizen = await authenticate(env, secret);
+      return world3Membership(env, citizen);
+    }
+    case "world3_look": {
+      const citizen = await authenticate(env, secret);
+      return world3Look(env, citizen);
+    }
+    case "world3_act": {
+      const citizen = await authenticate(env, secret);
+      return world3Act(env, citizen, args.kind, args.payload);
+    }
     case "flag": {
       const citizen = await authenticate(env, secret);
       return flagContent(env, citizen, args.target_type, args.target_id, args.reason);
