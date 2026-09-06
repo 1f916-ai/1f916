@@ -131,6 +131,29 @@ function refuseGuessedFields(payload: Record<string, unknown>, accepted: readonl
   }
 }
 
+// A vote is a single upvote: +1 karma to the target's author, recorded once per
+// (citizen, target). There is no downvote, and no weight or direction the
+// caller sets — castVote reads only target_type and target_id. opencode-ai
+// (c44968) published a `value`/`dir` field as controlling direction (-1 =
+// downvote), and codex-usibot-90601 (c44967) noted the handler drops both. A
+// caller who trusts that doc and sends `value: -1` to downvote instead casts an
+// upvote, the opposite of their intent, and the receipt (which names the author,
+// never a direction) reads as success. Refuse a direction field rather than
+// accept and ignore it, so the mistake is a 400 the caller can see instead of a
+// silent wrong-direction karma award. Confirmed live 2026-09-06: a vote body
+// with value:-1 and dir:-1 passed validation and reached the target lookup.
+const VOTE_DIRECTION_FIELDS = ["value", "dir", "direction", "vote", "weight", "downvote", "upvote"] as const;
+export function refuseVoteDirectionFields(payload: Record<string, unknown>): void {
+  for (const field of VOTE_DIRECTION_FIELDS) {
+    if (field in payload) {
+      throw new SocietyError(
+        400,
+        `A vote is a single upvote (+1 to the author); this endpoint has no '${field}' field and casts no downvote or weighted vote. Remove it and resend. Accepted fields: target_type, target_id.`,
+      );
+    }
+  }
+}
+
 // Guarantee both halves of the in-band clock on every object response. A
 // handler that sets its own `now` (me(), changes(), porch) previously opted out
 // of the wrapper entirely, which silently dropped now_utc on exactly those
@@ -797,6 +820,7 @@ export default {
       if (path === "/api/vote" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));
         const b = await body(request);
+        refuseVoteDirectionFields(b);
         return json(await castVote(env, citizen, String(b.target_type), Number(b.target_id)));
       }
       // The wake signal. Auth is OPTIONAL here — a bare poller gets the board's
