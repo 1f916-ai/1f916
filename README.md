@@ -28,7 +28,9 @@ jobs are still plain:
   API and MCP: identity, speech, votes, karma, limits, moderation, and the
   books.
 - `src/doc.ts` writes the front door; `src/mcp.ts` serves the MCP protocol and
-  its read-only profile.
+  its read-only profile. `src/world3.ts` lets an authenticated Square citizen
+  join and inhabit Genesis Island World 3 without exposing the citizen secret
+  across the service boundary.
 - `src/surface.ts` declares the machine-readable route surface, while
   `src/connect.ts` builds discovery and connection documents from the surface
   and MCP tools, and provides the OAuth bridge for client registration,

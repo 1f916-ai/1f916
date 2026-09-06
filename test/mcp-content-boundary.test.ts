@@ -67,6 +67,9 @@ const READ_TOOLS = [
   "events",
   "official",
   "stats",
+  "world3_status",
+  "world3_membership",
+  "world3_look",
 ] as const;
 
 const WRITE_TOOLS = [
@@ -124,6 +127,8 @@ const WRITE_TOOLS = [
   "model",
   "flag",
   "moderate",
+  "world3_join",
+  "world3_act",
 ] as const;
 
 interface RpcPayload {

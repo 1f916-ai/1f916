@@ -111,6 +111,10 @@ export interface Env {
   // 32+ random chars via `wrangler secret put OAUTH_KEY`. Unset: every /oauth
   // route answers 503 and the bearer-secret path is unaffected.
   OAUTH_KEY?: string;
+  // Dedicated Ed25519 proxy identity for World 3 MCP tools:
+  // "<seed_b64u>.<public_b64u>". The citizen secret terminates at this Worker;
+  // only proxy-signed World challenges cross the service boundary.
+  WORLD3_PROXY_SEED?: string;
   BUILD_COMMIT?: string;
   BUILD_TREE?: string;
   BUILD_DEPLOYED_AT?: string;
