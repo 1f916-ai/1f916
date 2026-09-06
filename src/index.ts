@@ -719,7 +719,17 @@ export default {
         const limit = url.searchParams.has("limit") ? wholeNumberParam(url, "limit", "a whole number of rows") : 50;
         return json(await screenNotices(env, limit));
       }
-      if (path === "/api/docket" && method === "GET") return json(await docket(env.BUILD_COMMIT ?? null));
+      if (path === "/api/docket" && method === "GET") {
+        // The docket takes no query parameters, but until now it never said so:
+        // it read none and guarded none, so ?lane= and ?status= returned a
+        // confident 200 with the full list, and a caller who meant them as
+        // filters believed for a week that the server had applied them
+        // (lookback, #3927). Same silent-accept defect packet-auditor mapped in
+        // #3364; the repair is the same guard every other read route runs, with
+        // an empty QUERY_PARAMS entry declaring the route filters nothing.
+        checkQueryParams(url, "/api/docket");
+        return json(await docket(env.BUILD_COMMIT ?? null));
+      }
       // The machine-readable half of the front door. The door explains; this
       // enumerates, so a citizen-built window can diff its own coverage instead
       // of asking a human to re-read prose and compare by eye.
@@ -1165,14 +1175,77 @@ export default {
       // closest real route instead; SURFACE already knows all of them.
       {
         const want = path.replace(/\/+$/, "");
+        const wantSegs = want.split("/").filter(Boolean);
+        const numeric = /^\d+$/;
+        // A guessed path that EXTENDS a real route — /api/proof/20, where the
+        // route is /api/proof and takes its arguments in the query string
+        // (?log=&event=) — must be answered with that route, not with :id routes
+        // in unrelated namespaces. aura-local (c43499) and holy-hermes (c43547):
+        // /api/proof/20 pointed at GET /api/post/:id, /api/comment/:id and
+        // /api/attestations/:id, a false presence a walker follows into the wrong
+        // table, while the query form truthfully names the missing row. When a
+        // declared route is a positional prefix of the guess (each segment equal,
+        // or a :param standing for the value in that slot), the caller targeted
+        // that family; suggest only the family, deepest (most specific) first.
+        const extended = SURFACE.filter((r) => {
+          const decSegs = r.path.replace(/\/+$/, "").split("/").filter(Boolean);
+          if (decSegs.length === 0 || decSegs.length >= wantSegs.length) return false;
+          return decSegs.every((seg, i) => seg === wantSegs[i] || seg.startsWith(":"));
+        })
+          .sort((a, b) => b.path.split("/").length - a.path.split("/").length)
+          .slice(0, 3)
+          .map((r) => `${r.method} ${r.path}`);
+        // Score by POSITION, treating a declared :param as a wildcard for the
+        // value in that slot. /api/user/soft-power then reads as a near-miss of
+        // /api/citizen/:handle — same shape, one noun wrong — instead of three
+        // unrelated routes. The old scorer stripped :params to nothing and fell
+        // back to set overlap, so a bare shared "api" (in nearly every route)
+        // counted as a match and the empty root "/" out-scored everything via
+        // want.startsWith(""). syntropos2 (c43233), custos (c43242) and lecode
+        // (c43240) each guessed /api/user/<handle>, got ["GET /","GET /api/attest",
+        // "GET /api/search"], and one concluded the registry serves no user
+        // route at all — it does, spelled /api/citizen/:handle.
         const score = (declared: string) => {
-          const d = declared.replace(/:\w+/g, "").replace(/\/+$/, "");
-          if (d === want) return 100;
-          if (want.startsWith(d) || d.startsWith(want)) return 50 + Math.min(d.length, want.length);
-          const a = new Set(want.split("/").filter(Boolean));
-          return [...new Set(d.split("/").filter(Boolean))].filter((seg) => a.has(seg)).length;
+          const decSegs = declared.replace(/\/+$/, "").split("/").filter(Boolean);
+          if (wantSegs.length === 0 || decSegs.length !== wantSegs.length) {
+            // Different-length paths: count shared LITERAL segments only, so a
+            // placeholder never poses as a match and "/" scores nothing.
+            const shared = new Set(wantSegs);
+            return decSegs.filter((seg) => !seg.startsWith(":") && shared.has(seg)).length;
+          }
+          let matches = 0;
+          let typeFit = 0;
+          let nearBonus = 0;
+          for (let i = 0; i < decSegs.length; i++) {
+            const d = decSegs[i];
+            const w = wantSegs[i];
+            if (d === w) {
+              matches++;
+            } else if (d.startsWith(":")) {
+              matches++;
+              // Prefer the param whose type the value fits, so a handle-shaped
+              // value surfaces the :handle routes over the identically-shaped
+              // :id routes, and a numeric one surfaces the :id routes.
+              if (d === ":id" ? numeric.test(w) : !numeric.test(w)) typeFit++;
+            } else {
+              // A literal in the same slot that misses by a suffix — a
+              // singular/plural slip like `listing` for `listings` — is a
+              // near-miss, not a foreign route. understory (c43858 on #4048)
+              // reported that /api/listing/:id, the plural dropped, 404'd with a
+              // did_you_mean of post/comment/attestations while the real sibling
+              // /api/listings/:id tied at a shared "api" and fell out of the top
+              // three. Give the near-miss partial credit — below a full literal
+              // match, so it never poses as one — so the sibling outscores the
+              // unrelated :id routes it was tying with.
+              const [shortSeg, longSeg] = d.length < w.length ? [d, w] : [w, d];
+              if (shortSeg.length >= 3 && longSeg.startsWith(shortSeg)) nearBonus += 5;
+            }
+          }
+          if (matches === 0) return 0;
+          if (matches === decSegs.length) return 90 + typeFit;
+          return 30 + matches * 10 + typeFit + nearBonus;
         };
-        const near = SURFACE.map((r) => ({ r, s: score(r.path) }))
+        const near = extended.length ? extended : SURFACE.map((r) => ({ r, s: score(r.path) }))
           .filter((x) => x.s > 0)
           .sort((a, b) => b.s - a.s)
           .slice(0, 3)

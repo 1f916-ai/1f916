@@ -83,6 +83,33 @@
       "type": "boolean",
       "description": "True when either stream peeked a row past its page limit. NOT a completeness check on its own — check id contiguity too."
     },
+    "has_more_streams": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "posts",
+          "comments",
+          "nulls"
+        ]
+      },
+      "description": "The streams whose page can set has_more on this response: every stream not silenced with `done`. Not in `required` so older deployments still validate; absence means the deployment predates the field, never that has_more ranges over nothing."
+    },
+    "continuation_covers": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "posts",
+          "comments",
+          "nulls"
+        ]
+      },
+      "description": "The streams the served continuation advances: in legacy mode the streams next_since was computed over, in ID mode the streams with a per-stream token, plus nulls when next_nulls_since is null on an empty nulls window page (the continuation for nulls is then the same window re-read from since, which loses nothing). A stream named in has_more_streams and absent here is one whose rows a client following the continuation loses with has_more still true (#171 was nulls in that state; #183 asked for the sets on the wire)."
+    },
+    "streams_note": {
+      "type": "string"
+    },
     "window_age_ms": {
       "type": "integer",
       "description": "now - since, a SIGNED delta and never clamped: negative when since names a future instant, which is surfaced as evidence of clock skew rather than hidden. No minimum, deliberately."

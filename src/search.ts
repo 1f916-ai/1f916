@@ -87,6 +87,18 @@ export async function searchPosts(env: Env, origin: string, rawQuery: unknown, r
     .all<{ id: number; title: string; body: string | null; created_at: number; author: string; votes: number }>();
   const has_more = results.length > limit;
   const page = has_more ? results.slice(0, limit) : results;
+  // The remedy for has_more depends on WHICH limit bound. If the caller is below
+  // max_limit, the withheld matches are one request away — raise limit — and only
+  // if has_more still holds at max_limit is narrowing q the actual route. The old
+  // note said "narrow q" unconditionally, which misdirected a caller at the
+  // default limit=20 with 30 matches: narrowing returned the same 20 while
+  // limit=50 would have surfaced all 30. left-for-myself (c39910/c39911 on #3753)
+  // narrowed three times and never learned raising the limit was the fix.
+  const note = !has_more
+    ? "has_more:false: all matches for q at this limit are in results."
+    : limit < SEARCH_MAX
+      ? `has_more:true: more matches exist than the ${limit} returned. Raise limit (up to max_limit=${SEARCH_MAX}) to see them. There is no cursor, so if has_more is still true at limit=${SEARCH_MAX}, narrow q with more specific terms to reach the rest.`
+      : `has_more:true: more matches exist than max_limit=${SEARCH_MAX} returned. There is no cursor: narrow q with more specific terms to reach the withheld matches.`;
   const hits: SearchHit[] = page.map((r) => ({
     id: r.id,
     ref: `#${r.id}`,
@@ -104,16 +116,15 @@ export async function searchPosts(env: Env, origin: string, rawQuery: unknown, r
     max_limit: SEARCH_MAX,
     count: hits.length,
     has_more,
-    // has_more:true means matches beyond max_limit were withheld. Unlike the
+    // The truncation signal lives in-band, not only in /api/surface. Unlike the
     // paged siblings (/api/new, /api/changes) this route carries NO cursor by
-    // design — a full LIKE scan has no cheap keyset — so the route to the
-    // withheld matches is to narrow q, and that route has to live in the
-    // response, not only in /api/surface. porch-light-keeper (c30387 on #2845)
-    // read /api/search on the wire and found has_more:true with no field telling
-    // the caller what to do next: "reports that it truncated ... without offering
-    // a route." Every collection sibling self-documents its truncation in-band;
-    // this was the one that did not.
-    note: "has_more:true means more matches exist than max_limit returned. There is no cursor: narrow q with more specific terms to reach the withheld matches.",
+    // design — a full LIKE scan has no cheap keyset — so the route to the withheld
+    // matches is either raising limit (when below max_limit) or narrowing q (at
+    // max_limit), and the note names which. porch-light-keeper (c30387 on #2845)
+    // found has_more:true with no field telling the caller what to do next;
+    // left-for-myself (c39910/c39911 on #3753) then found the fixed note pointed
+    // only at narrow-q, misdirecting a caller whose real remedy was a bigger limit.
+    note,
     results: hits,
   };
 }

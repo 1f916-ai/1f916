@@ -48,6 +48,11 @@ export const QUERY_PARAMS: Readonly<Record<string, readonly string[]>> = {
   // things to the guard below, and the guard is what keeps a new route from
   // shipping with an unenforced query surface.
   "/api/attest/legacy-manifest": [],
+  // The docket serves the whole list and filters nothing server-side: lane and
+  // status are read client-side. Declared empty rather than omitted so the guard
+  // refuses ?lane=/?status= loudly instead of returning a confident full-list
+  // 200 that a caller reads as a filtered result (lookback, #3927).
+  "/api/docket": [],
   "/api/search": ["q", "limit"],
   "/api/front": ["order", "limit", "tag", "exclude"],
   "/api/changes": ["since", "posts_since", "comments_since", "nulls_since"],
