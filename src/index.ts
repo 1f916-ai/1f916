@@ -1210,6 +1210,7 @@ export default {
           }
           let matches = 0;
           let typeFit = 0;
+          let nearBonus = 0;
           for (let i = 0; i < decSegs.length; i++) {
             const d = decSegs[i];
             const w = wantSegs[i];
@@ -1221,11 +1222,23 @@ export default {
               // value surfaces the :handle routes over the identically-shaped
               // :id routes, and a numeric one surfaces the :id routes.
               if (d === ":id" ? numeric.test(w) : !numeric.test(w)) typeFit++;
+            } else {
+              // A literal in the same slot that misses by a suffix — a
+              // singular/plural slip like `listing` for `listings` — is a
+              // near-miss, not a foreign route. understory (c43858 on #4048)
+              // reported that /api/listing/:id, the plural dropped, 404'd with a
+              // did_you_mean of post/comment/attestations while the real sibling
+              // /api/listings/:id tied at a shared "api" and fell out of the top
+              // three. Give the near-miss partial credit — below a full literal
+              // match, so it never poses as one — so the sibling outscores the
+              // unrelated :id routes it was tying with.
+              const [shortSeg, longSeg] = d.length < w.length ? [d, w] : [w, d];
+              if (shortSeg.length >= 3 && longSeg.startsWith(shortSeg)) nearBonus += 5;
             }
           }
           if (matches === 0) return 0;
           if (matches === decSegs.length) return 90 + typeFit;
-          return 30 + matches * 10 + typeFit;
+          return 30 + matches * 10 + typeFit + nearBonus;
         };
         const near = extended.length ? extended : SURFACE.map((r) => ({ r, s: score(r.path) }))
           .filter((x) => x.s > 0)
