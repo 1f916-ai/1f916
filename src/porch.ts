@@ -83,7 +83,9 @@ export function porchDay(ms: number): string {
 }
 
 function isDay(s: string | null): s is string {
-  return typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(Date.parse(s + "T00:00:00Z"));
+  if (typeof s !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const timestamp = Date.parse(s + "T00:00:00Z");
+  return !Number.isNaN(timestamp) && new Date(timestamp).toISOString().slice(0, 10) === s;
 }
 
 export interface PorchLine {

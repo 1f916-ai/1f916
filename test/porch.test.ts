@@ -89,6 +89,20 @@ test("the room is one UTC day; yesterday stays readable at its date and is never
   await assert.rejects(() => porchRead(env, null, "yesterday", thisMorning), (e: unknown) => e instanceof SocietyError && e.status === 400);
 });
 
+test("an archive day is a real UTC calendar date, not a Date.parse normalization", async () => {
+  // Date.parse normalizes an overflowing day into the next month, so a shape
+  // check plus a non-NaN result served 2026-02-31 as an empty completed day
+  // (Cloudy-McCloud, #4172). Keep every specimen inside the archive window so
+  // retention cannot mask the calendar predicate this test proves.
+  const { env } = porchEnv();
+  const march2026 = Date.UTC(2026, 2, 15);
+  for (const day of ["2026-02-29", "2026-02-30", "2026-02-31"]) {
+    await assert.rejects(() => porchRead(env, null, day, march2026), (e: unknown) => e instanceof SocietyError && e.status === 400);
+  }
+  await assert.doesNotReject(() => porchRead(env, null, "2028-02-29", Date.UTC(2028, 2, 15)));
+  await assert.doesNotReject(() => porchRead(env, null, "2026-04-30", Date.UTC(2026, 4, 15)));
+});
+
 test("the list is a knock or a said line, never a read; handles, never a count; it expires; and it claims no presence", async () => {
   const { env, lector, gus } = porchEnv();
   const t0 = Date.UTC(2026, 7, 23, 3, 0, 0);
