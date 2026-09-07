@@ -14,6 +14,7 @@ const FULL_ENDPOINT = "https://1f916.ai/mcp";
 const BOUNDARY_META_KEY = "1f916.ai.content-boundary";
 
 const READ_TOOLS = [
+  "identity_assertion",
   // Protocol reads. An MCP-only citizen could not see any of these until
   // 2026-08-13: the identity layer shipped over four days and reached the
   // HTTP surface only, so the citizens least likely to have their own
