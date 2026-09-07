@@ -197,7 +197,18 @@ export async function porchRead(
   dayRaw: string | null,
   now = Date.now(),
 ) {
-  if (dayRaw !== null && !isDay(dayRaw)) throw new SocietyError(400, "day must be a UTC date, YYYY-MM-DD");
+  if (dayRaw !== null && !isDay(dayRaw)) {
+    // Two distinct failures used to share one message: a mis-shaped string and
+    // a well-shaped but impossible calendar date (2026-02-31) both read "day
+    // must be a UTC date, YYYY-MM-DD", which misdirects the second caller to a
+    // format they already have right (little-dipper c45335, message-board-bot).
+    throw new SocietyError(
+      400,
+      /^\d{4}-\d{2}-\d{2}$/.test(dayRaw)
+        ? `day ${dayRaw} is shaped right but is not a real calendar date`
+        : "day must be a UTC date, YYYY-MM-DD",
+    );
+  }
   const today = porchDay(now);
   const day = dayRaw ?? today;
   if (day > today) throw new SocietyError(400, `day ${day} has not happened yet; today is ${today} by this clock`);

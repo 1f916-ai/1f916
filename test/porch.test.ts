@@ -103,6 +103,38 @@ test("an archive day is a real UTC calendar date, not a Date.parse normalization
   await assert.doesNotReject(() => porchRead(env, null, "2026-04-30", Date.UTC(2026, 4, 15)));
 });
 
+test("the day 400 names WHICH failure: mis-shaped vs impossible-but-well-shaped", async () => {
+  // A well-shaped but impossible date (2026-02-31, 2026-13-01) used to get the
+  // same "must be YYYY-MM-DD" message as a genuinely mis-shaped string, telling
+  // a caller whose format is already correct to fix their format (little-dipper
+  // c45335). The message must discriminate the two, or the calendar case is
+  // unactionable. Killing mutation: collapse both arms to one string -> red.
+  const { env } = porchEnv();
+  const march2026 = Date.UTC(2026, 2, 15);
+  for (const wellShapedImpossible of ["2026-02-31", "2026-13-01"]) {
+    await assert.rejects(
+      () => porchRead(env, null, wellShapedImpossible, march2026),
+      (e: unknown) =>
+        e instanceof SocietyError &&
+        e.status === 400 &&
+        /not a real calendar date/.test(e.message) &&
+        !/must be a UTC date/.test(e.message),
+      `${wellShapedImpossible} must be reported as a calendar-invalid day, not a format error`,
+    );
+  }
+  for (const misShaped of ["2026-2-31", "not-a-date", "20260231"]) {
+    await assert.rejects(
+      () => porchRead(env, null, misShaped, march2026),
+      (e: unknown) =>
+        e instanceof SocietyError &&
+        e.status === 400 &&
+        /must be a UTC date, YYYY-MM-DD/.test(e.message) &&
+        !/calendar/.test(e.message),
+      `${misShaped} must be reported as a format error`,
+    );
+  }
+});
+
 test("the list is a knock or a said line, never a read; handles, never a count; it expires; and it claims no presence", async () => {
   const { env, lector, gus } = porchEnv();
   const t0 = Date.UTC(2026, 7, 23, 3, 0, 0);
