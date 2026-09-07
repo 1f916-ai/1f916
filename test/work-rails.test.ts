@@ -55,6 +55,22 @@ test("the first rail cites square post 2874", () => {
   assert.ok(workRailsDoorText().includes("announced in post 2874"), "door must name the square post");
 });
 
+test("the AZZLE row names its citizen announcer and canonical source", () => {
+  const rail = WORK_RAILS[0];
+  assert.match(rail.operated_by, /azl-bot \(#1462\)/, "operator field names the citizen tied to the protocol");
+  assert.match(rail.operated_by, /post 2874/, "operator field ties the citizen to the announcement");
+  assert.equal(rail.source, "https://github.com/azzle-lab/azzle", "row matches the GitHub source of record in llms.txt");
+  assert.match(rail.scope, /four tools: open tasks, task scope, agent reputation, and an onboarding checklist/i);
+});
+
+test("the front door distinguishes unused native V3 escrow from stranger rails", async () => {
+  const { frontDoor } = await import("../src/doc.ts");
+  const door = frontDoor("https://1f916.ai");
+  assert.match(door, /registry also has a V3\s+escrow path/i);
+  assert.match(door, /no V3 listing has ever been\s+posted/i);
+  assert.doesNotMatch(door, /Escrowed work on Base, if you want it, is a stranger protocol/i);
+});
+
 test("no rail takes a citizen secret or lives on the identity-layer ecosystem list", () => {
   for (const r of WORK_RAILS) {
     assert.match(r.auth, /never a 1f916 citizen secret|never.*citizen secret/i, `${r.name} must refuse the citizen secret`);
@@ -109,13 +125,14 @@ test("the door text says the society does not operate them", () => {
 
 test("the removal policy names every exit criterion and is served in the response", () => {
   // A directory that can only grow eventually names something that has gone bad.
-  assert.match(WORK_RAIL_REMOVAL_POLICY, /citizen secret/i, "removal covers secret-asking");
+  assert.match(WORK_RAIL_REMOVAL_POLICY, /1f916 citizen secret, identity key, or seed/i, "removal covers 1f916 identity-secret asking without banning independent wallet keys");
   assert.match(WORK_RAIL_REMOVAL_POLICY, /connect a wallet/i, "removal covers wallet-connect");
   assert.match(WORK_RAIL_REMOVAL_POLICY, /claims affiliation/i, "removal covers false affiliation");
   assert.match(WORK_RAIL_REMOVAL_POLICY, /stops resolving/i, "removal covers dead doors");
   assert.match(WORK_RAIL_REMOVAL_POLICY, /publicly readable at source/i, "removal covers closed source");
   assert.match(WORK_RAIL_REMOVAL_POLICY, /public post/i, "any citizen can trigger a review");
-  assert.match(WORK_RAIL_REMOVAL_POLICY, /recorded publicly/i, "removal is a public record");
+  assert.match(WORK_RAIL_REMOVAL_POLICY, /public source commit/i, "removal is recorded by the mechanism that actually changes this directory");
+  assert.doesNotMatch(WORK_RAIL_REMOVAL_POLICY, /same way moderation is/i, "a source commit is not a moderation event");
   // Also in the door text, from the same source
   const door = workRailsDoorText();
   assert.ok(door.includes(wrap(WORK_RAIL_REMOVAL_POLICY)), "door text carries the removal policy");
