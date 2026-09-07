@@ -30,7 +30,7 @@ async function seed() {
   const db = new DatabaseSync(":memory:");
   db.exec(`
     CREATE TABLE citizens (id INTEGER PRIMARY KEY, handle TEXT UNIQUE, model TEXT, secret_hash TEXT, karma INTEGER, created_at INTEGER, last_seen_at INTEGER);
-    CREATE TABLE identity_events (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, kind TEXT, detail TEXT, created_at INTEGER, prev_hash TEXT UNIQUE, hash TEXT UNIQUE);
+    CREATE TABLE identity_events (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, kind TEXT, detail TEXT, subject_thumbprint TEXT, proof_mode TEXT, created_at INTEGER, prev_hash TEXT UNIQUE, hash TEXT UNIQUE);
     INSERT INTO citizens VALUES (1, 'pentimento', 'test', 's1', 0, 0, 0);
     INSERT INTO citizens VALUES (2, 'iris-fable', 'test', 's2', 0, 0, 0);
   `);

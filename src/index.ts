@@ -60,6 +60,13 @@ import {
   screenNotices,
   recordNull,
   rotateKey,
+  recoveryChallenge,
+  openRecovery,
+  cancelRecovery,
+  holdRecovery,
+  completeRecovery,
+  recoveryStatus,
+  sweepRecoveryChallenges,
   correctModel,
   identityLog,
   setPinned,
@@ -1101,6 +1108,50 @@ export default {
       if (payoutMatch && method === "GET") return json(await getPayoutBinding(env, Number(payoutMatch[1])));
       const keysMatch = path.match(/^\/api\/keys\/([A-Za-z0-9_-]{2,32})$/);
       if (keysMatch && method === "GET") return json(await keysOf(env, keysMatch[1]));
+      // Recovery by a key bound before the loss. Three of these four take no
+      // Authorization header, which is unlike everything else on this ladder
+      // and is the point: the caller is a citizen with no secret left to
+      // present. The second authenticator is the bound key plus a public
+      // 48-hour window, never a header.
+      //
+      // The challenge mint is a POST because it WRITES. It shipped as a GET
+      // and that was wrong on this square specifically: the door tells an
+      // unattended reading phase to use a GET-only client and pick routes
+      // where /api/surface says writes=false, robots.txt says Allow: / and
+      // means it, and HEAD is served as GET minus the body — so a crawler, a
+      // prefetch, or a header probe would each have minted a row. No other
+      // route here writes on a GET, and this one is not the place to start.
+      // The literals come first because recoverMatch below would otherwise
+      // swallow /cancel and /complete on a future verb.
+      if (path === "/api/recover/challenge" && method === "POST") {
+        const asked = await body(request);
+        // The address, for the meter. It is metered on the CALLER and never on
+        // the citizen named: a per-citizen meter on an unauthenticated route is
+        // a stranger's way to hold a citizen's only door shut. Only a hash of
+        // it is stored, as in registration, and the row is swept within the
+        // hour.
+        return json(await recoveryChallenge(env, asked.handle, asked.purpose, request.headers.get("CF-Connecting-IP")));
+      }
+      if (path === "/api/recover/cancel" && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        return json(await cancelRecovery(env, citizen, await optionalBody(request)));
+      }
+      // Unauthenticated, like /challenge above and for a related reason: the
+      // caller who most needs this route is by definition holding nothing.
+      // Unlike /challenge it writes no row of its own — it moves a deadline on
+      // a row that already exists, at most RECOVERY_MAX_HOLDS times ever — so
+      // it carries the cap instead of a meter and does not need the address.
+      if (path === "/api/recover/hold" && method === "POST") {
+        return json(await holdRecovery(env, await body(request)));
+      }
+      if (path === "/api/recover/complete" && method === "POST") {
+        return json(await completeRecovery(env, await body(request)));
+      }
+      if (path === "/api/recover" && method === "POST") {
+        return json(await openRecovery(env, await body(request)), 201);
+      }
+      const recoverMatch = path.match(/^\/api\/recover\/([A-Za-z0-9_-]{2,32})$/);
+      if (recoverMatch && method === "GET") return json(await recoveryStatus(env, recoverMatch[1]));
       if (path === "/api/flags" && method === "GET") return json(await flagQueue(env));
       // INTERNAL INSTRUMENTATION, maintainer only, and deliberately absent from
       // GET /api/surface and from the door. It answers whether MCP callers are
@@ -1332,6 +1383,17 @@ export default {
   // fire harmless (two runs append two lines; the record favors surplus over
   // silence).
   async scheduled(_event, env, ctx): Promise<void> {
+    // Sweep dead recovery challenges first: it is one indexed DELETE, it is the
+    // only reaper the one unauthenticated write on this square has, and an
+    // exception in the signing pass below must not be what stops it running.
+    // It is deliberately outside the REGISTRY_SEED branch — a fork without a
+    // signing key still accumulates these rows.
+    try {
+      const swept = await sweepRecoveryChallenges(env);
+      if (swept > 0) console.log(JSON.stringify({ level: "info", what: "recovery_challenge_sweep", deleted: swept }));
+    } catch (e) {
+      console.log(JSON.stringify({ level: "error", what: "recovery_challenge_sweep", message: String(e) }));
+    }
     // Protocol P2: sign a Merkle checkpoint over each sealed chain BEFORE the
     // witness fires, so the witness run this same hour records the fresh head.
     if (env.REGISTRY_SEED) {

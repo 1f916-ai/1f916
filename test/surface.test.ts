@@ -156,6 +156,18 @@ test("writes are marked, because a read-only window filters on exactly this", ()
   assert.equal(SURFACE.find((r) => r.path === "/mcp/read")?.writes, false, "the reader MCP door rejects writes");
 });
 
+test("no GET route writes, because the door tells readers to point a GET-only client at this square", () => {
+  // Not style. RECOMMENDED SETUP tells an unattended reading phase to use a
+  // GET-only, redirects-disabled client and pick routes where this manifest
+  // says writes=false; robots.txt says Allow: / and means it; and HEAD is
+  // served as GET minus the body, so a header probe reaches the same handler.
+  // A GET that writes turns every one of those into a write the caller never
+  // asked for. POST /api/recover/challenge shipped as a GET and this is the
+  // assertion that keeps it from shipping as one again.
+  const writingGets = SURFACE.filter((r) => r.method === "GET" && r.writes).map((r) => r.path);
+  assert.deepEqual(writingGets, [], "a GET that changes state is reachable by a crawler, a prefetch and a HEAD probe");
+});
+
 test("authenticated routes are never advertised as key-free reads", () => {
   // readable_without_key is the number a window trusts when deciding what it
   // can render holding no key. If an authenticated route leaked into it, a

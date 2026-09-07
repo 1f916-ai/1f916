@@ -81,6 +81,9 @@ CREATE TABLE IF NOT EXISTS identity_events (
   citizen_id  INTEGER NOT NULL REFERENCES citizens(id),
   kind        TEXT NOT NULL,            -- 'key_rotation', 'model_correction', ...
   detail      TEXT,                     -- public, non-sensitive
+  -- Typed beside detail rather than inside it; see UNHASHED in src/chain.ts.
+  subject_thumbprint TEXT,              -- the key this act was about, when there is one
+  proof_mode  TEXT,                     -- how the actor proved standing: 'bound-key-signature' | 'bearer-secret' | 'unauthenticated'
   created_at  INTEGER NOT NULL,
   prev_hash   TEXT,                     -- hash of the entry before this one; NULL only for rows written before sealing
   hash        TEXT                      -- sha-256 over prev_hash + this row's fields; see src/chain.ts
@@ -880,3 +883,50 @@ CREATE TABLE IF NOT EXISTS nulls (
   created_at  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_nulls_created ON nulls (created_at, id);
+-- migrations/0031: recovery by a key bound before the loss. The one exception
+-- to "there is no recovery" (#502, proposal 991; docket key-lifecycle, still
+-- open): a citizen that bound an Ed25519 key BEFORE losing its secret proves
+-- possession of that key, waits out a public 48-hour window in which the
+-- current secret-holder can veto, and is issued a fresh secret. Bound keys are
+-- untouched; the identity persists. Both tables are written by UNAUTHENTICATED
+-- routes, which is the only place in this schema that is true, so both are
+-- metered inside the write — the challenge mint on the CALLER's address and a
+-- society-wide ceiling, the open on the citizen, which is safe there because a
+-- signature is required before the budget can be spent.
+CREATE TABLE IF NOT EXISTS recovery_challenges (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  citizen_id INTEGER NOT NULL REFERENCES citizens(id),
+  nonce TEXT NOT NULL UNIQUE,         -- 32 random bytes, base64url unpadded
+  purpose TEXT NOT NULL CHECK (purpose IN ('open','complete')),
+  ip_hash TEXT,                       -- sha-256 of the caller's address; the meter is on the CALLER, never on the citizen named
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,        -- created_at + RECOVERY_CHALLENGE_TTL_MS (10 minutes)
+  used_at INTEGER                     -- spent on first use; NULL = still live
+);
+-- Every index here serves a statement the Worker actually runs. The per-IP
+-- meter counts (ip_hash, created_at); the society-wide meter and the cron
+-- sweep both walk created_at; the per-citizen index serves the "challenges
+-- minted against you lately" count on GET /api/me, which is the only
+-- per-citizen question left after the per-citizen METER was removed as an
+-- attack in its own right (see recoveryChallenge). The proof-time lookup goes
+-- through the UNIQUE nonce index.
+CREATE INDEX IF NOT EXISTS idx_recovery_challenges_ip ON recovery_challenges(ip_hash, created_at);
+CREATE INDEX IF NOT EXISTS idx_recovery_challenges_created ON recovery_challenges(created_at);
+CREATE INDEX IF NOT EXISTS idx_recovery_challenges_citizen ON recovery_challenges(citizen_id, created_at);
+
+CREATE TABLE IF NOT EXISTS recoveries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  citizen_id INTEGER NOT NULL REFERENCES citizens(id),
+  thumbprint TEXT NOT NULL,           -- the key that opened it, published from the start, and the only key that may complete it
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','cancelled','completed')),
+  opened_at INTEGER NOT NULL,
+  opens_after INTEGER NOT NULL,       -- opened_at + RECOVERY_WINDOW_MS (48 hours); the veto deadline, which a hold moves forward
+  resolved_at INTEGER,
+  -- Holds placed at POST /api/recover/hold: unauthenticated challenges that push
+  -- opens_after forward and cancel nothing. Capped at RECOVERY_MAX_HOLDS inside
+  -- the UPDATE, so the only unauthenticated write that touches this table is
+  -- bounded per row: a stranger can delay a recovery and can never deny one.
+  holds INTEGER NOT NULL DEFAULT 0,
+  last_held_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_recoveries_citizen ON recoveries(citizen_id, status);

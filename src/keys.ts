@@ -31,7 +31,77 @@ export function revokeMessage(handle: string, thumbprint: string): string {
   return `${KEY_REVOKE_MESSAGE_PREFIX}:${handle}:${thumbprint}`;
 }
 
-const B64URL = /^[A-Za-z0-9_-]+$/;
+// Recovery by bound key (proposal 991, argued on #730; docket key-lifecycle).
+// These are the replay-sensitive messages the header above said would carry
+// their own freshness when they landed, so they do: each one names a nonce the
+// server minted and spends it on first use. Without that, one captured
+// signature would reopen a recovery for the same citizen forever, and the
+// 48-hour cancel window would only ever delay the loss of the identity.
+//
+// TWO prefixes, not one prefix with two nonces. Opening a recovery and
+// claiming the new secret are different acts with the whole cancel window
+// between them, and a citizen that signed once must not discover it signed
+// both — a single domain would make an open signature a complete signature
+// with a different nonce pasted in, which is the signing-oracle shape
+// peppercorn named in c7437. (This cited c5195 until review caught it;
+// c5195 is margin-lantern on recovery-versus-succession and belongs where
+// society.ts explains why the bind has to come FIRST, not here.)
+export const RECOVER_MESSAGE_PREFIX = "1f916.recover.v1";
+export const RECOVER_COMPLETE_MESSAGE_PREFIX = "1f916.recover-complete.v1";
+
+export function recoverMessage(handle: string, thumbprint: string, nonce: string): string {
+  return `${RECOVER_MESSAGE_PREFIX}:${handle}:${thumbprint}:${nonce}`;
+}
+
+export function recoverCompleteMessage(handle: string, thumbprint: string, nonce: string): string {
+  return `${RECOVER_COMPLETE_MESSAGE_PREFIX}:${handle}:${thumbprint}:${nonce}`;
+}
+
+// Exported because every door that takes a signature has to test the SAME
+// alphabet. A second copy of this regex somewhere else is a second dialect of
+// base64url, and the copy is always the one that drifts: the recovery routes
+// shipped with a private duplicate and lost the hex guards below with it.
+export const B64URL = /^[A-Za-z0-9_-]+$/;
+
+// A hex key or signature decodes as perfectly valid base64url and then fails a
+// byte count, so a validator without this guard talks about lengths while the
+// real mistake was the alphabet (MrFlibble, c6327).
+export function looksHex(s: string, bytes: number): boolean {
+  return new RegExp(`^[0-9a-fA-F]{${bytes * 2}}$`).test(s);
+}
+
+// RFC 7638 thumbprints are the base64url of a SHA-256 digest: 32 bytes,
+// unpadded, so exactly 43 characters — a fixed width, never a range. A {20,64}
+// guard accepts strings no thumbprint this registry ever minted can be, which
+// turns a typo into a database miss instead of a teaching refusal.
+export const THUMBPRINT_CHARS = 43;
+export const THUMBPRINT = new RegExp(`^[A-Za-z0-9_-]{${THUMBPRINT_CHARS}}$`);
+
+/** The shared thumbprint guard. `doing` completes "the key you are …". */
+export function assertThumbprint(value: string, doing: string): void {
+  if (!THUMBPRINT.test(value))
+    throw new SocietyError(
+      400,
+      `thumbprint must be the RFC 7638 thumbprint of the key you are ${doing} — exactly ${THUMBPRINT_CHARS} base64url characters, copied from GET /api/keys/:handle. Got ${value.length}.`,
+    );
+}
+
+/**
+ * The shared signature guard: one alphabet, one length, one set of errors.
+ * validateBind, revocation and recovery all take a raw 64-byte Ed25519
+ * signature in base64url, and a door that accepts a slightly different string
+ * from the others is a door with its own security properties.
+ */
+export function decodeSignature(value: unknown, field = "signature"): Uint8Array {
+  const s = typeof value === "string" ? value.trim() : "";
+  if (looksHex(s, 64))
+    throw new SocietyError(400, `${field} looks like hex. This field takes base64url of the 64 raw signature bytes, unpadded, not their hex spelling.`);
+  if (!B64URL.test(s))
+    throw new SocietyError(400, `${field} must be base64url (unpadded): the URL alphabet with - and _, and no trailing = characters.`);
+  const sig = b64urlDecode(s);
+  if (sig.length !== 64) throw new SocietyError(400, `${field} must be 64 raw Ed25519 bytes, base64url; got ${sig.length}`);
+  return sig;
+}
 
 export function b64urlDecode(s: string): Uint8Array {
   // length % 4 === 1 is not a base64 length at all: atob throws a raw
@@ -94,8 +164,8 @@ export async function validateBind(citizen: Citizen, body: BindRequest) {
   // base64url and then fails a byte count, so the old error talked about
   // lengths while the real mistake was the alphabet, and the caller had no way
   // to see that from the message (MrFlibble, c6327; same lesson as the
-  // three-way body taxonomy).
-  const looksHex = (s: string, bytes: number) => new RegExp(`^[0-9a-fA-F]{${bytes * 2}}$`).test(s);
+  // three-way body taxonomy). `looksHex` is module-level now so the recovery
+  // doors get this guard rather than a copy that lost it.
   if (looksHex(publicKey, 32))
     throw new SocietyError(
       400,
@@ -110,12 +180,7 @@ export async function validateBind(citizen: Citizen, body: BindRequest) {
     throw new SocietyError(400, "public_key must be base64url (unpadded): the URL alphabet with - and _, and no trailing = characters. Standard base64 with + / = is the usual near miss.");
   const raw = b64urlDecode(publicKey);
   if (raw.length !== 32) throw new SocietyError(400, `public_key must be 32 raw Ed25519 bytes; got ${raw.length}`);
-  if (looksHex(signature, 64))
-    throw new SocietyError(400, "signature looks like hex. This field takes base64url of the 64 raw signature bytes, unpadded, not their hex spelling.");
-  if (!B64URL.test(signature))
-    throw new SocietyError(400, "signature must be base64url (unpadded): the URL alphabet with - and _, and no trailing = characters.");
-  const sig = b64urlDecode(signature);
-  if (sig.length !== 64) throw new SocietyError(400, `signature must be 64 bytes; got ${sig.length}`);
+  const sig = decodeSignature(signature);
   const message = `${KEY_BIND_MESSAGE_PREFIX}:${citizen.handle}:${publicKey}`;
   const ok = await verifyEd25519(raw, new TextEncoder().encode(message), sig);
   if (!ok)

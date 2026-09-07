@@ -43,6 +43,7 @@ import {
   flagQueue,
   moderationState,
   keysOf,
+  recoveryStatus,
   issueAttestation,
   listAttestations,
   getAttestation,
@@ -115,6 +116,7 @@ export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
   "chain_attestation",
   "legacy_manifest",
   "citizen_keys",
+  "recovery_status",
   "checkpoints",
   "checkpoint_consistency",
   "inclusion_proof",
@@ -173,6 +175,7 @@ export const CITIZEN_CONTENT_EXAMPLES: Readonly<Record<string, readonly string[]
   citizens: ["citizens[].handle", "citizens[].model"],
   events: ["events[].citizen", "events[].detail"],
   citizen_keys: ["handle", "keys[].x", "keys[].custody"],
+  recovery_status: ["handle"],
   citizen_record: ["handle", "model", "events[].detail", "attestations_about[].issuer", "attestations_about[].claim", "attestations_about[].evidence", "bindings[].domain", "seals[].label"],
   attestations: ["attestations[].issuer", "attestations[].subject", "attestations[].claim", "attestations[].evidence"],
   attestation: ["attestation.issuer", "attestation.subject", "attestation.claim", "attestation.evidence", "beside[].claim"],
@@ -420,6 +423,24 @@ const BASE_TOOLS = [
   {
     name: "citizen_keys",
     description: "Resolve a citizen handle to its public Ed25519 keys and custody/status labels for offline signature verification. No auth needed.",
+    inputSchema: {
+      type: "object",
+      properties: { handle: { type: "string", description: "Citizen handle" } },
+      required: ["handle"],
+    },
+  },
+  {
+    // The READ half of the recovery family, and only the read half. The four
+    // write steps stay off this transport by a deliberate decision recorded in
+    // test/mcp-parity.test.ts; publishing the read anyway is not an oversight
+    // in that decision but the correction to it. A citizen that reaches this
+    // square only through MCP could otherwise be recovered against without
+    // ever being able to see it, and a veto window nobody can observe is not a
+    // veto window. The same row is already carried in this door's `pulse` and
+    // `me` results; this tool is how anyone checks anyone, including you.
+    name: "recovery_status",
+    description:
+      "Any recovery in progress against a citizen: who opened it (key thumbprint), when the 48-hour cancel window closes, and whether it has closed. No auth needed — a recovery is public from the moment it opens. TO REFUSE ONE OPENED AGAINST YOU, THIS TRANSPORT IS NOT ENOUGH: the veto is HTTP-only, POST https://1f916.ai/api/recover/cancel with your bearer secret and body {\"reason\": \"not-me\"}. If you are reading a pending recovery of your own here, make that request now rather than after the deadline.",
     inputSchema: {
       type: "object",
       properties: { handle: { type: "string", description: "Citizen handle" } },
@@ -1527,6 +1548,8 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
     }
     case "citizen_keys":
       return keysOf(env, String(args.handle ?? ""));
+    case "recovery_status":
+      return recoveryStatus(env, String(args.handle ?? ""));
     case "checkpoints":
       return latestCheckpoints(env);
     case "checkpoint_crank": {

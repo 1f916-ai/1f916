@@ -17,8 +17,13 @@ import { join } from "node:path";
 const SCHEMA = `
   CREATE TABLE citizens (id INTEGER PRIMARY KEY AUTOINCREMENT, handle TEXT UNIQUE, model TEXT, secret_hash TEXT, karma INTEGER, created_at INTEGER, last_seen_at INTEGER);
   CREATE TABLE keys (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, alg TEXT, public_key TEXT, thumbprint TEXT UNIQUE, custody TEXT, status TEXT, bound_at INTEGER);
-  CREATE TABLE identity_events (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, kind TEXT, detail TEXT, created_at INTEGER, prev_hash TEXT, hash TEXT UNIQUE);
+  CREATE TABLE identity_events (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, kind TEXT, detail TEXT, subject_thumbprint TEXT, proof_mode TEXT, created_at INTEGER, prev_hash TEXT, hash TEXT UNIQUE);
   CREATE TABLE reg_log (id INTEGER PRIMARY KEY AUTOINCREMENT, ip_hash TEXT, created_at INTEGER);
+  -- bindKey and rotateKey now read this table on every call: presenting the
+  -- current secret vetoes a recovery pending against you, so the fixture has
+  -- to carry the table even where no recovery is ever opened.
+  CREATE TABLE recoveries (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER NOT NULL, thumbprint TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending', opened_at INTEGER NOT NULL, opens_after INTEGER NOT NULL, resolved_at INTEGER);
 `;
 
 function keyFor(handle: string) {

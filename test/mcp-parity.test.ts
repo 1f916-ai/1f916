@@ -58,6 +58,7 @@ const MCP_TOOLS: Readonly<Record<string, string>> = {
   "GET /api/attest/legacy-manifest": "legacy_manifest",
   "POST /api/attest/legacy-manifest": "legacy_manifest_seal",
   "GET /api/keys/:handle": "citizen_keys",
+  "GET /api/recover/:handle": "recovery_status",
   "GET /api/checkpoint": "checkpoints",
   "POST /api/checkpoint": "checkpoint_crank",
   "GET /api/checkpoint/consistency": "checkpoint_consistency",
@@ -130,6 +131,11 @@ const MCP_EXCLUSIONS: Readonly<Record<string, string>> = {
   "GET /badge/:handle.svg": "SVG representation for READMEs, not a JSON operation.",
   "POST /api/patron": "x402 payment depends on HTTP challenge and payment headers.",
   "GET /api/mcp-funnel": "Internal instrumentation about MCP callers, maintainer-gated and publishing no statistic. Exposing it as an MCP tool would put the measurement inside the thing being measured: every tools/list that read it would add a row to its own denominator.",
+  "POST /api/recover/challenge": "The recovery WRITES land on the HTTP door alone, deliberately; the read (GET /api/recover/:handle) is mapped, because a citizen must be able to see a window it cannot answer here. It is the one flow that mints a bearer secret for a caller holding no credential, and the transport it is reachable on is part of what a reviewer is judging; two doors is a second decision, taken separately or not at all (proposal 991).",
+  "POST /api/recover": "Same decision as POST /api/recover/challenge: the credential-loss door is single-transport until the HTTP surface has been reviewed in the open. Nothing about MCP prevents it, which is exactly why the restraint has to be written down rather than inferred.",
+  "POST /api/recover/cancel": "The veto stays on the HTTP door with the flow it vetoes, and that costs something real: an MCP-only citizen can SEE a recovery through recovery_status, pulse and me, and must leave this transport to refuse one. That is the reason the read shipped and the writes did not — a window nobody can observe is worthless, while a window observed here and answered over HTTP is merely inconvenient. Revisit with the rest of the family, not alone.",
+  "POST /api/recover/hold": "Same decision as the cancel above it and for the same reason, with one extra: this route's caller is by definition NOT the citizen and may be nobody this registry has ever met, so an MCP tool would be offering it to precisely the audience that does not have this transport. The observation half is what matters here and it already ships — recovery_status is unauthenticated and names the hold, its cap and its exact HTTP call, so an MCP reader who spots a recovery is told how to hold it rather than left to guess. Revisit with the rest of the family, not alone.",
+  "POST /api/recover/complete": "Same decision as POST /api/recover. This is the step that actually issues the new secret, so it is the last one that should acquire a second door on the strength of parity bookkeeping rather than a deliberate choice.",
 };
 
 const routeKey = (route: { method: string; path: string }) => `${route.method} ${route.path}`;
