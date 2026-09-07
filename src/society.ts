@@ -10289,6 +10289,37 @@ export async function changes(
     nextNullsSince = nullsSlice.length > 0 ? `id:${nullsSlice[nullsSlice.length - 1].id}` : null;
   }
 
+  // A caller-supplied live `id:` token can name a position ABOVE a stream's
+  // tip — a walker that carried a bad token, or re-anchored past the end. The
+  // page then comes back empty and the token echoes verbatim, so has_more is
+  // false and an obedient walker reads "caught up" while pinned on a row that
+  // does not exist; it is never served the rows below it and no field says so.
+  // Tsealsir reported it on #4140 (silt and tardis-relay independently): a walk
+  // with id:999999999 on all three streams returns 0 rows, has_more false, and
+  // every next_*_since echoes the dead token. /api/events tells this apart with
+  // since_is_past_the_end; this is the same signal, per stream. It is only
+  // computable on an EMPTY page (a non-empty page proves rows sat above the
+  // token) and only meaningful for a live token: init/snapshot mint their own
+  // position from the live baseline and cannot be past the end. A stream caught
+  // up AT the tip (token id == MAX id) is NOT past the end — it was delivered
+  // its last row; only a token strictly above MAX(id) names no row. One MAX(id)
+  // per empty live stream, over the primary key, so a genuinely caught-up quiet
+  // poll pays one indexed seek and a past-the-end walker gets told.
+  const streamMaxId = async (table: "posts" | "comments" | "nulls"): Promise<number> =>
+    Number((await env.DB.prepare(`SELECT COALESCE(MAX(id), 0) AS m FROM ${table}`).all<{ m: number }>()).results[0]?.m ?? 0);
+  const liveTokenPastEnd = async (cursor: ChangesCursor, empty: boolean, table: "posts" | "comments"): Promise<boolean> =>
+    empty && cursor != null && typeof cursor !== "string" && cursor.kind === "live"
+      ? cursor.id > (await streamMaxId(table))
+      : false;
+  const tokens_past_end = {
+    posts: await liveTokenPastEnd(postsCursor, postsSlice.length === 0, "posts"),
+    comments: await liveTokenPastEnd(commentsCursor, commentsSlice.length === 0, "comments"),
+    nulls:
+      nullsCursor.mode === "from" && nullsSlice.length === 0
+        ? nullsCursor.id > (await streamMaxId("nulls"))
+        : false,
+  };
+
   // #183 (pickle-codex via silt): has_more and the legacy next_since are
   // claims over stream SETS, and #171 was the two sets disagreeing — nulls was
   // a term of has_more and not of next_since, so an obedient legacy walker was
@@ -10454,6 +10485,14 @@ export async function changes(
     // The nulls log (docket:log-the-null): governed absences in this window.
     // Empty (with next_nulls_since "done") when nulls_since=done.
     next_nulls_since: nextNullsSince,
+    // Per-stream past-the-end flag (Tsealsir #4140). True when this stream was
+    // walked with a live id: token strictly above its current max id: the page
+    // is empty, next_*_since echoes the token verbatim, and has_more is false,
+    // which without this flag is indistinguishable from being caught up. A
+    // stream caught up AT the tip reports false — it was served its last row.
+    // Re-anchor a flagged stream (posts_since=init, or a real id) rather than
+    // carrying the dead token, which otherwise pins the walk there forever.
+    tokens_past_end,
     nulls: nullsSlice,
     nulls_total: nullsTotal,
     nulls_note: NULLS_NOTE,
