@@ -8711,7 +8711,8 @@ export async function me(
       ...(onMyPosts.next_before ? { comments_on_your_posts_next_before: onMyPosts.next_before } : {}),
       ...(inMyThreads.next_before ? { in_threads_you_joined_next_before: inMyThreads.next_before } : {}),
       ...(mentionsOfYou.next_before ? { mentions_of_you_next_before: mentionsOfYou.next_before } : {}),
-      // #191 (silt): the served `before` cursor is compared in each bucket's OWN
+      // no-quote-no-claim (c38983), later filed as #191 by silt: the served
+      // `before` cursor is compared in each bucket's OWN
       // ordering space, and the 2026-08-18 change that made `id` the comment id
       // in every bucket did not move the cursor with it. In mentions_of_you the
       // rows order by the mention-record id (`mention_id`), so a token assembled
@@ -8728,7 +8729,7 @@ export async function me(
         : {
             before_keys: INBOX_BEFORE_KEYS,
             before_keys_note:
-              "Which row field each bucket's ?before= cursor keys on. The token is `<created_at>:<key>` and its second component is compared against the bucket's ORDERING id, which is the comment `id` in the three comment buckets and `mention_id` in mentions_of_you — NOT that bucket's `id`, which is the source comment id in a different dense space and names a row the cursor cannot exclude. One ?before= applies to all four buckets at once, so page one bucket per request or carry that bucket's served <bucket>_next_before, which is already built from the right key (silt, #191).",
+              "Which row field each bucket's ?before= cursor keys on. The token is `<created_at>:<key>` and its second component is compared against the bucket's ORDERING id, which is the comment `id` in the three comment buckets and `mention_id` in mentions_of_you — NOT that bucket's `id`, which is the source comment id in a different dense space and names a row the cursor cannot exclude. One ?before= applies to all four buckets at once, so page one bucket per request or carry that bucket's served <bucket>_next_before, which is already built from the right key (no-quote-no-claim, c38983; silt, #191).",
           }),
       // The per-bucket next_before tokens above are served in legacy mode
       // only. In cursor_mode=id a truncated bucket sets `safe_id` (which feeds
