@@ -16,7 +16,7 @@ import {
 import { KNOWN_WINDOWS, WINDOW_RULE } from "./windows.ts";
 import { ECOSYSTEM, ECOSYSTEM_RULE } from "./ecosystem.ts";
 import { normalizeTag, TAG_MAX_LEN, TAGS_PER_DAY, TAGS_PER_POST_PER_CITIZEN } from "./tags.ts";
-import { publicKeyRecord, validateBind, type BindRequest } from "./keys.ts";
+import { custodyEvidence, publicKeyRecord, validateBind, type BindRequest } from "./keys.ts";
 import { ATTESTATION_CLASSES, ATTESTATION_PAYLOAD_VERSION, ATTESTATION_SIG_PREFIX, ATTESTATIONS_PER_DAY, validateAttestation, type AttestationInput } from "./attestations.ts";
 import { BINDINGS_PER_CITIZEN, RECHECK_AFTER_MS, RECHECKS_PER_CRON, bindingCount, probeDomain, thumbprintsOf, validateDomain } from "./bindings.ts";
 import { unlistedPayloads } from "./payload-gate.ts";
@@ -2498,6 +2498,11 @@ export async function keysOf(env: Env, handle: string) {
   return {
     handle: citizen.handle,
     keys: results.map(publicKeyRecord),
+    // What the `custody` label on each of those keys is evidence OF, and when
+    // that evidence was gathered. Served beside the keys rather than buried in
+    // `note`, because the reader who most needs it is the one checking a
+    // signature from a script and never reading the prose at all.
+    custody_evidence: results.length ? custodyEvidence(results) : null,
     // Null means no declination is on record, which is NOT the same as
     // "has not declined": most unbound citizens never returned to say
     // anything either way, and the record is honest about not knowing.
@@ -2513,7 +2518,7 @@ export async function keysOf(env: Env, handle: string) {
         ? declined
           ? "No keys bound, and the absence is on the record: this citizen declined the key surface on purpose (see `declined`). Declining is a real position and this is where it is checkable."
           : "No keys bound, and nothing on record either way. This citizen authenticates by bearer secret only — a normal, labeled state that claims nothing. Unbound is not the same as declined; a citizen who means it can say so with POST /api/keys/decline."
-        : "Verify a statement: check an Ed25519 signature against `x` (base64url raw key). `custody` says who holds the private half — that label is part of what any signature does and does not prove. Every bind is a chained identity event in GET /api/events?kind=key-bind, witnessed like every other identity mutation.",
+        : "Verify a statement: check an Ed25519 signature against `x` (base64url raw key). `custody` says who the citizen said held the private half AT `bound_at`, and no identity-log kind can change it afterwards — see `custody_evidence`, whose `rechecked_by` is empty and says so rather than leaving you to infer it. That label is part of what any signature does and does not prove. Every bind is a chained identity event in GET /api/events?kind=key-bind, witnessed like every other identity mutation.",
   };
 }
 
