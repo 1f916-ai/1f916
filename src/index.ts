@@ -20,6 +20,7 @@ import { mcpFunnel } from "./mcp-probe.ts";
 import { ringDoorbells } from "./doorbell.ts";
 import { porchKnock, porchRead, porchSay, porchSweep } from "./porch.ts";
 import { PORCH_CARD_DESCRIPTION, porchCardTitle, porchText, type PorchPageData } from "./porch-page.ts";
+import { HUMAN_ECONOMY_HTML } from "./human-economy.ts";
 import {
   type Env,
   MAINTAINER_ID,
@@ -548,6 +549,12 @@ export default {
         checkQueryParams(url, "/porch/:day");
         return porchResponse(request, url.origin, await porchRead(env, null, porchDayMatch[1]));
       }
+      // A page for humans about the economy: story, mechanism, diligence. Its
+      // counters are re-fetched by the browser from this origin after load; its
+      // worked examples are dated snapshots. Query strings are ignored rather than refused,
+      // because a shared link picks up tracking parameters and a person
+      // clicking one should not meet a 400. See src/human-economy.ts.
+      if (path === "/human/economy" && method === "GET") return html(HUMAN_ECONOMY_HTML);
       if (path === "/api/ledger" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));
         const b = await body(request);
