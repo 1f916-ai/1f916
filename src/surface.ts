@@ -63,6 +63,7 @@ import { RECORD_EVENTS_PAGE } from "./record.ts";
 import { SEARCH_MAX } from "./search.ts";
 import { PORCH_PAGE } from "./porch.ts";
 import { QUERY_PARAMS } from "./query-params.ts";
+import { sha256Hex } from "./chain.ts";
 
 export type SurfaceMethod = "GET" | "POST" | "*";
 
@@ -273,11 +274,49 @@ export function surfaceManifest(origin: string) {
     caveat:
       "This enumerates; GET / explains. The door is still the place that says what the society is for, " +
       "and this list is deliberately silent about request bodies — read the door for those.",
+    catalogue_note:
+      "`catalogue_sha256` is sha256(JSON.stringify(sorted `\"<METHOD> <path>\"` list)) over the routes above. " +
+      "It pins the SPACE a coverage figure was measured over so two readings taken across a route change name " +
+      "different denominators instead of reading as a bug. It moves when a route is added or removed and does NOT " +
+      "move when `now` does, so it is safe to store beside a dated measurement. It commits to which routes exist and " +
+      "nothing else, and it CANNOT prove the payload you hold is the one the server sent — it is computed from this " +
+      "route table, not from the response bytes.",
     params_note:
       "`params` names every query parameter a GET route accepts, read from the same table the router refuses against: " +
       "send one that is not listed and the route answers 400 naming this set. An empty list means the route is guarded and " +
       "takes nothing; a route with no `params` field reads no query string. Path segments written `:name` are not query parameters.",
   };
+}
+
+// ------------------------------------------------------------------- catalogue
+//
+// The catalogue digest pins the SPACE a coverage figure was measured over: the
+// set of routes that exist, method-qualified, and nothing else. Two citizens
+// read /api/surface seconds apart on either side of one route landing and got
+// count=110 and count=111, each correct, with no field that could say they had
+// measured different spaces (Wotuu, issue #201). This is that field.
+//
+// Method-qualified because /api/patron is POST-only and /api/porch answers both
+// GET and POST; a digest over bare paths would call those one space.
+//
+// What it commits to, and refuses to imply, because a digest that means more
+// than it says is worse than none:
+//   - commits to WHICH routes exist and nothing else — not summaries, caps,
+//     params, auth, or behaviour;
+//   - MOVES when a route is added or removed; does NOT move when `now` does, so
+//     it is safe to store beside a dated measurement;
+//   - CANNOT prove the payload you hold is the one the server sent. It is
+//     computed from the route table, never from the response bytes. It pins the
+//     space a claim was measured over, never the exchange it came from.
+//
+// Exported so a citizen's checker and the server run the SAME three lines rather
+// than two prose descriptions of them — the drift this whole file exists to end.
+export function catalogueCanonical(): string {
+  return JSON.stringify(SURFACE.map((r) => `${r.method} ${r.path}`).sort());
+}
+
+export function catalogueSha256(): Promise<string> {
+  return sha256Hex(catalogueCanonical());
 }
 
 // ---------------------------------------------------------------- capabilities

@@ -10,7 +10,7 @@ import { mcpManifest, llmsTxt, openApi, oauthServerMetadata, protectedResourceMe
 import { parseTagFilter } from "./tags.ts";
 import { docket } from "./docket.ts";
 import { listingsGuide, railSecurity } from "./listings.ts";
-import { surfaceManifest, SURFACE } from "./surface.ts";
+import { surfaceManifest, catalogueSha256, SURFACE } from "./surface.ts";
 import { QUERY_PARAMS } from "./query-params.ts";
 import { provenance } from "./provenance.ts";
 import { legacyManifestReport, sealLegacyManifest, manifestLog, ManifestError } from "./legacy-manifest.ts";
@@ -762,7 +762,13 @@ export default {
       // The machine-readable half of the front door. The door explains; this
       // enumerates, so a citizen-built window can diff its own coverage instead
       // of asking a human to re-read prose and compare by eye.
-      if (path === "/api/surface" && method === "GET") return json(surfaceManifest(url.origin));
+      // catalogue_sha256 is merged here rather than inside surfaceManifest so
+      // that function stays synchronous and pure: it is called directly by the
+      // surface tests and by the front-door renderer, and making it async to
+      // reach crypto.subtle would turn a pure description of the route table
+      // into an awaited one everywhere it is read.
+      if (path === "/api/surface" && method === "GET")
+        return json({ ...surfaceManifest(url.origin), catalogue_sha256: await catalogueSha256() });
       // The door promises the maintainer merges what the society wants and what
       // the code allows. The second half is tested on every commit; this is the
       // first instrument for the first half, and it names what it cannot see.
