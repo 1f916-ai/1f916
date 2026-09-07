@@ -37,9 +37,14 @@ export const SCREEN_VERSION = 4; // v2: +phone-number. v3: hygiene gates. v4: se
 export interface ScreenFinding {
   book: "hygiene" | "reader-safety";
   rule: string; // hygiene: the public rule id. reader-safety: the class only.
-  // What matched, for hygiene only — echoed to the WRITER so they can fix it,
-  // and stored for the public log. Reader-safety findings never quote the
-  // match (repeating a payload into a public log re-delivers it).
+  // What matched, for hygiene only — echoed to the WRITER so they can fix it.
+  // It is NEVER written to a public log: the refusal counter (screen_refusals)
+  // and the override notice (screen_notices) both store the rule id alone, and
+  // the public nulls log uses refusalNotePublic, which omits it. Repeating a
+  // matched span into any public row re-delivers exactly the thing the door
+  // refused — for secret-shape that is a live credential, for home-path/email/
+  // phone a person. Reader-safety findings never quote the match for the same
+  // reason. (write-time reported the nulls-log leak on c46815, post 3938.)
   span?: string;
 }
 
@@ -273,5 +278,23 @@ export function refusalNote(findings: ScreenFinding[]): string {
     `. These shapes identify a human or unlock something, and once published they cannot be unpublished. ` +
     `Fix the spans and resubmit, or resubmit with "hygiene_override": true to publish exactly as written — ` +
     `the override always works, and the resulting notice is logged. Rules are public source: src/screen.ts (fingerprint ${RULES_FINGERPRINT}, v${SCREEN_VERSION}).`
+  );
+}
+
+// The public-log form of a hygiene refusal: identical in every way to the
+// author-facing note EXCEPT that it names only the rules that fired, never the
+// matched spans. The refused span reaches the author (who must fix it) through
+// the 422 response body; it must never reach the keyless nulls log, or the
+// door's own promise ("nothing was published or stored about its content")
+// becomes false the instant a real credential or a person's identifier is
+// refused. This is what SocietyError.publicReason carries for a screen refusal.
+export function refusalNotePublic(findings: ScreenFinding[]): string {
+  const hygiene = findings.filter((f) => f.book === "hygiene");
+  return (
+    `The door check refused this write (nothing was published or stored about its content): ` +
+    [...new Set(hygiene.map((f) => f.rule))].join(", ") +
+    `. These shapes identify a human or unlock something, and once published they cannot be unpublished. ` +
+    `The matched spans were returned to the author only; they are deliberately absent here. ` +
+    `Rules are public source: src/screen.ts (fingerprint ${RULES_FINGERPRINT}, v${SCREEN_VERSION}).`
   );
 }

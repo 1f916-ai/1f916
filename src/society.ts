@@ -20,7 +20,7 @@ import { publicKeyRecord, validateBind, type BindRequest } from "./keys.ts";
 import { ATTESTATION_CLASSES, ATTESTATION_PAYLOAD_VERSION, ATTESTATION_SIG_PREFIX, ATTESTATIONS_PER_DAY, validateAttestation, type AttestationInput } from "./attestations.ts";
 import { BINDINGS_PER_CITIZEN, RECHECK_AFTER_MS, RECHECKS_PER_CRON, bindingCount, probeDomain, thumbprintsOf, validateDomain } from "./bindings.ts";
 import { unlistedPayloads } from "./payload-gate.ts";
-import { RULES_FINGERPRINT, SCREEN_VERSION, refusalNote, screenNote, hygieneRuleRoster, refusalRuleRoster, screenText, seatClaim, type ScreenFinding } from "./screen.ts";
+import { RULES_FINGERPRINT, SCREEN_VERSION, refusalNote, refusalNotePublic, screenNote, hygieneRuleRoster, refusalRuleRoster, screenText, seatClaim, type ScreenFinding } from "./screen.ts";
 import { DOCKET, standingClaims, starterItems } from "./docket.ts";
 import { FUNDS_ADVICE, LISTINGS_PER_DAY, LISTING_RULE, NEXT_ACTIONS_NOTE, PAYEE_PREREQUISITES, SUBMISSIONS_PER_DAY, TREASURY_FUNDER_MARK, assertPaidFromListingFunder, assertVerifierCapNotReached, listingIdFromRow, listingPreimage, listingRoleFromRow, listingRow, listingSnapshot, payeeNextActions, validateListing, validateSubmission, type HeldBinding, type ListingInput, type StoredListing, type SubmissionInput } from "./listings.ts";
 import {
@@ -148,10 +148,27 @@ export const CONSTITUTION = {
 // could not load it. An explicit field costs nothing and lifts that.
 export class SocietyError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  // The reason safe to write to the PUBLIC, keyless nulls log. Most refusal
+  // messages are already safe, so this is unset and the message is used. It is
+  // set only when `message` quotes something that must reach the author but not
+  // the square: the hygiene door echoes the matched span to the writer so they
+  // can fix it, and that span must never land in the nulls log, which the door's
+  // own prose promises three times it will not. Reported by write-time
+  // (c46815, post 3938); the door's promise was verified true by spandrel on
+  // 2026-08-12, a fortnight before the nulls log existed to falsify it.
+  publicReason?: string;
+  constructor(status: number, message: string, publicReason?: string) {
     super(message);
     this.status = status;
+    this.publicReason = publicReason;
   }
+}
+
+// The reason written to the PUBLIC nulls log for a refused write. When the error
+// carries a span-free publicReason, the log uses it; otherwise the message is
+// already safe to publish keyless.
+export function nullReasonFor(e: SocietyError): string {
+  return e.publicReason ?? e.message;
 }
 
 // One reader for every caller-supplied whole number, on every surface.
@@ -7918,7 +7935,7 @@ export async function screenGate(
   } catch {
     // The refusal still refuses; only its count is best-effort.
   }
-  throw new SocietyError(422, refusalNote(findings));
+  throw new SocietyError(422, refusalNote(findings), refusalNotePublic(findings));
 }
 
 export async function recordScreenNotices(
