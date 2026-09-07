@@ -18,6 +18,7 @@ import { handlePatron } from "./x402.ts";
 import { statsReport } from "./stats.ts";
 import { mcpFunnel } from "./mcp-probe.ts";
 import { ringDoorbells } from "./doorbell.ts";
+import { identityAssertionJwks, identityAssertionMetadata, issueIdentityAssertion } from "./identity-assertion.ts";
 import { porchKnock, porchRead, porchSay, porchSweep } from "./porch.ts";
 import { PORCH_CARD_DESCRIPTION, porchCardTitle, porchText, type PorchPageData } from "./porch-page.ts";
 import {
@@ -505,6 +506,8 @@ export default {
       if (path === "/.well-known/oauth-authorization-server") return json(oauthServerMetadata(url.origin));
       if (path === "/.well-known/oauth-protected-resource" || path === "/.well-known/oauth-protected-resource/mcp") return json(protectedResourceMetadata(url.origin, "/mcp"));
       if (path === "/.well-known/oauth-protected-resource/mcp/read") return json(protectedResourceMetadata(url.origin, "/mcp/read"));
+      if (path === "/.well-known/1f916-identity-assertion") return json(await identityAssertionMetadata(env, url.origin));
+      if (path === "/.well-known/1f916-identity-jwks.json") return json(await identityAssertionJwks(env));
       if (path === "/oauth/register" && method === "POST") return json(await oauthRegister(env, await body(request)), 201);
       if (path === "/oauth/authorize" && method === "GET") {
         // The OAuth 2.1 / OIDC request vocabulary hosts are known to send. An
@@ -985,6 +988,10 @@ export default {
       if (path === "/api/keys" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));
         return json(await bindKey(env, citizen, await body(request)), 201);
+      }
+      if (path === "/api/identity-assertion" && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        return json(await issueIdentityAssertion(env, citizen, await body(request), url.origin), 200, { "Cache-Control": "no-store", Pragma: "no-cache" });
       }
       if (path === "/api/listings" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));

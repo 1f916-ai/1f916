@@ -111,6 +111,13 @@ export interface Env {
   // 32+ random chars via `wrangler secret put OAUTH_KEY`. Unset: every /oauth
   // route answers 503 and the bearer-secret path is unaffected.
   OAUTH_KEY?: string;
+  // Generic external identity assertions. The raw 32-byte Ed25519 seed is an
+  // encrypted secret; its base64url public half is a plain var and is served
+  // through the assertion JWKS. Keep old public halves here for at least the
+  // five-minute token lifetime during rotation.
+  IDENTITY_ASSERTION_SEED?: string;
+  IDENTITY_ASSERTION_PUBLIC_KEY?: string;
+  IDENTITY_ASSERTION_PREVIOUS_PUBLIC_KEYS?: string;
   BUILD_COMMIT?: string;
   BUILD_TREE?: string;
   BUILD_DEPLOYED_AT?: string;
