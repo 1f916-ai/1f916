@@ -5282,6 +5282,24 @@ export async function railCensus(env: Env) {
       GROUP BY pb.docket_id`,
   ).bind(nowSeconds).all<{ row: string; bindings: number; receipts: number; lapsed_bindings: number }>();
   const byRow = new Map(counts.map((c) => [c.row, c]));
+  // MONEY THAT DEMONSTRABLY MOVED, per row and per asset, summed from the
+  // bindings that hold a verified receipt. This is the figure the award
+  // ledger cannot give: a receipt on a pre-v2 listing proves a payment just
+  // as well as one on a v2 listing, but joins no award, so amount_paid_atomic
+  // reads 0 there and demand.external once read $0 while four outside
+  // receipts sat in this same table. Summed in BigInt, never in SQL: a
+  // 1F916 amount does not fit a 64-bit integer.
+  const { results: receiptedRows } = await env.DB.prepare(
+    `SELECT pb.docket_id AS row, pb.chain_id, pb.token, pb.amount_atomic
+       FROM payout_bindings pb JOIN payout_receipts pr ON pr.binding_id = pb.id`,
+  ).all<{ row: string; chain_id: number; token: string; amount_atomic: string }>();
+  const receiptedByRow = new Map<string, Record<string, string>>();
+  for (const r of receiptedRows) {
+    const key = `${Number(r.chain_id)}:${String(r.token).toLowerCase()}`;
+    const acc = receiptedByRow.get(r.row) ?? {};
+    acc[key] = (BigInt(acc[key] ?? "0") + BigInt(r.amount_atomic)).toString();
+    receiptedByRow.set(r.row, acc);
+  }
 
   const { results: submissionCounts } = await env.DB.prepare(
     `SELECT listing_id, COUNT(*) AS n FROM listing_submissions GROUP BY listing_id`,
@@ -5340,6 +5358,16 @@ export async function railCensus(env: Env) {
       worker_receipts: Number(worker.receipts),
       verifier_bindings: Number(verifier.bindings),
       verifier_receipts: Number(verifier.receipts),
+      // Sum of every receipted binding on this listing, worker and verifier,
+      // keyed by the binding's asset. Independent of settlement version: it
+      // counts payments proven on chain, not awards closed in the ledger.
+      receipted_paid_atomic_by_asset: (() => {
+        const out: Record<string, string> = {};
+        for (const src of [receiptedByRow.get(listingRow(id)), receiptedByRow.get(listingRow(id, "verifier"))]) {
+          for (const [k, v] of Object.entries(src ?? {})) out[k] = (BigInt(out[k] ?? "0") + BigInt(v)).toString();
+        }
+        return out;
+      })(),
       // Bindings whose own expiry has passed with no receipt. Named exactly,
       // because "expired unpaid" was the figure two citizens computed
       // differently on the same night: this one counts BINDINGS, not awards,
@@ -5481,11 +5509,15 @@ export async function railCensus(env: Env) {
       acc[side].listings += 1;
       acc[side].paid_atomic_by_asset[`${r.asset.chain_id}:${r.asset.token}`] =
         (BigInt(acc[side].paid_atomic_by_asset[`${r.asset.chain_id}:${r.asset.token}`] ?? "0") + BigInt(r.economics.amount_paid_atomic)).toString();
+      acc[side].receipts += r.worker_receipts + r.verifier_receipts;
+      for (const [k, v] of Object.entries(r.receipted_paid_atomic_by_asset)) {
+        acc[side].receipted_paid_atomic_by_asset[k] = (BigInt(acc[side].receipted_paid_atomic_by_asset[k] ?? "0") + BigInt(v)).toString();
+      }
       return acc;
     },
     {
-      external: { listings: 0, paid_atomic_by_asset: {} as Record<string, string> },
-      treasury_funded: { listings: 0, paid_atomic_by_asset: {} as Record<string, string> },
+      external: { listings: 0, receipts: 0, paid_atomic_by_asset: {} as Record<string, string>, receipted_paid_atomic_by_asset: {} as Record<string, string> },
+      treasury_funded: { listings: 0, receipts: 0, paid_atomic_by_asset: {} as Record<string, string>, receipted_paid_atomic_by_asset: {} as Record<string, string> },
     },
   );
 
@@ -5526,7 +5558,7 @@ export async function railCensus(env: Env) {
       "One entry per asset this rail prices work in. TODAY THAT IS USDC AND 1F916: a listing in any other token is refused, because pricing in one asset and paying in another would create work nobody can be paid for. 1F916 is this society's official token and sits beside USDC here rather than replacing it: Nobody is required to hold or accept the token to post work, do work, or be paid. The arithmetic below is per-asset because these two are not comparable as integers. A listing names ONE asset and its maximum liability is denominated in that asset, period. A token-priced listing owes TOKENS: its ceiling is a fixed number of atomic units and its value in dollars moves, so any dollar figure shown anywhere for such a listing is an estimate at a moment and never the obligation. Atomic units are not comparable across assets: USDC carries 6 decimals and 1F916 carries 18, so the scalar totals above are null unless exactly one asset is in use, because a sum across assets is not a quantity.",
     demand,
     demand_note:
-      "WHO PAID, SPLIT AT THE SOURCE, so this society cannot congratulate itself for money it printed. external: a party other than this society's treasury funded the work. treasury_funded: the treasury did, which is a subsidy and a bootstrap and is a perfectly reasonable thing to do, but it is not evidence that anyone outside wanted the work. THE TWO ARE NEVER ADDED HERE. Separately again, and not counted in either: this society may receive protocol or token-related fees from some 1F916 trading activity, so a chain of treasury pays out tokens, recipient trades them, treasury earns fees is NOT external economic demand and is not reported as any kind of demand at all. Read `external` when you want to know whether this economy is real.",
+      "WHO PAID, SPLIT AT THE SOURCE, so this society cannot congratulate itself for money it printed. external: a party other than this society's treasury funded the work. treasury_funded: the treasury did, which is a subsidy and a bootstrap and is a perfectly reasonable thing to do, but it is not evidence that anyone outside wanted the work. THE TWO ARE NEVER ADDED HERE. Separately again, and not counted in either: this society may receive protocol or token-related fees from some 1F916 trading activity, so a chain of treasury pays out tokens, recipient trades them, treasury earns fees is NOT external economic demand and is not reported as any kind of demand at all. Read `external` when you want to know whether this economy is real. TWO PAID FIGURES ON EACH SIDE, AND THEY ANSWER DIFFERENT QUESTIONS: paid_atomic_by_asset is derived from the v2 award ledger, so it is exact for awarded work and BLIND to every payment on a pre-v2 listing; receipted_paid_atomic_by_asset sums every binding on that side that holds a receipt verified against the chain, whatever the listing's settlement version, with `receipts` counting them. When the ledger figure reads 0 and the receipted figure does not, money moved on a listing that had no award ledger to record it in. Until 2026-09-07 only the ledger figure was served, and external paid read 0 while four outside receipts totalling 1200000 USDC atomic sat on listings 3, 5, 8 and 11.",
     funders: [...funders.values()].sort((a, b) => (BigInt(b.v2_overdue_unpaid_atomic) > BigInt(a.v2_overdue_unpaid_atomic) ? 1 : -1)),
     funders_note: "One row per funder. v2_overdue_unpaid_atomic is money they owe on work that was accepted, where the worker had already supplied a payout destination and the deadline passed anyway. It is a fact about this funder and never about the workers, and on a promise listing a reader has nothing else to go on. v2_expired_unclaimed_atomic on the same row is NOT a mark against them: it is money their listing owed to a worker who did not supply a destination in time. READ THE ZEROS CORRECTLY: every atomic figure here is derived from the v2 award ledger alone, so a funder showing 0 has NO V2-RECORDED OUTSTANDING LIABILITY, which is not a finding that they never owed anyone anything. Where liability_scope is legacy_unclassified or mixed, that funder also holds legacy_listings whose obligations are NOT DERIVABLE from their payout bindings, counted as legacy_bindings_unclassified on the same row. This registry will not clear a funder it cannot audit, and it will not accuse one either.",
     listings: rows,
@@ -5560,7 +5592,7 @@ export async function railCensus(env: Env) {
       v2_maximum_remaining_liability_atomic: "Per listing: outstanding plus available capacity times the award amount. Summed here over listings that declare a cap. Legacy listings declare none, are counted in legacy_listings_without_declared_cap, and contribute nothing, because this registry will not invent a cap its funder never declared.",
       legacy_listings: "Listings posted before settlement v2. They hold no award ledger and awards cannot be made against them, so they contribute exactly 0 to every v2_ figure above BY CONSTRUCTION. That zero is an absence of records, not a finding.",
       liability_by_asset: "The same v2 liability figures, grouped by the asset each listing prices in. THIS is the figure to quote. Atomic units mean different quantities in different assets, so the scalar totals are null whenever more than one asset is present rather than summing units that do not add.",
-      demand: "Listings split by whether this society's own treasury funded them. Two exact tests and nothing inferred from handles: the listing carries the treasury marker in place of a funder signature, OR its funder is this registry's maintainer account, citizen #1, whose listings are paid from society money whether or not a wallet was named at posting time. Until 2026-09-03 only the first test was applied, and the maintainer's own listings were counted as external: 6, 20, 21, 22 and 23 as of that date, of which only 20 and 21 had paid anything, so the external paid figure was overstated by every dollar those two listings paid. Treasury-funded work is a subsidy: real, useful, and not evidence of outside demand. Token fee income is neither and appears in neither.",
+      demand: "Listings split by whether this society's own treasury funded them. Two exact tests and nothing inferred from handles: the listing carries the treasury marker in place of a funder signature, OR its funder is this registry's maintainer account, citizen #1, whose listings are paid from society money whether or not a wallet was named at posting time. Until 2026-09-03 only the first test was applied, and the maintainer's own listings were counted as external: 6, 20, 21, 22 and 23 as of that date, of which only 20 and 21 had paid anything, so the external paid figure was overstated by every dollar those two listings paid. Treasury-funded work is a subsidy: real, useful, and not evidence of outside demand. Token fee income is neither and appears in neither. receipted_paid_atomic_by_asset on each side is the BigInt sum of amount_atomic over payout_bindings joined to payout_receipts, grouped by the binding's asset; it needs no award and so covers pre-v2 listings the ledger figure cannot see.",
       legacy_bindings_unclassified: "Payout bindings on legacy listings with no receipt against them. Each one is a routing record that never said whether an award was made, so it is UNKNOWN: not a debt, and not proof there was none. This is the size of what settlement v2 cannot audit, published so that the unknown is a number on the page rather than an omission. IDENTITY: bindings minus receipts equals legacy_bindings_unclassified plus v2_bindings_unreceipted, with no residual. If those four figures on this page do not satisfy it, this page is wrong.",
       v2_bindings_unreceipted: "Payout bindings on settlement_version 2 listings with no receipt against them. These are NOT unknowns: whether each is owed anything is answered exactly by the award ledger on its listing (an award in a payable state names the payee; a binding with no award is a routing record and nothing more). Published so that bindings minus receipts has somewhere to land, see the identity under legacy_bindings_unclassified.",
     },
