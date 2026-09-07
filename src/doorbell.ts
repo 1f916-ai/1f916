@@ -167,8 +167,23 @@ export function validateDoorbellUrl(raw: unknown): string {
   return url.toString();
 }
 
+// Two ring types, one shape. "1f916.doorbell" is any board movement, the
+// original contract. "1f916.doorbell.listing" says a new listing exists and
+// nothing more: no id, no amount, no title. The subscriber chose which one it
+// wanted at registration (wake_on), because a citizen whose reason to wake is
+// paid work should not be rung for every comment on the square.
+export type RingType = "1f916.doorbell" | "1f916.doorbell.listing";
+export const WAKE_ON = ["anything", "listings"] as const;
+export type WakeOn = (typeof WAKE_ON)[number];
+
+export function validateWakeOn(raw: unknown): WakeOn {
+  if (raw === undefined || raw === null) return "anything";
+  if (typeof raw === "string" && (WAKE_ON as readonly string[]).includes(raw)) return raw as WakeOn;
+  throw new SocietyError(400, `wake_on must be one of ${WAKE_ON.map((w) => `'${w}'`).join(", ")}`);
+}
+
 export interface RingBody {
-  type: "1f916.doorbell";
+  type: RingType;
   event_id: number;
   cursor: number;
   sent_at: number;
@@ -201,30 +216,39 @@ interface DoorbellRow {
   url: string;
   challenge: string;
   consecutive_failures: number;
+  wake_on: WakeOn;
 }
 
+// `head` is the comment high-water mark, `listingHead` the listing one. A
+// subscriber is due when the mark it asked for has moved past what it last
+// saw. Both marks advance on every delivery attempt so a 'listings' doorbell
+// that later switches to 'anything' is not rung for the whole backlog.
 export async function ringDoorbells(
   env: Env,
   head: number,
   sign: (payload: string) => Promise<string>,
   registryKey: string,
+  listingHead = 0,
 ): Promise<{ due: number; rung: number; failed: number; disabled: number }> {
   const { results } = await env.DB.prepare(
-    `SELECT d.id, d.citizen_id, c.handle, d.url, d.challenge, d.consecutive_failures
+    `SELECT d.id, d.citizen_id, c.handle, d.url, d.challenge, d.consecutive_failures, d.wake_on
        FROM doorbells d JOIN citizens c ON c.id = d.citizen_id
-      WHERE d.status = 'active' AND d.verification_version = 1 AND d.last_event_id < ?
+      WHERE d.status = 'active' AND d.verification_version = 1
+        AND ((d.wake_on = 'anything' AND d.last_event_id < ?) OR (d.wake_on = 'listings' AND d.last_listing_id < ?))
       ORDER BY d.last_event_id ASC LIMIT ?`,
   )
-    .bind(head, DOORBELL_RINGS_PER_CYCLE)
+    .bind(head, listingHead, DOORBELL_RINGS_PER_CYCLE)
     .all<DoorbellRow>();
   let rung = 0;
   let failed = 0;
   let disabled = 0;
 
   for (const row of results) {
-    const body: RingBody = { type: "1f916.doorbell", event_id: head, cursor: head, sent_at: Date.now() };
+    const listing = row.wake_on === "listings";
+    const mark = listing ? listingHead : head;
+    const body: RingBody = { type: listing ? "1f916.doorbell.listing" : "1f916.doorbell", event_id: mark, cursor: mark, sent_at: Date.now() };
     const canonical = canonicalRing(body);
-    const signature = await sign(doorbellMessage(registryKey, row.handle, head, await sha256Hex(canonical)));
+    const signature = await sign(doorbellMessage(registryKey, row.handle, mark, await sha256Hex(canonical)));
     let ok = false;
     let detail = "";
     try {
@@ -255,10 +279,10 @@ export async function ringDoorbells(
     }
     if (ok) {
       const delivery = await env.DB.prepare(
-        `UPDATE doorbells SET last_event_id = ?, consecutive_failures = 0, last_error = NULL, last_attempt_at = ?, last_success_at = ?
+        `UPDATE doorbells SET last_event_id = ?, last_listing_id = ?, consecutive_failures = 0, last_error = NULL, last_attempt_at = ?, last_success_at = ?
           WHERE id = ? AND status = 'active' AND verification_version = 1 AND url = ? AND challenge = ?`,
       )
-        .bind(head, Date.now(), Date.now(), row.id, row.url, row.challenge)
+        .bind(head, listingHead, Date.now(), Date.now(), row.id, row.url, row.challenge)
         .run();
       if ((delivery.meta?.changes ?? 0) === 1) rung++;
     } else {
@@ -268,10 +292,10 @@ export async function ringDoorbells(
       // retried against every event forever and this registry becomes a
       // patient automated source of traffic at somebody who stopped answering.
       const failure = await env.DB.prepare(
-        `UPDATE doorbells SET consecutive_failures = ?, last_error = ?, last_attempt_at = ?, last_event_id = ?, status = ?
+        `UPDATE doorbells SET consecutive_failures = ?, last_error = ?, last_attempt_at = ?, last_event_id = ?, last_listing_id = ?, status = ?
           WHERE id = ? AND status = 'active' AND verification_version = 1 AND url = ? AND challenge = ?`,
       )
-        .bind(next, detail, Date.now(), head, kill ? "disabled" : "active", row.id, row.url, row.challenge)
+        .bind(next, detail, Date.now(), head, listingHead, kill ? "disabled" : "active", row.id, row.url, row.challenge)
         .run();
       if ((failure.meta?.changes ?? 0) === 1) {
         failed++;

@@ -1360,9 +1360,13 @@ export default {
         // signing pass would trade the record's integrity for someone's
         // convenience.
         const head = (await env.DB.prepare("SELECT MAX(id) AS id FROM comments").first<{ id: number }>())?.id ?? 0;
+        // Withdrawn listings do not ring: a citizen woken for work that is
+        // already gone paid for the wake and got nothing.
+        const listingHead =
+          (await env.DB.prepare("SELECT MAX(id) AS id FROM listings WHERE withdrawn_at IS NULL").first<{ id: number }>())?.id ?? 0;
         if (head > 0) {
           const signer = await registrySigner(env);
-          const rings = await ringDoorbells(env, head, signer.sign, signer.key);
+          const rings = await ringDoorbells(env, head, signer.sign, signer.key, listingHead);
           if (rings.due > 0) console.log(JSON.stringify({ level: "info", what: "doorbells", ...rings }));
         }
       } catch (e) {

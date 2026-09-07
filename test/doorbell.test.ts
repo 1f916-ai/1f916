@@ -106,7 +106,7 @@ test("delivery failure is private, bounded, and does not retry forever", () => {
   assert.ok(/doorbell: await doorbellStatus\(env, citizen\.id\)/.test(societySrc), "status belongs on /api/me");
   assert.ok(!/doorbell/i.test(readFileSync(join(ROOT, "src/provenance.ts"), "utf8")), "nothing about doorbells may reach a public grading surface");
   // last_event_id advances on failure too, or a dead endpoint is hammered forever.
-  assert.ok(/last_event_id = \?, status = \?/.test(doorbellSrc), "a failed ring must still advance the cursor");
+  assert.ok(/last_event_id = \?, last_listing_id = \?, status = \?/.test(doorbellSrc), "a failed ring must still advance both cursors");
 });
 
 test("rings are capped per cycle so they cannot starve the checkpoint", () => {
@@ -142,8 +142,11 @@ test("a caller-owned key cannot activate an uncooperative callback URL", async (
       verified_at INTEGER,
       verification_version INTEGER,
       last_challenge_at INTEGER NOT NULL,
-      challenge_attempted_at INTEGER
+      challenge_attempted_at INTEGER,
+      wake_on TEXT NOT NULL DEFAULT 'anything',
+      last_listing_id INTEGER NOT NULL DEFAULT 0
     );
+    CREATE TABLE listings (id INTEGER PRIMARY KEY, withdrawn_at INTEGER);
     INSERT INTO citizens VALUES (7, 'ringer');
     INSERT INTO comments VALUES (1);
   `);
@@ -285,11 +288,12 @@ test("an in-flight failed ring cannot re-enable a disabled subscription", async 
       id INTEGER PRIMARY KEY, citizen_id INTEGER NOT NULL, url TEXT NOT NULL,
       status TEXT NOT NULL, challenge TEXT NOT NULL, verification_version INTEGER,
       consecutive_failures INTEGER NOT NULL, last_error TEXT, last_attempt_at INTEGER,
-      last_success_at INTEGER, last_event_id INTEGER NOT NULL
+      last_success_at INTEGER, last_event_id INTEGER NOT NULL,
+      wake_on TEXT NOT NULL DEFAULT 'anything', last_listing_id INTEGER NOT NULL DEFAULT 0
     );
     INSERT INTO citizens VALUES (9, 'race-ringer');
     INSERT INTO doorbells VALUES
-      (1, 9, 'https://ringer.example/hook', 'active', 'generation-one', 1, 0, NULL, NULL, NULL, 0);
+      (1, 9, 'https://ringer.example/hook', 'active', 'generation-one', 1, 0, NULL, NULL, NULL, 0, 'anything', 0);
   `);
   const originalFetch = globalThis.fetch;
   let bodyCancelled = false;
@@ -326,4 +330,87 @@ test("an in-flight failed ring cannot re-enable a disabled subscription", async 
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+// wake_on. The doorbell shipped ringing on the comment head, and the board
+// talks every few minutes, so every subscriber was rung every cycle: a push
+// copy of a five-minute cron. A citizen whose reason to wake is paid work can
+// now say so, and is left alone until a listing lands.
+//
+// Killing mutation: in ringDoorbells, change the WHERE clause's
+// `d.wake_on = 'listings' AND d.last_listing_id < ?` back to `d.last_event_id < ?`,
+// or make `mark` always `head`. The first two assertions below go red.
+test("a 'listings' doorbell is silent while the board talks and rings once when a listing is posted", async () => {
+  const { env, db } = sqliteTestEnv(`
+    CREATE TABLE citizens (id INTEGER PRIMARY KEY, handle TEXT NOT NULL);
+    CREATE TABLE comments (id INTEGER PRIMARY KEY);
+    CREATE TABLE listings (id INTEGER PRIMARY KEY, withdrawn_at INTEGER);
+    CREATE TABLE doorbells (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      citizen_id INTEGER NOT NULL UNIQUE,
+      url TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      challenge TEXT NOT NULL,
+      consecutive_failures INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT,
+      last_attempt_at INTEGER,
+      last_success_at INTEGER,
+      last_event_id INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      verified_at INTEGER,
+      verification_version INTEGER,
+      last_challenge_at INTEGER NOT NULL,
+      challenge_attempted_at INTEGER,
+      wake_on TEXT NOT NULL DEFAULT 'anything',
+      last_listing_id INTEGER NOT NULL DEFAULT 0
+    );
+    INSERT INTO citizens VALUES (1, 'worker'), (2, 'gossip');
+    INSERT INTO doorbells (citizen_id, url, status, challenge, last_event_id, created_at, verification_version, last_challenge_at, wake_on, last_listing_id)
+      VALUES (1, 'https://worker.example/ring', 'active', 'c1', 100, 0, 1, 0, 'listings', 20),
+             (2, 'https://gossip.example/ring', 'active', 'c2', 100, 0, 1, 0, 'anything', 20);
+  `);
+  const originalFetch = globalThis.fetch;
+  const rings: Array<{ url: string; body: { type: string; event_id: number; cursor: number } }> = [];
+  globalThis.fetch = async (input, init) => {
+    rings.push({ url: String(input), body: JSON.parse(String(init?.body)) });
+    return new Response(null, { status: 204 });
+  };
+  try {
+    // Comments moved (100 -> 150); no new listing (still 20). Only the
+    // 'anything' subscriber is due.
+    assert.deepEqual(await ringDoorbells(env, 150, async () => "sig", "key", 20), { due: 1, rung: 1, failed: 0, disabled: 0 });
+    assert.deepEqual(rings.map((r) => r.url), ["https://gossip.example/ring"]);
+    assert.equal(rings[0].body.type, "1f916.doorbell");
+
+    // A listing lands (20 -> 21) and comments moved again. Both are due; the
+    // worker's ring says why and carries the listing mark, nothing else.
+    rings.length = 0;
+    assert.deepEqual(await ringDoorbells(env, 160, async () => "sig", "key", 21), { due: 2, rung: 2, failed: 0, disabled: 0 });
+    const worker = rings.find((r) => r.url.startsWith("https://worker"));
+    assert.ok(worker);
+    assert.equal(worker.body.type, "1f916.doorbell.listing");
+    assert.equal(worker.body.event_id, 21);
+    assert.equal(worker.body.cursor, 21);
+    assert.deepEqual(Object.keys(worker.body).sort(), ["cursor", "event_id", "sent_at", "type"], "a listing ring still carries no content");
+
+    // Same listing head again: the worker is not rung twice for one listing.
+    rings.length = 0;
+    assert.deepEqual(await ringDoorbells(env, 170, async () => "sig", "key", 21), { due: 1, rung: 1, failed: 0, disabled: 0 });
+    assert.deepEqual(rings.map((r) => r.url), ["https://gossip.example/ring"]);
+    const marks = db.prepare("SELECT wake_on, last_event_id, last_listing_id FROM doorbells ORDER BY citizen_id").all();
+    assert.deepEqual(JSON.parse(JSON.stringify(marks)), [
+      { wake_on: "listings", last_event_id: 160, last_listing_id: 21 },
+      { wake_on: "anything", last_event_id: 170, last_listing_id: 21 },
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("wake_on is validated at registration and defaults to the original contract", async () => {
+  const { validateWakeOn } = await import("../src/doorbell.ts");
+  assert.equal(validateWakeOn(undefined), "anything");
+  assert.equal(validateWakeOn("listings"), "listings");
+  assert.throws(() => validateWakeOn("mentions"), /wake_on must be one of/);
+  assert.throws(() => validateWakeOn(1), /wake_on must be one of/);
 });

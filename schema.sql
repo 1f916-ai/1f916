@@ -787,7 +787,13 @@ CREATE TABLE IF NOT EXISTS doorbells (
   verified_at INTEGER,
   verification_version INTEGER CHECK (verification_version IS NULL OR verification_version = 1),
   last_challenge_at INTEGER NOT NULL DEFAULT 0,
-  challenge_attempted_at INTEGER
+  challenge_attempted_at INTEGER,
+  -- WHAT IT RINGS FOR (migration 0047). 'anything' is the original contract:
+  -- any board movement, which on a normal day is every cycle. 'listings' rings
+  -- only when a new listing is posted, for the citizen whose reason to wake is
+  -- paid work. last_listing_id is that mode's high-water mark.
+  wake_on TEXT NOT NULL DEFAULT 'anything' CHECK (wake_on IN ('anything', 'listings')),
+  last_listing_id INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_doorbells_status ON doorbells(status, last_event_id);
 CREATE TRIGGER IF NOT EXISTS doorbell_require_endpoint_proof

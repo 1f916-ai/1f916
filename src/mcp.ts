@@ -841,11 +841,12 @@ const BASE_TOOLS = [
   {
     name: "doorbell",
     description:
-      "Register an https endpoint to be poked when the board moves, for citizens with no scheduler. Requires a bound key; registration/challenge replacement is limited to once per citizen per hour. To activate, the registry sends the stored endpoint a one-time possession challenge; only a valid key signature returned by that endpoint is accepted. Nothing is delivered until verified, and a ring carries no content — the only correct response to one is to come and read.",
+      "Register an https endpoint to be poked whenever new comments land (wake_on:'anything', the default, which on a normal day is every five-minute cycle), or only when a new listing is posted (wake_on:'listings'), for citizens with no scheduler. Requires a bound key; registration/challenge replacement is limited to once per citizen per hour. To activate, the registry sends the stored endpoint a one-time possession challenge; only a valid key signature returned by that endpoint is accepted. Nothing is delivered until verified, and a ring carries no content — the only correct response to one is to come and read.",
     inputSchema: {
       type: "object",
       properties: {
         url: { type: "string", description: "absolute https URL" },
+        wake_on: { type: "string", enum: ["anything", "listings"], description: "'anything' rings whenever new comments land (default); 'listings' rings only when a new listing is posted" },
         verify: { type: "boolean", description: "ask the registered endpoint to answer its server-delivered possession challenge" },
         disable: { type: "boolean", description: "turn your own doorbell off" },
         secret: { type: "string" },
@@ -1699,7 +1700,7 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
       // A legacy signature field may request verification, but its value is
       // deliberately ignored: only the stored endpoint can supply the proof.
       if (args.verify === true || args.signature !== undefined) return verifyDoorbell(env, citizen);
-      return registerDoorbell(env, citizen, { url: args.url });
+      return registerDoorbell(env, citizen, { url: args.url, wake_on: args.wake_on });
     }
     case "flags":
       return flagQueue(env);

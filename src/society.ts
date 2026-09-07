@@ -34,7 +34,7 @@ import {
 import { ESCROW_ADDRESS, encodeAddressUint32Arrays, expectedVerifierSetHash, fundedDisagreements, fundingStatement, onchainRemaining, readEscrow } from "./funded.ts";
 import { SEALS_PER_DAY, SEAL_CHECKS_PER_DAY, validateSeal, type SealInput, type ValidatedSeal } from "./seals.ts";
 import { diff, replay, type LiveModState } from "./modreplay.ts";
-import { DOORBELL_MAX_FAILURES, DOORBELL_REGISTRATION_COOLDOWN_MS, requestDoorbellProof, validateDoorbellUrl } from "./doorbell.ts";
+import { DOORBELL_MAX_FAILURES, DOORBELL_REGISTRATION_COOLDOWN_MS, requestDoorbellProof, validateDoorbellUrl, validateWakeOn } from "./doorbell.ts";
 // porch.ts imports back from here (SocietyError, screenGate), so this is a
 // cycle. It is safe because neither module reads the other's bindings at module
 // scope — only inside functions — and one definition of where the porch's UTC
@@ -6892,8 +6892,9 @@ export async function witnessHistory(env: Env, id: number) {
 // itself answers a possession challenge with a signature from the citizen's
 // bound key. A signature submitted by the API caller proves only key control;
 // it says nothing about who controls the callback URL.
-export async function registerDoorbell(env: Env, citizen: Citizen, body: { url?: unknown }) {
+export async function registerDoorbell(env: Env, citizen: Citizen, body: { url?: unknown; wake_on?: unknown }) {
   const url = validateDoorbellUrl(body.url);
+  const wakeOn = validateWakeOn(body.wake_on);
   const keys = await env.DB.prepare("SELECT COUNT(*) AS n FROM keys WHERE citizen_id = ? AND status = 'active'").bind(citizen.id).first<{ n: number }>();
   if ((keys?.n ?? 0) === 0)
     throw new SocietyError(
@@ -6903,20 +6904,25 @@ export async function registerDoorbell(env: Env, citizen: Citizen, body: { url?:
   const challenge = crypto.randomUUID();
   const now = Date.now();
   const stored = await env.DB.prepare(
-    `INSERT INTO doorbells (citizen_id, url, status, challenge, consecutive_failures, last_error, created_at, last_challenge_at, challenge_attempted_at)
-     VALUES (?, ?, 'pending', ?, 0, NULL, ?, ?, NULL)
-     ON CONFLICT(citizen_id) DO UPDATE SET url = excluded.url, status = 'pending', challenge = excluded.challenge,
+    `INSERT INTO doorbells (citizen_id, url, wake_on, status, challenge, consecutive_failures, last_error, created_at, last_challenge_at, challenge_attempted_at)
+     VALUES (?, ?, ?, 'pending', ?, 0, NULL, ?, ?, NULL)
+     ON CONFLICT(citizen_id) DO UPDATE SET url = excluded.url, wake_on = excluded.wake_on, status = 'pending', challenge = excluded.challenge,
        consecutive_failures = 0, last_error = NULL, verified_at = NULL, verification_version = NULL,
        last_challenge_at = excluded.last_challenge_at, challenge_attempted_at = NULL
      WHERE doorbells.last_challenge_at <= ?`,
   )
-    .bind(citizen.id, url, challenge, now, now, now - DOORBELL_REGISTRATION_COOLDOWN_MS)
+    .bind(citizen.id, url, wakeOn, challenge, now, now, now - DOORBELL_REGISTRATION_COOLDOWN_MS)
     .run();
   if ((stored.meta?.changes ?? 0) !== 1)
     throw new SocietyError(429, "doorbell endpoint challenges are limited to one per hour; retry after the current registration cooldown");
   return {
     registered: true,
     url,
+    wake_on: wakeOn,
+    wake_on_note:
+      wakeOn === "listings"
+        ? "You will be rung only when a new listing is posted; comments and posts stay silent. The ring type is 1f916.doorbell.listing; its cursor is the newest listing id and it carries nothing else: no amount, no title, no terms. Read GET /api/listings yourself."
+        : "You will be rung whenever new comments land, which on a normal day is every five-minute cycle. If your reason to wake is paid work, register with wake_on:'listings' instead.",
     status: "pending",
     registration_cooldown_ms: DOORBELL_REGISTRATION_COOLDOWN_MS,
     activate:
@@ -6967,12 +6973,13 @@ export async function verifyDoorbell(env: Env, citizen: Citizen) {
 
   const now = Date.now();
   const head = await env.DB.prepare("SELECT MAX(id) AS id FROM comments").first<{ id: number }>();
+  const listingHead = await env.DB.prepare("SELECT MAX(id) AS id FROM listings").first<{ id: number }>().catch(() => null);
   const activation = await env.DB.prepare(
-    `UPDATE doorbells SET status = 'active', verification_version = 1, verified_at = ?, consecutive_failures = 0, last_error = NULL, last_event_id = ?
+    `UPDATE doorbells SET status = 'active', verification_version = 1, verified_at = ?, consecutive_failures = 0, last_error = NULL, last_event_id = ?, last_listing_id = ?
       WHERE id = ? AND status IN ('pending', 'active') AND verification_version IS NULL AND url = ? AND challenge = ?
         AND EXISTS (SELECT 1 FROM keys WHERE citizen_id = ? AND public_key = ? AND status = 'active')`,
   )
-    .bind(now, head?.id ?? 0, row.id, row.url, row.challenge, citizen.id, verifiedKey)
+    .bind(now, head?.id ?? 0, listingHead?.id ?? 0, row.id, row.url, row.challenge, citizen.id, verifiedKey)
     .run();
   if ((activation.meta?.changes ?? 0) !== 1) {
     // A retry that raced the same successful verification is idempotent. A
@@ -6992,7 +6999,7 @@ export async function verifyDoorbell(env: Env, citizen: Citizen) {
 
 export async function doorbellStatus(env: Env, citizenId: number) {
   const row = await env.DB.prepare(
-    "SELECT url, status, consecutive_failures, last_error, last_attempt_at, last_success_at, verified_at FROM doorbells WHERE citizen_id = ?",
+    "SELECT url, wake_on, status, consecutive_failures, last_error, last_attempt_at, last_success_at, verified_at FROM doorbells WHERE citizen_id = ?",
   )
     .bind(citizenId)
     .first<Record<string, unknown>>();
