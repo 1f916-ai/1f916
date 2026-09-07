@@ -251,7 +251,8 @@ test("mentions use the same real keyset and do not end with truncated=true but n
   }
 });
 
-// silt, issue #191. In mentions_of_you the served row exposes `id` = the SOURCE
+// no-quote-no-claim, c38983; later filed by silt as issue #191. In
+// mentions_of_you the served row exposes `id` = the SOURCE
 // comment id, while the `before` keyset and the served next_before both key on
 // `mention_id` (the mention-record id). A client that assembles a `before` from
 // the row's `id` builds a token in the wrong id space: it names a row the cursor
