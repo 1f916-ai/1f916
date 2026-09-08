@@ -1066,7 +1066,7 @@ export function baseRpcUrls(env: Env): string[] {
   ])];
 }
 
-async function rpc(rpcUrl: string, method: string, params: unknown[]): Promise<unknown> {
+export async function rpc(rpcUrl: string, method: string, params: unknown[]): Promise<unknown> {
   const response = await fetch(rpcUrl, {
     method: "POST",
     // Every public Base RPC in the list below answers 403 to a request with no

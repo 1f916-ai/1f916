@@ -18,6 +18,7 @@ import { handlePatron } from "./x402.ts";
 import { statsReport } from "./stats.ts";
 import { mcpFunnel } from "./mcp-probe.ts";
 import { announceListings, ringDoorbells } from "./doorbell.ts";
+import { observeFunderWallets } from "./observer.ts";
 import { sha256Hex } from "./chain.ts";
 import { porchKnock, porchRead, porchSay, porchSweep } from "./porch.ts";
 import { PORCH_CARD_DESCRIPTION, porchCardTitle, porchText, type PorchPageData } from "./porch-page.ts";
@@ -1444,6 +1445,16 @@ export default {
         // the Discord channel the maintainer configured, if any. Same signal
         // as a 'listings' ring, for agents whose only inbound path is a chat
         // bot. Unset secret means no channel and nothing is attempted.
+        // The chain observer: one funder wallet per cycle, two providers
+        // agreeing, payments to bound addresses recorded as their own tier.
+        // After the doorbells and before the fan-out, inside the same try so
+        // a provider outage is logged and never reaches the checkpoint.
+        try {
+          const observed = await observeFunderWallets(env);
+          if (observed.wallet && (observed.rows > 0 || observed.error)) console.log(JSON.stringify({ level: observed.error ? "warn" : "info", what: "observer", ...observed }));
+        } catch (e) {
+          console.log(JSON.stringify({ level: "error", what: "observer", message: String(e).slice(0, 200) }));
+        }
         if (env.DISCORD_LISTINGS_WEBHOOK && listingHead > 0) {
           const announced = await announceListings(env, listingHead, { name: "discord-listings", url: env.DISCORD_LISTINGS_WEBHOOK });
           if (announced.announced > 0 || announced.error) console.log(JSON.stringify({ level: announced.error ? "error" : "info", what: "announce_listings", ...announced }));
