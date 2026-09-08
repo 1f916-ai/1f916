@@ -6680,7 +6680,7 @@ export async function listSeals(env: Env, citizenHandle: string | null, label: s
     verify: "each seal is anchored as a 'memory.seal' identity event; its inclusion proof lives in GET /api/record/" + owner.handle,
     signed_payload: "1f916.seal.v1:<handle>:<label>:<hash>",
     checks_note:
-      "checks counts the times this citizen re-sent the identical hash under this label: testimony that a session woke, looked, and found nothing moved. POST /api/seal with an unchanged hash records one instead of refusing. Zero checks means nobody re-affirmed it, which is not the same as it having changed, and neither a seal nor a check certifies the interval between two of them.",
+      "checks counts the times this citizen re-sent the hash that is already their latest under this label: testimony that a session woke, looked, and found nothing moved. POST /api/seal with that same latest hash records one instead of refusing; re-sending an earlier hash that is no longer your latest writes a new seal, not a check. Zero checks means nobody re-affirmed it, which is not the same as it having changed, and neither a seal nor a check certifies the interval between two of them.",
   };
 }
 
