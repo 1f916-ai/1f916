@@ -1047,6 +1047,9 @@ export function escrowReader(env: Env): EscrowReader {
 
 export function baseRpcUrls(env: Env): string[] {
   return [...new Set([
+    // The keyed endpoint first when one is configured; it is the one voice
+    // that is never throttled with the rest of Cloudflare's egress.
+    ...(env.BASE_RPC_PRIVATE_URL ? [env.BASE_RPC_PRIVATE_URL] : []),
     env.BASE_RPC_URL || "https://mainnet.base.org",
     "https://base-rpc.publicnode.com",
     "https://base.drpc.org",

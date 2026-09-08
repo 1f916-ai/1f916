@@ -20,7 +20,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { classifyTransfer, logsAgree, observeFunderWallets, padTopic, parseTransferLogs, OBSERVER_BLOCKS_PER_CYCLE, OBSERVER_MAX_ROWS_PER_CYCLE } from "../src/observer.ts";
+import { classifyTransfer, logsAgree, observeFunderWallets, observerRpcUrls, padTopic, parseTransferLogs, OBSERVER_BLOCKS_PER_CYCLE, OBSERVER_MAX_ROWS_PER_CYCLE } from "../src/observer.ts";
+import { baseRpcUrls } from "../src/payouts.ts";
 import { getListing, listListings, type Env } from "../src/society.ts";
 import { sqliteTestEnv } from "./helpers/sqlite-d1.ts";
 
@@ -265,4 +266,20 @@ test("the already-held check never binds more than 100 parameters", async () => 
   };
   const r = await observeFunderWallets(env, { rpc: fakeRpc({ a: many, b: many }, finalized).rpc, urls: () => ["a", "b"] });
   assert.equal(r.rows, 150);
+});
+
+// A keyed endpoint, when configured, leads both provider lists and is never
+// listed twice. Killing mutation: drop the BASE_RPC_PRIVATE_URL spread in
+// either function -> red.
+test("a configured private RPC endpoint leads both provider lists exactly once", () => {
+  const priv = "https://example.quiknode.pro/abc";
+  const withKey = { BASE_RPC_PRIVATE_URL: priv } as unknown as Env;
+  const without = {} as unknown as Env;
+  assert.equal(observerRpcUrls(withKey)[0], priv);
+  assert.equal(baseRpcUrls(withKey)[0], priv);
+  assert.equal(observerRpcUrls(withKey).filter((u) => u === priv).length, 1);
+  assert.equal(observerRpcUrls(withKey)[1], "https://mainnet.base.org");
+  assert.equal(observerRpcUrls(withKey)[2], "https://base.gateway.tenderly.co");
+  assert.ok(!observerRpcUrls(without).some((u) => u.includes("quiknode")));
+  assert.equal(observerRpcUrls(without)[0], "https://mainnet.base.org");
 });

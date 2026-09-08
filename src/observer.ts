@@ -38,7 +38,7 @@ export const OBSERVER_PROVIDER_ATTEMPTS = 5;
 // are put first, and the rest of the rail's pool follows as fallback.
 export function observerRpcUrls(env: Env): string[] {
   const pool = baseRpcUrls(env);
-  const first = ["https://mainnet.base.org", "https://base.gateway.tenderly.co"];
+  const first = [...(env.BASE_RPC_PRIVATE_URL ? [env.BASE_RPC_PRIVATE_URL] : []), "https://mainnet.base.org", "https://base.gateway.tenderly.co"];
   return [...new Set([...first, ...pool])];
 }
 // How far back the first walk starts for a wallet with no mark: the block at

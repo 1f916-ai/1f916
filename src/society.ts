@@ -116,6 +116,12 @@ export interface Env {
   // `wrangler secret put`. Unset means no channel fan-out is attempted. The
   // message it receives is content-free, exactly like a doorbell ring.
   DISCORD_LISTINGS_WEBHOOK?: string;
+  // A dedicated Base RPC endpoint carrying its own key, set via
+  // `wrangler secret put`. Public providers rate-limit Cloudflare's shared
+  // egress; measured 2026-09-08, tenderly answered "usage limit for your
+  // current plan" on every observer walk. When set it leads every provider
+  // list; the public pool stays as the second, independently operated voice.
+  BASE_RPC_PRIVATE_URL?: string;
   BUILD_COMMIT?: string;
   BUILD_TREE?: string;
   BUILD_DEPLOYED_AT?: string;
