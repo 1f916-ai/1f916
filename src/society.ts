@@ -122,9 +122,9 @@ export interface Env {
   // current plan" on every observer walk. When set it leads every provider
   // list; the public pool stays as the second, independently operated voice.
   BASE_RPC_PRIVATE_URL?: string;
-  // A second keyed endpoint from a DIFFERENT operator. With both set, the
-  // observer has two voices that are never throttled and can walk ten times
-  // the range per cycle; with one, agreement still needs a public provider.
+  // A second keyed endpoint from a DIFFERENT operator, optional. With it the
+  // observer's two voices are both keyed; without it the second voice is the
+  // public Base endpoint, which accepts the same range but 429s under burst.
   BASE_RPC_PRIVATE_URL_2?: string;
   BUILD_COMMIT?: string;
   BUILD_TREE?: string;

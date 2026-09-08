@@ -29,13 +29,30 @@ import { baseRpcUrls, rpc } from "./payouts.ts";
 // 1,000; 1rpc at 50; mainnet.base.org takes more but one provider is not
 // agreement). Measured by the pre-deploy auditor 2026-09-08.
 export const OBSERVER_BLOCKS_PER_CYCLE = 1_000;
-// With two keyed endpoints from different operators both configured, the
-// range per cycle grows tenfold: keyed providers accept 10,000-block log
-// queries (Infura and QuickNode both measured 2026-09-08), and neither
-// depends on a public provider's rate limit. One or none: the public cap.
+// With a keyed endpoint configured the range per cycle grows tenfold: Infura
+// (measured 2026-09-08) and https://mainnet.base.org both accept 10,000-block
+// log queries, so the keyed voice and the public Base endpoint can agree on
+// the wide range; the providers that cap lower simply do not vote. (QuickNode's
+// free trial caps eth_getLogs at FIVE blocks and was removed the same night.)
+// No keyed endpoint: the 1,000 that tenderly accepts, so any two of the
+// public pool can still agree.
 export const OBSERVER_BLOCKS_PER_CYCLE_KEYED = 10_000;
 export function blocksPerCycle(env: Env): number {
-  return env.BASE_RPC_PRIVATE_URL && env.BASE_RPC_PRIVATE_URL_2 ? OBSERVER_BLOCKS_PER_CYCLE_KEYED : OBSERVER_BLOCKS_PER_CYCLE;
+  return env.BASE_RPC_PRIVATE_URL || env.BASE_RPC_PRIVATE_URL_2 ? OBSERVER_BLOCKS_PER_CYCLE_KEYED : OBSERVER_BLOCKS_PER_CYCLE;
+}
+
+// The public Base endpoint answers 429 under burst and is the observer's
+// second voice, so one 429 costs a whole cycle. One short retry per provider
+// turns most of those into agreement. Bounded: one retry, one wait.
+export const OBSERVER_RETRY_WAIT_MS = 1_500;
+export async function callWithRetry(call: typeof rpc, url: string, method: string, params: unknown[], wait = OBSERVER_RETRY_WAIT_MS): Promise<unknown> {
+  try {
+    return await call(url, method, params);
+  } catch (e) {
+    if (!/HTTP 429/.test(String(e))) throw e;
+    await new Promise((r) => setTimeout(r, wait));
+    return call(url, method, params);
+  }
 }
 export const OBSERVER_PROVIDER_ATTEMPTS = 5;
 
@@ -241,7 +258,7 @@ async function walkWallet(env: Env, wallet: WalletRow, deps: ObserverDeps): Prom
     try {
       const chain = await call(url, "eth_chainId", []);
       if (typeof chain !== "string" || BigInt(chain) !== 8453n) continue;
-      const head = (await call(url, "eth_getBlockByNumber", ["finalized", false])) as { number?: string; timestamp?: string } | null;
+      const head = (await callWithRetry(call, url, "eth_getBlockByNumber", ["finalized", false])) as { number?: string; timestamp?: string } | null;
       if (!head || typeof head.number !== "string") continue;
       const finalized = Number(BigInt(head.number));
       // The range is fixed by the FIRST answering provider so every provider
@@ -256,7 +273,7 @@ async function walkWallet(env: Env, wallet: WalletRow, deps: ObserverDeps): Prom
       }
       if (finalized < toBlock) continue;
       if (fromBlock > toBlock) return { wallet: funder, from_block: fromBlock, to_block: toBlock, rows: 0, payments: 0, zero_value: 0, sources: 0 };
-      const raw = await call(url, "eth_getLogs", [
+      const raw = await callWithRetry(call, url, "eth_getLogs", [
         { address: [...OBSERVED_TOKENS], fromBlock: "0x" + fromBlock.toString(16), toBlock: "0x" + toBlock.toString(16), topics: [TRANSFER_TOPIC, padTopic(funder)] },
       ]);
       const logs = parseTransferLogs(raw).filter((l) => l.from === funder);

@@ -20,7 +20,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { blocksPerCycle, classifyTransfer, logsAgree, observeFunderWallets, observerRpcUrls, padTopic, parseTransferLogs, OBSERVER_BLOCKS_PER_CYCLE, OBSERVER_BLOCKS_PER_CYCLE_KEYED, OBSERVER_MAX_ROWS_PER_CYCLE } from "../src/observer.ts";
+import { blocksPerCycle, callWithRetry, classifyTransfer, logsAgree, observeFunderWallets, observerRpcUrls, padTopic, parseTransferLogs, OBSERVER_BLOCKS_PER_CYCLE, OBSERVER_BLOCKS_PER_CYCLE_KEYED, OBSERVER_MAX_ROWS_PER_CYCLE } from "../src/observer.ts";
 import { baseRpcUrls } from "../src/payouts.ts";
 import { getListing, listListings, type Env } from "../src/society.ts";
 import { sqliteTestEnv } from "./helpers/sqlite-d1.ts";
@@ -290,7 +290,7 @@ test("a configured private RPC endpoint leads both provider lists exactly once",
   assert.deepEqual(observerRpcUrls(both).slice(0, 3), [priv, priv2, "https://mainnet.base.org"]);
   assert.deepEqual(baseRpcUrls(both).slice(0, 2), [priv, priv2]);
   assert.equal(blocksPerCycle(both), OBSERVER_BLOCKS_PER_CYCLE_KEYED);
-  assert.equal(blocksPerCycle(withKey), OBSERVER_BLOCKS_PER_CYCLE, "one keyed endpoint still needs a public second voice, so the public cap applies");
+  assert.equal(blocksPerCycle(withKey), OBSERVER_BLOCKS_PER_CYCLE_KEYED, "one keyed endpoint plus mainnet.base.org both accept the wide range (killing mutation: require both keyed)");
   assert.equal(blocksPerCycle(without), OBSERVER_BLOCKS_PER_CYCLE);
   assert.ok(OBSERVER_BLOCKS_PER_CYCLE_KEYED <= 10_000);
 });
@@ -304,4 +304,22 @@ test("with two keyed endpoints the walk covers the keyed range per cycle", async
   const r = await observeFunderWallets(env, { rpc: fakeRpc({ "https://a.example/k": [], "https://b.example/k": [] }).rpc });
   assert.equal(r.sources, 2);
   assert.equal(r.to_block - r.from_block + 1, OBSERVER_BLOCKS_PER_CYCLE_KEYED);
+});
+
+// One retry on a 429, and only on a 429. Killing mutations: drop the regex
+// test (a non-429 error is retried: second block red); drop the retry (first
+// block red).
+test("callWithRetry retries exactly once on HTTP 429 and never on anything else", async () => {
+  let n = 0;
+  const flaky = async () => { n++; if (n === 1) throw new Error("rpc unavailable (HTTP 429)"); return "ok"; };
+  assert.equal(await callWithRetry(flaky as never, "u", "m", [], 1), "ok");
+  assert.equal(n, 2);
+  let m = 0;
+  const hard = async () => { m++; throw new Error("rpc error -32001: usage limit"); };
+  await assert.rejects(() => callWithRetry(hard as never, "u", "m", [], 1), /usage limit/);
+  assert.equal(m, 1, "a non-429 failure is not retried");
+  let k = 0;
+  const twice = async () => { k++; throw new Error("rpc unavailable (HTTP 429)"); };
+  await assert.rejects(() => callWithRetry(twice as never, "u", "m", [], 1), /429/);
+  assert.equal(k, 2, "at most one retry");
 });
