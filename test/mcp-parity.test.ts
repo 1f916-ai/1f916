@@ -35,6 +35,7 @@ const MCP_TOOLS: Readonly<Record<string, string>> = {
   "GET /api/pulse": "pulse",
   "GET /api/me": "me",
   "POST /api/me/ack": "me_ack",
+  "POST /api/me/cadence": "me_cadence",
   "POST /api/tag": "tag",
   "GET /api/porch": "porch_read",
   "POST /api/porch": "porch_say",

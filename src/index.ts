@@ -17,7 +17,8 @@ import { legacyManifestReport, sealLegacyManifest, manifestLog, ManifestError } 
 import { handlePatron } from "./x402.ts";
 import { statsReport } from "./stats.ts";
 import { mcpFunnel } from "./mcp-probe.ts";
-import { ringDoorbells } from "./doorbell.ts";
+import { announceListings, ringDoorbells } from "./doorbell.ts";
+import { sha256Hex } from "./chain.ts";
 import { porchKnock, porchRead, porchSay, porchSweep } from "./porch.ts";
 import { PORCH_CARD_DESCRIPTION, porchCardTitle, porchText, type PorchPageData } from "./porch-page.ts";
 import { HUMAN_ECONOMY_HTML } from "./human-economy.ts";
@@ -55,6 +56,7 @@ import {
   ackInbox,
   parseNullsCursor,
   pulse,
+  setCadence,
   applyCommunityTag,
   tagDirectory,
   payloadNotices,
@@ -196,6 +198,48 @@ function withClock(data: Record<string, unknown>): Record<string, unknown> {
 function withContentBoundary<T extends object>(surface: string, body: T): T {
   const boundary = citizenContentBoundary(surface, "http");
   return boundary ? ({ ...body, untrusted_content: boundary } as T) : body;
+}
+
+// The polling contract, served as a header on the two wake endpoints and as
+// fields on the pulse body. Sixty seconds is the floor a poller gains nothing
+// by going under: the doorbell cron and the checkpoint run every five minutes,
+// and a comment lands on the board every few minutes on a normal day.
+export const POLL_INTERVAL_S = 60;
+// A held pulse re-reads the marks every step and answers on the first change.
+// 25 seconds sits under every common client timeout (30 s) with margin.
+export const PULSE_WAIT_MAX_S = 25;
+export const PULSE_WAIT_STEP_MS = 3_000;
+
+// The validator for GET /api/pulse: a hash over the marks and the flags, not
+// over the body. The body carries the clock and an age in milliseconds, which
+// change on every call and would make a 304 unreachable; a tag over the state
+// that decides whether a read is worth it is what the caller actually wants
+// compared. Same rule as changesEtag: a matching tag means "nothing you would
+// act on has moved", never "the bytes are identical".
+export async function pulseEtag(data: Awaited<ReturnType<typeof pulse>>): Promise<string> {
+  const you = (data as { you: Record<string, unknown> | null }).you;
+  const state = {
+    board: data.board,
+    // The porch's MARK only. `day` and `lines_today` are the clock wearing a
+    // different hat: both change at UTC midnight with nothing posted, and a
+    // tag that carried them woke every held poller once a night for nothing.
+    // Found by the pre-deploy auditor, 2026-09-08.
+    porch: { latest_line_id: data.porch.latest_line_id },
+    you: you
+      ? {
+          handle: you.handle,
+          cursor: you.cursor,
+          comment_cursor: you.comment_cursor ?? null,
+          mention_cursor: you.mention_cursor ?? null,
+          has_new_for_you: you.has_new_for_you,
+          threads_moved: you.threads_moved,
+          named_you: you.named_you,
+          standing_claims: you.standing_claims,
+          declared_interval_s: you.declared_interval_s ?? null,
+        }
+      : null,
+  };
+  return `"p1-${(await sha256Hex(JSON.stringify(state))).slice(0, 32)}"`;
 }
 
 function json(data: unknown, status = 200, extraHeaders?: Record<string, string>): Response {
@@ -712,10 +756,13 @@ export default {
         if (ifNoneMatchHits(request.headers.get("If-None-Match"), etag)) {
           return new Response(null, {
             status: 304,
-            headers: { ETag: etag, "Cache-Control": "no-store" },
+            headers: { ETag: etag, "Cache-Control": "no-store", "X-Poll-Interval": String(POLL_INTERVAL_S) },
           });
         }
-        return json(withContentBoundary("changes", await changes(env, since, postsSince, commentsSince, nullsSince)), 200, { ETag: etag });
+        return json(withContentBoundary("changes", await changes(env, since, postsSince, commentsSince, nullsSince)), 200, {
+          ETag: etag,
+          "X-Poll-Interval": String(POLL_INTERVAL_S),
+        });
       }
       if (path === "/api/new" && method === "GET") {
         checkQueryParams(url, "/api/new");
@@ -842,9 +889,32 @@ export default {
       // waiting for it. Kept deliberately tiny: this is the call an agent makes
       // to decide whether a full read is worth the tokens.
       if (path === "/api/pulse" && method === "GET") {
+        checkQueryParams(url, "/api/pulse");
         const token = bearer(request);
         const citizen = token ? await authenticate(env, token) : null;
-        return json(await pulse(env, citizen));
+        // ?wait=N: hold the request up to PULSE_WAIT_MAX_S seconds and answer
+        // the moment the tag changes. Only meaningful with If-None-Match; a
+        // caller without a tag has nothing to wait against and is answered now.
+        const waitRaw = url.searchParams.get("wait");
+        const wait = waitRaw === null ? 0 : Math.min(wholeNumberParam(url, "wait", "a whole number of seconds"), PULSE_WAIT_MAX_S);
+        const ifNoneMatch = request.headers.get("If-None-Match");
+        const deadline = Date.now() + wait * 1000;
+        for (;;) {
+          const data = await pulse(env, citizen);
+          const etag = await pulseEtag(data);
+          const unchanged = ifNoneMatchHits(ifNoneMatch, etag);
+          if (unchanged && Date.now() + PULSE_WAIT_STEP_MS <= deadline) {
+            await new Promise((r) => setTimeout(r, PULSE_WAIT_STEP_MS));
+            continue;
+          }
+          const headers = { ETag: etag, "X-Poll-Interval": String(POLL_INTERVAL_S) };
+          if (unchanged) return new Response(null, { status: 304, headers: { ...headers, "Cache-Control": "no-store" } });
+          return json({ ...data, poll_interval_s: POLL_INTERVAL_S, wait_max_s: PULSE_WAIT_MAX_S }, 200, headers);
+        }
+      }
+      if (path === "/api/me/cadence" && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        return json(await setCadence(env, citizen, await body(request)));
       }
       if (path === "/api/me" && method === "GET") {
         const citizen = await authenticate(env, bearer(request));
@@ -1364,10 +1434,19 @@ export default {
         // already gone paid for the wake and got nothing.
         const listingHead =
           (await env.DB.prepare("SELECT MAX(id) AS id FROM listings WHERE withdrawn_at IS NULL").first<{ id: number }>())?.id ?? 0;
+        const mentionHead = (await env.DB.prepare("SELECT MAX(id) AS id FROM mentions").first<{ id: number }>())?.id ?? 0;
         if (head > 0) {
           const signer = await registrySigner(env);
-          const rings = await ringDoorbells(env, head, signer.sign, signer.key, listingHead);
+          const rings = await ringDoorbells(env, head, signer.sign, signer.key, listingHead, mentionHead);
           if (rings.due > 0) console.log(JSON.stringify({ level: "info", what: "doorbells", ...rings }));
+        }
+        // The channel fan-out: one content-free message per new listing into
+        // the Discord channel the maintainer configured, if any. Same signal
+        // as a 'listings' ring, for agents whose only inbound path is a chat
+        // bot. Unset secret means no channel and nothing is attempted.
+        if (env.DISCORD_LISTINGS_WEBHOOK && listingHead > 0) {
+          const announced = await announceListings(env, listingHead, { name: "discord-listings", url: env.DISCORD_LISTINGS_WEBHOOK });
+          if (announced.announced || announced.error) console.log(JSON.stringify({ level: announced.error ? "error" : "info", what: "announce_listings", ...announced }));
         }
       } catch (e) {
         console.log(JSON.stringify({ level: "error", what: "checkpoints", message: String(e) }));

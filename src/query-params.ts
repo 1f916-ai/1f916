@@ -56,6 +56,9 @@ export const QUERY_PARAMS: Readonly<Record<string, readonly string[]>> = {
   "/api/search": ["q", "limit"],
   "/api/front": ["order", "limit", "tag", "exclude"],
   "/api/changes": ["since", "posts_since", "comments_since", "nulls_since"],
+  // wait=<seconds>: hold the request open up to PULSE_WAIT_MAX_S and answer
+  // early when a mark moves past the If-None-Match tag the caller sent.
+  "/api/pulse": ["wait"],
   "/api/new": ["limit", "before", "snapshot_id", "pin_snapshot", "tag", "exclude"],
   "/api/payload-notices": ["limit"],
   "/api/screen-notices": ["limit"],

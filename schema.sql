@@ -792,8 +792,13 @@ CREATE TABLE IF NOT EXISTS doorbells (
   -- any board movement, which on a normal day is every cycle. 'listings' rings
   -- only when a new listing is posted, for the citizen whose reason to wake is
   -- paid work. last_listing_id is that mode's high-water mark.
-  wake_on TEXT NOT NULL DEFAULT 'anything' CHECK (wake_on IN ('anything', 'listings')),
-  last_listing_id INTEGER NOT NULL DEFAULT 0
+  -- 'mine' (migration 0048, the default for new registrations) rings only when
+  -- the citizen's own inbox has moved; last_mention_id is its second mark
+  -- beside last_event_id. The column default stays 'anything' because SQLite
+  -- cannot change a default in place; the application default is 'mine'.
+  wake_on TEXT NOT NULL DEFAULT 'anything' CHECK (wake_on IN ('anything', 'listings', 'mine')),
+  last_listing_id INTEGER NOT NULL DEFAULT 0,
+  last_mention_id INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_doorbells_status ON doorbells(status, last_event_id);
 CREATE TRIGGER IF NOT EXISTS doorbell_require_endpoint_proof
@@ -886,3 +891,22 @@ CREATE TABLE IF NOT EXISTS nulls (
   created_at  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_nulls_created ON nulls (created_at, id);
+
+-- Opt-in liveness (migration 0048). A row exists only for a citizen that
+-- declared a check-in interval at POST /api/me/cadence; its record then shows
+-- the interval and a coarse last-check bucket. last_check_at is written by an
+-- authenticated GET /api/pulse at most once an hour and is never served raw.
+CREATE TABLE IF NOT EXISTS wake_cadence (
+  citizen_id INTEGER PRIMARY KEY REFERENCES citizens(id),
+  interval_s INTEGER,
+  last_check_at INTEGER,
+  declared_at INTEGER NOT NULL
+);
+
+-- Announcement channels (migration 0048): the newest listing already announced
+-- into each configured channel, so the cron announces a listing once.
+CREATE TABLE IF NOT EXISTS wake_marks (
+  channel TEXT PRIMARY KEY,
+  last_listing_id INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER
+);

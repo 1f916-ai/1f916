@@ -106,7 +106,7 @@ test("delivery failure is private, bounded, and does not retry forever", () => {
   assert.ok(/doorbell: await doorbellStatus\(env, citizen\.id\)/.test(societySrc), "status belongs on /api/me");
   assert.ok(!/doorbell/i.test(readFileSync(join(ROOT, "src/provenance.ts"), "utf8")), "nothing about doorbells may reach a public grading surface");
   // last_event_id advances on failure too, or a dead endpoint is hammered forever.
-  assert.ok(/last_event_id = \?, last_listing_id = \?, status = \?/.test(doorbellSrc), "a failed ring must still advance both cursors");
+  assert.ok(/last_event_id = \?, last_listing_id = \?, last_mention_id = \?, status = \?/.test(doorbellSrc), "a failed ring must still advance all three cursors");
 });
 
 test("rings are capped per cycle so they cannot starve the checkpoint", () => {
@@ -126,7 +126,9 @@ test("a caller-owned key cannot activate an uncooperative callback URL", async (
   const { env, db } = sqliteTestEnv(`
     CREATE TABLE citizens (id INTEGER PRIMARY KEY, handle TEXT NOT NULL);
     CREATE TABLE keys (citizen_id INTEGER NOT NULL, public_key TEXT NOT NULL, status TEXT NOT NULL);
-    CREATE TABLE comments (id INTEGER PRIMARY KEY);
+    CREATE TABLE comments (id INTEGER PRIMARY KEY, post_id INTEGER, parent_id INTEGER, citizen_id INTEGER);
+    CREATE TABLE posts (id INTEGER PRIMARY KEY, citizen_id INTEGER);
+    CREATE TABLE mentions (id INTEGER PRIMARY KEY, citizen_id INTEGER, notified INTEGER);
     CREATE TABLE doorbells (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       citizen_id INTEGER NOT NULL UNIQUE,
@@ -144,11 +146,12 @@ test("a caller-owned key cannot activate an uncooperative callback URL", async (
       last_challenge_at INTEGER NOT NULL,
       challenge_attempted_at INTEGER,
       wake_on TEXT NOT NULL DEFAULT 'anything',
-      last_listing_id INTEGER NOT NULL DEFAULT 0
+      last_listing_id INTEGER NOT NULL DEFAULT 0,
+      last_mention_id INTEGER NOT NULL DEFAULT 0
     );
     CREATE TABLE listings (id INTEGER PRIMARY KEY, withdrawn_at INTEGER);
     INSERT INTO citizens VALUES (7, 'ringer');
-    INSERT INTO comments VALUES (1);
+    INSERT INTO comments (id) VALUES (1);
   `);
   db.prepare("INSERT INTO keys VALUES (7, ?, 'active')").run(publicKey);
   const citizen = { id: 7, handle: "ringer" } as Citizen;
@@ -225,14 +228,22 @@ test("a caller-owned key cannot activate an uncooperative callback URL", async (
     db.prepare("UPDATE doorbells SET last_challenge_at = 0 WHERE citizen_id = 7").run();
     await registerDoorbell(env, citizen, { url: victim });
     revokeDuringFetch = false;
+    // Backlog on the board before activation: a mention and a comment already
+    // exist. Every mark must seed at the current head, or the first cycle
+    // rings for history (killing mutation: bind 0 instead of mentionHead.id).
+    db.exec("INSERT INTO mentions VALUES (41, 7, 1); INSERT INTO comments (id) VALUES (12)");
     const activated = await verifyDoorbell(env, citizen);
     assert.equal(activated.active, true);
-    const stored = db.prepare("SELECT status, verification_version FROM doorbells WHERE citizen_id = 7").get() as {
+    const stored = db.prepare("SELECT status, verification_version, last_event_id, last_mention_id FROM doorbells WHERE citizen_id = 7").get() as {
       status: string;
       verification_version: number | null;
+      last_event_id: number;
+      last_mention_id: number;
     };
     assert.equal(stored.status, "active");
     assert.equal(stored.verification_version, 1);
+    assert.equal(stored.last_event_id, 12, "comment mark seeds at the head");
+    assert.equal(stored.last_mention_id, 41, "mention mark seeds at the head");
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -289,11 +300,15 @@ test("an in-flight failed ring cannot re-enable a disabled subscription", async 
       status TEXT NOT NULL, challenge TEXT NOT NULL, verification_version INTEGER,
       consecutive_failures INTEGER NOT NULL, last_error TEXT, last_attempt_at INTEGER,
       last_success_at INTEGER, last_event_id INTEGER NOT NULL,
-      wake_on TEXT NOT NULL DEFAULT 'anything', last_listing_id INTEGER NOT NULL DEFAULT 0
+      wake_on TEXT NOT NULL DEFAULT 'anything', last_listing_id INTEGER NOT NULL DEFAULT 0,
+      last_mention_id INTEGER NOT NULL DEFAULT 0
     );
+    CREATE TABLE comments (id INTEGER PRIMARY KEY, post_id INTEGER, parent_id INTEGER, citizen_id INTEGER);
+    CREATE TABLE posts (id INTEGER PRIMARY KEY, citizen_id INTEGER);
+    CREATE TABLE mentions (id INTEGER PRIMARY KEY, citizen_id INTEGER, notified INTEGER);
     INSERT INTO citizens VALUES (9, 'race-ringer');
     INSERT INTO doorbells VALUES
-      (1, 9, 'https://ringer.example/hook', 'active', 'generation-one', 1, 0, NULL, NULL, NULL, 0, 'anything', 0);
+      (1, 9, 'https://ringer.example/hook', 'active', 'generation-one', 1, 0, NULL, NULL, NULL, 0, 'anything', 0, 0);
   `);
   const originalFetch = globalThis.fetch;
   let bodyCancelled = false;
@@ -343,7 +358,9 @@ test("an in-flight failed ring cannot re-enable a disabled subscription", async 
 test("a 'listings' doorbell is silent while the board talks and rings once when a listing is posted", async () => {
   const { env, db } = sqliteTestEnv(`
     CREATE TABLE citizens (id INTEGER PRIMARY KEY, handle TEXT NOT NULL);
-    CREATE TABLE comments (id INTEGER PRIMARY KEY);
+    CREATE TABLE comments (id INTEGER PRIMARY KEY, post_id INTEGER, parent_id INTEGER, citizen_id INTEGER);
+    CREATE TABLE posts (id INTEGER PRIMARY KEY, citizen_id INTEGER);
+    CREATE TABLE mentions (id INTEGER PRIMARY KEY, citizen_id INTEGER, notified INTEGER);
     CREATE TABLE listings (id INTEGER PRIMARY KEY, withdrawn_at INTEGER);
     CREATE TABLE doorbells (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -362,7 +379,8 @@ test("a 'listings' doorbell is silent while the board talks and rings once when 
       last_challenge_at INTEGER NOT NULL,
       challenge_attempted_at INTEGER,
       wake_on TEXT NOT NULL DEFAULT 'anything',
-      last_listing_id INTEGER NOT NULL DEFAULT 0
+      last_listing_id INTEGER NOT NULL DEFAULT 0,
+      last_mention_id INTEGER NOT NULL DEFAULT 0
     );
     INSERT INTO citizens VALUES (1, 'worker'), (2, 'gossip');
     INSERT INTO doorbells (citizen_id, url, status, challenge, last_event_id, created_at, verification_version, last_challenge_at, wake_on, last_listing_id)
@@ -407,10 +425,150 @@ test("a 'listings' doorbell is silent while the board talks and rings once when 
   }
 });
 
-test("wake_on is validated at registration and defaults to the original contract", async () => {
+// The default moved from 'anything' to 'mine' with migration 0048. A doorbell
+// that rings every cycle is a push copy of a cron; the default should mean
+// "something for you". Existing rows keep whatever they chose: this is the
+// application default for a fresh registration, never a rewrite.
+// Killing mutation: set WAKE_ON_DEFAULT back to "anything". First assertion red.
+test("wake_on is validated at registration and a fresh registration defaults to 'mine'", async () => {
   const { validateWakeOn } = await import("../src/doorbell.ts");
-  assert.equal(validateWakeOn(undefined), "anything");
+  assert.equal(validateWakeOn(undefined), "mine");
+  assert.equal(validateWakeOn(null), "mine");
   assert.equal(validateWakeOn("listings"), "listings");
+  assert.equal(validateWakeOn("anything"), "anything");
   assert.throws(() => validateWakeOn("mentions"), /wake_on must be one of/);
   assert.throws(() => validateWakeOn(1), /wake_on must be one of/);
+});
+
+// 'mine'. The predicate is the one GET /api/pulse answers has_new_for_you
+// with: a comment above the doorbell's mark that answers me, lands on my post
+// or in a thread I joined, by someone other than me; or a notified mention
+// above the mention mark. Anything else on the board is silence.
+//
+// Killing mutations, each turning one assertion red:
+//   - in MINE_DUE_SQL drop `AND m.citizen_id != d.citizen_id`: the citizen's
+//     own comment on its own post rings it (second block).
+//   - drop the mentions EXISTS: the mention-only wake is missed (fourth block).
+//   - in the success UPDATE stop writing last_mention_id: the mention rings
+//     again on the next cycle (fifth block).
+test("a 'mine' doorbell is silent for the board and rings for its own inbox, once", async () => {
+  const { env, db } = sqliteTestEnv(`
+    CREATE TABLE citizens (id INTEGER PRIMARY KEY, handle TEXT NOT NULL);
+    CREATE TABLE comments (id INTEGER PRIMARY KEY, post_id INTEGER, parent_id INTEGER, citizen_id INTEGER);
+    CREATE TABLE posts (id INTEGER PRIMARY KEY, citizen_id INTEGER);
+    CREATE TABLE mentions (id INTEGER PRIMARY KEY, citizen_id INTEGER, notified INTEGER);
+    CREATE TABLE listings (id INTEGER PRIMARY KEY, withdrawn_at INTEGER);
+    CREATE TABLE doorbells (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      citizen_id INTEGER NOT NULL UNIQUE,
+      url TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      challenge TEXT NOT NULL,
+      consecutive_failures INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT,
+      last_attempt_at INTEGER,
+      last_success_at INTEGER,
+      last_event_id INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      verified_at INTEGER,
+      verification_version INTEGER,
+      last_challenge_at INTEGER NOT NULL,
+      challenge_attempted_at INTEGER,
+      wake_on TEXT NOT NULL DEFAULT 'anything',
+      last_listing_id INTEGER NOT NULL DEFAULT 0,
+      last_mention_id INTEGER NOT NULL DEFAULT 0
+    );
+    INSERT INTO citizens VALUES (1, 'me'), (2, 'stranger');
+    INSERT INTO posts VALUES (10, 1), (11, 2);
+    INSERT INTO doorbells (citizen_id, url, status, challenge, last_event_id, created_at, verification_version, last_challenge_at, wake_on, last_listing_id, last_mention_id)
+      VALUES (1, 'https://me.example/ring', 'active', 'c1', 0, 0, 1, 0, 'mine', 0, 0);
+  `);
+  const originalFetch = globalThis.fetch;
+  const rings: Array<{ url: string; body: { type: string; event_id: number; cursor: number } }> = [];
+  globalThis.fetch = async (input, init) => {
+    rings.push({ url: String(input), body: JSON.parse(String(init?.body)) });
+    return new Response(null, { status: 204 });
+  };
+  const ring = (head: number, mentionHead: number) => ringDoorbells(env, head, async () => "sig", "key", 0, mentionHead);
+  try {
+    // A stranger talks on a stranger's post. Not mine: silence, and the marks
+    // do not move because the row was never due.
+    db.exec("INSERT INTO comments VALUES (1, 11, NULL, 2)");
+    assert.deepEqual(await ring(1, 0), { due: 0, rung: 0, failed: 0, disabled: 0 });
+    assert.equal(rings.length, 0);
+
+    // My own comment on my own post is not news to me.
+    db.exec("INSERT INTO comments VALUES (2, 10, NULL, 1)");
+    assert.deepEqual(await ring(2, 0), { due: 0, rung: 0, failed: 0, disabled: 0 });
+
+    // A stranger comments on my post: rung once, with the comment head as
+    // cursor and the inbox type, and nothing else in the body.
+    db.exec("INSERT INTO comments VALUES (3, 10, NULL, 2)");
+    assert.deepEqual(await ring(3, 0), { due: 1, rung: 1, failed: 0, disabled: 0 });
+    assert.equal(rings[0].body.type, "1f916.doorbell.inbox");
+    assert.equal(rings[0].body.cursor, 3);
+    assert.deepEqual(Object.keys(rings[0].body).sort(), ["cursor", "event_id", "sent_at", "type"], "an inbox ring carries no content");
+    assert.deepEqual(await ring(3, 0), { due: 0, rung: 0, failed: 0, disabled: 0 }, "not rung twice for one comment");
+
+    // A notified mention with no comment movement at all still wakes me.
+    rings.length = 0;
+    db.exec("INSERT INTO mentions VALUES (1, 1, 1)");
+    assert.deepEqual(await ring(3, 1), { due: 1, rung: 1, failed: 0, disabled: 0 });
+    assert.equal(rings[0].body.type, "1f916.doorbell.inbox");
+
+    // Same heads again: silent. The mention mark advanced with the ring.
+    assert.deepEqual(await ring(3, 1), { due: 0, rung: 0, failed: 0, disabled: 0 });
+    const marks = db.prepare("SELECT last_event_id, last_listing_id, last_mention_id FROM doorbells WHERE citizen_id = 1").get();
+    assert.deepEqual(JSON.parse(JSON.stringify(marks)), { last_event_id: 3, last_listing_id: 0, last_mention_id: 1 });
+
+    // An unnotified mention (in a code fence, past the cap) is not a wake,
+    // exactly as it is not an inbox item.
+    db.exec("INSERT INTO mentions VALUES (2, 1, 0)");
+    assert.deepEqual(await ring(3, 2), { due: 0, rung: 0, failed: 0, disabled: 0 });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+// The channel fan-out announces a listing once per channel, carries no listing
+// content, and does not advance past a failed delivery.
+// Killing mutations: move the wake_marks UPSERT above the ok check (third
+// block goes red: a failed post advances the mark); put `title` in the body
+// (second block).
+test("announceListings posts one content-free message per new listing and never skips a failed channel", async () => {
+  const { announceListings } = await import("../src/doorbell.ts");
+  const { env, db } = sqliteTestEnv(`
+    CREATE TABLE wake_marks (channel TEXT PRIMARY KEY, last_listing_id INTEGER NOT NULL DEFAULT 0, updated_at INTEGER);
+  `);
+  const originalFetch = globalThis.fetch;
+  const posts: Array<{ url: string; body: Record<string, unknown> }> = [];
+  let status = 204;
+  globalThis.fetch = async (input, init) => {
+    posts.push({ url: String(input), body: JSON.parse(String(init?.body)) });
+    return new Response(null, { status });
+  };
+  const channel = { name: "discord-listings", url: "https://discord.example/api/webhooks/1/x" };
+  try {
+    assert.deepEqual(await announceListings(env, 0, channel), { announced: false, from: 0, to: 0 });
+    assert.equal(posts.length, 0, "no listing, no message");
+
+    const first = await announceListings(env, 7, channel);
+    assert.deepEqual(first, { announced: true, from: 0, to: 7 });
+    assert.equal(posts.length, 1);
+    assert.deepEqual(Object.keys(posts[0].body), ["content"]);
+    assert.match(String(posts[0].body.content), /Cursor 7/);
+    assert.match(String(posts[0].body.content), /since_id=0/);
+    for (const forbidden of ["title", "amount", "condition", "USDC", "$"]) assert.ok(!String(posts[0].body.content).includes(forbidden), `no ${forbidden} in a channel message`);
+    assert.deepEqual(await announceListings(env, 7, channel), { announced: false, from: 7, to: 7 }, "the same head is not announced twice");
+
+    status = 503;
+    const failed = await announceListings(env, 9, channel);
+    assert.deepEqual(failed, { announced: false, from: 7, to: 7, error: "HTTP 503" });
+    assert.equal((db.prepare("SELECT last_listing_id FROM wake_marks WHERE channel = 'discord-listings'").get() as { last_listing_id: number }).last_listing_id, 7, "a failed post does not advance the mark");
+
+    status = 204;
+    assert.deepEqual(await announceListings(env, 9, channel), { announced: true, from: 7, to: 9 }, "retried next cycle, from the mark it last delivered");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
