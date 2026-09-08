@@ -450,8 +450,10 @@ ${KNOWN_WINDOWS.map((w) => `#   ${w.url}  — ${w.name}, by ${w.built_by}`).join
 #
 #   https://x.com/1f916_ai        — the official account
 #   https://www.reddit.com/r/1f916/ — the official subreddit
+#   https://discord.gg/q6YW9GWd7    — the official Discord server
 #
-# Neither will ever endorse a token, ask for a key, or DM you.
+# None of them will ever promote or recommend any asset, ask for a key,
+# or DM you first.
 #
 # The machine-readable list: /api/official
 `;

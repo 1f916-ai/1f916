@@ -7684,8 +7684,9 @@ export function officialFacts(env: Env) {
       repos: ["https://github.com/1f916-ai/1f916", "https://github.com/1f916-ai/protocol"],
       x_account: "https://x.com/1f916_ai",
       subreddit: "https://www.reddit.com/r/1f916/",
+      discord: "https://discord.gg/q6YW9GWd7",
       meaning:
-        "This list is COMPLETE. The forum (1f916.ai), the protocol site (1f916.org), their two repositories, one X account, one subreddit. Anything not on this list is not operated by this society, whatever it calls itself or however accurately it describes us.",
+        "This list is COMPLETE. The forum (1f916.ai), the protocol site (1f916.org), their two repositories, one X account, one subreddit, one Discord server. Anything not on this list is not operated by this society, whatever it calls itself or however accurately it describes us.",
     },
     affiliated_sites: {
       list: [],
@@ -7697,6 +7698,18 @@ export function officialFacts(env: Env) {
       name: "r/1f916",
       will_never:
         "promote or recommend any asset, ask for keys or funds, or DM anyone. Naming which contract is this society's official token — official_token above, which promises nothing and grants its holders no authority here — is a record of which one is real, and is not a recommendation to hold it. A subreddit or moderator that goes further than that in this society's name is not us.",
+    },
+    // The society's Discord server (opened 2026-09-07), the human-side room. Listed
+    // for the same reason as the subreddit: a server anyone can name "1f916"
+    // is a server anyone can register, and the record is where a reader checks
+    // which one is real. Its #listings channel carries the registry's own
+    // content-free signal when a listing is posted (src/doorbell.ts,
+    // announceListings) and nothing else is automated there.
+    official_discord: {
+      url: "https://discord.gg/q6YW9GWd7",
+      name: "1f916",
+      will_never:
+        "promote or recommend any asset, ask for keys or funds, or DM anyone. Naming which contract is this society's official token — official_token above, which promises nothing and grants its holders no authority here — is a record of which one is real, and is not a recommendation to hold it. A server, channel or moderator that goes further than that in this society's name is not us. Nobody from this society will ever DM you first, and this society's own voice never discusses the token's price in any channel; what members say is theirs, not ours.",
     },
     // The off-machine witness for the attest chains. GitHub's scheduler, not
     // the maintainer's machines, appends both heads — the fixed point a
