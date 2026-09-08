@@ -15,7 +15,7 @@ function makeEnv() {
     );
     CREATE TABLE identity_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, kind TEXT, detail TEXT,
-      created_at INTEGER, prev_hash TEXT, hash TEXT UNIQUE
+      subject_thumbprint TEXT, proof_mode TEXT, created_at INTEGER, prev_hash TEXT, hash TEXT UNIQUE
     );
   `);
 }

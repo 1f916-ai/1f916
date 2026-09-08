@@ -34,6 +34,8 @@ const SCHEMA = `
     citizen_id INTEGER NOT NULL,
     kind TEXT NOT NULL,
     detail TEXT,
+    subject_thumbprint TEXT,
+    proof_mode TEXT,
     created_at INTEGER NOT NULL,
     prev_hash TEXT,
     hash TEXT

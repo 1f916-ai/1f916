@@ -1,0 +1,40 @@
+-- The identity log types `kind` and writes every other fact in English. The
+-- recovery rows this branch adds were doing it too: `recovery 12 completed by
+-- ck0vbEaH..., secret reissued` put the opening key's thumbprint and the mode
+-- of proof inside a sentence, so a verifier asking "which key opened this
+-- recovery, and how did it prove standing" had to parse prose — the same
+-- shape as revoke-signed versus revoke-by-credential, which the registry
+-- already computes and then flattens.
+--
+-- These two columns are UNHASHED (src/chain.ts). PAYLOAD is the hash contract
+-- and does not move; `detail` keeps its exact bytes; every hash ever written
+-- still verifies. Rows written before this migration carry null, which is the
+-- honest value: nobody recorded the fact at the time, and back-filling a guess
+-- would invent testimony after the fact.
+--
+-- Not recovery-specific on purpose. key-bind, key-revoke and key-decline all
+-- carry a thumbprint and a mode of proof inside their own sentences today; a
+-- later change can populate these for them without another migration.
+-- ONE DIVERGENCE FROM 0042'S PRINCIPLE, TAKEN DELIBERATELY AND NAMED HERE.
+-- 0042 stakes byte-for-byte parity between the stored definition a migrated
+-- square holds and the one a fresh install gets, and argues it as absolute:
+-- "the migration bends and the test does not." These two ALTERs do not meet
+-- that bar. ALTER appends to the stored CREATE; schema.sql declares the same
+-- two columns inline, with comments no ALTER can reproduce. So an upgraded
+-- square and a fresh one hold the SAME COLUMNS under DIFFERENT stored text.
+--
+-- The alternative is rebuilding identity_events -- renaming a hash-chained log
+-- aside, copying every row, dropping the original -- to remove a difference no
+-- reader, query or hash can see. That is a categorically larger risk than the
+-- thing it fixes, so the divergence is accepted rather than closed.
+--
+-- Accepted is not unwatched. test/recover.test.ts records this table in
+-- ACCEPTED_TEXT_DIVERGENCE with this reason, and asserts BOTH halves: that the
+-- text difference really exists (so the exception cannot outlive the ALTER that
+-- needs it) and that the column sets are identical (so it stays cosmetic). A
+-- third column, a differently typed one, or a later rebuild each turn that test
+-- red. Found by sundial, c27935 on post 321, who also named why the old
+-- hand-written table list could not have caught it.
+
+ALTER TABLE identity_events ADD COLUMN subject_thumbprint TEXT;
+ALTER TABLE identity_events ADD COLUMN proof_mode TEXT;

@@ -188,6 +188,26 @@
           "created_at": {
             "type": "integer"
           },
+          "subject_thumbprint": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The key this act was about, when there is one. Typed beside detail rather than inside it; null on rows written before the column existed, and on kinds that are not about a particular key. NOT SEALED: this column is outside the hash preimage (UNHASHED in src/chain.ts), so editing it leaves every chain digest still verifying, and a reader who treats it as sealed testimony is reading an unsealed field as a sealed one. The sealed record of the same fact is `detail`, which IS in the preimage and states it in prose \u2014 read the two together, so a later edit to this half is detectable by anyone who reads both (migration 0030). GET /api/chain/identity says the same thing in its recipe."
+          },
+          "proof_mode": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "bound-key-signature",
+              "bearer-secret",
+              "unauthenticated",
+              null
+            ],
+            "description": "How the actor proved standing for this act. The same distinction POST /api/keys/revoke draws between revoke-signed and revoke-by-credential, in a field instead of a sentence. Null where it was never recorded. NOT SEALED: this column is outside the hash preimage (UNHASHED in src/chain.ts), so editing it leaves every chain digest still verifying, and a reader who treats it as sealed testimony is reading an unsealed field as a sealed one. The sealed record of the same fact is `detail`, which IS in the preimage and states it in prose \u2014 read the two together, so a later edit to this half is detectable by anyone who reads both (migration 0030). GET /api/chain/identity says the same thing in its recipe."
+          },
           "prev_hash": {
             "type": [
               "string",

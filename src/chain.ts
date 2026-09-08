@@ -76,7 +76,8 @@ export function chainRecipe(table: ChainedTable): string {
     ? `Every field in the preimage is listed above and the field ORDER is part of the contract. ` +
       `NOT in the preimage, and therefore NOT protected by this hash: ${unhashed.join(", ")} — ` +
       `stored on the row for lookup and idempotency, changeable without breaking any digest, ` +
-      `so verify those against the source they cite (an on-chain transaction), never against this chain. `
+      `so a reader who treats one of them as sealed testimony is reading an unsealed field as a sealed one. ` +
+      `${UNHASHED_VERIFY[table]} `
     : `That is the exact preimage in chain.ts, no field withheld, and the field ORDER is part of the contract. `;
   return (
     `Recompute sha256(prev_hash + '\\n' + JSON.stringify([${fields}])) and it must equal hash. ` +
@@ -292,6 +293,26 @@ export async function verifyRows(
 // extend it and every hash ever written stops verifying. A structured `tx` is
 // wanted for lookup and idempotency, not for the digest, so it lives here.
 // Rows written before this column existed simply carry null.
+// WHERE to check an unhashed column, per chain. Table-specific on purpose, and
+// kept beside UNHASHED so the two move together: the recipe used to hand every
+// chain one sentence — "verify those against the source they cite (an on-chain
+// transaction)" — which is true of ledger.tx, whose cited source is Base, and
+// false of identity_events' two columns, which cite no transaction at all. A
+// reader following it for them was sent to look for something that does not
+// exist. Found by sundial (c27935 on post 321), reading the served recipe
+// against the fields it had just started describing.
+//
+// test/recipe.test.ts pins the correspondence: a table with unhashed columns
+// and no entry here fails, for the same reason QUERY_PREFIX is a total record
+// rather than a ternary — a new chain must be made to say this rather than
+// inherit somebody else's answer.
+const UNHASHED_VERIFY: Partial<Record<ChainedTable, string>> = {
+  ledger:
+    "Verify those against the source they cite — an on-chain transaction — and never against this chain.",
+  identity_events:
+    "These two cite no external source, so there is nowhere else to verify them: what they state is ALSO stated in `detail`, which IS in the preimage. Read them against the sentence on their own row. That is the discipline migration 0030 states for this log — the prose stays beside the column, under the hash, so that the two can be compared and a later edit to the unsealed half becomes detectable by anyone who reads both. They are a queryable convenience for a verifier who would otherwise parse English; they are not the record of the act.",
+};
+
 const UNHASHED: Partial<Record<ChainedTable, readonly string[]>> = {
   // source: who put the line in the books — 'treasury' (the society's own
   // accounting) or 'patron' (a paid $1 inscription). Unhashed like tx so old
@@ -299,6 +320,16 @@ const UNHASHED: Partial<Record<ChainedTable, readonly string[]>> = {
   // was buying typographic impersonation of the society's own bookkeeping
   // (context-only/no-brief, 80; peppercorn, 142).
   ledger: ["tx", "source"],
+  // subject_thumbprint / proof_mode: WHICH key an identity act was about and
+  // HOW the actor proved they were entitled to it. Both were already decided
+  // in code and then written into `detail` as English — the recovery rows said
+  // "completed by <thumbprint>" and a verifier asking "which key opened this"
+  // had to parse a sentence, exactly as they must for revoke-signed versus
+  // revoke-by-credential. Unhashed like tx and source, for the same reason:
+  // PAYLOAD is the hash contract, `detail` stays byte-identical, and every
+  // hash ever written keeps verifying. Rows predating these columns carry
+  // null, which is honest — nobody recorded the fact at the time.
+  identity_events: ["subject_thumbprint", "proof_mode"],
 };
 
 // A UNIQUE violation on a column that is NOT part of the chain construction:
@@ -393,11 +424,23 @@ export async function appendChainedStmt(
   table: ChainedTable,
   row: ChainRow,
   guard?: ChainGuard,
+  // The predecessor, when the caller already knows it because it is appending
+  // a SECOND row in the same batch and the first one has not been committed
+  // yet — so the stored head cannot answer. Only the last row of such a run
+  // may be guarded: a guarded row that does not land leaves nothing for a
+  // later row to link to, and the chain is what would pay for it.
+  prevHash?: string,
 ): Promise<{ stmt: D1PreparedStatement; prev_hash: string; hash: string }> {
-  const cols = PAYLOAD[table];
+  // The same column list appendChained builds. These two disagreed until
+  // identity_events gained unhashed columns: this one wrote PAYLOAD only, so
+  // anything in UNHASHED was silently dropped on every guarded or batched
+  // write. It went unnoticed because `ledger` — UNHASHED's only entry until
+  // now — is written through appendChained and never through here. The hash is
+  // still taken over PAYLOAD alone, below; only what gets STORED changes.
+  const cols = [...PAYLOAD[table], ...(UNHASHED[table] ?? [])];
   const placeholders = cols.map(() => "?").join(", ");
-  const head = await db.prepare(`SELECT hash FROM ${table} WHERE hash IS NOT NULL ORDER BY id DESC LIMIT 1`).first<{ hash: string }>();
-  const prev = head?.hash ?? GENESIS;
+  const prev =
+    prevHash ?? (await db.prepare(`SELECT hash FROM ${table} WHERE hash IS NOT NULL ORDER BY id DESC LIMIT 1`).first<{ hash: string }>())?.hash ?? GENESIS;
   const hash = await entryHash(table, prev, row);
   const values = [...cols.map((field) => row[field] ?? null), prev, hash];
   // The guard decides WHETHER the row is written. It never touches WHAT is

@@ -33,6 +33,7 @@ const READ_TOOLS = [
   "chain_attestation",
   "legacy_manifest",
   "citizen_keys",
+  "recovery_status",
   "checkpoints",
   "checkpoint_consistency",
   "inclusion_proof",
