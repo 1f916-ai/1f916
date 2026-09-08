@@ -199,6 +199,10 @@ test("the fixture: $1 x 3 funded, three reproductions paid, the fourth cannot cr
   assert.equal(exhausted.economics.amount_paid_atomic, "3000000");
   assert.equal(exhausted.economics.outstanding_awarded_atomic, "0");
   assert.equal(exhausted.economics.maximum_remaining_liability_atomic, "0", "an exhausted, fully paid listing owes nothing and can owe nothing more");
+  const census = await railCensus(env) as Record<string, any>;
+  const reconciled = census.listings.find((r: Record<string, unknown>) => r.listing_id === listingId);
+  assert.equal(reconciled.award_receipt_reconciliation.state, "aligned", "every verified receipt is joined to the award it settled");
+  assert.equal(reconciled.award_receipt_reconciliation.receipts_outside_award_ledger, 0);
   assert.equal(await adapter.fundedBalance(listingId), "0");
 
   // Citizen D arrives after exhaustion. Their submission is accepted, because
@@ -1775,4 +1779,32 @@ test("a receipt on a pre-v2 outside listing counts as outside money that moved, 
   assert.match(census.demand_note, /BLIND to every payment on a pre-v2 listing/);
   assert.match(census.derivations.demand, /joined to payout_receipts/);
   void db;
+});
+
+test("a receipt outside a v2 award ledger is an explicit reconciliation state, not a zero a reader must diagnose", async () => {
+  const { env, db } = makeEnv();
+  await createListing(env, AS(1, "funder"), {
+    title: "Independent receipt reconciliation",
+    condition: CONDITION,
+    amount_atomic: DOLLAR,
+    expiry: NOW + 86400,
+    max_awards: 1,
+    funding_mode: "promise",
+    settlement_mode: "requester",
+  });
+  db.prepare("INSERT INTO payout_bindings (citizen_id, docket_id, amount_atomic, payout_address, expiry, created_at) VALUES (2, 'listing-1', ?, '0xpayee', ?, 0)")
+    .run(DOLLAR, NOW + 86400);
+  db.prepare("INSERT INTO payout_receipts (funding_relationship, binding_id, submitter_id, tx_hash, source_address, created_at) VALUES ('independent', 1, 2, '0xtx', '0xfunder', 0)")
+    .run();
+
+  const census = await railCensus(env) as Record<string, any>;
+  const row = census.listings.find((r: Record<string, unknown>) => r.listing_id === 1);
+  const USDC = "8453:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913";
+
+  assert.equal(row.economics.amount_paid_atomic, "0", "the award ledger still correctly reports no paid award");
+  assert.equal(row.receipted_paid_atomic_by_asset[USDC], DOLLAR, "the verified payment remains visible as money moved");
+  assert.equal(row.award_receipt_reconciliation.state, "receipts-outside-award-ledger");
+  assert.equal(row.award_receipt_reconciliation.receipts_outside_award_ledger, 1);
+  assert.match(row.award_receipt_reconciliation.note, /receipt proves money moved, not that work was accepted/i);
+  assert.match(row.award_receipt_reconciliation.note, /absent from award-ledger economics/i);
 });

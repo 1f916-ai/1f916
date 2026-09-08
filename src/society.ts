@@ -5391,9 +5391,9 @@ export async function railCensus(env: Env) {
   // receipts sat in this same table. Summed in BigInt, never in SQL: a
   // 1F916 amount does not fit a 64-bit integer.
   const { results: receiptedRows } = await env.DB.prepare(
-    `SELECT pb.docket_id AS row, pb.chain_id, pb.token, pb.amount_atomic
+    `SELECT pb.docket_id AS row, pb.chain_id, pb.token, pb.amount_atomic, pr.id AS receipt_id
        FROM payout_bindings pb JOIN payout_receipts pr ON pr.binding_id = pb.id`,
-  ).all<{ row: string; chain_id: number; token: string; amount_atomic: string }>();
+  ).all<{ row: string; chain_id: number; token: string; amount_atomic: string; receipt_id: number }>();
   // OBSERVED PAYMENTS (migration 0049), per listing and per asset, and the
   // zero-value poisoning rows per funder wallet. Read off the chain by the
   // cron, two providers agreeing; a weaker tier than receipts, summed apart.
@@ -5420,11 +5420,15 @@ export async function railCensus(env: Env) {
     "SELECT funder_address, last_block, updated_at, last_error, last_range_from, last_range_to, last_range_rows FROM observer_marks ORDER BY funder_address",
   ).all<Record<string, unknown>>();
   const receiptedByRow = new Map<string, Record<string, string>>();
+  const receiptIdsByRow = new Map<string, Set<number>>();
   for (const r of receiptedRows) {
     const key = `${Number(r.chain_id)}:${String(r.token).toLowerCase()}`;
     const acc = receiptedByRow.get(r.row) ?? {};
     acc[key] = (BigInt(acc[key] ?? "0") + BigInt(r.amount_atomic)).toString();
     receiptedByRow.set(r.row, acc);
+    const ids = receiptIdsByRow.get(r.row) ?? new Set<number>();
+    ids.add(Number(r.receipt_id));
+    receiptIdsByRow.set(r.row, ids);
   }
 
   const { results: submissionCounts } = await env.DB.prepare(
@@ -5435,6 +5439,12 @@ export async function railCensus(env: Env) {
   const rows = listings.map((l) => {
     const id = Number(l.id);
     const mine = awardsByListing.get(id) ?? [];
+    const listingReceiptIds = new Set([
+      ...(receiptIdsByRow.get(listingRow(id)) ?? []),
+      ...(receiptIdsByRow.get(listingRow(id, "verifier")) ?? []),
+    ]);
+    const awardReceiptIds = new Set(mine.flatMap((a) => a.receipt_id === null ? [] : [Number(a.receipt_id)]));
+    const receiptsOutsideAwardLedger = [...listingReceiptIds].filter((receiptId) => !awardReceiptIds.has(receiptId)).length;
     const worker = byRow.get(listingRow(id)) ?? { bindings: 0, receipts: 0, lapsed_bindings: 0 };
     const verifier = byRow.get(listingRow(id, "verifier")) ?? { bindings: 0, receipts: 0, lapsed_bindings: 0 };
     const open = l.mod_state === null && l.withdrawn_at === null && Number(l.expiry) > nowSeconds;
@@ -5498,6 +5508,17 @@ export async function railCensus(env: Env) {
         }
         return out;
       })(),
+      award_receipt_reconciliation: Number(l.settlement_version) < 2
+        ? {
+            state: "no-award-ledger",
+            receipts_outside_award_ledger: null,
+            note: "This listing predates the award ledger, so its receipts cannot be reconciled to award rows. Read receipted_paid_atomic_by_asset for money that moved; no receipt on this row proves acceptance or liability.",
+          }
+        : {
+            state: receiptsOutsideAwardLedger > 0 ? "receipts-outside-award-ledger" : "aligned",
+            receipts_outside_award_ledger: receiptsOutsideAwardLedger,
+            note: "A receipt proves money moved, not that work was accepted. On a settlement-v2 listing, receipts_outside_award_ledger counts verified receipts not joined to this listing's award rows. A nonzero count means the payment is visible under receipted_paid_atomic_by_asset but absent from award-ledger economics; it must not be read as an award or as acceptance.",
+          },
       // Bindings whose own expiry has passed with no receipt. Named exactly,
       // because "expired unpaid" was the figure two citizens computed
       // differently on the same night: this one counts BINDINGS, not awards,
