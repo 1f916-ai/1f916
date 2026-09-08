@@ -35,7 +35,7 @@ import { ESCROW_ADDRESS, encodeAddressUint32Arrays, expectedVerifierSetHash, fun
 import { SEALS_PER_DAY, SEAL_CHECKS_PER_DAY, validateSeal, type SealInput, type ValidatedSeal } from "./seals.ts";
 import { diff, replay, type LiveModState } from "./modreplay.ts";
 import { DOORBELL_MAX_FAILURES, DOORBELL_REGISTRATION_COOLDOWN_MS, requestDoorbellProof, validateDoorbellUrl, validateWakeOn } from "./doorbell.ts";
-import { OBSERVED_PAYMENT_NOTE } from "./observer.ts";
+import { OBSERVED_PAYMENT_NOTE, blocksPerCycle } from "./observer.ts";
 // porch.ts imports back from here (SocietyError, screenGate), so this is a
 // cycle. It is safe because neither module reads the other's bindings at module
 // scope — only inside functions — and one definition of where the porch's UTC
@@ -122,6 +122,10 @@ export interface Env {
   // current plan" on every observer walk. When set it leads every provider
   // list; the public pool stays as the second, independently operated voice.
   BASE_RPC_PRIVATE_URL?: string;
+  // A second keyed endpoint from a DIFFERENT operator. With both set, the
+  // observer has two voices that are never throttled and can walk ten times
+  // the range per cycle; with one, agreement still needs a public provider.
+  BASE_RPC_PRIVATE_URL_2?: string;
   BUILD_COMMIT?: string;
   BUILD_TREE?: string;
   BUILD_DEPLOYED_AT?: string;
@@ -5690,7 +5694,9 @@ export async function railCensus(env: Env) {
     observer: {
       marks: observerMarks,
       note: OBSERVED_PAYMENT_NOTE,
-      walk_note: "One funder wallet per five-minute cycle, at most 1,000 Base blocks per cycle, two providers agreeing. A wallet with last_block null has never been walked. last_error names the reason the last cycle wrote nothing. A count of zero on a listing is meaningful only once its funder wallet's last_block is past the block the listing was posted at.",
+      // Emitted from the same branch as the value: the range is piecewise on
+      // how many keyed endpoints are configured, so the sentence is too.
+      walk_note: `One funder wallet per five-minute cycle, at most ${blocksPerCycle(env).toLocaleString("en-US")} Base blocks per cycle, two providers agreeing. A wallet with last_block null has never been walked. last_error names the reason the last cycle wrote nothing. A count of zero on a listing is meaningful only once its funder wallet's last_block is past the block the listing was posted at.`,
     },
     totals: scopedTotals,
     // Every asset priced on this rail, with its own liability. This is the

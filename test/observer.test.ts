@@ -20,7 +20,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { classifyTransfer, logsAgree, observeFunderWallets, observerRpcUrls, padTopic, parseTransferLogs, OBSERVER_BLOCKS_PER_CYCLE, OBSERVER_MAX_ROWS_PER_CYCLE } from "../src/observer.ts";
+import { blocksPerCycle, classifyTransfer, logsAgree, observeFunderWallets, observerRpcUrls, padTopic, parseTransferLogs, OBSERVER_BLOCKS_PER_CYCLE, OBSERVER_BLOCKS_PER_CYCLE_KEYED, OBSERVER_MAX_ROWS_PER_CYCLE } from "../src/observer.ts";
 import { baseRpcUrls } from "../src/payouts.ts";
 import { getListing, listListings, type Env } from "../src/society.ts";
 import { sqliteTestEnv } from "./helpers/sqlite-d1.ts";
@@ -282,4 +282,26 @@ test("a configured private RPC endpoint leads both provider lists exactly once",
   assert.equal(observerRpcUrls(withKey)[2], "https://base.gateway.tenderly.co");
   assert.ok(!observerRpcUrls(without).some((u) => u.includes("quiknode")));
   assert.equal(observerRpcUrls(without)[0], "https://mainnet.base.org");
+  // Two keyed endpoints lead in order, and only then does the range widen.
+  // Killing mutations: drop the _2 spread (order red); make blocksPerCycle
+  // return the keyed range with one endpoint (range red).
+  const priv2 = "https://base-mainnet.infura.io/v3/abc";
+  const both = { BASE_RPC_PRIVATE_URL: priv, BASE_RPC_PRIVATE_URL_2: priv2 } as unknown as Env;
+  assert.deepEqual(observerRpcUrls(both).slice(0, 3), [priv, priv2, "https://mainnet.base.org"]);
+  assert.deepEqual(baseRpcUrls(both).slice(0, 2), [priv, priv2]);
+  assert.equal(blocksPerCycle(both), OBSERVER_BLOCKS_PER_CYCLE_KEYED);
+  assert.equal(blocksPerCycle(withKey), OBSERVER_BLOCKS_PER_CYCLE, "one keyed endpoint still needs a public second voice, so the public cap applies");
+  assert.equal(blocksPerCycle(without), OBSERVER_BLOCKS_PER_CYCLE);
+  assert.ok(OBSERVER_BLOCKS_PER_CYCLE_KEYED <= 10_000);
+});
+
+// The walk uses the keyed range when both endpoints are configured.
+// Killing mutation: hardcode OBSERVER_BLOCKS_PER_CYCLE in walkWallet -> red.
+test("with two keyed endpoints the walk covers the keyed range per cycle", async () => {
+  const { env } = makeEnv();
+  (env as unknown as { BASE_RPC_PRIVATE_URL: string; BASE_RPC_PRIVATE_URL_2: string }).BASE_RPC_PRIVATE_URL = "https://a.example/k";
+  (env as unknown as { BASE_RPC_PRIVATE_URL_2: string }).BASE_RPC_PRIVATE_URL_2 = "https://b.example/k";
+  const r = await observeFunderWallets(env, { rpc: fakeRpc({ "https://a.example/k": [], "https://b.example/k": [] }).rpc });
+  assert.equal(r.sources, 2);
+  assert.equal(r.to_block - r.from_block + 1, OBSERVER_BLOCKS_PER_CYCLE_KEYED);
 });

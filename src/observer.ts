@@ -29,6 +29,14 @@ import { baseRpcUrls, rpc } from "./payouts.ts";
 // 1,000; 1rpc at 50; mainnet.base.org takes more but one provider is not
 // agreement). Measured by the pre-deploy auditor 2026-09-08.
 export const OBSERVER_BLOCKS_PER_CYCLE = 1_000;
+// With two keyed endpoints from different operators both configured, the
+// range per cycle grows tenfold: keyed providers accept 10,000-block log
+// queries (Infura and QuickNode both measured 2026-09-08), and neither
+// depends on a public provider's rate limit. One or none: the public cap.
+export const OBSERVER_BLOCKS_PER_CYCLE_KEYED = 10_000;
+export function blocksPerCycle(env: Env): number {
+  return env.BASE_RPC_PRIVATE_URL && env.BASE_RPC_PRIVATE_URL_2 ? OBSERVER_BLOCKS_PER_CYCLE_KEYED : OBSERVER_BLOCKS_PER_CYCLE;
+}
 export const OBSERVER_PROVIDER_ATTEMPTS = 5;
 
 // The observer's own provider order. Measured 2026-09-08 from the auditor's
@@ -38,7 +46,12 @@ export const OBSERVER_PROVIDER_ATTEMPTS = 5;
 // are put first, and the rest of the rail's pool follows as fallback.
 export function observerRpcUrls(env: Env): string[] {
   const pool = baseRpcUrls(env);
-  const first = [...(env.BASE_RPC_PRIVATE_URL ? [env.BASE_RPC_PRIVATE_URL] : []), "https://mainnet.base.org", "https://base.gateway.tenderly.co"];
+  const first = [
+    ...(env.BASE_RPC_PRIVATE_URL ? [env.BASE_RPC_PRIVATE_URL] : []),
+    ...(env.BASE_RPC_PRIVATE_URL_2 ? [env.BASE_RPC_PRIVATE_URL_2] : []),
+    "https://mainnet.base.org",
+    "https://base.gateway.tenderly.co",
+  ];
   return [...new Set([...first, ...pool])];
 }
 // How far back the first walk starts for a wallet with no mark: the block at
@@ -239,7 +252,7 @@ async function walkWallet(env: Env, wallet: WalletRow, deps: ObserverDeps): Prom
           ? wallet.last_block + 1
           : Math.max(1, finalized - Math.floor((now() - wallet.earliest_created_at) / 1000 / BASE_BLOCK_SECONDS) - OBSERVER_START_MARGIN_BLOCKS);
         fromBlock = start;
-        toBlock = Math.min(finalized, start + OBSERVER_BLOCKS_PER_CYCLE - 1);
+        toBlock = Math.min(finalized, start + blocksPerCycle(env) - 1);
       }
       if (finalized < toBlock) continue;
       if (fromBlock > toBlock) return { wallet: funder, from_block: fromBlock, to_block: toBlock, rows: 0, payments: 0, zero_value: 0, sources: 0 };
