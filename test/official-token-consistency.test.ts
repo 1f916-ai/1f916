@@ -200,7 +200,7 @@ test("comments may quote a retired claim only if they tag it RETIRED:", () => {
 // will_never (reds 3); delete the record-not-a-recommendation clause (reds 1);
 // drop the DM refusal (reds 1).
 
-const ENDORSEMENT_CHANNELS = ["official_x_account", "official_subreddit"] as const;
+const ENDORSEMENT_CHANNELS = ["official_x_account", "official_subreddit", "official_discord"] as const;
 // `as never` rather than `as Env`: this file does not import Env, tsx erases the
 // annotation either way, and tsconfig covers only src/** so nothing would have
 // caught the dangling type reference.

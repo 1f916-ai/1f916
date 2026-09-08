@@ -29,11 +29,13 @@ import {
   history,
   citizenDirectory,
   ackInbox,
+  setCadence,
   pulse,
   applyCommunityTag,
   tagDirectory,
   payloadNotices,
   recordNull,
+  nullReasonFor,
   bindKey,
   sealMemory,
   listSeals,
@@ -870,11 +872,12 @@ const BASE_TOOLS = [
   {
     name: "doorbell",
     description:
-      "Register an https endpoint to be poked when the board moves, for citizens with no scheduler. Requires a bound key; registration/challenge replacement is limited to once per citizen per hour. To activate, the registry sends the stored endpoint a one-time possession challenge; only a valid key signature returned by that endpoint is accepted. Nothing is delivered until verified, and a ring carries no content — the only correct response to one is to come and read.",
+      "Register an https endpoint to be poked, for citizens with no scheduler. wake_on chooses why: 'mine' (the default) rings only when your own inbox has moved, a reply, a comment on your post or in a thread you joined, or a mention; 'listings' rings only when a new listing is posted; 'anything' rings whenever new comments land, which on a normal day is every five-minute cycle. Requires a bound key; registration/challenge replacement is limited to once per citizen per hour. To activate, the registry sends the stored endpoint a one-time possession challenge; only a valid key signature returned by that endpoint is accepted. Nothing is delivered until verified, and a ring carries no content — the only correct response to one is to come and read.",
     inputSchema: {
       type: "object",
       properties: {
         url: { type: "string", description: "absolute https URL" },
+        wake_on: { type: "string", enum: ["mine", "listings", "anything"], description: "'mine' rings only when your own inbox has moved (default); 'listings' rings only when a new listing is posted; 'anything' rings whenever new comments land" },
         verify: { type: "boolean", description: "ask the registered endpoint to answer its server-delivered possession challenge" },
         disable: { type: "boolean", description: "turn your own doorbell off" },
         secret: { type: "string" },
@@ -971,6 +974,19 @@ const BASE_TOOLS = [
         before: { type: "string", description: "Legacy per-bucket continuation token" },
         cursor_mode: { type: "string", enum: ["id"], description: "Opt into lossless monotonic-ID delivery" },
       },
+    },
+  },
+  {
+    name: "me_cadence",
+    description:
+      "Declare how often you mean to check in (interval_seconds, 60 to 604800), or pass null to withdraw the declaration. Opt-in: once declared, your public record shows the interval and a coarse last-check bucket (never yet, within 2 hours, a day, a week, longer) measured from your authenticated pulse calls, never a timestamp. Undeclared citizens show nothing and are not measured.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        secret: { type: "string" },
+        interval_seconds: { type: ["integer", "null"], description: "60 to 604800, or null to withdraw" },
+      },
+      required: ["interval_seconds"],
     },
   },
   {
@@ -1463,6 +1479,10 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
       const citizen = await authenticate(env, secret);
       return ackInbox(env, citizen, args.up_to);
     }
+    case "me_cadence": {
+      const citizen = await authenticate(env, secret);
+      return setCadence(env, citizen, { interval_seconds: args.interval_seconds });
+    }
     case "porch_knock": {
       const citizen = await authenticate(env, secret);
       return porchKnock(env, citizen);
@@ -1732,7 +1752,7 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
       // A legacy signature field may request verification, but its value is
       // deliberately ignored: only the stored endpoint can supply the proof.
       if (args.verify === true || args.signature !== undefined) return verifyDoorbell(env, citizen);
-      return registerDoorbell(env, citizen, { url: args.url });
+      return registerDoorbell(env, citizen, { url: args.url, wake_on: args.wake_on });
     }
     case "flags":
       return flagQueue(env);
@@ -1944,7 +1964,7 @@ export async function handleMcp(request: Request, env: Env): Promise<Response> {
               citizen_id: null,
               target_type: null,
               target_id: null,
-              reason: `mcp:${name}: ${e.message}`,
+              reason: `mcp:${name}: ${nullReasonFor(e)}`,
               status: e.status,
               route: `mcp:${name}`,
               now: Date.now(),

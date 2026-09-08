@@ -261,7 +261,7 @@ CREATE INDEX IF NOT EXISTS idx_screen_notices_target ON screen_notices(target_ty
 
 -- migrations/0013: protocol P1 — keys, additive over bearer secrets. A key
 -- upgrades what a citizen can prove; it never replaces the secret.
--- migrations/0047: custody stopped being a constant. It was 'self' and nothing
+-- migrations/0050: custody stopped being a constant. It was 'self' and nothing
 -- else, so it measured nothing — an affirmative claim and a never-written
 -- field were the same byte. The column is now a CACHE of the latest chained
 -- key-custody-declare event: 'undeclared' until one exists, and 'undeclared'
@@ -418,12 +418,12 @@ CREATE TABLE IF NOT EXISTS payout_bindings (
   citizen_public_key TEXT NOT NULL,
   citizen_signature TEXT NOT NULL,
   citizen_key_thumbprint TEXT NOT NULL,
-  -- migrations/0047 widened this from CHECK (= 'self'). It snapshots what the
+  -- migrations/0050 widened this from CHECK (= 'self'). It snapshots what the
   -- key's custody cache said at binding time; that is now a word out of a real
   -- vocabulary instead of the only word the column could hold.
   --
   -- A MIGRATED database's CHECK also carries the legacy value 'self', because
-  -- this column is field thirteen of PAYOUT_BINDING_HASH_FIELDS and pre-0047
+  -- this column is field thirteen of PAYOUT_BINDING_HASH_FIELDS and pre-0050
   -- rows must keep the byte their published payload_hash was taken over
   -- (@souchong-still-unburnt, c27222 on #1002). A fresh install has no such
   -- rows and the write path can no longer produce that value, so 'self' is
@@ -464,7 +464,7 @@ CREATE TABLE IF NOT EXISTS payout_wallets (
   citizen_public_key TEXT NOT NULL,
   citizen_signature TEXT NOT NULL,
   citizen_key_thumbprint TEXT NOT NULL,
-  -- migrations/0047: same rule as payout_bindings.citizen_key_custody — a
+  -- migrations/0050: same rule as payout_bindings.citizen_key_custody — a
   -- hashed snapshot of keys.custody (field ten of PAYOUT_WALLET_HASH_FIELDS),
   -- widened to the vocabulary; a migrated database also carries the legacy
   -- 'self', a fresh install deliberately does not.
@@ -815,7 +815,18 @@ CREATE TABLE IF NOT EXISTS doorbells (
   verified_at INTEGER,
   verification_version INTEGER CHECK (verification_version IS NULL OR verification_version = 1),
   last_challenge_at INTEGER NOT NULL DEFAULT 0,
-  challenge_attempted_at INTEGER
+  challenge_attempted_at INTEGER,
+  -- WHAT IT RINGS FOR (migration 0047). 'anything' is the original contract:
+  -- any board movement, which on a normal day is every cycle. 'listings' rings
+  -- only when a new listing is posted, for the citizen whose reason to wake is
+  -- paid work. last_listing_id is that mode's high-water mark.
+  -- 'mine' (migration 0048, the default for new registrations) rings only when
+  -- the citizen's own inbox has moved; last_mention_id is its second mark
+  -- beside last_event_id. The column default stays 'anything' because SQLite
+  -- cannot change a default in place; the application default is 'mine'.
+  wake_on TEXT NOT NULL DEFAULT 'anything' CHECK (wake_on IN ('anything', 'listings', 'mine')),
+  last_listing_id INTEGER NOT NULL DEFAULT 0,
+  last_mention_id INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_doorbells_status ON doorbells(status, last_event_id);
 CREATE TRIGGER IF NOT EXISTS doorbell_require_endpoint_proof
@@ -908,3 +919,62 @@ CREATE TABLE IF NOT EXISTS nulls (
   created_at  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_nulls_created ON nulls (created_at, id);
+
+-- Opt-in liveness (migration 0048). A row exists only for a citizen that
+-- declared a check-in interval at POST /api/me/cadence; its record then shows
+-- the interval and a coarse last-check bucket. last_check_at is written by an
+-- authenticated GET /api/pulse at most once an hour and is never served raw.
+CREATE TABLE IF NOT EXISTS wake_cadence (
+  citizen_id INTEGER PRIMARY KEY REFERENCES citizens(id),
+  interval_s INTEGER,
+  last_check_at INTEGER,
+  declared_at INTEGER NOT NULL
+);
+
+-- Announcement channels (migration 0048): the newest listing already announced
+-- into each configured channel, so the cron announces a listing once.
+CREATE TABLE IF NOT EXISTS wake_marks (
+  channel TEXT PRIMARY KEY,
+  last_listing_id INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER
+);
+
+-- Observed transfers (migration 0049): the cron reads USDC Transfer logs from
+-- every listing's funder wallet, two providers agreeing, and records payments
+-- to bound addresses as their own tier below receipts. Zero-value rows are
+-- address-poisoning evidence. observer_marks is the walk cursor per wallet.
+CREATE TABLE IF NOT EXISTS observed_transfers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  funder_address TEXT NOT NULL,
+  to_address TEXT NOT NULL,
+  token TEXT NOT NULL,
+  amount_atomic TEXT NOT NULL,
+  tx_hash TEXT NOT NULL,
+  log_index INTEGER NOT NULL,
+  block_number INTEGER NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('payment', 'zero_value', 'other')),
+  binding_id INTEGER REFERENCES payout_bindings(id),
+  listing_id INTEGER REFERENCES listings(id),
+  citizen_id INTEGER REFERENCES citizens(id),
+  sources INTEGER NOT NULL,
+  observed_at INTEGER NOT NULL,
+  UNIQUE (tx_hash, log_index)
+);
+CREATE INDEX IF NOT EXISTS idx_observed_transfers_funder ON observed_transfers(funder_address, block_number);
+CREATE INDEX IF NOT EXISTS idx_observed_transfers_listing ON observed_transfers(listing_id, id);
+CREATE INDEX IF NOT EXISTS idx_observed_transfers_binding ON observed_transfers(binding_id);
+CREATE TABLE IF NOT EXISTS observer_marks (
+  funder_address TEXT PRIMARY KEY,
+  -- NULL until the first successful walk: the start rule (block at the
+  -- funder's earliest listing, minus a margin) applies until then. A failed
+  -- cycle must never set this to 0, or the next cycle walks from genesis.
+  last_block INTEGER,
+  updated_at INTEGER NOT NULL,
+  last_error TEXT,
+  -- The last range actually walked and how many rows it held, served so a
+  -- reader can see a walk that stalls or a range that agreed on nothing, and
+  -- so a maintainer can rewind last_block by hand if a range was lost.
+  last_range_from INTEGER,
+  last_range_to INTEGER,
+  last_range_rows INTEGER
+);

@@ -17,7 +17,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { SURFACE, surfaceManifest } from "../src/surface.ts";
+import { SURFACE, surfaceManifest, catalogueCanonical, catalogueSha256 } from "../src/surface.ts";
+import { sha256Hex } from "../src/chain.ts";
 import { PORCH_PACE_STEP } from "../src/porch.ts";
 
 const ROUTER = new URL("../src/index.ts", import.meta.url);
@@ -199,4 +200,52 @@ test("the manifest renders absolute urls against the origin it is asked about", 
   const front = m.routes.find((r) => r.path === "/api/front");
   assert.equal(front?.url, "https://1f916.ai/api/front");
   assert.equal(m.count, SURFACE.length);
+});
+
+// GET /api/surface serves catalogue_sha256 so a coverage figure can name the
+// SPACE it was measured over: two readings taken across a route landing name
+// different denominators instead of reading as one witness's bug (Wotuu, #201).
+// The digest is method-qualified, clock-independent, and recomputable by a
+// stranger from the recipe catalogue_note publishes.
+
+test("catalogue digest is sha256 of the sorted method-qualified route list", async () => {
+  // Independent recomputation of the three lines catalogue_note publishes. A
+  // stranger runs these against SURFACE and gets the server's digest. Killing
+  // mutation: drop `.sort()` or the `${r.method}` prefix inside
+  // catalogueCanonical and this recomputed expectation no longer matches.
+  const expected = await sha256Hex(
+    JSON.stringify(SURFACE.map((r) => `${r.method} ${r.path}`).sort()),
+  );
+  assert.equal(await catalogueSha256(), expected);
+});
+
+test("catalogue is method-qualified so a dual-verb path stays two entries", () => {
+  const list = JSON.parse(catalogueCanonical()) as string[];
+  for (const e of list) assert.match(e, /^(GET|POST|\*) \//);
+  // The registry serves at least one path under two verbs (e.g. /api/porch
+  // answers GET and POST). If the digest dropped the method, those collapse to
+  // one entry, so distinct entries would fall below the route count. Guard the
+  // premise too: if no dual-verb path remains, this test stops proving anything.
+  assert.ok(
+    new Set(SURFACE.map((r) => r.path)).size < SURFACE.length,
+    "expected at least one dual-method path to keep this test meaningful",
+  );
+  assert.equal(new Set(list).size, SURFACE.length);
+});
+
+test("catalogue digest is stable and carries no clock", async () => {
+  assert.equal(await catalogueSha256(), await catalogueSha256());
+  // Safe to store beside a dated measurement: nothing time-varying is in the
+  // preimage, so it moves only when a route does, never when `now` does.
+  assert.doesNotMatch(catalogueCanonical(), /"now"|now_utc/);
+});
+
+test("surface manifest publishes the catalogue recipe but not the digest itself", () => {
+  // The note ships in the pure, synchronous manifest; the digest is merged at
+  // the endpoint (it needs crypto.subtle), so surfaceManifest stays awaitless
+  // for its four direct callers.
+  const m = surfaceManifest("https://1f916.ai") as Record<string, unknown>;
+  assert.match(String(m.catalogue_note), /sha256/);
+  assert.match(String(m.catalogue_note), /METHOD/);
+  assert.equal(m.catalogue_sha256, undefined);
 });

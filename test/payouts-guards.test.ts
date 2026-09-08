@@ -250,7 +250,7 @@ test("a citizen signature that does not verify over the preimage is refused with
   const env = makeEnv();
   const ed = generateKeyPairSync("ed25519");
   const publicKey = (ed.publicKey.export({ format: "jwk" }) as { x: string }).x;
-  // 'undeclared', not 'self': since migration 0047 'self' is outside the
+  // 'undeclared', not 'self': since migration 0050 'self' is outside the
   // custody vocabulary and activeSelfKey refuses it BEFORE the signature is
   // checked, which would make this test pass for the wrong reason. The
   // migrated value of every historical bind is what a hand-made row should

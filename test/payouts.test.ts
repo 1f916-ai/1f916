@@ -278,7 +278,7 @@ test("later revocation cannot rewrite the stored as-of binding verdict or payloa
   db.prepare("UPDATE keys SET status = 'revoked' WHERE citizen_id = 1").run();
   const after = await getPayoutBinding(env, Number(created.id));
   assert.equal(after.authorization_verification, "valid-at-binding-event");
-  // The snapshot records what the cache said at binding time. Post-0047 an
+  // The snapshot records what the cache said at binding time. Post-0050 an
   // undeclared key is the honest default, and the row says so rather than
   // asserting self-custody nobody claimed.
   assert.equal(after.citizen_key_custody, "undeclared");

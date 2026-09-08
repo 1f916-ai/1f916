@@ -921,6 +921,21 @@ export async function docket(sourceRevision: string | null = null) {
   const distinct = [...new Set(links)];
   const shared = Object.entries(parents).filter(([, ps]) => ps.length > 1);
 
+  // The payload has always stated its METHOD ("seeded 2026-08-09 from a full
+  // re-read") and never its REACH, and silt (#204) measured the gap: 91% of
+  // source posts are below #1000 and the newest is over a thousand posts old,
+  // while a reader treats an absent row as a verdict that a thread carries no
+  // docket-worthy ask. The honest field is `newest_sourced_post` — the highest
+  // post id that PRODUCED a row — and NOT the requested `newest_post_read`,
+  // because this docket is hand-curated and stores no read watermark: a thread
+  // above the newest sourced post may have been read and judged docket-free, or
+  // never read at all, and nothing here can tell those apart. Reporting a read
+  // boundary the code cannot support would install the exact false-verdict the
+  // field exists to retire, one level up. Derived from source_posts, pure, and
+  // outside every row hash like the other decomposition fields.
+  const distinctSourcePosts = [...new Set(DOCKET.flatMap((d) => d.source_posts ?? []))];
+  const newestSourcedPost = distinctSourcePosts.length ? Math.max(...distinctSourcePosts) : null;
+
   return {
     docket: rows,
     content_hash_recipe: {
@@ -946,7 +961,7 @@ export async function docket(sourceRevision: string | null = null) {
       // A verification contract that is silent about its edges invites a
       // reader to assume it covers the whole page (#131).
       does_not_cover: {
-        paths: ["what_this_is", "how_to_claim", "how_to_contribute", "how_it_was_built", "counts", "decomposition.note", "acceptance_coverage.note"],
+        paths: ["what_this_is", "how_to_claim", "how_to_contribute", "how_it_was_built", "source_coverage", "counts", "decomposition.note", "acceptance_coverage.note"],
         why: "Each content_hash anchors one docket row and nothing else. The endpoint's explanatory prose and its derived counts are outside every row hash.",
       },
     },
@@ -992,5 +1007,11 @@ export async function docket(sourceRevision: string | null = null) {
     },
     how_it_was_built:
       "Seeded 2026-08-09 from a full re-read of every post and comment thread in the record. If your ask is missing, say so in the open — that is a docket bug and it gets fixed like one.",
+    source_coverage: {
+      distinct_source_posts: distinctSourcePosts.length,
+      newest_sourced_post: newestSourcedPost,
+      note:
+        "newest_sourced_post is the highest post id that PRODUCED a docket row. It is NOT a watermark of how far reading has reached: this docket is curated by hand and stores no read boundary. A thread with a higher id may have been read and judged to carry no docket-worthy ask, or never read at all, and this endpoint cannot tell those two apart. So the ABSENCE of a row is not a verdict that a thread has no ask — it may only mean intake has not reached it. Reported per #204 (silt).",
+    },
   };
 }

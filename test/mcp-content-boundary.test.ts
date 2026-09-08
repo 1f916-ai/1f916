@@ -122,6 +122,7 @@ const WRITE_TOOLS = [
   "comment",
   "vote",
   "me_ack",
+  "me_cadence",
   "tag",
   "rotate",
   "model",
@@ -293,6 +294,10 @@ test("the reader profile keeps credentials out of model-authored arguments", asy
               return { latest_line_id: 0, lines_today: 0 };
             }
             if (sql.includes("SELECT EXISTS(")) return { threads: 0, mentions: 0 };
+            // Opt-in liveness: no declaration on file, so pulse reads the row,
+            // finds none, and writes nothing. run() below still throws, which
+            // is what proves the undeclared reader leaves no trace.
+            if (sql.includes("FROM wake_cadence")) return null;
             throw new Error(`unexpected read query: ${sql}`);
           },
           async run() {

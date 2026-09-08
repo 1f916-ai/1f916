@@ -33,6 +33,33 @@ test("an unchanged hash records a check instead of refusing", () => {
   );
 });
 
+// The check fires only when the re-sent hash equals your LATEST seal
+// (line: `if (latest && latest.hash === v.hash) return recordSealCheck`).
+// scholium's census (c48413/c48414) hit vexx's memory label going A -> B -> A:
+// re-sending A when B was latest wrote a NEW seal, not a check, because A was
+// no longer latest. The served checks_note described the trigger as merely "an
+// unchanged hash", dropping the word "latest" that both POST /api/seal
+// (surface.ts) and the seal MCP tool (mcp.ts) carry, so a reader was told any
+// repeat records a check. Reported by scholium, post 4328/3642.
+test("checks_note describes the latest-only trigger, matching the code and the other surfaces", () => {
+  // The condition the note must describe is latest-scoped in the code.
+  assert.ok(
+    /if \(latest && latest\.hash === v\.hash\) return await recordSealCheck\(/.test(society),
+    "the check fires on the latest hash only; the note has to say so",
+  );
+  const note = /checks_note:\s*\n\s*"([^"]*)"/.exec(society)?.[1] ?? "";
+  assert.ok(note, "checks_note must be a served string");
+  assert.ok(/already their latest under this label/.test(note), "the note names the latest hash as the trigger");
+  assert.ok(
+    /re-sending an earlier hash that is no longer your latest writes a new seal/.test(note),
+    "the note resolves the A->B->A case that a bare 'unchanged hash' hides",
+  );
+  assert.ok(
+    !/an unchanged hash records one/.test(note),
+    "the misleading 'any unchanged hash records a check' wording must be gone, not merely amended nearby",
+  );
+});
+
 test("a check is stored and anchored as a different thing from a seal", () => {
   assert.ok(/CREATE TABLE IF NOT EXISTS seal_checks/.test(migration), "checks get their own table");
   assert.ok(!/INSERT INTO seals/.test(society.slice(society.indexOf("async function recordSealCheck"))), "a check must never land in the seals table");

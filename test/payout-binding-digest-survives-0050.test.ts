@@ -1,7 +1,7 @@
 // A migration about a LABEL must not silently invalidate published digests.
 //
 // Found by @souchong-still-unburnt (#1762) in c27222 on #1002, reading the
-// branch at 2ba5b7c. The first version of migration 0047 rewrote
+// branch at 2ba5b7c. The first version of migration 0050 rewrote
 // payout_bindings.citizen_key_custody from 'self' to 'undeclared' on every
 // historical row while copying payload_hash through unchanged, under a comment
 // asserting "this column was never inside the signed bytes." The comment is
@@ -31,13 +31,13 @@ import { DatabaseSync } from "node:sqlite";
 import { sha256Hex } from "../src/chain.ts";
 import { PAYOUT_BINDING_HASH_FIELDS } from "../src/payouts.ts";
 
-const migration = readFileSync(new URL("../migrations/0047_key_custody_declare.sql", import.meta.url), "utf8");
+const migration = readFileSync(new URL("../migrations/0050_key_custody_declare.sql", import.meta.url), "utf8");
 
-// The pre-0047 shape, as it stood on main AFTER 0044-0046 (nullable
+// The pre-0050 shape, as it stood on main AFTER 0044-0046 (nullable
 // wallet_signature, wallet_proof_id, and the payout_wallets table). Written out
 // here rather than derived from anything in the tree, because the whole point
 // is to migrate a database this branch did not create.
-const PRE_0047 = `
+const PRE_0050 = `
 CREATE TABLE citizens (id INTEGER PRIMARY KEY, handle TEXT);
 INSERT INTO citizens (id, handle) VALUES (1, 'a-citizen-who-bound-before-this-existed');
 CREATE TABLE keys (
@@ -144,9 +144,9 @@ function digestOf(row: Record<string, unknown>): Promise<string> {
   return sha256Hex(JSON.stringify(values));
 }
 
-test("0047 copies every hashed payout_bindings column verbatim — no literal in a value position", () => {
+test("0050 copies every hashed payout_bindings column verbatim — no literal in a value position", () => {
   const insert = migration.match(/INSERT INTO payout_bindings_new SELECT([\s\S]*?)FROM payout_bindings;/);
-  assert.ok(insert, "0047 no longer has the payout_bindings copy this test guards");
+  assert.ok(insert, "0050 no longer has the payout_bindings copy this test guards");
   const values = insert[1].split(",").map((v) => v.trim()).filter(Boolean);
   const literals = values.filter((v) => /^'.*'$/.test(v));
   assert.deepEqual(
@@ -171,9 +171,9 @@ test("0047 copies every hashed payout_bindings column verbatim — no literal in
   assert.ok(!values.includes("NULL"), "a NULL in a value position drops a stored column");
 });
 
-test("a pre-0047 binding still recomputes its own published digest after the migration runs", async () => {
+test("a pre-0050 binding still recomputes its own published digest after the migration runs", async () => {
   const db = new DatabaseSync(":memory:");
-  db.exec(PRE_0047);
+  db.exec(PRE_0050);
   db.exec("INSERT INTO keys (citizen_id, public_key, thumbprint, custody, bound_at) VALUES (1, 'pub', 'thumb', 'self', 1000)");
 
   const row: Record<string, unknown> = {
@@ -238,16 +238,16 @@ test("'self' survives in payout_bindings' CHECK and is gone from keys'", () => {
   assert.doesNotMatch(keysCheck[1], /'self'(?!-held)/, "keys.custody must not keep the value that was never a claim");
 });
 
-test("0047 copies every hashed payout_wallets column verbatim too, and a pre-0047 wallet proof keeps its digest", async () => {
+test("0050 copies every hashed payout_wallets column verbatim too, and a pre-0050 wallet proof keeps its digest", async () => {
   const insert = migration.match(/INSERT INTO payout_wallets_new SELECT([\s\S]*?)FROM payout_wallets;/);
-  assert.ok(insert, "0047 no longer has the payout_wallets copy this test guards");
+  assert.ok(insert, "0050 no longer has the payout_wallets copy this test guards");
   const values = insert[1].split(",").map((v) => v.trim()).filter(Boolean);
   assert.deepEqual(values.filter((v) => /^'.*'$/.test(v)), [], "a literal in the payout_wallets copy rewrites a hashed column");
   for (const col of ["citizen_key_custody", "citizen_public_key", "citizen_signature", "citizen_key_thumbprint", "citizen_key_bound_at", "preimage", "proof_hash", "commit_nonce", "created_at", "wallet_signature", "address", "expiry", "chain_id", "version"])
     assert.ok(values.includes(col), `the payout_wallets copy does not carry ${col}`);
 
   const db = new DatabaseSync(":memory:");
-  db.exec(PRE_0047);
+  db.exec(PRE_0050);
   db.exec("INSERT INTO keys (citizen_id, public_key, thumbprint, custody, bound_at) VALUES (1, 'pub', 'thumb', 'self', 1000)");
   db.prepare(
     `INSERT INTO payout_wallets (citizen_id, version, chain_id, address, expiry, wallet_signature, citizen_public_key, citizen_signature,
@@ -260,7 +260,7 @@ test("0047 copies every hashed payout_wallets column verbatim too, and a pre-004
     .run("0x" + "ab".repeat(20), "e".repeat(64), "f".repeat(64), "q".repeat(32));
   db.exec(migration);
   const pre = db.prepare("SELECT wallet_proof_id, wallet_signature, citizen_key_custody FROM payout_bindings WHERE docket_id = 'r0'").get() as { wallet_proof_id: number; wallet_signature: null; citizen_key_custody: string };
-  assert.equal(pre.wallet_proof_id, 1, "a pre-0047 binding lost its wallet_proof_id in the rebuild");
+  assert.equal(pre.wallet_proof_id, 1, "a pre-0050 binding lost its wallet_proof_id in the rebuild");
   assert.equal(pre.citizen_key_custody, "self");
   const w = db.prepare("SELECT citizen_key_custody, payload_hash FROM payout_wallets WHERE id = 1").get() as { citizen_key_custody: string; payload_hash: string };
   assert.equal(w.citizen_key_custody, "self", "a historical wallet proof's custody snapshot was rewritten; it is inside payload_hash");

@@ -203,7 +203,7 @@ test("proving a wallet needs BOTH halves over the same bytes, and an active boun
   // snapshotted into the row so a reader sees it, and it stops nothing. This
   // branch relabels the column and deliberately carries no payability policy
   // (#1002, #2700); if the square wants such a rule it arrives as its own
-  // change. 'undeclared' (what migration 0047 gives every historical bind)
+  // change. 'undeclared' (what migration 0050 gives every historical bind)
   // passes for the same reason. What IS still refused is a label outside the
   // vocabulary, before the custody value is looked at.
   //

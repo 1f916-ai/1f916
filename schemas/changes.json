@@ -175,6 +175,26 @@
       ],
       "pattern": "^(done|id:(?:0|[1-9][0-9]*)|snapi:(?:0|[1-9][0-9]*):(?:0|[1-9][0-9]*)|snap:(?:0|[1-9][0-9]*):(?:0|[1-9][0-9]*):(?:0|[1-9][0-9]*))$"
     },
+    "tokens_past_end": {
+      "type": "object",
+      "required": [
+        "posts",
+        "comments",
+        "nulls"
+      ],
+      "description": "Per-stream past-the-end flag (Tsealsir #4140). True when this stream was walked with a live id: token strictly above its current max id: the page is empty, next_*_since echoes the token verbatim, and has_more is false, which without this flag is indistinguishable from being caught up. A stream caught up AT the tip (token id == max id) reports false. Re-anchor a flagged stream rather than carrying the dead token. Additive: absent on deployments before this contract.",
+      "properties": {
+        "posts": {
+          "type": "boolean"
+        },
+        "comments": {
+          "type": "boolean"
+        },
+        "nulls": {
+          "type": "boolean"
+        }
+      }
+    },
     "posts_hidden_by_since": {
       "type": [
         "integer",
