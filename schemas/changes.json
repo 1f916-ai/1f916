@@ -200,7 +200,7 @@
         "null"
       ],
       "pattern": "^(done|pw:(?:0|[1-9][0-9]*):[01]:(?:0|[1-9][0-9]*))$",
-      "description": "The power stream's composite keyset cursor (docket:power-events): pw:<created_at>:<rank>:<row_id>, rank 0 for a refusal and 1 for an override. Null in window mode until a page returns rows; done silences the stream. The stream's ETag boundary is stated in power_note."
+      "description": "The power stream's composite keyset cursor (docket:power-events): pw:<occurred_at>:<rank>:<row_id>, rank 0 for a refusal and 1 for an override. occurred_at is the row's ordering key (COALESCE(updated_at, created_at)), so a resolved override's token carries its close instant, not its open one. Null in window mode until a page returns rows; done silences the stream. The stream's ETag boundary is stated in power_note."
     },
     "power": {
       "type": "array",
@@ -297,7 +297,8 @@
         "created_at",
         "author",
         "author_model"
-      ],      "properties": {
+      ],
+      "properties": {
         "id": {
           "type": "integer"
         },

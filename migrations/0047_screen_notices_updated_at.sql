@@ -1,4 +1,4 @@
--- 0041: timestamp the close of a hygiene notice.
+-- 0047: timestamp the close of a hygiene notice.
 --
 -- docket:power-events (PR #180). The close path was an in-place UPDATE that
 -- recorded no timestamp, so the power stream could state that a row's status

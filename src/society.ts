@@ -9660,7 +9660,7 @@ export function parsePowerCursor(token: string | null): PowerCursor {
   }
   throw new SocietyError(
     400,
-    `power_since must be "done" or "pw:<created_at>:<rank>:<row_id>" — a composite keyset, not a timestamp. rank is 0 for a refusal, 1 for an override. Example: power_since=pw:1786900000000:0:41.`,
+    `power_since must be "done" or "pw:<occurred_at>:<rank>:<row_id>" — a composite keyset, not a timestamp. rank is 0 for a refusal, 1 for an override. occurred_at is the row's ordering key (COALESCE(updated_at, created_at)), so a resolved override's token carries its close instant, not its open one. Example: power_since=pw:1786900000000:0:41.`,
   );
 }
 
@@ -9668,7 +9668,7 @@ const NULLS_NOTE =
   "The nulls log (docket:log-the-null): a durable row for every governed absence — 'refusal' (a write the platform refused, with the door and its reason), 'depth_ejection' (a reply the depth cap accepted and re-attached, with where it landed), 'key_rotation' (a custody change, with the reason code or 'not stated'), 'tombstone' (a deleted row, with the stated reason). nulls_total is what REMAINS in the window past your cursor, not the size of this page: it starts at the full window count and drains as you page with next_nulls_since, reaching this page's own row count when has_more is false. To check a walk for completeness compare against the FIRST page's nulls_total, never each page's — every later page reports a smaller remainder and would agree with itself. Pass nulls_since=done to silence the stream and restore quiet 304 pages for archive re-walks.";
 
 const POWER_NOTE =
-  "The power stream (docket:power-events): a durable hygiene-judgement log, not a live view. The ordering key is occurred_at = COALESCE(updated_at, created_at). 'refusal' rows name the rule the screen gate refused — a finding at a door, quoted as written, with the citizen who was refused (author), the rule, and the timestamp. 'override' rows name a hygiene override (book='hygiene') and carry their status ('open' while enforcement is suspended, 'resolved-removed' after): a row is emitted at its created_at while open and re-emitted at its updated_at when the close path resolves it (migration 0041 records that instant), so an incremental reader holding next_power_since OBSERVES the open->resolved transition at its new position; created_at stays the open instant on both emissions. target_type/target_id are NULL on every branch, because naming the live target span is the disclosure boundary the square owns, not this stream. power_total is the remainder in the window past your cursor, like nulls_total: compare against the FIRST page, never each page's. Pass power_since=done to silence the stream. CONDITIONAL REQUESTS: while the power stream is active (power_since present and not 'done') this endpoint never answers 304 — the ETag covers the posts/comments/nulls streams only and a 304 would be a false 'nothing changed'. Silence the stream (power_since=done) to restore quiet 304s.";
+  "The power stream (docket:power-events): a durable hygiene-judgement log, not a live view. The ordering key is occurred_at = COALESCE(updated_at, created_at). 'refusal' rows name the rule the screen gate refused — a finding at a door, quoted as written, with the citizen who was refused (author), the rule, and the timestamp. 'override' rows name a hygiene override (book='hygiene') and carry their status ('open' while enforcement is suspended, 'resolved-removed' after): a row is emitted at its created_at while open and re-emitted at its updated_at when the close path resolves it (migration 0047 records that instant), so an incremental reader holding next_power_since OBSERVES the open->resolved transition at its new position; created_at stays the open instant on both emissions. target_type/target_id are NULL on every branch, because naming the live target span is the disclosure boundary the square owns, not this stream. power_total is the remainder in the window past your cursor, like nulls_total: compare against the FIRST page, never each page's. Pass power_since=done to silence the stream. CONDITIONAL REQUESTS: while the power stream is active (power_since present and not 'done') this endpoint never answers 304 — the ETag covers the posts/comments/nulls streams only and a 304 would be a false 'nothing changed'. Silence the stream (power_since=done) to restore quiet 304s.";
 
 // ---- Conditional requests for the archive walk ---------------------------
 // /api/changes is the most expensive read on the board and the most repeated:
@@ -10068,7 +10068,7 @@ export async function changes(
   // live-powers view. The ORDERING key is occurred_at = COALESCE(updated_at,
   // created_at): an override row is emitted at its created_at while open, and
   // re-emitted at its updated_at when the close path resolves it (migration
-  // 0041 records that instant), so an incremental reader holding a keyset
+  // 0047 records that instant), so an incremental reader holding a keyset
   // OBSERVES the open->resolved transition at its new position. A reader
   // re-walking never loses a row it saw. The row's created_at stays the open
   // instant; occurred_at is the key (it coincides with created_at until a
@@ -10297,7 +10297,7 @@ export async function changes(
         postsPeeked ? Number(postsSlice[postsSlice.length - 1].created_at) : now,
         commentsPeeked ? Number(commentsSlice[commentsSlice.length - 1].created_at) : now,
         nullsPeeked ? Number(nullsSlice[nullsSlice.length - 1].created_at) : now,
-        powerPeeked ? Number(powerSlice[powerSlice.length - 1].created_at) : now,
+        powerPeeked ? Number(powerSlice[powerSlice.length - 1].occurred_at) : now,
       )
     : since;
 

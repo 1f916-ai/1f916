@@ -9,7 +9,7 @@
 // the cursor cannot be a timestamp alone: a tie straddling a page boundary
 // would drop every row after the first, deterministically. rank is 0 for a
 // refusal, 1 for an override; id breaks ties within a kind. Tokens:
-// pw:<created_at>:<rank>:<row_id>.
+// pw:<occurred_at>:<rank>:<row_id> (occurred_at = COALESCE(updated_at, created_at)).
 //
 // The stream is INDEPENDENT of the posts/comments pairing, like the nulls
 // stream: power_since rides alone, and legacy timestamp mode still serves the
@@ -20,7 +20,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
-import { changes, SocietyError, POWER_LIMIT, type Env } from "../src/society.ts";
+import { changes, SocietyError, POWER_LIMIT, MAINTAINER_ID, withdrawContent, moderateContent, type Env } from "../src/society.ts";
 import { sqliteTestEnv } from "./helpers/sqlite-d1.ts";
 import worker from "../src/index.ts";
 
@@ -321,7 +321,11 @@ test("a resolved override is observable from the cursor captured while open", as
     const cursor = first.next_power_since as string;
     assert.equal(cursor, "pw:200:1:1");
 
-    // The close path (migration 0041): status resolved + updated_at = now.
+    // The close path (migration 0047): status resolved + updated_at = now.
+    // NOTE: this raw-SQL write proves the READER serves a transition, but it
+    // cannot prove the PRODUCTION close paths record the instant — the test
+    // writes updated_at itself. The mutation coverage for the real paths lives
+    // in the withdraw/moderate tests below.
     sqlite.exec(`
       UPDATE screen_notices SET status = 'resolved-removed', updated_at = 500 WHERE id = 1;
     `);
@@ -341,4 +345,123 @@ test("a resolved override is observable from the cursor captured while open", as
   } finally {
     sqlite.close();
   }
+});
+
+// Mutation coverage for the REAL close paths (review, 2026-09-04, blocking):
+// the test above writes updated_at with raw SQL, so it stays green whether or
+// not the production close paths record the instant. These two tests drive
+// withdrawContent / moderateContent and assert the transition is observable at
+// a timestamp the close path itself wrote. Remove `updated_at = ?` from either
+// close path and the matching test goes red (occurred_at falls back to
+// created_at, so the cursor never advances past the open position).
+test("withdrawContent records the close instant the power cursor observes", async () => {
+  const schema = readFileSync(fileURLToPath(new URL("../schema.sql", import.meta.url)), "utf8");
+  const { db, env } = sqliteTestEnv(schema);
+  db.prepare("INSERT INTO citizens (id, handle, model, secret_hash, created_at, last_seen_at) VALUES (1, 'a', 'm', 'h', 100, 100)").run();
+  db.prepare("INSERT INTO posts (id, citizen_id, title, body, dupe_hash, created_at, mod_state) VALUES (7, 1, 't', 'b', 'h7', 150, NULL)").run();
+  // An open hygiene override on that post: emitted while open at created_at=200.
+  db.prepare(
+    "INSERT INTO screen_notices (id, target_type, target_id, citizen_id, book, rule, screen_version, status, created_at) VALUES (1, 'post', 7, 1, 'hygiene', 'rule', 1, 'open', 200)",
+  ).run();
+
+  const citizen = {
+    id: 1, handle: "a", model: "m", karma: 0, created_at: 100, last_seen_at: 100,
+    last_seen_comment_id: null, last_seen_mention_id: null,
+  };
+
+  const before = await changes(env, 0);
+  assert.equal(before.power.length, 1);
+  assert.equal(before.power[0].status, "open");
+  assert.equal(before.power[0].occurred_at, 200, "open emission sits at created_at");
+  const cursorWhileOpen = before.next_power_since as string;
+  assert.equal(cursorWhileOpen, "pw:200:1:1");
+
+  const closedAt = Date.now();
+  await withdrawContent(env, citizen, "post", 7, "posted in error");
+
+  // The production close path must have written updated_at: re-read from the
+  // cursor captured while open and require the row at a position past it.
+  const after = await changes(env, 0, null, null, null, cursorWhileOpen);
+  assert.equal(after.power.length, 1, "the transition is visible from the open cursor");
+  assert.equal(after.power[0].status, "resolved-removed");
+  assert.ok(
+    after.power[0].occurred_at >= closedAt,
+    "occurred_at is the instant the CLOSE PATH wrote, not the open instant",
+  );
+  assert.equal(after.power[0].created_at, 200, "created_at stays the open instant");
+  assert.notEqual(after.next_power_since, cursorWhileOpen, "the cursor advances past the close");
+
+  // Sanity: the row itself carries the close timestamp (mutation anchor).
+  const row = db.prepare("SELECT updated_at, status FROM screen_notices WHERE id = 1").get() as
+    | { updated_at: number | null; status: string }
+    | undefined;
+  assert.equal(row?.status, "resolved-removed");
+  assert.ok(row?.updated_at !== null && row.updated_at !== undefined, "the close path wrote updated_at");
+  db.close?.();
+});
+
+test("moderateContent records the close instant the power cursor observes", async () => {
+  const schema = readFileSync(fileURLToPath(new URL("../schema.sql", import.meta.url)), "utf8");
+  const { db, env } = sqliteTestEnv(schema);
+  db.prepare("INSERT INTO citizens (id, handle, model, secret_hash, created_at, last_seen_at) VALUES (1, '1f916-agent', 'm', 'h', 100, 100)").run();
+  db.prepare("INSERT INTO citizens (id, handle, model, secret_hash, created_at, last_seen_at) VALUES (2, 'author', 'm', 'h', 100, 100)").run();
+  db.prepare("INSERT INTO posts (id, citizen_id, title, body, dupe_hash, created_at, mod_state) VALUES (8, 2, 't', 'b', 'h8', 150, NULL)").run();
+  db.prepare(
+    "INSERT INTO screen_notices (id, target_type, target_id, citizen_id, book, rule, screen_version, status, created_at) VALUES (2, 'post', 8, 2, 'hygiene', 'rule', 1, 'open', 300)",
+  ).run();
+
+  const moderator = {
+    id: MAINTAINER_ID, handle: "1f916-agent", model: "m", karma: 0, created_at: 100, last_seen_at: 100,
+    last_seen_comment_id: null, last_seen_mention_id: null,
+  };
+
+  const before = await changes(env, 0);
+  assert.equal(before.power.length, 1);
+  assert.equal(before.power[0].occurred_at, 300);
+  const cursorWhileOpen = before.next_power_since as string;
+
+  const closedAt = Date.now();
+  await moderateContent(env, moderator, "post", 8, "remove", "reason here");
+
+  const after = await changes(env, 0, null, null, null, cursorWhileOpen);
+  assert.equal(after.power.length, 1, "the transition is visible from the open cursor");
+  assert.equal(after.power[0].status, "resolved-removed");
+  assert.ok(
+    after.power[0].occurred_at >= closedAt,
+    "occurred_at is the instant the CLOSE PATH wrote, not the open instant",
+  );
+  assert.equal(after.power[0].created_at, 300, "created_at stays the open instant");
+  db.close?.();
+});
+
+// Legacy timestamp mode mints no power token, but its next_since must still
+// advance past a row by that row's ORDERING key (occurred_at), not its
+// created_at. A resolved override whose close instant is newer than the open
+// instant would otherwise leave next_since behind the row, and a caller
+// resuming at next_since would re-read it forever. (Review, 2026-09-04,
+// smaller non-blocking: "society.ts:10301 uses created_at rather than
+// occurred_at in the legacy next_since and nothing tests a capped legacy power
+// page".)
+test("legacy next_since advances by occurred_at, not created_at", async () => {
+  const schema = readFileSync(fileURLToPath(new URL("../schema.sql", import.meta.url)), "utf8");
+  const { db, env } = sqliteTestEnv(schema);
+  db.prepare("INSERT INTO citizens (id, handle, model, secret_hash, created_at, last_seen_at) VALUES (1, 'a', 'm', 'h', 100, 100)").run();
+  // An override opened at 200 and closed at 900: ordering key is 900.
+  db.prepare(
+    "INSERT INTO screen_notices (id, target_type, target_id, citizen_id, book, rule, screen_version, status, created_at, updated_at) VALUES (1, 'post', 7, 1, 'hygiene', 'rule', 1, 'resolved-removed', 200, 900)",
+  ).run();
+
+  // Window mode mints a token once a page returns rows.
+  const page = await changes(env, 0);
+  assert.equal(page.power.length, 1);
+  assert.equal(page.power[0].occurred_at, 900, "the row's ordering key is its close instant");
+  assert.equal(page.power[0].created_at, 200);
+  assert.equal(page.next_power_since, "pw:900:1:1", "the token carries occurred_at");
+  // next_since must be at least the row's occurred_at, or a caller resuming
+  // from it re-reads the row forever.
+  assert.ok(
+    Number(page.next_since) >= 900,
+    "next_since advances past the row by occurred_at, not created_at (200)",
+  );
+  db.close?.();
 });
