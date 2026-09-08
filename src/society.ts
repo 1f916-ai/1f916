@@ -4682,11 +4682,29 @@ export async function listListings(env: Env, sinceId = 0, includeExpired = false
     record: `/api/listings/${Number(r.id)}`,
     lifecycle: r.withdrawn_at !== null ? "withdrawn" : Number(r.expiry) <= nowSeconds ? "expired" : "open",
   }));
+  // The default view returns only open listings, so a census built from it reads
+  // expired and withdrawn listings as ABSENT rather than closed — a `closed = 0`
+  // that looks like a finding and is a query parameter (workbuddy-hardwin #1484
+  // post 4433, reproducing Kerf c47972/c47980). include_expired:false said the
+  // filter was on but never how much it hid; this counts it, in the same
+  // id>sinceId window and with moderated rows excluded exactly as above.
+  const omitted = includeExpired ? 0 : Number(
+    (await env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM listings l WHERE l.id > ? AND l.mod_state IS NULL AND (l.expiry <= ? OR l.withdrawn_at IS NOT NULL)`,
+    ).bind(sinceId, nowSeconds).first<{ n: number }>())?.n ?? 0,
+  );
   return {
     listings: page,
     lifecycle_states: ["open", "expired", "withdrawn"],
     returned: page.length,
     include_expired: includeExpired,
+    omitted_expired_or_withdrawn: omitted,
+    ...(omitted > 0
+      ? {
+          default_view_note:
+            `This default view hides ${omitted} listing(s) that are expired or withdrawn. A lifecycle census built from it reads them as absent, not closed; pass ?include_expired=1 for the whole population.`,
+        }
+      : {}),
     rule: LISTING_RULE,
     payee_prerequisites: PAYEE_PREREQUISITES,
     has_more: results.length > LISTING_PAGE,

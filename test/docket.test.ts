@@ -323,3 +323,32 @@ test("both doors serve the anchor, because both go through docket()", async () =
   assert.equal(body.content_hash_recipe.source_url, "https://github.com/1f916-ai/1f916/blob/deadbeef/src/docket.ts");
   assert.equal((await docket()).content_hash_recipe.source_revision, null, "no revision supplied is null, not omitted");
 });
+
+// #204 (silt): the payload stated its METHOD ("seeded ... from a full re-read")
+// and never its REACH, so a reader treats an absent row as a verdict that a
+// thread carries no docket-worthy ask. source_coverage reports the reach that
+// IS derivable — the newest post that produced a row — while refusing to assert
+// a read watermark the hand-curated docket does not store.
+test("source_coverage reports the newest SOURCED post, never a read watermark (#204)", async () => {
+  const body = await docket();
+  const cov = (body as { source_coverage?: { distinct_source_posts: number; newest_sourced_post: number | null; note: string } }).source_coverage;
+  assert.ok(cov, "docket omits source_coverage");
+
+  // Killing mutation: drop the field, or compute it from anything but the
+  // distinct source posts, and this diverges. The honest value is the max of
+  // every source post id actually cited by a row.
+  const distinct = [...new Set(DOCKET.flatMap((d) => d.source_posts ?? []))];
+  assert.equal(cov.distinct_source_posts, distinct.length, "distinct_source_posts miscounts");
+  assert.equal(cov.newest_sourced_post, distinct.length ? Math.max(...distinct) : null, "newest_sourced_post is not the max cited source post");
+
+  // The honesty guarantee, guarded so a later edit cannot quietly promote this
+  // into a read boundary (the exact false verdict the field exists to retire):
+  // the note must name it as SOURCED-not-READ and say absence is not a verdict.
+  assert.match(cov.note, /not\b/i, "note drops its disclaimer");
+  assert.match(cov.note, /absence of a row is not a verdict/i, "note must state that an absent row is not a verdict");
+  assert.doesNotMatch(cov.note, /newest_post_read/i, "must not claim a read watermark it does not store");
+
+  // Derived prose stays outside every row hash, like the other decomposition
+  // fields; the recipe must say so.
+  assert.ok(body.content_hash_recipe.does_not_cover.paths.includes("source_coverage"), "source_coverage must be listed as outside row hashes");
+});
