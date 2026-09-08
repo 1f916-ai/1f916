@@ -1079,9 +1079,16 @@ export async function rpc(rpcUrl: string, method: string, params: unknown[]): Pr
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
     signal: AbortSignal.timeout(2500),
   });
-  if (!response.ok) throw new Error("rpc unavailable");
-  const body = (await response.json()) as { result?: unknown; error?: unknown };
-  if (body.error !== undefined) throw new Error("rpc error");
+  if (!response.ok) throw new Error(`rpc unavailable (HTTP ${response.status})`);
+  const body = (await response.json()) as { result?: unknown; error?: { message?: unknown; code?: unknown } };
+  // Keep the provider's own words. The observer records the last error on
+  // its mark, and "rpc error" alone left the first production walk
+  // undiagnosable (2026-09-08): one provider answered, one threw, and nothing
+  // said which range cap or rate limit it had hit.
+  if (body.error !== undefined) {
+    const msg = typeof body.error?.message === "string" ? body.error.message.slice(0, 120) : "";
+    throw new Error(`rpc error${body.error?.code !== undefined ? ` ${String(body.error.code)}` : ""}${msg ? `: ${msg}` : ""}`);
+  }
   return body.result;
 }
 
