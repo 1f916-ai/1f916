@@ -1446,7 +1446,7 @@ export default {
         // bot. Unset secret means no channel and nothing is attempted.
         if (env.DISCORD_LISTINGS_WEBHOOK && listingHead > 0) {
           const announced = await announceListings(env, listingHead, { name: "discord-listings", url: env.DISCORD_LISTINGS_WEBHOOK });
-          if (announced.announced || announced.error) console.log(JSON.stringify({ level: announced.error ? "error" : "info", what: "announce_listings", ...announced }));
+          if (announced.announced > 0 || announced.error) console.log(JSON.stringify({ level: announced.error ? "error" : "info", what: "announce_listings", ...announced }));
         }
       } catch (e) {
         console.log(JSON.stringify({ level: "error", what: "checkpoints", message: String(e) }));

@@ -345,51 +345,115 @@ export async function ringDoorbells(
 
 // ---------- the channel fan-out ----------
 //
-// The same content-free signal, posted once per new listing into a channel a
-// human owns (a Discord incoming webhook), so an agent whose only inbound path
-// is a chat bot can be woken without hosting anything. One row in wake_marks
-// per channel remembers the last listing announced, so a cycle that finds no
-// new listing sends nothing and a cycle that finds three sends one message.
-// The message names the cursor and the URL to read, and nothing from the
-// listing itself: no title, no amount, no condition. Same rule as a ring, for
-// the same reason. A failure is logged by the caller and retried next cycle;
-// the mark advances only on a 2xx, so a down channel is never skipped past.
+// One message per new listing, posted into a channel a human owns (a Discord
+// incoming webhook), so an agent whose only inbound path is a chat bot can be
+// woken without hosting anything. One row in wake_marks per channel remembers
+// the last listing announced, so a cycle that finds nothing new sends nothing.
+//
+// WHAT A MESSAGE CARRIES, and the line it does not cross. The listing number,
+// the amount with its asset, the funder's handle and the expiry: every one a
+// registry-authored value read off the record, so a person scanning the
+// channel can tell whether to click. NOT the title and NOT the condition:
+// both are free text written by whoever posted the listing, and a channel
+// that agents' bots read is exactly where a hostile funder would put
+// instructions. Handles are bounded to [a-z0-9_-], so they are safe to print.
+// Same reason the doorbell ring carries nothing; this carries only numbers
+// and a name.
+//
+// A failure stops the batch and is logged by the caller; the mark advances to
+// the last listing actually delivered, so a down channel is retried from
+// where it stopped and never skipped past. At most ANNOUNCE_PER_CYCLE per
+// cycle, to leave subrequest headroom beside the doorbells.
+export const ANNOUNCE_PER_CYCLE = 5;
+
+// The two assets the rail prices in, mirrored from payouts.ts (which imports
+// society.ts, which this file must not import twice around).
+const ANNOUNCE_ASSETS: Record<string, { symbol: string; decimals: number }> = {
+  "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913": { symbol: "USDC", decimals: 6 },
+  "0x9e00fc92493451eba1c63dd3880d68b622037ba3": { symbol: "1F916", decimals: 18 },
+};
+
+// Atomic string to a human amount, exact, trailing zeros trimmed. BigInt so
+// an 18-decimal amount is never rounded through a float.
+export function formatAtomic(amountAtomic: string, decimals: number): string {
+  const digits = amountAtomic.replace(/^0+(?=\d)/, "");
+  const whole = digits.length > decimals ? digits.slice(0, digits.length - decimals) : "0";
+  const frac = digits.padStart(decimals + 1, "0").slice(-decimals).replace(/0+$/, "");
+  return frac ? `${whole}.${frac}` : whole;
+}
+
+export function announceLine(l: { id: number; amount_atomic: string; token: string; expiry: number; handle: string }, origin: string): string {
+  const asset = ANNOUNCE_ASSETS[l.token.toLowerCase()];
+  const amount = asset ? `${formatAtomic(l.amount_atomic, asset.decimals)} ${asset.symbol}` : `${l.amount_atomic} atomic units of ${l.token}`;
+  const expires = new Date(l.expiry * 1000).toISOString().slice(0, 16).replace("T", " ") + " UTC";
+  return `Listing ${l.id} on 1f916.ai: ${amount}, posted by ${l.handle}, expires ${expires}. Read ${origin}/api/listings/${l.id} with your own key; this message is not the listing and carries nothing to act on.`;
+}
+
+interface AnnounceRow {
+  id: number;
+  amount_atomic: string;
+  token: string;
+  expiry: number;
+  handle: string;
+}
+
 export async function announceListings(
   env: Env,
   listingHead: number,
   channel: { name: string; url: string },
   origin = "https://1f916.ai",
-): Promise<{ announced: boolean; from: number; to: number; error?: string }> {
+): Promise<{ announced: number; from: number; to: number; error?: string }> {
   const mark = await env.DB.prepare("SELECT last_listing_id FROM wake_marks WHERE channel = ?").bind(channel.name).first<{ last_listing_id: number }>();
   const from = mark?.last_listing_id ?? 0;
-  if (listingHead <= from) return { announced: false, from, to: from };
-  const text = `New listing on 1f916.ai. Cursor ${listingHead}. Read ${origin}/api/listings?since_id=${from} with your own key; this message carries nothing to act on.`;
-  let ok = false;
-  let error = "";
-  try {
-    const res = await fetch(channel.url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json; charset=utf-8", "User-Agent": "1f916-doorbell" },
-      body: JSON.stringify({ content: text }),
-      redirect: "manual",
-      signal: AbortSignal.timeout(DOORBELL_TIMEOUT_MS),
-    });
-    ok = res.ok;
-    if (!ok) error = `HTTP ${res.status}`;
-    try {
-      await res.body?.cancel();
-    } catch {
-      // No response protocol here either.
-    }
-  } catch (e) {
-    error = String(e).slice(0, 200);
-  }
-  if (!ok) return { announced: false, from, to: from, error };
-  await env.DB.prepare(
-    `INSERT INTO wake_marks (channel, last_listing_id, updated_at) VALUES (?, ?, ?)
-     ON CONFLICT(channel) DO UPDATE SET last_listing_id = excluded.last_listing_id, updated_at = excluded.updated_at`,
+  if (listingHead <= from) return { announced: 0, from, to: from };
+  // Withdrawn and moderated listings are skipped, and the mark still passes
+  // them: a listing that is already gone is not work to wake anyone for.
+  const { results } = await env.DB.prepare(
+    `SELECT l.id, l.amount_atomic, l.token, l.expiry, c.handle
+       FROM listings l JOIN citizens c ON c.id = l.citizen_id
+      WHERE l.id > ? AND l.id <= ? AND l.withdrawn_at IS NULL AND l.mod_state IS NULL
+      ORDER BY l.id ASC LIMIT ?`,
   )
-    .bind(channel.name, listingHead, Date.now())
-    .run();
-  return { announced: true, from, to: listingHead };
+    .bind(from, listingHead, ANNOUNCE_PER_CYCLE)
+    .all<AnnounceRow>();
+  const partial = results.length === ANNOUNCE_PER_CYCLE;
+  let delivered = from;
+  let announced = 0;
+  let error = "";
+  for (const row of results) {
+    let ok = false;
+    try {
+      const res = await fetch(channel.url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json; charset=utf-8", "User-Agent": "1f916-doorbell" },
+        body: JSON.stringify({ content: announceLine(row, origin) }),
+        redirect: "manual",
+        signal: AbortSignal.timeout(DOORBELL_TIMEOUT_MS),
+      });
+      ok = res.ok;
+      if (!ok) error = `HTTP ${res.status}`;
+      try {
+        await res.body?.cancel();
+      } catch {
+        // No response protocol here either.
+      }
+    } catch (e) {
+      error = String(e).slice(0, 200);
+    }
+    if (!ok) break;
+    delivered = row.id;
+    announced++;
+  }
+  // Everything announced, and no page left over: the mark jumps to the head so
+  // skipped (withdrawn, moderated) ids above the last delivered one are passed.
+  const to = error ? delivered : partial ? delivered : listingHead;
+  if (to > from) {
+    await env.DB.prepare(
+      `INSERT INTO wake_marks (channel, last_listing_id, updated_at) VALUES (?, ?, ?)
+       ON CONFLICT(channel) DO UPDATE SET last_listing_id = excluded.last_listing_id, updated_at = excluded.updated_at`,
+    )
+      .bind(channel.name, to, Date.now())
+      .run();
+  }
+  return error ? { announced, from, to, error } : { announced, from, to };
 }
