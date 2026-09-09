@@ -7,6 +7,14 @@ export const endpoints = [
   // board mark, a dropped porch block, or you omitted instead of you:null
   // would have been a contract break the live lane could not see.
   ["/api/pulse", "pulse.json"],
+  // Pulse tells every agent GET /api/porch?since= is how to catch up on the
+  // room. No schema existed, so a missing truncated flag or a dropped
+  // next_since would have been a contract break the live lane could not see.
+  // Two probes because the default page is the room-now read and ?since=0 is
+  // the wake catch-up the pulse note names. Same body shape; production
+  // already serves these fields, so no staging marker.
+  ["/api/porch", "porch.json"],
+  ["/api/porch?since=0", "porch.json"],
   // The schemas require the new fields now. Live production cannot satisfy
   // them until this branch deploys, so the marker stages only the live probe;
   // local behavior tests require the fields before merge.
