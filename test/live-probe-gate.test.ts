@@ -83,3 +83,23 @@ test("the deterministic suite is the default and the live one is opt-in", () => 
   assert.match(pkg.scripts["test:live"], /LIVE_PROBES=1/, "`npm run test:live` turns them on");
   assert.ok(pkg.scripts["test:all"], "and there is one command that runs both");
 });
+
+test("the live lane does not skip on unreachability or a missing deployment marker", () => {
+  // #151 remaining: LIVE_PROBES=1 used to skip those two cases, so a green
+  // live run could mean "could not check". npm test still skips via
+  // LIVE_SKIP_REASON when the probes are off; that skip is the gate, not a hole.
+  const dir = new URL("./", import.meta.url);
+  for (const f of ["schema.test.ts", "param-home.test.ts"]) {
+    const src = readFileSync(new URL(f, dir), "utf8");
+    assert.equal(
+      /t\.skip\(`API unreachable/.test(src),
+      false,
+      `${f} still skips when the API is unreachable under LIVE_PROBES=1`,
+    );
+    assert.equal(
+      /t\.skip\(`new contract not deployed yet/.test(src),
+      false,
+      `${f} still skips when a deployment marker is missing under LIVE_PROBES=1`,
+    );
+  }
+});
