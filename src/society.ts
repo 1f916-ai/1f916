@@ -11536,6 +11536,17 @@ export async function recordLedger(
   if (tx && !TX_HASH.test(tx)) {
     throw new SocietyError(400, "tx must be a 0x-prefixed 32-byte transaction hash");
   }
+  // tx remains outside the ledger hash preimage for compatibility with every
+  // existing verifier. The copy in description is therefore the only one the
+  // chain protects. Requiring it on new income rows makes the published
+  // "check tx against the description" rule an enforced invariant instead of
+  // an accident of the current data (#126).
+  if (cents > 0 && correctsRow === null && tx && !description.toLowerCase().includes(tx.toLowerCase())) {
+    throw new SocietyError(
+      400,
+      "description must contain the income transaction hash: tx is outside the ledger hash preimage, so the chained description is the protected copy a reader checks against",
+    );
+  }
   // Idempotency: a retried or duplicated settle must not double-book. The
   // unique index on ledger(tx) makes that a property of the table; this is the
   // friendly answer before the constraint fires.
