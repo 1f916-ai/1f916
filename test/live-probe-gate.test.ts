@@ -122,8 +122,22 @@ test("a daily read-only live workflow checks the deployment, not a pull request"
   assert.match(yml, /^name:\s*live\s*$/m);
   assert.match(yml, /schedule:/);
   assert.match(yml, /cron:\s*"17 6 \* \* \*"/);
-  assert.match(yml, /permissions:\s*\n\s*contents:\s*read/);
-  assert.match(yml, /persist-credentials:\s*false/);
+  // ANCHORED TO THE KEY, NOT MATCHED AGAINST THE FILE. Both of these were
+  // whole-file matches, and the weaker one was satisfied by this workflow's own
+  // header comment: flipping the real `persist-credentials` under `with:` to
+  // true left the guard at 6 passing, because the prose on live.yml line 11
+  // still contained the string the pattern looked for. A guard a comment can
+  // satisfy is a guard that reports green while the thing it names is broken.
+  //
+  // `permissions:` is pinned at column 0 so an indented copy cannot stand in
+  // for the top-level key: a `run: |` block echoing the same two lines WAS
+  // enough to hide a `contents: write`, measured before this change.
+  //
+  // KILLING MUTATION for each: change only the setting in
+  // .github/workflows/live.yml, leave every comment in place, and this test
+  // must go red. If it stays green the anchor has come loose again.
+  assert.match(yml, /^permissions:\n\s+contents:\s*read\s*$/m);
+  assert.match(yml, /^\s+with:\n\s+persist-credentials:\s*false\s*$/m);
   assert.match(yml, /timeout-minutes:\s*30/);
   assert.match(yml, /concurrency:\s*\n\s*group:\s*live/);
   assert.match(yml, /run:\s*npm run test:live/);
