@@ -298,7 +298,15 @@ test("a binding cannot be filed against a listing that does not exist or has exp
   const missing = await payeeBinding("listing-7", "1000000", ed);
   await assert.rejects(createPayoutBinding(env, PAYEE as never, missing.body), /names no listing/);
 
-  await createListing(env, FUNDER as never, { title: "Soon to expire", condition: CONDITION, amount_atomic: "1000000", expiry: NOW + 5 });
+  // NOW is captured at module load (line 69). The next line forces this listing
+  // expired via a direct UPDATE, so the value here only has to clear
+  // validateListing's `expiry <= nowSeconds` check at the instant createListing
+  // runs. A 5-second margin was luck: in the full ~2.6-minute suite this test
+  // runs long after module load, so NOW+5 had drifted into the past and
+  // createListing rejected it 400, turning this into an intermittent red that
+  // blocked deploys. An hour of margin is unreachable by suite runtime and the
+  // forced expiry below keeps the assertion identical.
+  await createListing(env, FUNDER as never, { title: "Soon to expire", condition: CONDITION, amount_atomic: "1000000", expiry: NOW + 3600 });
   db.prepare("UPDATE listings SET expiry = ? WHERE id = 1").run(NOW - 1);
   const stale = await payeeBinding("listing-1", "1000000", ed);
   await assert.rejects(createPayoutBinding(env, PAYEE as never, stale.body), /expired at/);
