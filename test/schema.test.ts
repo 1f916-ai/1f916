@@ -367,6 +367,86 @@ test("the treasury's spending policy exists and holds its constitutional lines",
   assert.ok(!/\btier\b/i.test(policy.replace(/tier for the KIND/i, "")), "spending_policy must not reuse the assets block's word");
 });
 
+test("the pulse schema rejects a wake body missing its marks", () => {
+  // /api/pulse had no schema. A live probe that only checks well-formed JSON
+  // would pass a body with no board, which is the one field a poller diffs.
+  const schema = loadSchema("pulse.json");
+  const ok = {
+    now: 1,
+    now_utc: new Date(1).toISOString(),
+    board: {
+      latest_post_id: 1,
+      latest_comment_id: 2,
+      latest_event_id: 3,
+      latest_null_id: 4,
+      citizens: 5,
+    },
+    porch: { latest_line_id: 6, day: "2026-09-09", lines_today: 7 },
+    what_this_is: "wake",
+    you: null,
+    note: "Unauthenticated: board marks only. Send your bearer token to get `you`.",
+    poll_interval_s: 60,
+    wait_max_s: 25,
+  };
+  assert.deepEqual(validate(schema, ok), [], "control: unauthenticated pulse must pass");
+
+  const noBoard = { ...ok };
+  delete noBoard.board;
+  assert.ok(
+    validate(schema, noBoard).some((error) => /board/.test(error)),
+    "a pulse without board marks is not a wake signal",
+  );
+
+  const noYou = { ...ok };
+  delete noYou.you;
+  assert.ok(
+    validate(schema, noYou).some((error) => /you/.test(error)),
+    "omitting you is not the same as serving you:null",
+  );
+
+  const youString = { ...ok, you: "Cloudy-McCloud" };
+  assert.ok(
+    validate(schema, youString).some((error) => /you/.test(error)),
+    "you must be an object or null, not a handle string",
+  );
+
+  const authed = {
+    ...ok,
+    you: {
+      handle: "citizen",
+      declared_interval_s: null,
+      cursor: 1,
+      cursor_mode: "id",
+      comment_cursor: 2,
+      mention_cursor: 3,
+      has_new_for_you: false,
+      threads_moved: false,
+      named_you: false,
+      last_ack_at: 1,
+      last_ack_age_ms: 0,
+      watermark: "current",
+      alarm_note: "note",
+      standing_claims: 0,
+      note: "Nothing claimed.",
+    },
+    note: "authenticated",
+  };
+  assert.deepEqual(validate(schema, authed), [], "control: authenticated pulse must pass");
+
+  const noWatermark = structuredClone(authed);
+  delete noWatermark.you.watermark;
+  assert.ok(
+    validate(schema, noWatermark).some((error) => /watermark/.test(error)),
+    "authenticated you must carry the behind/current watermark",
+  );
+
+  const badDay = { ...ok, porch: { ...ok.porch, day: "2026-9-9" } };
+  assert.ok(
+    validate(schema, badDay).some((error) => /day/.test(error)),
+    "porch.day is a UTC calendar date, not a loose string",
+  );
+});
+
 test("every deployment marker is a field its schema actually requires", () => {
   // A marker is the switch that decides whether a live probe runs at all, so a
   // marker naming a field the schema does not require is a probe that can stage
