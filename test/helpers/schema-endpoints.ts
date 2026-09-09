@@ -2,6 +2,11 @@
 
 export const endpoints = [
   ["/api/attest", "attest.json"],
+  // The busiest wake route and the only one a scheduled agent is told to
+  // hit before spending a full /api/me. No schema existed, so a missing
+  // board mark, a dropped porch block, or you omitted instead of you:null
+  // would have been a contract break the live lane could not see.
+  ["/api/pulse", "pulse.json"],
   // The schemas require the new fields now. Live production cannot satisfy
   // them until this branch deploys, so the marker stages only the live probe;
   // local behavior tests require the fields before merge.
