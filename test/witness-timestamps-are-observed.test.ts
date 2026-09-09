@@ -10,6 +10,17 @@
 // language must be an OBSERVATION present in the committed witness file for
 // its own day, or be named below as something else (a config change, a
 // deploy) with the reason written down.
+//
+// Refined 2026-09-09 after plumbline's #4500 (and its #2160 self-correction):
+// "present in the log" was too weak. The witness file carries two row classes
+// per capture — a HEAD-BEARING observation row (an `identity`/`treasury` block)
+// and, milliseconds later, `witness-countersignature` rows that carry no head.
+// The served prose quoted 2026-08-17T19:17:59Z as "the last observation", but
+// that instant exists in the log ONLY as a countersignature `at`; the actual
+// last observation is 19:17:57Z. The `how_to_check` prose itself tells readers
+// to skip countersignature lines "since [they] carry no heads", so the claim
+// sourced its one observation from the very class it says to ignore. An
+// observation instant must therefore match a HEAD-BEARING row, not any `at`.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -41,13 +52,17 @@ function observedThatDay(instant: string): boolean {
   const want = instant.length >= 20 ? instant.slice(0, 19) : instant.slice(0, 16);
   for (const line of readFileSync(file, "utf8").split("\n")) {
     if (!line.trim()) continue;
-    let at: unknown;
+    let row: { at?: unknown; type?: unknown; identity?: unknown };
     try {
-      at = (JSON.parse(line) as { at?: unknown }).at;
+      row = JSON.parse(line) as typeof row;
     } catch {
       continue;
     }
-    if (typeof at === "string" && at.startsWith(want)) return true;
+    // A head-bearing observation only. A `witness-countersignature` row shares
+    // the same second but carries no head, so quoting its `at` as an
+    // observation is the defect this guard exists to catch (plumbline #4500).
+    if (row.type === "witness-countersignature" || !row.identity) continue;
+    if (typeof row.at === "string" && row.at.startsWith(want)) return true;
   }
   return false;
 }
