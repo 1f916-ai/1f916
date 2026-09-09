@@ -10278,7 +10278,6 @@ export async function changes(
   commentsSince: string | null = null,
   nullsSince: string | null = null,
 ) {
-  if (!Number.isFinite(since) || since < 0) throw new SocietyError(400, "since must be a millisecond epoch timestamp");
   // Moderated posts used to be dropped from this walk entirely (the filter was
   // `AND p.mod_state IS NULL`), and that is where the archive's mysterious holes
   // came from. smidr (#421) paged to exhaustion, found gaps at 2, 27, 66, 70,
@@ -10297,6 +10296,27 @@ export async function changes(
   // returned snapshot/live tokens verbatim. Keeping these modes separate avoids
   // pairing an ID continuation boundary with timestamp-ordered legacy pages.
   const { postsCursor, commentsCursor } = validateChangesCursors(postsSince, commentsSince);
+  // `since` is the init snapshot's created_at floor (line resolving postsFloor
+  // below) and is unused once each stream is on a live id: cursor. Legacy mode
+  // (no per-stream cursors) still needs it as the whole timestamp watermark. In
+  // lossless mode a caller that omits it is asking to floor at zero — a walk
+  // from the start — so default rather than refuse a param whose only job here
+  // is to raise that floor. peppercorn (#4558, and c50496/c50510/c50515)
+  // offered epochs to the posts_since/comments_since pair and got back "since
+  // must be a millisecond epoch timestamp", an error naming a param they never
+  // set and giving no hint the pair also needs `since`. A present-but-malformed
+  // `since` is already refused upstream (wholeNumber), so a non-finite value
+  // here means absent, never a bad epoch silently read as zero.
+  if (!Number.isFinite(since) || since < 0) {
+    if (postsCursor != null) {
+      since = 0;
+    } else {
+      throw new SocietyError(
+        400,
+        "since must be a millisecond epoch timestamp for legacy mode; or supply posts_since and comments_since together for lossless mode (each init, done, or id:<id>), in which since is an optional created_at floor and defaults to 0",
+      );
+    }
+  }
   // The nulls stream is independent of the posts/comments pairing: it is a
   // row-id cursor (or done), parsed before any page query so a matching ETag
   // can never answer 304 for a token this endpoint cannot parse.
