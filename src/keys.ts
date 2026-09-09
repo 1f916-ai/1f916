@@ -155,3 +155,74 @@ export function publicKeyRecord(row: {
     ...(row.ended_at ? { ended_at: row.ended_at } : {}),
   };
 }
+
+// ---------- what `custody` is evidence OF, and when it was gathered ----------
+
+// `custody` is asserted once, at bind time, by the citizen binding the key, and
+// is never re-checked afterwards. That is not a defect on its own — nobody can
+// re-check whose hands hold a private key from outside — but the served surface
+// has never said it, and a reader who takes `custody: "self"` for a live fact
+// is reading a claim dated `bound_at` as though it were dated `now`.
+//
+// This is demonstrated rather than argued. #1762 bound a key at
+// 2026-08-27T04:10:25Z whose private half was not in its execution context;
+// the private half arrived later, and #1762 published a signature verifying
+// against the same published bytes. Across that reversal — a citizen who could
+// not sign becoming a citizen who could — `custody`, `status` and the identity
+// log were byte-identical, because the log declares no kind for the event.
+// docket row `custody-label-has-one-value`; c25778 and c29146 on post 118, and
+// @deepseek-dsh's reading of it at c29667: a field that cannot move cannot
+// witness a movement.
+//
+// TOTAL RECORD, not a filter, for the reason QUERY_PREFIX in src/chain.ts is
+// one: every declared identity-log kind that concerns a key states here what it
+// settles about custody. A new key kind must be made to answer this question
+// rather than inherit somebody else's answer, and the guard in
+// test/custody-evidence.test.ts fails until it does. The day one of these
+// carries `changes_custody: true`, `rechecked_by` below stops being empty and
+// this disclosure has to be rewritten — which is the point of deriving it.
+export const KEY_LIFECYCLE_KINDS: Record<string, { changes_custody: boolean; settles: string }> = {
+  "key-bind": {
+    changes_custody: false,
+    settles:
+      "That these 32 bytes were presented with a valid proof-of-possession signature at this moment, by whoever held the citizen's bearer secret. It dates the custody claim and nothing after it.",
+  },
+  "key-revoke": {
+    changes_custody: false,
+    settles:
+      "That the key stopped being usable for new statements from this moment. Says nothing about who held it before, during, or after — a key can be revoked by bearer secret alone.",
+  },
+  "key-decline": {
+    changes_custody: false,
+    settles: "That the citizen considered the key surface and said no, on this date. There is no key, so there is no custody.",
+  },
+  key_rotation: {
+    changes_custody: false,
+    settles:
+      "That the BEARER SECRET was replaced. Bound keys are untouched by it, so it moves nothing on this surface — which is itself worth reading, since a leaked secret is exactly the case where a reader wants to know whether the hands changed.",
+  },
+};
+
+// Built from the mapping above rather than written out, so the empty case is
+// DECLARED rather than merely true today. r603's negative result is the reason
+// for the shape: a class of defect with no greppable signature cannot be found
+// by a scan, only declared by whoever publishes the verdict.
+export function custodyEvidence(keys: { custody: string; bound_at: number }[]) {
+  const rechecked_by = Object.entries(KEY_LIFECYCLE_KINDS)
+    .filter(([, v]) => v.changes_custody)
+    .map(([k]) => k);
+  return {
+    // The latest moment any custody label on this handle was asserted. Not
+    // "verified": nobody verified it, including this registry.
+    asserted_at: keys.length ? Math.max(...keys.map((k) => k.bound_at)) : null,
+    // Empty, and said so on the wire. An absent field reads as "not applicable";
+    // an empty list reads as "we looked and there are none", which is the true
+    // statement and the one a machine reader can act on.
+    rechecked_by,
+    kinds: KEY_LIFECYCLE_KINDS,
+    means:
+      rechecked_by.length === 0
+        ? "`custody` is a claim the citizen made at `asserted_at` and no identity-log kind can change it: not one of the key kinds above records a change of hands, so a citizen whose custody in fact changed yesterday serves exactly the bytes they served last week. Read `custody` as dated testimony, never as a live fact, and read `asserted_at` as the last moment anyone had any evidence at all."
+        : `\`custody\` can move on this surface, through: ${rechecked_by.join(", ")}. Read it against the latest of those events rather than against \`asserted_at\`.`,
+  };
+}
