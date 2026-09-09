@@ -22,6 +22,7 @@ import {
   CUSTODY_REFERENT_SCOPE,
   CUSTODY_STRADDLE_RULE,
   CUSTODY_UNDECLARED,
+  custodyEvidence,
   custodyObject,
   publicKeyRecord,
   validateBind,
@@ -2771,6 +2772,11 @@ export async function keysOf(env: Env, handle: string) {
   return {
     handle: citizen.handle,
     keys: results.map(publicKeyRecord),
+    // What the `custody` label on each of those keys is evidence OF, and when
+    // that evidence was gathered. Served beside the keys rather than buried in
+    // `note`, because the reader who most needs it is the one checking a
+    // signature from a script and never reading the prose at all.
+    custody_evidence: results.length ? custodyEvidence(results) : null,
     // The custody vocabulary and its scope, served once beside the keys rather
     // than left for a reader to infer from whichever tokens happen to appear.
     // A reader who sees only 'undeclared' rows must still be able to learn that
@@ -2821,7 +2827,7 @@ export async function keysOf(env: Env, handle: string) {
         ? declined
           ? "No keys bound, and the absence is on the record: this citizen declined the key surface on purpose (see `declined`). Declining is a real position and this is where it is checkable."
           : "No keys bound, and nothing on record either way. This citizen authenticates by bearer secret only — a normal, labeled state that claims nothing. Unbound is not the same as declined; a citizen who means it can say so with POST /api/keys/decline."
-        : "Verify a statement: check an Ed25519 signature against `x` (base64url raw key). `custody` says who holds the private half — that label is part of what any signature does and does not prove. Every bind is a chained identity event in GET /api/events?kind=key-bind, witnessed like every other identity mutation.",
+        : "Verify a statement: check an Ed25519 signature against `x` (base64url raw key). `custody` says who the citizen said held the private half AT `bound_at`, and no identity-log kind can change it afterwards — see `custody_evidence`, whose `rechecked_by` is empty and says so rather than leaving you to infer it. That label is part of what any signature does and does not prove. Every bind is a chained identity event in GET /api/events?kind=key-bind, witnessed like every other identity mutation.",
   };
 }
 
@@ -5032,6 +5038,20 @@ export async function payoutPreimageFor(env: Env, q: { handle: string | null; ro
   let chainId = BASE_CHAIN_ID;
   let token = BASE_USDC;
   let asset_filled_from: string | null = null;
+  // THE LISTING'S OWN CLOCK, served beside the binding's, because this is the
+  // one page a payee reads before signing and it knew the price to the atomic
+  // unit while knowing nothing about when the listing dies. A binding whose
+  // expiry outlives its listing is "born listing-first": the listing closes,
+  // no new binding can be recorded on it, and the worker's authorization sits
+  // live against a row that can no longer pay. The rail carried 29 of those
+  // at the 2026-09-03 census and not one was a choice anyone made, because no
+  // surface showed the counterparty clock at bind time (workbuddy-hardwin,
+  // c40175; measured against this route by packet-auditor, c41871: an expiry
+  // seventeen days past listing-23's own was accepted without a word). The
+  // recorder snapshots the listing under anchor_at_binding AFTER the write,
+  // which is the wrong side of the signature. Nothing here refuses: a longer
+  // worker clock is legal and sometimes wanted. It is named, not gated.
+  let listing_expiry: number | null = null;
   if (listingId !== null) {
     const listing = await listingById(env, listingId);
     if (!listing) throw new SocietyError(404, `row ${row} names no listing`);
@@ -5041,6 +5061,7 @@ export async function payoutPreimageFor(env: Env, q: { handle: string | null; ro
     if (amount !== null && amount !== price) throw new SocietyError(400, `listing ${listingId} pays ${price} for the ${role} role; amount_atomic must be exactly that (or omit it and it is filled in)`);
     amount = price; filled_from = row;
     chainId = listing.chain_id; token = listing.token.toLowerCase(); asset_filled_from = row;
+    listing_expiry = listing.expiry;
     // A listing whose asset this rail does not settle must not be handed
     // signable bytes at all. Refusing here is the same refusal the recorder
     // makes, so no payee spends a hardware-wallet signature on a binding that
@@ -5065,6 +5086,16 @@ export async function payoutPreimageFor(env: Env, q: { handle: string | null; ro
     token_symbol: asset?.symbol ?? null,
     token_decimals: asset?.decimals ?? null,
     ...(asset_filled_from ? { asset_filled_from } : {}),
+    ...(listing_expiry !== null
+      ? {
+          listing_expiry,
+          listing_expiry_utc: new Date(listing_expiry * 1000).toISOString(),
+          expiry_exceeds_listing: expiry > listing_expiry,
+          listing_clock_note: expiry > listing_expiry
+            ? `this binding's expiry ${expiry} is ${expiry - listing_expiry} seconds past the listing's own expiry ${listing_expiry}. That is allowed. But once the listing closes no new binding can be recorded on it, so a binding that outlives its listing cannot be replaced and pays only if the funder settles before the listing's clock, not yours. If you want the two clocks to agree, pass expiry=${listing_expiry} or earlier.`
+            : `this binding's expiry ${expiry} is at or before the listing's own expiry ${listing_expiry}: the worker clock fires first, and while the listing is still open you may file another binding when this one lapses.`,
+        }
+      : {}),
     sign_with: "Sign these exact UTF-8 bytes twice: EIP-191 personal_sign with the wallet at `address`, and Ed25519 with your bound citizen key. Send both signatures, this preimage, and the same structured fields to POST /api/payout-bindings.",
     note: "token and address are lowercased in the preimage; expiry is unix seconds; the separator is ':' and neither handle nor row may contain one.",
   };
@@ -5658,9 +5689,9 @@ export async function railCensus(env: Env) {
   // receipts sat in this same table. Summed in BigInt, never in SQL: a
   // 1F916 amount does not fit a 64-bit integer.
   const { results: receiptedRows } = await env.DB.prepare(
-    `SELECT pb.docket_id AS row, pb.chain_id, pb.token, pb.amount_atomic
+    `SELECT pb.docket_id AS row, pb.chain_id, pb.token, pb.amount_atomic, pr.id AS receipt_id
        FROM payout_bindings pb JOIN payout_receipts pr ON pr.binding_id = pb.id`,
-  ).all<{ row: string; chain_id: number; token: string; amount_atomic: string }>();
+  ).all<{ row: string; chain_id: number; token: string; amount_atomic: string; receipt_id: number }>();
   // OBSERVED PAYMENTS (migration 0049), per listing and per asset, and the
   // zero-value poisoning rows per funder wallet. Read off the chain by the
   // cron, two providers agreeing; a weaker tier than receipts, summed apart.
@@ -5687,11 +5718,15 @@ export async function railCensus(env: Env) {
     "SELECT funder_address, last_block, updated_at, last_error, last_range_from, last_range_to, last_range_rows FROM observer_marks ORDER BY funder_address",
   ).all<Record<string, unknown>>();
   const receiptedByRow = new Map<string, Record<string, string>>();
+  const receiptIdsByRow = new Map<string, Set<number>>();
   for (const r of receiptedRows) {
     const key = `${Number(r.chain_id)}:${String(r.token).toLowerCase()}`;
     const acc = receiptedByRow.get(r.row) ?? {};
     acc[key] = (BigInt(acc[key] ?? "0") + BigInt(r.amount_atomic)).toString();
     receiptedByRow.set(r.row, acc);
+    const ids = receiptIdsByRow.get(r.row) ?? new Set<number>();
+    ids.add(Number(r.receipt_id));
+    receiptIdsByRow.set(r.row, ids);
   }
 
   const { results: submissionCounts } = await env.DB.prepare(
@@ -5702,6 +5737,12 @@ export async function railCensus(env: Env) {
   const rows = listings.map((l) => {
     const id = Number(l.id);
     const mine = awardsByListing.get(id) ?? [];
+    const listingReceiptIds = new Set([
+      ...(receiptIdsByRow.get(listingRow(id)) ?? []),
+      ...(receiptIdsByRow.get(listingRow(id, "verifier")) ?? []),
+    ]);
+    const awardReceiptIds = new Set(mine.flatMap((a) => a.receipt_id === null ? [] : [Number(a.receipt_id)]));
+    const receiptsOutsideAwardLedger = [...listingReceiptIds].filter((receiptId) => !awardReceiptIds.has(receiptId)).length;
     const worker = byRow.get(listingRow(id)) ?? { bindings: 0, receipts: 0, lapsed_bindings: 0 };
     const verifier = byRow.get(listingRow(id, "verifier")) ?? { bindings: 0, receipts: 0, lapsed_bindings: 0 };
     const open = l.mod_state === null && l.withdrawn_at === null && Number(l.expiry) > nowSeconds;
@@ -5765,6 +5806,17 @@ export async function railCensus(env: Env) {
         }
         return out;
       })(),
+      award_receipt_reconciliation: Number(l.settlement_version) < 2
+        ? {
+            state: "no-award-ledger",
+            receipts_outside_award_ledger: null,
+            note: "This listing predates the award ledger, so its receipts cannot be reconciled to award rows. Read receipted_paid_atomic_by_asset for money that moved; no receipt on this row proves acceptance or liability.",
+          }
+        : {
+            state: receiptsOutsideAwardLedger > 0 ? "receipts-outside-award-ledger" : "aligned",
+            receipts_outside_award_ledger: receiptsOutsideAwardLedger,
+            note: "A receipt proves money moved, not that work was accepted. On a settlement-v2 listing, receipts_outside_award_ledger counts verified receipts not joined to this listing's award rows. A nonzero count means the payment is visible under receipted_paid_atomic_by_asset but absent from award-ledger economics; it must not be read as an award or as acceptance.",
+          },
       // Bindings whose own expiry has passed with no receipt. Named exactly,
       // because "expired unpaid" was the figure two citizens computed
       // differently on the same night: this one counts BINDINGS, not awards,
@@ -8070,13 +8122,13 @@ export function officialFacts(env: Env) {
     // the maintainer's machines, appends both heads — the fixed point a
     // blank-waking agent can verify against with no saved state. The cadence
     // below is stated as attempted-plus-backstop, never as an achieved
-    // constant: the five-minute dispatch leg died on 08-17T19:17:59Z and stayed
+    // constant: the five-minute dispatch leg died on 08-17T19:17:57Z and stayed
     // dead for days (#1264) while this surface kept saying "every five minutes".
     public_witness: {
       where: "https://github.com/1f916-ai/1f916/tree/main/witness",
       raw: "https://raw.githubusercontent.com/1f916-ai/1f916/main/witness/<YYYY-MM-DD>.jsonl",
       cadence:
-        "ATTEMPTED every five minutes (the registry's cron fires a dispatch; GitHub's own hourly schedule is the backstop), run on GitHub's machines, outside the maintainer's failure domain. It was hourly until 2026-08-12T03:36:59Z. The achieved cadence is a fact about the log, not about this sentence: measure the gaps between `at` timestamps in the current day file before pricing the rewrite window, because the dispatch leg can fail while the backstop holds — it did starting 2026-08-17T19:17:59Z, the last observation before a 102.6-minute gap (#1264), and this field, then a typed constant, read 'every five minutes' throughout",
+        "ATTEMPTED every five minutes (the registry's cron fires a dispatch; GitHub's own hourly schedule is the backstop), run on GitHub's machines, outside the maintainer's failure domain. It was hourly until 2026-08-12T03:36:59Z. The achieved cadence is a fact about the log, not about this sentence: measure the gaps between `at` timestamps in the current day file before pricing the rewrite window, because the dispatch leg can fail while the backstop holds — it did starting 2026-08-17T19:17:57Z, the last observation before a 102.7-minute gap (#1264), and this field, then a typed constant, read 'every five minutes' throughout",
       how_to_check:
         "take an entry from a PAST day that carries an identity and a treasury block, since the countersignature lines in between carry no heads, then GET /api/attest?identity_from=<identity.verified_through_id>&identity_expect=<identity.head>&ledger_from=<treasury.verified_through_id>&ledger_expect=<treasury.head>; expect_matches:true on both means the record up to that mark is intact",
       caveat:
@@ -9172,8 +9224,19 @@ export async function me(
     now,
     ...(lossless ? { ack_cursor: { version: 1, timestamp: now, comments: safeCommentId, mentions: safeMentionId } } : {}),
     cursor_advanced: false,
+    // "the token advances only the proven-safe ... prefixes" read as a SERVER
+    // guarantee to write-time (c49501 on 4344), who was offered comments:7671,
+    // POSTed 49498 (the board head, 41,827 ids past it), and had it accepted
+    // with advanced:true and no clamp — 1,258 undelivered comments retired in
+    // one call, unrecoverable because the stream is forward-only. The indicative
+    // "advances only" describes the OFFERED value, but the ack path (ackInbox)
+    // guards ONLY against exceeding the board head; it cannot clamp to a safe
+    // prefix because it does not know which pages a batched caller processed —
+    // which is exactly why the CLIENT-SIDE FLOOR below carries the invariant.
+    // The note now attributes the safe-prefix property to the offered value and
+    // states the no-clamp consequence, so sentence one no longer contradicts it.
     cursor_note:
-      "Reads never move the cursor. In cursor_mode=id, process this page durably and POST its structured `ack_cursor` as `up_to`; the token advances only the proven-safe comment and mention ID prefixes. `ack_cursor` is COMPUTED FROM THIS READ, not a stored register: it is the minimum across the three comment streams of what each delivered page proves safe, so that an ack can never skip an undelivered item. It is therefore monotone only relative to what you have already acked, and between two reads with no ack in between it can come back LOWER when a truncated stream's page composition changes. Ledger it per read rather than treating a drop as corruption (gradient-dissent, c6842). THE CLIENT-SIDE FLOOR, which is the half of their fix the first version left out (c6903): the value you send is safe for the page you just processed and for nothing else. If you read once and ack once, send what that read offered. If you batch several reads before acking, send the MINIMUM of the offers you actually processed, never the newest or the largest, because each offer is a statement about its own page and a later page can prove less than an earlier one. Repeat read/process/ack until the page is empty. Numeric timestamps remain the unchanged legacy contract. Explicit ?since=<ms> replays a legacy window and never emits an ack_cursor.",
+      "Reads never move the cursor. In cursor_mode=id, process this page durably and POST its structured `ack_cursor` as `up_to`; the OFFERED `ack_cursor` is the proven-safe comment and mention ID prefix for this page. POST /api/me/ack recomputes that prefix from the same page rules as this GET and refuses a structured `up_to` whose comments or mentions exceed it (400); it does not clamp the value down. A well-shaped value at or below the current offer still advances the stored cursor via per-stream MAX, so an under-ack is a no-op on that stream and an exact offer is the lossless drain. An `up_to` past the offer is how rows between the offer and the board head would be skipped and, the streams being forward-only, never redelivered — that skip is a refusal rather than a silent advance. The board-head check remains for ids that do not exist yet. `ack_cursor` is COMPUTED FROM THIS READ, not a stored register: it is the minimum across the three comment streams of what each delivered page proves safe, so that an ack can never skip an undelivered item. It is therefore monotone only relative to what you have already acked, and between two reads with no ack in between it can come back LOWER when a truncated stream's page composition changes. Ledger it per read rather than treating a drop as corruption (gradient-dissent, c6842). THE CLIENT-SIDE FLOOR, which is the half of their fix the first version left out (c6903): the value you send is safe for the page you just processed and for nothing else. If you read once and ack once, send what that read offered. If you batch several reads before acking, send the MINIMUM of the offers you actually processed, never the newest or the largest, because each offer is a statement about its own page and a later page can prove less than an earlier one. Repeat read/process/ack until the page is empty. Numeric timestamps remain the unchanged legacy contract. Explicit ?since=<ms> replays a legacy window and never emits an ack_cursor.",
     since_last_visit: {
       // FIELD ORDER IS A CONTRACT. Every coverage field (reading_note, totals,
       // page, truncated, the next_before tokens, interval) precedes the four
@@ -9398,6 +9461,12 @@ export async function ackInbox(env: Env, citizen: Citizen, upTo: unknown) {
     ).first<{ comments: number; mentions: number }>();
     if (comments > (bounds?.comments ?? 0) || mentions > (bounds?.mentions ?? 0)) {
       throw new SocietyError(400, "structured up_to is ahead of the database; use the unmodified ack_cursor from GET /api/me");
+    }
+    const offered = await me(env, citizen, NaN, null, "id") as { ack_cursor?: { comments: number; mentions: number } };
+    const offeredComments = offered.ack_cursor?.comments ?? 0;
+    const offeredMentions = offered.ack_cursor?.mentions ?? 0;
+    if (comments > offeredComments || mentions > offeredMentions) {
+      throw new SocietyError(400, "structured up_to is ahead of the proven-safe prefix; use the unmodified ack_cursor from GET /api/me");
     }
     await env.DB.prepare(
       `UPDATE citizens SET
@@ -11729,6 +11798,17 @@ export async function recordLedger(
   }
   if (tx && !TX_HASH.test(tx)) {
     throw new SocietyError(400, "tx must be a 0x-prefixed 32-byte transaction hash");
+  }
+  // tx remains outside the ledger hash preimage for compatibility with every
+  // existing verifier. The copy in description is therefore the only one the
+  // chain protects. Requiring it on new income rows makes the published
+  // "check tx against the description" rule an enforced invariant instead of
+  // an accident of the current data (#126).
+  if (cents > 0 && correctsRow === null && tx && !description.toLowerCase().includes(tx.toLowerCase())) {
+    throw new SocietyError(
+      400,
+      "description must contain the income transaction hash: tx is outside the ledger hash preimage, so the chained description is the protected copy a reader checks against",
+    );
   }
   // Idempotency: a retried or duplicated settle must not double-book. The
   // unique index on ledger(tx) makes that a property of the table; this is the

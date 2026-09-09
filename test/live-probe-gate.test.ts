@@ -83,3 +83,90 @@ test("the deterministic suite is the default and the live one is opt-in", () => 
   assert.match(pkg.scripts["test:live"], /LIVE_PROBES=1/, "`npm run test:live` turns them on");
   assert.ok(pkg.scripts["test:all"], "and there is one command that runs both");
 });
+
+test("the live lane does not skip on unreachability or a missing deployment marker", () => {
+  // #151 remaining: LIVE_PROBES=1 used to skip those two cases, so a green
+  // live run could mean "could not check". npm test still skips via
+  // LIVE_SKIP_REASON when the probes are off; that skip is the gate, not a hole.
+  const dir = new URL("./", import.meta.url);
+  for (const f of ["schema.test.ts", "param-home.test.ts"]) {
+    const src = readFileSync(new URL(f, dir), "utf8");
+    assert.equal(
+      /t\.skip\(`API unreachable/.test(src),
+      false,
+      `${f} still skips when the API is unreachable under LIVE_PROBES=1`,
+    );
+    assert.equal(
+      /t\.skip\(`new contract not deployed yet/.test(src),
+      false,
+      `${f} still skips when a deployment marker is missing under LIVE_PROBES=1`,
+    );
+  }
+});
+
+test("liveFetch is an anonymous origin-locked HTTPS GET paced at one per second", () => {
+  const src = readFileSync(new URL("./helpers/live.ts", import.meta.url), "utf8");
+  assert.match(src, /LIVE_ORIGIN = "https:\/\/1f916.ai"/);
+  assert.match(src, /LIVE_MIN_INTERVAL_MS = 1000/);
+  assert.match(src, /credentials: "omit"/);
+  assert.match(src, /redirect: "error"/);
+  assert.match(src, /parsed.origin !== LIVE_ORIGIN/);
+  assert.match(src, /method !== "GET"/);
+});
+
+test("a daily read-only live workflow checks the deployment, not a pull request", () => {
+  // #151 remaining: test.yml runs test:live on push/PR with continue-on-error.
+  // That still misses hours whose only commits are witness/ (paths-ignore).
+  // The daily workflow is the caller for the deployed contract.
+  const yml = readFileSync(new URL("../.github/workflows/live.yml", import.meta.url), "utf8");
+  assert.match(yml, /^name:\s*live\s*$/m);
+  assert.match(yml, /schedule:/);
+  assert.match(yml, /cron:\s*"17 6 \* \* \*"/);
+  // ANCHORED TO THE KEY, NOT MATCHED AGAINST THE FILE. Both of these were
+  // whole-file matches, and the weaker one was satisfied by this workflow's own
+  // header comment: flipping the real `persist-credentials` under `with:` to
+  // true left the guard at 6 passing, because the prose on live.yml line 11
+  // still contained the string the pattern looked for. A guard a comment can
+  // satisfy is a guard that reports green while the thing it names is broken.
+  //
+  // `permissions:` is pinned at column 0 so an indented copy cannot stand in
+  // for the top-level key: a `run: |` block echoing the same two lines WAS
+  // enough to hide a `contents: write`, measured before this change.
+  //
+  // KILLING MUTATION for each: change only the setting in
+  // .github/workflows/live.yml, leave every comment in place, and this test
+  // must go red. If it stays green the anchor has come loose again.
+  assert.match(yml, /^permissions:\n\s+contents:\s*read\s*$/m);
+  assert.match(yml, /^\s+with:\n\s+persist-credentials:\s*false\s*$/m);
+  assert.match(yml, /timeout-minutes:\s*30/);
+  assert.match(yml, /concurrency:\s*\n\s*group:\s*live/);
+  assert.match(yml, /run:\s*npm run test:live/);
+  assert.equal(/run:\s*npm test\b/.test(yml), false, "the daily live lane must not run the deterministic suite as its verdict");
+  assert.match(yml, /uses:\s*actions\/checkout@[0-9a-f]{40}/);
+  assert.match(yml, /uses:\s*actions\/setup-node@[0-9a-f]{40}/);
+  assert.equal(/uses:\s*actions\/checkout@v\d/.test(yml), false, "checkout must be pinned to a commit, not a floating tag");
+  assert.equal(/uses:\s*actions\/setup-node@v\d/.test(yml), false, "setup-node must be pinned to a commit, not a floating tag");
+  assert.match(yml, /currently deployed service/);
+});
+
+test("the live-probe inventory is the three files that call liveFetch", () => {
+  // #151 remaining: a mechanical inventory of production probes. Helper-lock
+  // tests import liveFetch to stub fetch; they do not read the deployment.
+  // A new liveFetch import outside this list is an unlisted probe until the
+  // list moves with it. The physical move under test/live/ is a later slice.
+  const dir = new URL("./", import.meta.url);
+  const callers: string[] = [];
+  for (const f of testFiles(dir)) {
+    if (f === "helpers/live.ts") continue;
+    if (f === "live-fetch-lock.test.ts") continue;
+    if (f === "live-probe-gate.test.ts") continue;
+    const src = readFileSync(new URL(f, dir), "utf8");
+    if (!/from "\.\/helpers\/live\.ts"/.test(src)) continue;
+    if (/(?<![.\w])liveFetch\s*\(/.test(src)) callers.push(f);
+  }
+  assert.deepEqual(
+    callers.sort(),
+    ["ledger-tx-migration.test.ts", "param-home.test.ts", "schema.test.ts"],
+    `liveFetch callers changed: ${callers.join(", ")}`,
+  );
+});

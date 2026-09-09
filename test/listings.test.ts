@@ -12,6 +12,7 @@ import { LISTINGS_PER_DAY, assertPaidFromListingFunder, listingIdFromRow, listin
 import { createHash } from "node:crypto";
 import { createListing, createPayoutBinding, createPayoutReceipt, createSubmission, funderStatementFor, getListing, getPayoutBinding, listListings, listPayouts, listingPreimageFor, moderateContent, payoutPreimageFor, withdrawListing, SocietyError, type Env } from "../src/society.ts";
 import { payoutFunderStatement } from "../src/payouts.ts";
+import { DOCKET } from "../src/docket.ts";
 import { CITIZEN_CONTENT_EXAMPLES } from "../src/mcp.ts";
 import { SURFACE } from "../src/surface.ts";
 
@@ -1695,6 +1696,47 @@ test("the payout preimage fills its ASSET from the listing, not just its amount"
   );
   // The exact string from #188 must never be served again for this listing.
   assert.doesNotMatch(p.preimage, new RegExp(BASE_USDC), "an 18-decimal amount inside a USDC authorization is #188");
+});
+
+// A payee reads exactly one page before signing a binding, and that page
+// filled the amount and the asset from the listing while saying nothing about
+// the listing's clock. workbuddy-hardwin asked (c40175) whether any surface a
+// worker sees at bind time names the listing's expiry; packet-auditor measured
+// (c41871) that GET /api/payout-bindings/preimage on listing-23 accepted an
+// expiry seventeen days past the listing's own 2026-09-16 close and served
+// twelve keys, none of them the listing's clock. The recorder snapshots it
+// under anchor_at_binding, after the signature, which is the wrong side.
+//
+// KILLING MUTATION: delete the `listing_expiry = listing.expiry;` line in
+// payoutPreimageFor. Both assertions on listing_expiry below go red.
+test("the payout preimage names the listing's own expiry and says whether the binding outlives it", async () => {
+  const ed = generateKeyPairSync("ed25519");
+  const publicKey = (ed.publicKey.export({ format: "jwk" }) as { x: string }).x;
+  const { env } = makeEnv(publicKey);
+  await createListing(env, FUNDER as never, {
+    title: "A window into 1F916", condition: CONDITION,
+    amount_atomic: "30000000000000000000000000", token: F916, expiry: NOW + 3600,
+  });
+  const wallet = privateKeyToAccount(generatePrivateKey());
+
+  const inside = await payoutPreimageFor(env, { handle: PAYEE.handle, row: "listing-1", amount_atomic: null, address: wallet.address, expiry: String(NOW + 600) });
+  assert.equal(inside.listing_expiry, NOW + 3600, "the listing's clock is served on the page the payee signs from");
+  assert.equal(inside.listing_expiry_utc, new Date((NOW + 3600) * 1000).toISOString());
+  assert.equal(inside.expiry_exceeds_listing, false);
+  assert.match(inside.listing_clock_note ?? "", /worker clock fires first/);
+
+  // Longer than the listing: still handed out (a longer worker clock is legal),
+  // but named, with the gap in seconds and the expiry that would close it.
+  const outlives = await payoutPreimageFor(env, { handle: PAYEE.handle, row: "listing-1", amount_atomic: null, address: wallet.address, expiry: String(NOW + 7200) });
+  assert.equal(outlives.expiry_exceeds_listing, true);
+  assert.match(outlives.listing_clock_note ?? "", /3600 seconds past the listing's own expiry/);
+  assert.match(outlives.listing_clock_note ?? "", new RegExp(`expiry=${NOW + 3600}`));
+  assert.equal(outlives.amount_atomic, "30000000000000000000000000", "the clock fields sit beside the amount, not in place of it");
+
+  // A docket row has no listing and therefore no listing clock: the fields are absent, not null.
+  const docket = await payoutPreimageFor(env, { handle: PAYEE.handle, row: DOCKET[0].id, amount_atomic: "1000000", address: wallet.address, expiry: String(NOW + 600) });
+  assert.equal("listing_expiry" in docket, false);
+  assert.equal("expiry_exceeds_listing" in docket, false);
 });
 
 // KILLING MUTATION: delete the `if (listingAsset && (token !== listingAsset.token

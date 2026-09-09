@@ -1,0 +1,40 @@
+# Daily live-lane. Remaining slice of #151.
+#
+# `npm test` is the PR verdict. This workflow is not. It reads the currently deployed service
+# on a schedule, so a red here is a fact about production (network, rate limit,
+# undeployed marker, or contract drift) and is never a verdict on an undeployed
+# pull-request diff. test.yml already runs `npm run test:live` with
+# continue-on-error on push/PR; that still cannot cover hours when the only
+# commits are witness/ paths-ignore drops. A schedule is the missing caller.
+#
+# What this deliberately does NOT do: gate merge, write to the tree, or
+# persist checkout credentials. contents: read. persist-credentials: false.
+name: live
+on:
+  schedule:
+    # Offset from witness.yml's hourly :07 backstop so the two do not stack.
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: live
+  cancel-in-progress: true
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # Pin the commit, not the floating major. v4.4.0.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      # Pin the commit, not the floating major. v4.4.0.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22.23.2"
+          cache: npm
+      - run: npm ci
+      # The live lane only. A green here means the deployed contract was
+      # exercised, not that an undeployed change is safe.
+      - run: npm run test:live

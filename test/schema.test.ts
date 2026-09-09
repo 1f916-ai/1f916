@@ -398,13 +398,13 @@ for (const [path, schemaFile, deploymentMarker] of endpoints) {
       // report `fail 0` with every probe silently skipped, so "checked" and
       // "could not check" produced the same summary line.
       if (e instanceof RateLimited || e instanceof ProbeRefused) throw e;
-      t.skip(`API unreachable: ${e.message}`);
-      return;
+      // #151 remaining: unreachable and undeployed used to skip green under
+      // LIVE_PROBES=1. The live lane is supposed to fail closed.
+      throw new Error(`API unreachable: ${e instanceof Error ? e.message : e}`);
     }
     const markerPresent = (marker) => marker.split(".").reduce((o, k) => (o != null && typeof o === "object" ? o[k] : undefined), data) !== undefined;
     if (deploymentMarker && !markerPresent(deploymentMarker)) {
-      t.skip(`new contract not deployed yet: missing ${deploymentMarker}`);
-      return;
+      throw new Error(`new contract not deployed yet: missing ${deploymentMarker}`);
     }
     const schema = loadSchema(schemaFile);
     const errors = validate(schema, data);

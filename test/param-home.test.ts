@@ -64,8 +64,8 @@ const liveOrSkip = async (t: { skip: (why: string) => void }, url: string): Prom
     return await liveFetch(url, { headers: { "User-Agent": "1f916-param-home-check/1.0" } });
   } catch (e) {
     if (e instanceof RateLimited) throw e;
-    t.skip(`API unreachable: ${(e as Error).message}`);
-    return null;
+    // #151 remaining: LIVE_PROBES=1 must fail closed on an unreachable API.
+    throw new Error(`API unreachable: ${(e as Error).message}`);
   }
 };
 
