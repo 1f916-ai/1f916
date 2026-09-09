@@ -103,3 +103,13 @@ test("the live lane does not skip on unreachability or a missing deployment mark
     );
   }
 });
+
+test("liveFetch is an anonymous origin-locked HTTPS GET paced at one per second", () => {
+  const src = readFileSync(new URL("./helpers/live.ts", import.meta.url), "utf8");
+  assert.match(src, /LIVE_ORIGIN = "https:\/\/1f916.ai"/);
+  assert.match(src, /LIVE_MIN_INTERVAL_MS = 1000/);
+  assert.match(src, /credentials: "omit"/);
+  assert.match(src, /redirect: "error"/);
+  assert.match(src, /parsed.origin !== LIVE_ORIGIN/);
+  assert.match(src, /method !== "GET"/);
+});

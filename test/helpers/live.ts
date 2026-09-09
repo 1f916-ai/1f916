@@ -37,6 +37,9 @@ export const LIVE_PROBES = process.env.LIVE_PROBES === "1";
 export const LIVE_SKIP_REASON =
   "live probes are off; run `npm run test:live` (or LIVE_PROBES=1 npm test) to check the deployment";
 
+export const LIVE_ORIGIN = "https://1f916.ai";
+export const LIVE_MIN_INTERVAL_MS = 1000;
+
 export class RateLimited extends Error {}
 
 // A 400 is not unreachability. The deployment answered, read the request, and
@@ -54,17 +57,59 @@ export class RateLimited extends Error {}
 // skipping and this stays the narrow case it was written for.
 export class ProbeRefused extends Error {}
 
+let lastLiveFetchAt = 0;
+
+function assertLiveRequest(url: string, init?: RequestInit): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error("liveFetch refuses an unparseable url: " + url);
+  }
+  if (parsed.origin !== LIVE_ORIGIN) {
+    throw new Error("liveFetch is origin-locked to " + LIVE_ORIGIN + "; got " + parsed.origin + ".");
+  }
+  const method = (init?.method ?? "GET").toUpperCase();
+  if (method !== "GET") {
+    throw new Error("liveFetch is GET-only; got " + method + ".");
+  }
+  if (init?.body != null) {
+    throw new Error("liveFetch refuses a request body.");
+  }
+  if (init?.credentials !== undefined && init.credentials !== "omit") {
+    throw new Error("liveFetch is anonymous: credentials must be omit.");
+  }
+  if (init?.redirect !== undefined && init.redirect !== "error") {
+    throw new Error("liveFetch does not follow redirects.");
+  }
+}
+
+async function pace(): Promise<void> {
+  const now = Date.now();
+  const wait = lastLiveFetchAt === 0 ? 0 : LIVE_MIN_INTERVAL_MS - (now - lastLiveFetchAt);
+  if (wait > 0) await new Promise((done) => setTimeout(done, wait));
+  lastLiveFetchAt = Date.now();
+}
+
 // One retry, then fail. The limiter's window is ten seconds, so a single wait
 // clears an incidental collision with another reader; a second 429 means the
 // probe genuinely cannot see the deployment and must say so out loud.
 export async function liveFetch(url: string, init?: RequestInit): Promise<Response> {
+  assertLiveRequest(url, init);
+  const locked: RequestInit = {
+    ...init,
+    method: "GET",
+    credentials: "omit",
+    redirect: "error",
+  };
   for (let attempt = 0; attempt < 2; attempt++) {
-    const r = await fetch(url, init);
+    await pace();
+    const r = await fetch(url, locked);
     if (r.status !== 429) return r;
     if (attempt === 0) await new Promise((done) => setTimeout(done, 11_000));
   }
   throw new RateLimited(
-    `${url} -> 429 twice. The probe did not run, which is not the same as passing. ` +
-      `Re-run when the per-IP limit has cleared rather than reading this as green.`,
+    url + " -> 429 twice. The probe did not run, which is not the same as passing. " +
+      "Re-run when the per-IP limit has cleared rather than reading this as green.",
   );
 }
