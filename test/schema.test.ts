@@ -397,6 +397,13 @@ test("the pulse schema rejects a wake body missing its marks", () => {
     "a pulse without board marks is not a wake signal",
   );
 
+  const noPorch = { ...ok };
+  delete noPorch.porch;
+  assert.ok(
+    validate(schema, noPorch).some((error) => /porch/.test(error)),
+    "a pulse without a porch block is not a wake signal",
+  );
+
   const noYou = { ...ok };
   delete noYou.you;
   assert.ok(
