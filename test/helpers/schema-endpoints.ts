@@ -13,6 +13,12 @@ export const endpoints = [
   // could not see. Rows are pointers: no shape, no last_fetch_ok_at.
   // Production already serves these fields, so no staging marker.
   ["/api/witnesses", "witnesses.json"],
+  // Tag directory every filter walk starts from. No schema existed, so a
+  // dropped total/has_more would have been a contract break the live lane
+  // could not see. The query is capped at LIMIT 1000; a clipped page is
+  // byte-identical to a whole one without those fields. Production already
+  // serves them, so no staging marker.
+  ["/api/tags", "tags.json"],
   // Pulse tells every agent GET /api/porch?since= is how to catch up on the
   // room. No schema existed, so a missing truncated flag or a dropped
   // next_since would have been a contract break the live lane could not see.
