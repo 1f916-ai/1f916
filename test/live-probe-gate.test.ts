@@ -156,7 +156,7 @@ test("the live-probe inventory is the three files that call liveFetch", () => {
   // #151 remaining: a mechanical inventory of production probes. Helper-lock
   // tests import liveFetch to stub fetch; they do not read the deployment.
   // A new liveFetch import outside this list is an unlisted probe until the
-  // list moves with it. The physical move under test/live/ is a this slice.
+  // list moves with it. The physical move under test/live/ is this slice.
   const dir = new URL("./", import.meta.url);
   const callers: string[] = [];
   for (const f of testFiles(dir)) {
@@ -171,5 +171,26 @@ test("the live-probe inventory is the three files that call liveFetch", () => {
     callers.sort(),
     ["live/ledger-tx-migration.test.ts", "live/param-home.test.ts", "live/schema.test.ts"],
     `liveFetch callers changed: ${callers.join(", ")}`,
+  );
+});
+
+
+test("every .test.ts file sits in the deterministic lane or the live lane", () => {
+  // Narrowing npm test to test/*.test.ts and test:live to test/live/*.test.ts
+  // makes any other subdirectory invisible to both lanes. A failing file at
+  // test/sub/zz-misfiled.test.ts would keep both suites green.
+  const dir = new URL("./", import.meta.url);
+  const misfiled: string[] = [];
+  for (const f of testFiles(dir)) {
+    if (!f.endsWith(".test.ts")) continue;
+    const slash = f.lastIndexOf("/");
+    if (slash === -1) continue; // directly under test/
+    const parent = f.slice(0, slash);
+    if (parent !== "live") misfiled.push(f);
+  }
+  assert.deepEqual(
+    misfiled,
+    [],
+    `these .test.ts files sit outside test/ and test/live/, so neither npm test nor test:live will run them: ${misfiled.join(", ")}`,
   );
 });

@@ -19,6 +19,7 @@ import { join } from "node:path";
 import { docket } from "../src/docket.ts";
 import { provenance } from "../src/provenance.ts";
 import { validate } from "./helpers/json-schema.ts";
+import { endpoints } from "./helpers/schema-endpoints.ts";
 
 const SCHEMA_DIR = join(import.meta.dirname, "..", "schemas");
 
@@ -364,4 +365,28 @@ test("the treasury's spending policy exists and holds its constitutional lines",
   // the assets block already uses tier for the KIND of holding.
   const policy = src.slice(src.indexOf("spending_policy: {"), src.indexOf("wallet: {", src.indexOf("spending_policy: {")));
   assert.ok(!/\btier\b/i.test(policy.replace(/tier for the KIND/i, "")), "spending_policy must not reuse the assets block's word");
+});
+
+test("every deployment marker is a field its schema actually requires", () => {
+  // A marker is the switch that decides whether a live probe runs at all, so a
+  // marker naming a field the schema does not require is a probe that can stage
+  // itself off forever, or one that runs against a deployment older than the
+  // contract. Both read as green. This checks the half that is checkable: the
+  // marker is a required top-level property of the schema it gates.
+  //
+  // KILLING MUTATION: point any marker at a field not in the schema's
+  // `required` list -> red.
+  for (const [path, schemaFile, deploymentMarker] of endpoints) {
+    if (!deploymentMarker || deploymentMarker.includes(".")) continue;
+    const schema = loadSchema(schemaFile);
+    // Required, not merely declared. A marker the schema does not require is a
+    // switch that can turn a probe off against a contract nothing enforces,
+    // which is how /api/events?since=0 came to validate against a schema that
+    // would have accepted a response missing every field the probe was added
+    // for.
+    assert.ok(
+      Array.isArray(schema.required) && schema.required.includes(deploymentMarker),
+      `${path}: marker "${deploymentMarker}" is not a required property of ${schemaFile}`,
+    );
+  }
 });
