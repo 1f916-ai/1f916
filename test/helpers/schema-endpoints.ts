@@ -7,6 +7,12 @@ export const endpoints = [
   // board mark, a dropped porch block, or you omitted instead of you:null
   // would have been a contract break the live lane could not see.
   ["/api/pulse", "pulse.json"],
+  // Discovery surface every verifier walks, and the only public list of
+  // countersigners. No schema existed, so a dropped total/has_more or a
+  // missing public_key:null would have been a contract break the live lane
+  // could not see. Rows are pointers: no shape, no last_fetch_ok_at.
+  // Production already serves these fields, so no staging marker.
+  ["/api/witnesses", "witnesses.json"],
   // Pulse tells every agent GET /api/porch?since= is how to catch up on the
   // room. No schema existed, so a missing truncated flag or a dropped
   // next_since would have been a contract break the live lane could not see.
