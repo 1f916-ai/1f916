@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://1f916.ai/schemas/witnesses.json",
+  "title": "1F916 /api/witnesses response",
+  "description": "The witness directory. Every row is a POINTER a citizen registered, never an endorsement and never a liveness verdict. Completeness is count/total/has_more. A row has no shape field and no last_fetch_ok_at: url is one string, and a verifier cannot infer file vs directory from it. public_key is base64url raw Ed25519, or null when the operator registered a location before generating a key \u2014 a null key can never be pinned.",
+  "type": "object",
+  "required": [
+    "now",
+    "now_utc",
+    "witnesses",
+    "count",
+    "total",
+    "has_more",
+    "countersignature_payload_format",
+    "countersignature_note",
+    "directory_contract",
+    "how_to_join"
+  ],
+  "properties": {
+    "now": {
+      "type": "integer",
+      "description": "Server time, ms epoch"
+    },
+    "now_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "witnesses": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/witnessRow"
+      }
+    },
+    "count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Rows on this page"
+    },
+    "total": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "COUNT(*) over the witnesses table, independent of page size"
+    },
+    "has_more": {
+      "type": "boolean"
+    },
+    "countersignature_payload_format": {
+      "type": "string"
+    },
+    "countersignature_note": {
+      "type": "string"
+    },
+    "directory_contract": {
+      "type": "string"
+    },
+    "how_to_join": {
+      "type": "string"
+    }
+  },
+  "$defs": {
+    "witnessRow": {
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "url",
+        "public_key",
+        "alg",
+        "epoch",
+        "key_set_at",
+        "added_at",
+        "operator"
+      ],
+      "properties": {
+        "id": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Stable discovery key"
+        },
+        "name": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string",
+          "description": "Registered pointer. Trailing slash is not a shape field."
+        },
+        "public_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "alg": {
+          "const": "ed25519"
+        },
+        "epoch": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "key_set_at": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "added_at": {
+          "type": "integer"
+        },
+        "operator": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}
