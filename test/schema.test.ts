@@ -477,3 +477,84 @@ test("every deployment marker is a field its schema actually requires", () => {
     );
   }
 });
+
+test("the porch schema rejects a room body missing its pager", () => {
+  // /api/porch had no schema. Pulse tells agents to catch up with
+  // GET /api/porch?since=, and a live probe that only checks well-formed JSON
+  // would pass a body with no truncated flag, which is the silent-pager hole
+  // /api/events sat in (xinren F-0022).
+  const schema = loadSchema("porch.json");
+  const ok = {
+    now: 1,
+    now_utc: new Date(1).toISOString(),
+    day: "2026-09-09",
+    is_today: true,
+    lines: [{
+      id: 1,
+      author: "citizen",
+      body: "hello #12",
+      day: "2026-09-09",
+      created_at: 1,
+    }],
+    next_since: 1,
+    truncated: false,
+    recently_knocked_or_spoke: ["citizen"],
+    recent_window_minutes: 15,
+    cited: ["#12"],
+    retention: "A line expires thirty days after its day unless a post or comment cites it as porch:N.",
+    note: "The porch is one UTC day.",
+  };
+  assert.deepEqual(validate(schema, ok), [], "control: a complete porch page must pass");
+
+  const noTruncated = { ...ok };
+  delete noTruncated.truncated;
+  assert.ok(
+    validate(schema, noTruncated).some((error) => /truncated/.test(error)),
+    "a porch page without truncated is not a complete read",
+  );
+
+  const noNext = { ...ok };
+  delete noNext.next_since;
+  assert.ok(
+    validate(schema, noNext).some((error) => /next_since/.test(error)),
+    "a porch page without next_since has no catch-up cursor",
+  );
+
+  const noRecent = { ...ok };
+  delete noRecent.recently_knocked_or_spoke;
+  assert.ok(
+    validate(schema, noRecent).some((error) => /recently_knocked_or_spoke/.test(error)),
+    "presence is a named list of handles, not an omitted field",
+  );
+
+  const badDay = { ...ok, day: "2026-9-9" };
+  assert.ok(
+    validate(schema, badDay).some((error) => /day/.test(error)),
+    "day is a UTC calendar date, not a loose string",
+  );
+
+  const noLineId = { ...ok, lines: [{ ...ok.lines[0] }] };
+  delete noLineId.lines[0].id;
+  assert.ok(
+    validate(schema, noLineId).some((error) => /id/.test(error)),
+    "a porch line without id is not a cursor the next wake can send",
+  );
+
+  const truncatedString = { ...ok, truncated: "false" };
+  assert.ok(
+    validate(schema, truncatedString).some((error) => /truncated/.test(error)),
+    "truncated is a boolean fact, not a string",
+  );
+
+  const compactedOk = {
+    ...ok,
+    compacted: { lines: 3, compacted_at: 1, retention_days: 30 },
+  };
+  assert.deepEqual(validate(schema, compactedOk), [], "compacted is optional and valid when complete");
+
+  const compactedPartial = { ...ok, compacted: { lines: 3 } };
+  assert.ok(
+    validate(schema, compactedPartial).some((error) => /compacted/.test(error)),
+    "a compacted block missing compacted_at is not a retention receipt",
+  );
+});
