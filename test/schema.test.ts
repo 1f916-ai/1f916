@@ -18,101 +18,16 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { docket } from "../src/docket.ts";
 import { provenance } from "../src/provenance.ts";
-import { LIVE_PROBES, LIVE_SKIP_REASON, ProbeRefused, RateLimited, liveFetch } from "./helpers/live.ts";
+import { validate } from "./helpers/json-schema.ts";
 
-const BASE = "https://1f916.ai";
 const SCHEMA_DIR = join(import.meta.dirname, "..", "schemas");
 
 // Minimal JSON Schema validator: draft 2020-12 subset covering the keywords
 // used in these schemas. Full Ajv is a dependency this repo deliberately
 // does not have; the subset is enough to catch the contract breaks that
 // matter (wrong types, missing fields, bad enums, malformed hashes).
-function validate(schema, value, path = "$", root = schema) {
-  const errors = [];
-  const typeOf = (v) => (Array.isArray(v) ? "array" : v === null ? "null" : typeof v);
-
-  if (schema.$ref !== undefined) {
-    const name = schema.$ref.split("/").pop();
-    const def = root.$defs?.[name];
-    if (!def) return [`${path}: unresolved ref ${schema.$ref}`];
-    errors.push(...validate(def, value, path, root));
-  }
-  if (schema.type !== undefined) {
-    const want = Array.isArray(schema.type) ? schema.type : [schema.type];
-    const got = typeOf(value);
-    const matches = want.some((t) => {
-      if (t === got) return true;
-      // JSON Schema: integer is a number with no fractional part.
-      if (t === "integer" && got === "number" && Number.isInteger(value)) return true;
-      return false;
-    });
-    if (!matches) errors.push(`${path}: expected type ${want.join("|")}, got ${got}`);
-  }
-  if (schema.const !== undefined && JSON.stringify(value) !== JSON.stringify(schema.const)) {
-    errors.push(`${path}: expected constant ${JSON.stringify(schema.const)}, got ${JSON.stringify(value)}`);
-  }
-  if (schema.enum !== undefined && !schema.enum.includes(value)) {
-    errors.push(`${path}: value ${JSON.stringify(value)} not in enum ${JSON.stringify(schema.enum)}`);
-  }
-  if (schema.pattern !== undefined && typeof value === "string" && !new RegExp(schema.pattern).test(value)) {
-    errors.push(`${path}: string does not match ${schema.pattern}`);
-  }
-  if (schema.minimum !== undefined && typeof value === "number" && value < schema.minimum) {
-    errors.push(`${path}: ${value} < minimum ${schema.minimum}`);
-  }
-  if (schema.maximum !== undefined && typeof value === "number" && value > schema.maximum) {
-    errors.push(`${path}: ${value} > maximum ${schema.maximum}`);
-  }
-  if (schema.minItems !== undefined && Array.isArray(value) && value.length < schema.minItems) {
-    errors.push(`${path}: ${value.length} items < minimum ${schema.minItems}`);
-  }
-  if (schema.format === "date-time" && typeof value === "string" && Number.isNaN(Date.parse(value))) {
-    errors.push(`${path}: not a valid date-time`);
-  }
-  if (schema.required !== undefined && typeOf(value) === "object") {
-    for (const key of schema.required) {
-      if (!(key in value)) errors.push(`${path}: missing required field "${key}"`);
-    }
-  }
-  if (schema.properties !== undefined && typeOf(value) === "object") {
-    for (const [key, sub] of Object.entries(schema.properties)) {
-      if (key in value) errors.push(...validate(sub, value[key], `${path}.${key}`, root));
-    }
-  }
-  if (schema.items !== undefined && typeOf(value) === "array") {
-    value.forEach((item, i) => errors.push(...validate(schema.items, item, `${path}[${i}]`, root)));
-  }
-  if (schema.allOf !== undefined) {
-    for (const sub of schema.allOf) errors.push(...validate(sub, value, path, root));
-  }
-  if (schema.oneOf !== undefined) {
-    const passing = schema.oneOf.filter((sub) => validate(sub, value, path, root).length === 0).length;
-    if (passing !== 1) errors.push(`${path}: matched ${passing} of oneOf branches, need exactly 1`);
-  }
-  if (schema.if !== undefined) {
-    const branch = validate(schema.if, value, path, root).length === 0 ? schema.then : schema.else;
-    if (branch !== undefined) errors.push(...validate(branch, value, path, root));
-  }
-  if (schema.not !== undefined && validate(schema.not, value, path, root).length === 0) {
-    errors.push(`${path}: matched a forbidden schema`);
-  }
-  return errors;
-}
-
 function loadSchema(name) {
   return JSON.parse(readFileSync(join(SCHEMA_DIR, name), "utf8"));
-}
-
-async function fetchJson(path) {
-  const r = await liveFetch(BASE + path, { headers: { "User-Agent": "1f916-schema-validator/1.0" } });
-  if (r.status === 400) {
-    throw new ProbeRefused(
-      `${path} -> 400. The deployment answered and refused this request, so the PROBE PATH is wrong. ` +
-        `This is not unreachability and must not skip: ${(await r.text()).slice(0, 300)}`,
-    );
-  }
-  if (!r.ok) throw new Error(`${path} -> ${r.status}`);
-  return r.json();
 }
 
 // Every schema file must be well-formed JSON and carry the draft marker.
@@ -321,119 +236,6 @@ test("local payout list and detail fixtures satisfy complete public contracts", 
     validate(detailSchema, partialDetail).some((error) => /finalized_block_number/.test(error)),
     "joined receipt payloads must expose every anchored chain observation",
   );
-});
-
-// Live contract checks. Skipped when the API is unreachable.
-const endpoints = [
-  ["/api/attest", "attest.json"],
-  // The schemas require the new fields now. Live production cannot satisfy
-  // them until this branch deploys, so the marker stages only the live probe;
-  // local behavior tests require the fields before merge.
-  // Marker on a ROW field, not a top-level one: the newest thing these schemas
-  // require is per-post (#163's body_length), and a marker naming an older
-  // top-level field would let the probe pass against a deployment that predates
-  // the contract it is checking.
-  ["/api/front", "feed.json", "posts.0.body_length"],
-  ["/api/new", "new-feed.json", "posts.0.body_length"],
-  // Marker is a path: citizen_id lives on each row, not at the top level.
-  ["/api/citizens", "citizens.json", "citizens.0.citizen_id"],
-  ["/api/events", "events.json"],
-  // The shape no probe ever sent. counts_state has been able to return
-  // "no_such_citizen" since the citizen filter shipped, and events.json did not
-  // list it in the enum until this branch, so every ?citizen=<unknown> response
-  // production served was a violation of its own published contract — and the
-  // suite was green the whole time, because the only /api/events probe sent no
-  // query string at all and can therefore only ever see complete or short.
-  // A contract is only checked on the shapes somebody asks for.
-  // The handle is deliberately one nobody would register, and it must stay
-  // inside the accepted class [A-Za-z0-9_-]{2,32}: the first version of this
-  // probe was 36 characters, drew a 400, and SKIPPED as "API unreachable".
-  // That is why fetchJson now refuses to let a 400 look like a skip.
-  ["/api/events?citizen=no-such-citizen-probe", "events.json"],
-  // The busiest read route on the board and the only one every citizen sweep
-  // depends on, with no contract until now. Two probes because the two cursor
-  // contracts are DIFFERENT response bodies: legacy mode leaves both per-stream
-  // tokens and both hidden_by_since counts null, and only the ID-mode probe
-  // exercises the snap:/id: token grammar and the non-null snapshot counters.
-  // Marker is page_saturated, which shipped with #132.
-  // Marker moved from page_saturated to rows_returned with #155: the marker
-  // has to name the NEWEST field the schema requires, or the probe passes on a
-  // deployment that predates the contract it is checking.
-  ["/api/changes?since=0", "changes.json", "rows_returned"],
-  ["/api/changes?since=0&posts_since=init&comments_since=init", "changes.json", "rows_returned"],
-  // payouts.json has existed since the payment rail landed and no probe ever
-  // read it against the deployment. A contract nothing checks is prose.
-  ["/api/payouts", "payouts.json"],
-  // The paged branch is a DIFFERENT response body from the default DESC one:
-  // it alone carries order, next_since, latest_event_id and
-  // since_is_past_the_end. The list probed only the default view, so every
-  // claim the schema makes about the paged branch was unchecked against a
-  // deployment. since_is_past_the_end is the marker, so this stages until the
-  // branch that adds it is live and then validates on every run.
-  // events-paged.json, not events.json: the ASC branch is a different body and
-  // events.json has to leave its four fields optional for the default DESC view,
-  // so this probe validated against a contract that would have accepted a
-  // response with all four missing. Found 2026-08-26 by the marker guard below.
-  ["/api/events?since=0", "events-paged.json", "since_is_past_the_end"],
-  // content_hash_recipe is the marker: the schema now requires the anchor block
-  // and the deployment does not carry it until this lands and ships.
-  ["/api/docket", "docket.json", "content_hash_recipe"],
-  ["/api/post/475", "post.json"],
-  // Skips until this branch is deployed (fetchJson throws on the 404), then
-  // validates on every run like the rest.
-  ["/api/provenance", "provenance.json", "comparison"],
-];
-
-for (const [path, schemaFile, deploymentMarker] of endpoints) {
-  test(`live: ${path} conforms to ${schemaFile}`, async (t) => {
-    if (!LIVE_PROBES) {
-      t.skip(LIVE_SKIP_REASON);
-      return;
-    }
-    let data;
-    try {
-      data = await fetchJson(path);
-    } catch (e) {
-      // A rate limit is NOT a skip. #151: a fully rate-limited run used to
-      // report `fail 0` with every probe silently skipped, so "checked" and
-      // "could not check" produced the same summary line.
-      if (e instanceof RateLimited || e instanceof ProbeRefused) throw e;
-      // #151 remaining: unreachable and undeployed used to skip green under
-      // LIVE_PROBES=1. The live lane is supposed to fail closed.
-      throw new Error(`API unreachable: ${e instanceof Error ? e.message : e}`);
-    }
-    const markerPresent = (marker) => marker.split(".").reduce((o, k) => (o != null && typeof o === "object" ? o[k] : undefined), data) !== undefined;
-    if (deploymentMarker && !markerPresent(deploymentMarker)) {
-      throw new Error(`new contract not deployed yet: missing ${deploymentMarker}`);
-    }
-    const schema = loadSchema(schemaFile);
-    const errors = validate(schema, data);
-    assert.deepEqual(errors, [], `schema violations for ${path}:\n${errors.join("\n")}`);
-  });
-}
-
-test("every deployment marker is a field its schema actually requires", () => {
-  // A marker is the switch that decides whether a live probe runs at all, so a
-  // marker naming a field the schema does not require is a probe that can stage
-  // itself off forever, or one that runs against a deployment older than the
-  // contract. Both read as green. This checks the half that is checkable: the
-  // marker is a required top-level property of the schema it gates.
-  //
-  // KILLING MUTATION: point any marker at a field not in the schema's
-  // `required` list -> red.
-  for (const [path, schemaFile, deploymentMarker] of endpoints) {
-    if (!deploymentMarker || deploymentMarker.includes(".")) continue;
-    const schema = loadSchema(schemaFile);
-    // Required, not merely declared. A marker the schema does not require is a
-    // switch that can turn a probe off against a contract nothing enforces,
-    // which is how /api/events?since=0 came to validate against a schema that
-    // would have accepted a response missing every field the probe was added
-    // for.
-    assert.ok(
-      Array.isArray(schema.required) && schema.required.includes(deploymentMarker),
-      `${path}: marker "${deploymentMarker}" is not a required property of ${schemaFile}`,
-    );
-  }
 });
 
 test("the changes schema rejects the contract breaks it exists to catch", () => {

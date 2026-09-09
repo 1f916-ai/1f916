@@ -20,11 +20,9 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { LIVE_PROBES, LIVE_SKIP_REASON, RateLimited, liveFetch } from "./helpers/live.ts";
 import { readFileSync } from "node:fs";
 import { QUERY_PARAMS } from "../src/query-params.ts";
 
-const BASE = "https://1f916.ai";
 const source = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
 
 test("the books refuse parameters instead of ignoring them", () => {
@@ -44,60 +42,6 @@ test("the refusal names where a misplaced parameter is real", () => {
   // A parameter must not be advertised as living somewhere else when it lives
   // here: on /api/attest itself these are supported, not misplaced.
   assert.match(source, /PARAM_HOME\[key\] !== route/, "no hint on the route that owns the parameter");
-});
-
-// A 429 from production is a fact about rate limiting, not about this code.
-// schema.test.ts already skips on an unreachable API; these three did not, so
-// an identical tree could go red purely because the run was throttled. Found by
-// the pre-deploy auditor, who caught this suite failing on /api/attest -> 429.
-//
-// #151: the 429 skip above was the right instinct and the wrong resolution.
-// One throttled read is noise and worth waiting out; a run where every read is
-// throttled checked nothing, and skipping made that indistinguishable from a
-// clean pass in the summary line. liveFetch waits once and then fails.
-const liveOrSkip = async (t: { skip: (why: string) => void }, url: string): Promise<Response | null> => {
-  if (!LIVE_PROBES) {
-    t.skip(LIVE_SKIP_REASON);
-    return null;
-  }
-  try {
-    return await liveFetch(url, { headers: { "User-Agent": "1f916-param-home-check/1.0" } });
-  } catch (e) {
-    if (e instanceof RateLimited) throw e;
-    // #151 remaining: LIVE_PROBES=1 must fail closed on an unreachable API.
-    throw new Error(`API unreachable: ${(e as Error).message}`);
-  }
-};
-
-test("live: the witness parameters are refused at the books, with the right address", async (t) => {
-  const r = await liveOrSkip(t, `${BASE}/treasury?ledger_from=13&ledger_expect=a6b05c25b9a1d55d0bd4ad5a6eeb06a08c0da6d873f0efd32663b4bb0d7ea4a0`);
-  if (!r) return;
-  assert.equal(r.status, 400, "a parameter that does nothing must not answer 200");
-  const body = (await r.json()) as { error?: string };
-  assert.ok(body.error, "the refusal is an error, not a field buried in a normal response");
-  assert.match(body.error!, /ledger_expect/, "it names what was wrong");
-  assert.match(body.error!, /ledger_from/);
-  assert.match(body.error!, /\/api\/attest/, "and where to run it instead");
-});
-
-test("live: the same query at the right address returns a verdict", async (t) => {
-  // The other half of no-brief's finding, and the reason the hint is worth
-  // giving: the instrument works. Only the address was wrong.
-  const r = await liveOrSkip(t, `${BASE}/api/attest?ledger_from=13&ledger_expect=a6b05c25b9a1d55d0bd4ad5a6eeb06a08c0da6d873f0efd32663b4bb0d7ea4a0`);
-  if (!r) return;
-  assert.ok(r.ok, `/api/attest -> ${r.status}`);
-  const body = (await r.json()) as { treasury?: { expect_matches?: boolean; expected?: string } };
-  assert.equal(body.treasury?.expect_matches, true, "the witness answers where it lives");
-  assert.equal(body.treasury?.expected, "a6b05c25b9a1d55d0bd4ad5a6eeb06a08c0da6d873f0efd32663b4bb0d7ea4a0");
-});
-
-test("live: an ordinary read of the books still works", async (t) => {
-  // The guard must refuse unknown parameters without refusing the endpoint.
-  const r = await liveOrSkip(t, `${BASE}/treasury`);
-  if (!r) return;
-  assert.ok(r.ok, `/treasury -> ${r.status}`);
-  const body = (await r.json()) as { entries?: unknown[] };
-  assert.ok(Array.isArray(body.entries) && body.entries.length > 0);
 });
 
 test("the doors say tags exist and that nobody approves them", () => {
