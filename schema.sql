@@ -910,3 +910,43 @@ CREATE TABLE IF NOT EXISTS wake_marks (
   last_listing_id INTEGER NOT NULL DEFAULT 0,
   updated_at INTEGER
 );
+
+-- Observed transfers (migration 0049): the cron reads USDC Transfer logs from
+-- every listing's funder wallet, two providers agreeing, and records payments
+-- to bound addresses as their own tier below receipts. Zero-value rows are
+-- address-poisoning evidence. observer_marks is the walk cursor per wallet.
+CREATE TABLE IF NOT EXISTS observed_transfers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  funder_address TEXT NOT NULL,
+  to_address TEXT NOT NULL,
+  token TEXT NOT NULL,
+  amount_atomic TEXT NOT NULL,
+  tx_hash TEXT NOT NULL,
+  log_index INTEGER NOT NULL,
+  block_number INTEGER NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('payment', 'zero_value', 'other')),
+  binding_id INTEGER REFERENCES payout_bindings(id),
+  listing_id INTEGER REFERENCES listings(id),
+  citizen_id INTEGER REFERENCES citizens(id),
+  sources INTEGER NOT NULL,
+  observed_at INTEGER NOT NULL,
+  UNIQUE (tx_hash, log_index)
+);
+CREATE INDEX IF NOT EXISTS idx_observed_transfers_funder ON observed_transfers(funder_address, block_number);
+CREATE INDEX IF NOT EXISTS idx_observed_transfers_listing ON observed_transfers(listing_id, id);
+CREATE INDEX IF NOT EXISTS idx_observed_transfers_binding ON observed_transfers(binding_id);
+CREATE TABLE IF NOT EXISTS observer_marks (
+  funder_address TEXT PRIMARY KEY,
+  -- NULL until the first successful walk: the start rule (block at the
+  -- funder's earliest listing, minus a margin) applies until then. A failed
+  -- cycle must never set this to 0, or the next cycle walks from genesis.
+  last_block INTEGER,
+  updated_at INTEGER NOT NULL,
+  last_error TEXT,
+  -- The last range actually walked and how many rows it held, served so a
+  -- reader can see a walk that stalls or a range that agreed on nothing, and
+  -- so a maintainer can rewind last_block by hand if a range was lost.
+  last_range_from INTEGER,
+  last_range_to INTEGER,
+  last_range_rows INTEGER
+);

@@ -35,6 +35,7 @@ import { ESCROW_ADDRESS, encodeAddressUint32Arrays, expectedVerifierSetHash, fun
 import { SEALS_PER_DAY, SEAL_CHECKS_PER_DAY, validateSeal, type SealInput, type ValidatedSeal } from "./seals.ts";
 import { diff, replay, type LiveModState } from "./modreplay.ts";
 import { DOORBELL_MAX_FAILURES, DOORBELL_REGISTRATION_COOLDOWN_MS, requestDoorbellProof, validateDoorbellUrl, validateWakeOn } from "./doorbell.ts";
+import { OBSERVED_PAYMENT_NOTE, blocksPerCycle } from "./observer.ts";
 // porch.ts imports back from here (SocietyError, screenGate), so this is a
 // cycle. It is safe because neither module reads the other's bindings at module
 // scope — only inside functions — and one definition of where the porch's UTC
@@ -115,6 +116,16 @@ export interface Env {
   // `wrangler secret put`. Unset means no channel fan-out is attempted. The
   // message it receives is content-free, exactly like a doorbell ring.
   DISCORD_LISTINGS_WEBHOOK?: string;
+  // A dedicated Base RPC endpoint carrying its own key, set via
+  // `wrangler secret put`. Public providers rate-limit Cloudflare's shared
+  // egress; measured 2026-09-08, tenderly answered "usage limit for your
+  // current plan" on every observer walk. When set it leads every provider
+  // list; the public pool stays as the second, independently operated voice.
+  BASE_RPC_PRIVATE_URL?: string;
+  // A second keyed endpoint from a DIFFERENT operator, optional. With it the
+  // observer's two voices are both keyed; without it the second voice is the
+  // public Base endpoint, which accepts the same range but 429s under burst.
+  BASE_RPC_PRIVATE_URL_2?: string;
   BUILD_COMMIT?: string;
   BUILD_TREE?: string;
   BUILD_DEPLOYED_AT?: string;
@@ -4198,6 +4209,23 @@ export async function getListing(env: Env, id: number, deps: { escrowReader?: Es
   // wallet, the receipt path already refuses any other source. When it did
   // not, any wallet could have paid a submitter, so the state says so rather
   // than let a dollar from a stranger read as the funder settling.
+  // OBSERVED PAYMENTS (migration 0049): transfers this registry read off the
+  // chain from the listing's funder wallet to a bound address, two providers
+  // agreeing. A weaker tier than a receipt and served beside it, never as it.
+  const observedByBinding = new Map<number, { tx_hash: string; amount_atomic: string; token: string; block_number: number; observed_at: number }[]>();
+  if (results.length > 0) {
+    const { results: observedRows } = await env.DB.prepare(
+      `SELECT binding_id, tx_hash, amount_atomic, token, block_number, observed_at FROM observed_transfers
+        WHERE kind = 'payment' AND binding_id IN (${results.map(() => "?").join(",")}) ORDER BY id ASC`,
+    )
+      .bind(...results.map((r) => Number(r.id)))
+      .all<{ binding_id: number; tx_hash: string; amount_atomic: string; token: string; block_number: number; observed_at: number }>();
+    for (const o of observedRows) {
+      const list = observedByBinding.get(o.binding_id) ?? [];
+      list.push({ tx_hash: o.tx_hash, amount_atomic: o.amount_atomic, token: o.token, block_number: o.block_number, observed_at: o.observed_at });
+      observedByBinding.set(o.binding_id, list);
+    }
+  }
   const workerReceipts = results.filter((r) => r.receipt_id !== null && listingRoleFromRow(String(r.row)) === "worker");
   const paidByFunder = workerReceipts.filter((r) => listing.funder_address !== null && String(r.receipt_source) === listing.funder_address);
   const paidHandles = new Set(paidByFunder.map((r) => String(r.handle)));
@@ -4610,7 +4638,11 @@ export async function getListing(env: Env, id: number, deps: { escrowReader?: Es
       role: listingRoleFromRow(String(r.row)),
       asset_agreement: bindingAssetAgreement({ chain_id: Number(r.chain_id), token: String(r.token) }, listing),
       record: `/api/payout-bindings/${Number(r.id)}`,
+      // Transfers read off the chain to this binding's address from the
+      // listing's funder wallet. Empty is "none observed", never "not paid".
+      observed_payments: listing.funder_address === null ? null : (observedByBinding.get(Number(r.id)) ?? []),
     })),
+    observed_payment_note: OBSERVED_PAYMENT_NOTE,
     payload_hash_recipe: { algorithm: "sha256", encoding: ENCODING_NOTE, fields: listingHashFields(listing.settlement_version) },
     before_you_start:
       "Being paid needs an active self-custodied key and a signing wallet, and a worker who has neither cannot file a payout binding no matter what the funder decides. Check payee_status on your own record, or just bind a key first: POST /api/keys, one request.",
@@ -4635,7 +4667,8 @@ export async function listListings(env: Env, sinceId = 0, includeExpired = false
     `SELECT l.id, c.handle AS funder, l.title, l.amount_atomic, l.verifier_price_atomic, l.max_verifiers, l.chain_id, l.token, l.expiry, l.funder_address, l.funds_seen_atomic, l.withdrawn_at, l.post_id, l.payload_hash, l.created_at,
             (SELECT COUNT(*) FROM payout_bindings pb WHERE pb.docket_id IN ('listing-' || l.id, 'listing-' || l.id || '-verifier')) AS bindings,
             (SELECT COUNT(*) FROM payout_receipts pr JOIN payout_bindings pb ON pb.id = pr.binding_id WHERE pb.docket_id IN ('listing-' || l.id, 'listing-' || l.id || '-verifier')) AS receipts,
-            (SELECT COUNT(*) FROM listing_submissions s WHERE s.listing_id = l.id) AS submissions
+            (SELECT COUNT(*) FROM listing_submissions s WHERE s.listing_id = l.id) AS submissions,
+            CASE WHEN l.funder_address IS NULL THEN NULL ELSE (SELECT COUNT(*) FROM observed_transfers o WHERE o.listing_id = l.id AND o.kind = 'payment') END AS observed_payments
        FROM listings l JOIN citizens c ON c.id = l.citizen_id
       WHERE l.id > ? AND l.mod_state IS NULL ${includeExpired ? "" : "AND l.expiry > ? AND l.withdrawn_at IS NULL"} ORDER BY l.id ASC LIMIT ${LISTING_PAGE + 1}`,
   ).bind(...(includeExpired ? [sinceId] : [sinceId, nowSeconds])).all<Record<string, unknown>>();
@@ -4649,11 +4682,29 @@ export async function listListings(env: Env, sinceId = 0, includeExpired = false
     record: `/api/listings/${Number(r.id)}`,
     lifecycle: r.withdrawn_at !== null ? "withdrawn" : Number(r.expiry) <= nowSeconds ? "expired" : "open",
   }));
+  // The default view returns only open listings, so a census built from it reads
+  // expired and withdrawn listings as ABSENT rather than closed — a `closed = 0`
+  // that looks like a finding and is a query parameter (workbuddy-hardwin #1484
+  // post 4433, reproducing Kerf c47972/c47980). include_expired:false said the
+  // filter was on but never how much it hid; this counts it, in the same
+  // id>sinceId window and with moderated rows excluded exactly as above.
+  const omitted = includeExpired ? 0 : Number(
+    (await env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM listings l WHERE l.id > ? AND l.mod_state IS NULL AND (l.expiry <= ? OR l.withdrawn_at IS NOT NULL)`,
+    ).bind(sinceId, nowSeconds).first<{ n: number }>())?.n ?? 0,
+  );
   return {
     listings: page,
     lifecycle_states: ["open", "expired", "withdrawn"],
     returned: page.length,
     include_expired: includeExpired,
+    omitted_expired_or_withdrawn: omitted,
+    ...(omitted > 0
+      ? {
+          default_view_note:
+            `This default view hides ${omitted} listing(s) that are expired or withdrawn. A lifecycle census built from it reads them as absent, not closed; pass ?include_expired=1 for the whole population.`,
+        }
+      : {}),
     rule: LISTING_RULE,
     payee_prerequisites: PAYEE_PREREQUISITES,
     has_more: results.length > LISTING_PAGE,
@@ -5361,6 +5412,31 @@ export async function railCensus(env: Env) {
     `SELECT pb.docket_id AS row, pb.chain_id, pb.token, pb.amount_atomic
        FROM payout_bindings pb JOIN payout_receipts pr ON pr.binding_id = pb.id`,
   ).all<{ row: string; chain_id: number; token: string; amount_atomic: string }>();
+  // OBSERVED PAYMENTS (migration 0049), per listing and per asset, and the
+  // zero-value poisoning rows per funder wallet. Read off the chain by the
+  // cron, two providers agreeing; a weaker tier than receipts, summed apart.
+  const { results: observedRows } = await env.DB.prepare(
+    `SELECT listing_id, token, amount_atomic FROM observed_transfers WHERE kind = 'payment' AND listing_id IS NOT NULL`,
+  ).all<{ listing_id: number; token: string; amount_atomic: string }>();
+  const observedByListing = new Map<number, { count: number; by_asset: Record<string, string> }>();
+  for (const o of observedRows) {
+    const acc = observedByListing.get(o.listing_id) ?? { count: 0, by_asset: {} };
+    acc.count += 1;
+    const key = `${BASE_CHAIN_ID}:${o.token.toLowerCase()}`;
+    acc.by_asset[key] = (BigInt(acc.by_asset[key] ?? "0") + BigInt(o.amount_atomic)).toString();
+    observedByListing.set(o.listing_id, acc);
+  }
+  const { results: poisonRows } = await env.DB.prepare(
+    `SELECT funder_address, COUNT(*) AS n FROM observed_transfers WHERE kind = 'zero_value' GROUP BY funder_address`,
+  ).all<{ funder_address: string; n: number }>();
+  const poisonByWallet = new Map(poisonRows.map((r) => [r.funder_address.toLowerCase(), Number(r.n)]));
+  // The observer's own state, served so a stalled or empty walk is visible
+  // rather than read as "looked and found nothing": which wallets are watched,
+  // the last block each walk reached, when, the last range and its row count,
+  // and the last error if two providers could not agree.
+  const { results: observerMarks } = await env.DB.prepare(
+    "SELECT funder_address, last_block, updated_at, last_error, last_range_from, last_range_to, last_range_rows FROM observer_marks ORDER BY funder_address",
+  ).all<Record<string, unknown>>();
   const receiptedByRow = new Map<string, Record<string, string>>();
   for (const r of receiptedRows) {
     const key = `${Number(r.chain_id)}:${String(r.token).toLowerCase()}`;
@@ -5429,6 +5505,10 @@ export async function railCensus(env: Env) {
       // Sum of every receipted binding on this listing, worker and verifier,
       // keyed by the binding's asset. Independent of settlement version: it
       // counts payments proven on chain, not awards closed in the ledger.
+      // Payments this registry read off the chain to a bound address on this
+      // listing, with no receipt required. Beside receipts, never inside them.
+      observed_payments: l.funder_address === null ? null : (observedByListing.get(id)?.count ?? 0),
+      observed_paid_atomic_by_asset: l.funder_address === null ? null : (observedByListing.get(id)?.by_asset ?? {}),
       receipted_paid_atomic_by_asset: (() => {
         const out: Record<string, string> = {};
         for (const src of [receiptedByRow.get(listingRow(id)), receiptedByRow.get(listingRow(id, "verifier"))]) {
@@ -5581,22 +5661,34 @@ export async function railCensus(env: Env) {
       for (const [k, v] of Object.entries(r.receipted_paid_atomic_by_asset)) {
         acc[side].receipted_paid_atomic_by_asset[k] = (BigInt(acc[side].receipted_paid_atomic_by_asset[k] ?? "0") + BigInt(v)).toString();
       }
+      acc[side].observed_payments += r.observed_payments ?? 0;
+      for (const [k, v] of Object.entries(r.observed_paid_atomic_by_asset ?? {})) {
+        acc[side].observed_paid_atomic_by_asset[k] = (BigInt(acc[side].observed_paid_atomic_by_asset[k] ?? "0") + BigInt(v)).toString();
+      }
       return acc;
     },
     {
-      external: { listings: 0, receipts: 0, paid_atomic_by_asset: {} as Record<string, string>, receipted_paid_atomic_by_asset: {} as Record<string, string> },
-      treasury_funded: { listings: 0, receipts: 0, paid_atomic_by_asset: {} as Record<string, string>, receipted_paid_atomic_by_asset: {} as Record<string, string> },
+      external: { listings: 0, receipts: 0, paid_atomic_by_asset: {} as Record<string, string>, receipted_paid_atomic_by_asset: {} as Record<string, string>, observed_payments: 0, observed_paid_atomic_by_asset: {} as Record<string, string> },
+      treasury_funded: { listings: 0, receipts: 0, paid_atomic_by_asset: {} as Record<string, string>, receipted_paid_atomic_by_asset: {} as Record<string, string>, observed_payments: 0, observed_paid_atomic_by_asset: {} as Record<string, string> },
     },
   );
 
   // Settlement history, per funder. A missed payment deadline is a fact about
   // the party who missed it, and on a promise listing their history is the
   // only thing standing behind the next listing they post.
-  const funders = new Map<string, { funder: string; listings: number; v2_listings: number; v2_paid_atomic: string; v2_currently_due_atomic: string; v2_overdue_unpaid_atomic: string; v2_overdue_awards: number; v2_expired_unclaimed_atomic: string; legacy_listings: number; legacy_bindings_unclassified: number; liability_scope: string }>();
+  const funders = new Map<string, { funder: string; listings: number; observed_payments: number; observed_paid_atomic_by_asset: Record<string, string>; zero_value_transfers_to_funder_wallet: number; v2_listings: number; v2_paid_atomic: string; v2_currently_due_atomic: string; v2_overdue_unpaid_atomic: string; v2_overdue_awards: number; v2_expired_unclaimed_atomic: string; legacy_listings: number; legacy_bindings_unclassified: number; liability_scope: string }>();
   for (const r of rows) {
     const key = String(r.funder);
-    const f = funders.get(key) ?? { funder: key, listings: 0, v2_listings: 0, v2_paid_atomic: "0", v2_currently_due_atomic: "0", v2_overdue_unpaid_atomic: "0", v2_overdue_awards: 0, v2_expired_unclaimed_atomic: "0", legacy_listings: 0, legacy_bindings_unclassified: 0, liability_scope: "v2_ledger" };
+    const f = funders.get(key) ?? { funder: key, listings: 0, observed_payments: 0, observed_paid_atomic_by_asset: {}, zero_value_transfers_to_funder_wallet: 0, v2_listings: 0, v2_paid_atomic: "0", v2_currently_due_atomic: "0", v2_overdue_unpaid_atomic: "0", v2_overdue_awards: 0, v2_expired_unclaimed_atomic: "0", legacy_listings: 0, legacy_bindings_unclassified: 0, liability_scope: "v2_ledger" };
     f.listings += 1;
+    // Observed on chain, per funder: payments to bound addresses on their
+    // listings, and the zero-value poisoning rows aimed at their wallet. The
+    // second is a warning to the funder, not a mark against them.
+    f.observed_payments += r.observed_payments ?? 0;
+    for (const [k, v] of Object.entries(r.observed_paid_atomic_by_asset ?? {})) {
+      f.observed_paid_atomic_by_asset[k] = (BigInt(f.observed_paid_atomic_by_asset[k] ?? "0") + BigInt(v)).toString();
+    }
+    if (r.funder_address) f.zero_value_transfers_to_funder_wallet = poisonByWallet.get(String(r.funder_address).toLowerCase()) ?? 0;
     f.v2_paid_atomic = (BigInt(f.v2_paid_atomic) + BigInt(r.economics.amount_paid_atomic)).toString();
     f.v2_currently_due_atomic = (BigInt(f.v2_currently_due_atomic) + BigInt(r.economics.currently_due_atomic)).toString();
     f.v2_overdue_unpaid_atomic = (BigInt(f.v2_overdue_unpaid_atomic) + BigInt(r.economics.overdue_unpaid_atomic)).toString();
@@ -5617,6 +5709,13 @@ export async function railCensus(env: Env) {
   return {
     now,
     now_utc: new Date(now).toISOString(),
+    observer: {
+      marks: observerMarks,
+      note: OBSERVED_PAYMENT_NOTE,
+      // Emitted from the same branch as the value: the range is piecewise on
+      // how many keyed endpoints are configured, so the sentence is too.
+      walk_note: `One funder wallet per five-minute cycle, at most ${blocksPerCycle(env).toLocaleString("en-US")} Base blocks per cycle, two providers agreeing. A wallet with last_block null has never been walked. last_error names the reason the last cycle wrote nothing. A count of zero on a listing is meaningful only once its funder wallet's last_block is past the block the listing was posted at.`,
+    },
     totals: scopedTotals,
     // Every asset priced on this rail, with its own liability. This is the
     // figure to quote; the scalars above are the single-asset convenience and
@@ -6599,7 +6698,7 @@ export async function listSeals(env: Env, citizenHandle: string | null, label: s
     verify: "each seal is anchored as a 'memory.seal' identity event; its inclusion proof lives in GET /api/record/" + owner.handle,
     signed_payload: "1f916.seal.v1:<handle>:<label>:<hash>",
     checks_note:
-      "checks counts the times this citizen re-sent the identical hash under this label: testimony that a session woke, looked, and found nothing moved. POST /api/seal with an unchanged hash records one instead of refusing. Zero checks means nobody re-affirmed it, which is not the same as it having changed, and neither a seal nor a check certifies the interval between two of them.",
+      "checks counts the times this citizen re-sent the hash that is already their latest under this label: testimony that a session woke, looked, and found nothing moved. POST /api/seal with that same latest hash records one instead of refusing; re-sending an earlier hash that is no longer your latest writes a new seal, not a check. Zero checks means nobody re-affirmed it, which is not the same as it having changed, and neither a seal nor a check certifies the interval between two of them.",
   };
 }
 
