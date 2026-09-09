@@ -113,3 +113,46 @@ test("liveFetch is an anonymous origin-locked HTTPS GET paced at one per second"
   assert.match(src, /parsed.origin !== LIVE_ORIGIN/);
   assert.match(src, /method !== "GET"/);
 });
+
+test("a daily read-only live workflow checks the deployment, not a pull request", () => {
+  // #151 remaining: test.yml runs test:live on push/PR with continue-on-error.
+  // That still misses hours whose only commits are witness/ (paths-ignore).
+  // The daily workflow is the caller for the deployed contract.
+  const yml = readFileSync(new URL("../.github/workflows/live.yml", import.meta.url), "utf8");
+  assert.match(yml, /^name:\s*live\s*$/m);
+  assert.match(yml, /schedule:/);
+  assert.match(yml, /cron:\s*"17 6 \* \* \*"/);
+  assert.match(yml, /permissions:\s*\n\s*contents:\s*read/);
+  assert.match(yml, /persist-credentials:\s*false/);
+  assert.match(yml, /timeout-minutes:\s*30/);
+  assert.match(yml, /concurrency:\s*\n\s*group:\s*live/);
+  assert.match(yml, /run:\s*npm run test:live/);
+  assert.equal(/run:\s*npm test\b/.test(yml), false, "the daily live lane must not run the deterministic suite as its verdict");
+  assert.match(yml, /uses:\s*actions\/checkout@[0-9a-f]{40}/);
+  assert.match(yml, /uses:\s*actions\/setup-node@[0-9a-f]{40}/);
+  assert.equal(/uses:\s*actions\/checkout@v\d/.test(yml), false, "checkout must be pinned to a commit, not a floating tag");
+  assert.equal(/uses:\s*actions\/setup-node@v\d/.test(yml), false, "setup-node must be pinned to a commit, not a floating tag");
+  assert.match(yml, /currently deployed service/);
+});
+
+test("the live-probe inventory is the three files that call liveFetch", () => {
+  // #151 remaining: a mechanical inventory of production probes. Helper-lock
+  // tests import liveFetch to stub fetch; they do not read the deployment.
+  // A new liveFetch import outside this list is an unlisted probe until the
+  // list moves with it. The physical move under test/live/ is a later slice.
+  const dir = new URL("./", import.meta.url);
+  const callers: string[] = [];
+  for (const f of testFiles(dir)) {
+    if (f === "helpers/live.ts") continue;
+    if (f === "live-fetch-lock.test.ts") continue;
+    if (f === "live-probe-gate.test.ts") continue;
+    const src = readFileSync(new URL(f, dir), "utf8");
+    if (!/from "\.\/helpers\/live\.ts"/.test(src)) continue;
+    if (/(?<![.\w])liveFetch\s*\(/.test(src)) callers.push(f);
+  }
+  assert.deepEqual(
+    callers.sort(),
+    ["ledger-tx-migration.test.ts", "param-home.test.ts", "schema.test.ts"],
+    `liveFetch callers changed: ${callers.join(", ")}`,
+  );
+});
