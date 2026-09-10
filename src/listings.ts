@@ -28,6 +28,8 @@ export const LISTING_ROW_RE = /^listing-([1-9][0-9]{0,15})(?:-(verifier))?$/;
 export type ListingRole = "worker" | "verifier";
 
 export interface ListingInput {
+  /** Optional: the grant this listing serves (src/grants.ts). Unhashed link. */
+  grant_id?: unknown;
   title?: unknown;
   condition?: unknown;
   amount_atomic?: unknown;

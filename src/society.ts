@@ -22,6 +22,7 @@ import { BINDINGS_PER_CITIZEN, RECHECK_AFTER_MS, RECHECKS_PER_CRON, bindingCount
 import { unlistedPayloads } from "./payload-gate.ts";
 import { RULES_FINGERPRINT, SCREEN_VERSION, refusalNote, refusalNotePublic, screenNote, hygieneRuleRoster, refusalRuleRoster, screenText, seatClaim, type ScreenFinding } from "./screen.ts";
 import { DOCKET, standingClaims, starterItems } from "./docket.ts";
+import { grantForListing } from "./grants.ts";
 import { FUNDS_ADVICE, LISTINGS_PER_DAY, LISTING_RULE, NEXT_ACTIONS_NOTE, PAYEE_PREREQUISITES, SUBMISSIONS_PER_DAY, TREASURY_FUNDER_MARK, assertPaidFromListingFunder, assertVerifierCapNotReached, listingIdFromRow, listingPreimage, listingRoleFromRow, listingRow, listingSnapshot, payeeNextActions, validateListing, validateSubmission, type HeldBinding, type ListingInput, type StoredListing, type SubmissionInput } from "./listings.ts";
 import {
   ADAPTER_STATUS, AUTOMATIC_CHECK_NOTE, FUNDING_MODE_NOTE, SETTLEMENT_MODE_NOTE, SUBMISSION_STATE_NOTE,
@@ -2342,7 +2343,7 @@ async function commitWithModLogReturning<T>(
 // collision retries rather than fork the chain. The window predates the seal;
 // sealing gave it a way to open. Found by GPT-5.6 Sol in independent review —
 // from outside the room that wrote it, which is the only place it was visible.
-async function commitWithIdentityEvent<T>(
+export async function commitWithIdentityEvent<T>(
   env: Env,
   // null when the act IS the log entry and there is no state row to move.
   // Declining a key is the only such act today: it records that a citizen
@@ -2953,6 +2954,10 @@ export async function createListing(
   deps: { escrowAddress?: string | null; readBalance?: typeof readBalanceTwoSource; settlementAdapter?: SettlementAdapter } = {},
 ) {
   const listing = validateListing(body, Math.floor(Date.now() / 1000), citizen.id === MAINTAINER_ID ? (env.TREASURY_ADDRESS ?? null) : null);
+  // A listing may belong to a grant (src/grants.ts). The link is checked
+  // before anything commits and stored unhashed: it is not a term of the
+  // listing and changes nothing about how the listing pays.
+  const grantId = body.grant_id === undefined || body.grant_id === null ? null : await grantForListing(env, citizen, body.grant_id);
   // Settlement v2 terms. Every listing posted from here carries them, so
   // settlement_version 2 is not optional and not a flag a funder can decline:
   // a listing with no declared cap is the thing this rail is removing.
@@ -3150,8 +3155,8 @@ export async function createListing(
                            funder_address, funder_signature, funds_seen_atomic, funds_checked_at, funds_block_number, payload_hash, commit_nonce, created_at,
                            max_awards, funding_mode, settlement_mode, automatic_check, requester_timeout_seconds, award_on_timeout, award_ttl_seconds, settlement_version,
                            submission_deadline, payable_ttl_seconds,
-                           escrow_chain_id, escrow_address, escrow_token, verifiers, escrow_verifier_deadline, escrow_claim_deadline)
-     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                           escrow_chain_id, escrow_address, escrow_token, verifiers, escrow_verifier_deadline, escrow_claim_deadline${grantId === null ? "" : ", grant_id"})
+     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?${grantId === null ? "" : ", ?"}
       WHERE (SELECT COUNT(*) FROM listings WHERE citizen_id = ? AND created_at > ?) < ?
      RETURNING id`,
   ).bind(
@@ -3168,6 +3173,7 @@ export async function createListing(
       ? null
       : JSON.stringify(settlement.verifiers.map((v) => ({ handle: v.handle, key_thumbprint: v.keyThumbprint, evm_address: v.evmAddress, cap: v.cap }))),
     settlement.escrowVerifierDeadline, settlement.escrowClaimDeadline,
+    ...(grantId === null ? [] : [grantId]),
     citizen.id, dayAgo, LISTINGS_PER_DAY,
   );
   const committed = await commitWithIdentityEvent<{ id: number }>(
@@ -6277,6 +6283,10 @@ export const DECLARED_EVENT_KINDS: readonly string[] = [
   "listing-withdrawn",
   "binding-verified",
   "binding-lapsed",
+  // Grants (src/grants.ts): every lifecycle move of a grant, and every
+  // proposal filed on one. The grant timeline is read back off these.
+  "grant",
+  "grant-proposal",
 ] as const;
 
 export function kindAgreement(

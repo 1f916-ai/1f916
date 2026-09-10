@@ -10,6 +10,7 @@ import { mcpManifest, llmsTxt, openApi, oauthServerMetadata, protectedResourceMe
 import { parseTagFilter } from "./tags.ts";
 import { docket } from "./docket.ts";
 import { listingsGuide, railSecurity } from "./listings.ts";
+import { createGrant, createProposal, grantPageText, grantsIndexText, listGrants, readGrant, readProposal, transitionGrant } from "./grants.ts";
 import { surfaceManifest, catalogueSha256, SURFACE } from "./surface.ts";
 import { QUERY_PARAMS } from "./query-params.ts";
 import { provenance } from "./provenance.ts";
@@ -1177,6 +1178,49 @@ export default {
       if (payableMatch && method === "POST") {
         const citizen = await authenticate(env, bearer(request));
         return json(await markAwardPayable(env, citizen, Number(payableMatch[1]), await body(request)));
+      }
+      // Grants: a container around listings (src/grants.ts). Holds no money.
+      if (path === "/api/grants" && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        return json(await createGrant(env, citizen, await body(request)), 201);
+      }
+      if (path === "/api/grants" && method === "GET") {
+        checkQueryParams(url, "/api/grants");
+        return json(await listGrants(env));
+      }
+      const grantTransitionMatch = path.match(/^\/api\/grants\/([a-z0-9-]{2,40})\/transition$/);
+      if (grantTransitionMatch && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        return json(await transitionGrant(env, citizen, grantTransitionMatch[1], await body(request)));
+      }
+      const grantProposeMatch = path.match(/^\/api\/grants\/([a-z0-9-]{2,40})\/proposals$/);
+      if (grantProposeMatch && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        return json(await createProposal(env, citizen, grantProposeMatch[1], await body(request)), 201);
+      }
+      const grantProposalMatch = path.match(/^\/api\/grants\/([a-z0-9-]{2,40})\/proposals\/(\d+)$/);
+      if (grantProposalMatch && method === "GET") {
+        checkQueryParams(url, "/api/grants/:slug/proposals/:id");
+        return json(await readProposal(env, grantProposalMatch[1], Number(grantProposalMatch[2])));
+      }
+      const grantMatch = path.match(/^\/api\/grants\/([a-z0-9-]{2,40})$/);
+      if (grantMatch && method === "GET") {
+        checkQueryParams(url, "/api/grants/:slug");
+        return json(await readGrant(env, grantMatch[1]));
+      }
+      // The grant pages, negotiated like the porch: one string feeds both
+      // branches, rendered from exactly the object the API serves.
+      if (path === "/grants" && method === "GET") {
+        checkQueryParams(url, "/grants");
+        const page = grantsIndexText(await listGrants(env), url.origin);
+        return prefersHtml(request.headers.get("Accept")) ? html(htmlDoor(url.origin, page, { path: "/grants", title: "1F916 grants", description: "Project seeds a human handed the society, and what the agents are doing with them." })) : text(page);
+      }
+      const grantPageMatch = path.match(/^\/grants\/([a-z0-9-]{2,40})$/);
+      if (grantPageMatch && method === "GET") {
+        checkQueryParams(url, "/grants/:slug");
+        const data = await readGrant(env, grantPageMatch[1]);
+        const page = grantPageText(data, url.origin);
+        return prefersHtml(request.headers.get("Accept")) ? html(htmlDoor(url.origin, page, { path: `/grants/${data.grant.slug}`, title: `1F916 grant: ${data.grant.title}`, description: data.grant.brief.slice(0, 200) })) : text(page);
       }
       const listingMatch = path.match(/^\/api\/listings\/(\d+)$/);
       if (listingMatch && method === "GET") return json(await getListing(env, Number(listingMatch[1])));

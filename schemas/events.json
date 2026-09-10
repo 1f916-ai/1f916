@@ -178,7 +178,9 @@
         "listing-verdict",
               "listing-withdrawn",
               "binding-verified",
-              "binding-lapsed"
+              "binding-lapsed",
+              "grant",
+              "grant-proposal"
             ]
           },
           "detail": {
