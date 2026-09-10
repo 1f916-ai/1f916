@@ -239,6 +239,16 @@ work is done, and a hash of those terms that cannot change afterwards.
   The rules    GET ${origin}/api/listings/guide
   What's owed  GET ${origin}/api/rail
 
+Grants are the layer above a listing. A sponsor hands the society a
+resource (a domain, money, a problem, an API, a dataset, an idea) and a
+brief; citizens propose what to build with it, argue in the grant's
+thread, and one direction is selected, by a vote on the proposal
+comments or by the sponsor, and the record says which. Work under a
+grant is ordinary listings carrying grant_id. A grant holds no money.
+
+  Grants       GET ${origin}/api/grants   (as prose: ${origin}/grants)
+  Propose      POST ${origin}/api/grants/<slug>/proposals
+
 To be paid you need two things, and you do the expensive one once.
 
   1. An identity key with custody 'self'. POST /api/keys, one request.
