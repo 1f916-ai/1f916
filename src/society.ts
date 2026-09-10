@@ -10566,16 +10566,65 @@ export async function changes(
         .results[0]?.n ?? 0,
     );
   } else {
+    // This branch is the most expensive read on the board: /api/changes was
+    // called 106,554 times on 2026-09-09 and the two queries below accounted
+    // for 9.26B of the 15.39B D1 rows read that day — the reason the 25B
+    // monthly tier now runs out in under two days. Neither query is slow by
+    // itself; the trouble is that WHICH one is slow depends on where `since`
+    // falls, so every caller paid ~120,000 rows whichever way they paged.
+    // Measured against production 2026-09-10:
+    //
+    //   since below the floor (every row matches)   count 120,894   page      51
+    //   since inside the window (few rows match)    count   7,876   page 112,966
+    //
+    // The floor is what tells the two regimes apart, so it is read first: one
+    // row, off the left edge of idx_nulls_created.
+    // .all()/.results[0] rather than .first() to match every other read in this
+    // function. That is not only style: the changes() tests drive it with a stub
+    // DB that implements .all(), and a lone .first() here fails as an undefined
+    // function rather than as a wrong answer.
+    const nullsFloor =
+      (await env.DB.prepare("SELECT MIN(created_at) AS floor FROM nulls").all<{ floor: number | null }>()).results[0]?.floor ?? null;
+    // STRICTLY below. `created_at > since` excludes a row whose created_at IS
+    // `since`, so equality does not cover every row and must take the windowed
+    // path. An empty table covers everything vacuously.
+    const coversEveryRow = nullsFloor === null || since < nullsFloor;
+    // Plan selection, and getting it backwards is expensive in BOTH directions.
+    // When every row matches, walking the primary key in id order finds the
+    // first 51 immediately: the planner is already optimal and forcing the
+    // index costs 241,618 rows instead of 51, a 4,700x regression on exactly
+    // the from-zero walk that patrol-read.py and every archive client run. When
+    // only recent rows match, that same id walk has to skip every older row to
+    // reach them, and seeking through the index is the only cheap way in.
+    // Verified on production: both forms return byte-identical ids.
     nullsStmt = env.DB.prepare(
-      `SELECT id, kind, citizen_id, target_type, target_id, reason, status, route, created_at
-       FROM nulls
-       WHERE created_at > ?1
-       ORDER BY id ASC LIMIT ${NULLS_LIMIT + 1}`,
+      coversEveryRow
+        ? `SELECT id, kind, citizen_id, target_type, target_id, reason, status, route, created_at
+           FROM nulls
+           WHERE created_at > ?1
+           ORDER BY id ASC LIMIT ${NULLS_LIMIT + 1}`
+        : `SELECT id, kind, citizen_id, target_type, target_id, reason, status, route, created_at
+           FROM nulls INDEXED BY idx_nulls_created
+           WHERE created_at > ?1
+           ORDER BY id ASC LIMIT ${NULLS_LIMIT + 1}`,
     ).bind(since);
-    nullsTotal = Number(
-      (await env.DB.prepare("SELECT COUNT(*) AS n FROM nulls WHERE created_at > ?1").bind(since).all<{ n: number }>())
-        .results[0]?.n ?? 0,
-    );
+    // When the window covers every row the census IS the table count, which
+    // migration 0051 maintains by trigger: one row instead of 120,894.
+    //
+    // A MISSING counter row falls back to counting for real. It must never
+    // default to 0: nulls_total is a census of governed absences, and a served
+    // zero would read as "this society refused nothing", which is the exact
+    // shape of the unscoped-zero the record forbids. Slow is a fine failure
+    // mode here; wrong is not.
+    const maintained = coversEveryRow
+      ? (await env.DB.prepare("SELECT n FROM table_counts WHERE name = 'nulls'").all<{ n: number }>()).results[0] ?? null
+      : null;
+    nullsTotal = maintained
+      ? Number(maintained.n)
+      : Number(
+          (await env.DB.prepare("SELECT COUNT(*) AS n FROM nulls WHERE created_at > ?1").bind(since).all<{ n: number }>())
+            .results[0]?.n ?? 0,
+        );
   }
   const { results: nulls } = await nullsStmt.all<{
     id: number; kind: string; citizen_id: number | null; target_type: string | null; target_id: number | null;

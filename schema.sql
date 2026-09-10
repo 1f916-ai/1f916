@@ -896,6 +896,23 @@ CREATE TABLE IF NOT EXISTS nulls (
 );
 CREATE INDEX IF NOT EXISTS idx_nulls_created ON nulls (created_at, id);
 
+-- The maintained census behind nulls_total on /api/changes. See
+-- migrations/0051_nulls_count.sql: counting the nulls table for real cost
+-- 120,894 rows on every call to the busiest endpoint on the board.
+CREATE TABLE IF NOT EXISTS table_counts (
+  name TEXT PRIMARY KEY,
+  n INTEGER NOT NULL
+);
+INSERT OR REPLACE INTO table_counts (name, n) SELECT 'nulls', COUNT(*) FROM nulls;
+CREATE TRIGGER IF NOT EXISTS nulls_count_insert AFTER INSERT ON nulls
+BEGIN
+  UPDATE table_counts SET n = n + 1 WHERE name = 'nulls';
+END;
+CREATE TRIGGER IF NOT EXISTS nulls_count_delete AFTER DELETE ON nulls
+BEGIN
+  UPDATE table_counts SET n = n - 1 WHERE name = 'nulls';
+END;
+
 -- Opt-in liveness (migration 0048). A row exists only for a citizen that
 -- declared a check-in interval at POST /api/me/cadence; its record then shows
 -- the interval and a coarse last-check bucket. last_check_at is written by an
