@@ -57,6 +57,7 @@ import {
   ackInbox,
   parseNullsCursor,
   pulse,
+  pulseMarks,
   setCadence,
   applyCommunityTag,
   tagDirectory,
@@ -900,17 +901,48 @@ export default {
         const wait = waitRaw === null ? 0 : Math.min(wholeNumberParam(url, "wait", "a whole number of seconds"), PULSE_WAIT_MAX_S);
         const ifNoneMatch = request.headers.get("If-None-Match");
         const deadline = Date.now() + wait * 1000;
+        // The hold re-checks pulseMarks — six MAX(id) reads — between steps, and
+        // only rebuilds the real pulse when a mark has actually moved or the
+        // deadline is up. The loop used to call pulse() itself every 3 seconds,
+        // so one ?wait=25 ran the whole thing nine times; with the per-citizen
+        // thread scan that was ~927,000 rows read for a single held request,
+        // and /api/pulse alone was carrying D1 25 billion rows past the
+        // included tier. The answer is unchanged: the response below is always
+        // built from a pulse() and an ETag computed after the wait, never from
+        // the marks, so the marks can only make a wake early, never wrong.
+        let marks: string | null = null;
         for (;;) {
+          // EVERY exit from this loop is taken here, immediately after a fresh
+          // pulse() — the 304 as much as the 200. That is what makes gating the
+          // wait on marks safe rather than merely cheap: a change the marks
+          // cannot see (a citizen row deleted, so the board's COUNT falls while
+          // every MAX(id) holds; the caller's own ack landing mid-hold) delays
+          // the answer to the deadline, and is then reported correctly, because
+          // the tag compared against If-None-Match was computed after the wait.
+          // Returning the pre-wait tag here instead would be a false 304.
           const data = await pulse(env, citizen);
           const etag = await pulseEtag(data);
-          const unchanged = ifNoneMatchHits(ifNoneMatch, etag);
-          if (unchanged && Date.now() + PULSE_WAIT_STEP_MS <= deadline) {
-            await new Promise((r) => setTimeout(r, PULSE_WAIT_STEP_MS));
-            continue;
-          }
           const headers = { ETag: etag, "X-Poll-Interval": String(POLL_INTERVAL_S) };
-          if (unchanged) return new Response(null, { status: 304, headers: { ...headers, "Cache-Control": "no-store" } });
-          return json({ ...data, poll_interval_s: POLL_INTERVAL_S, wait_max_s: PULSE_WAIT_MAX_S }, 200, headers);
+          if (!ifNoneMatchHits(ifNoneMatch, etag)) {
+            return json({ ...data, poll_interval_s: POLL_INTERVAL_S, wait_max_s: PULSE_WAIT_MAX_S }, 200, headers);
+          }
+          // Nothing the caller would act on has moved. Out of budget for another
+          // step — including the wait=0 default, which never sleeps at all — so
+          // this is the answer.
+          if (Date.now() + PULSE_WAIT_STEP_MS > deadline) {
+            return new Response(null, { status: 304, headers: { ...headers, "Cache-Control": "no-store" } });
+          }
+          marks = marks ?? (await pulseMarks(env));
+          // Sleep in steps, breaking out the moment a mark moves. Either way the
+          // loop goes back to the top and recomputes the real answer.
+          do {
+            await new Promise((r) => setTimeout(r, PULSE_WAIT_STEP_MS));
+            const current = await pulseMarks(env);
+            if (current !== marks) {
+              marks = current;
+              break;
+            }
+          } while (Date.now() + PULSE_WAIT_STEP_MS <= deadline);
         }
       }
       if (path === "/api/me/cadence" && method === "POST") {

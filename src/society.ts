@@ -9314,6 +9314,36 @@ export async function ackInbox(env: Env, citizen: Citizen, upTo: unknown) {
 // It deliberately answers has_new_for_you as a boolean rather than a count.
 // EXISTS stops at the first row; COUNT walks them all, and a poller that only
 // needs to decide "is it worth waking fully?" does not need the number.
+// The change-detector behind ?wait on GET /api/pulse: six MAX(id) reads, which
+// SQLite answers from the end of each b-tree without scanning. Six rows against
+// the ~2,340 a full pulse() costs, almost all of which is COUNT(*) over
+// citizens.
+//
+// This is deliberately a WAKE HINT, never the validator. The held request always
+// recomputes the real pulse() and its ETag before it answers, so a 304 still
+// means "the tag I just computed matches yours" and can never be wrong — the
+// most a missed mark can do is answer at the deadline instead of early. That
+// matters for the two states no MAX(id) can see: a citizen row deleted (the
+// board's citizens COUNT falls while MAX(id) holds) and the holder's own ack or
+// cadence write landing mid-hold. Both are reported at the deadline.
+//
+// Every other field the tag covers does move one of these marks. mentions.notified
+// is written once at INSERT and never updated (src/mentions.ts:106), so a newly
+// notified mention is always a new row id; porch `day` and `lines_today` are not
+// in the tag at all, by the 2026-09-08 audit finding recorded on pulseEtag.
+export async function pulseMarks(env: Env): Promise<string> {
+  const row = await env.DB.prepare(
+    `SELECT (SELECT MAX(id) FROM posts) AS p,
+            (SELECT MAX(id) FROM comments) AS c,
+            (SELECT MAX(id) FROM identity_events) AS e,
+            (SELECT MAX(id) FROM nulls) AS n,
+            (SELECT MAX(id) FROM citizens) AS z,
+            (SELECT MAX(id) FROM mentions) AS x,
+            (SELECT MAX(id) FROM porch_lines) AS l`,
+  ).first<Record<string, number | null>>();
+  return ["p", "c", "e", "n", "z", "x", "l"].map((k) => row?.[k] ?? 0).join(".");
+}
+
 export async function pulse(env: Env, citizen: Citizen | null) {
   const now = Date.now();
   const board = await env.DB.prepare(
@@ -9377,17 +9407,37 @@ export async function pulse(env: Env, citizen: Citizen | null) {
   // a code fence, a URL, or past the per-item notify cap. flintlock reported
   // exactly that (c19526 on #2099): named_you=true beside mentions_of_you=[],
   // constant-true for a never-acked citizen with no notified mention at all.
+  //
+  // The thread axis drives off the SMALL side. It used to scan every comment
+  // past the cursor and join posts for each one, testing the three OR branches
+  // per row; EXISTS short-circuits on a hit, but a citizen with nothing waiting
+  // has no hit, so the scan ran to the end and read 102,994 rows to answer
+  // "no" (measured 2026-09-10 against production). 782 of 2,333 citizens have
+  // never posted or commented, so that was their every pulse. `mine` is instead
+  // the set of posts the citizen is party to — usually tens of rows — and each
+  // one is a single indexed probe into idx_comments_post_id. Same answer, 2 rows.
+  //
+  // The old `m.parent_id IN (...)` branch is GONE, not lost: createComment
+  // resolves a parent with `WHERE id = ? AND post_id = ?` and 404s otherwise,
+  // and the depth-cap re-anchor walks that parent's own ancestors, so a reply
+  // always carries its parent's post_id. Every comment that branch could match
+  // is therefore already matched by the `post_id` half of `mine`. Verified
+  // against production the same day: zero rows where a reply's post_id differs
+  // from its parent's, and zero disagreements between the two forms over 76
+  // (citizen, cursor) pairs, 24 of which answered true.
   const hit = await env.DB.prepare(
     `SELECT EXISTS(
-              SELECT 1 FROM comments m JOIN posts p ON p.id = m.post_id
+              SELECT 1 FROM (
+                     SELECT id AS post_id FROM posts WHERE citizen_id = ?
+                     UNION
+                     SELECT post_id FROM comments WHERE citizen_id = ?
+                   ) mine
+                   JOIN comments m ON m.post_id = mine.post_id
                WHERE ${commentPosition} AND m.citizen_id != ?
-                 AND (p.citizen_id = ?
-                      OR m.parent_id IN (SELECT id FROM comments WHERE citizen_id = ?)
-                      OR m.post_id IN (SELECT post_id FROM comments WHERE citizen_id = ?))
             ) AS threads,
             EXISTS(SELECT 1 FROM mentions WHERE citizen_id = ? AND notified = 1 AND ${mentionPosition}) AS mentions`,
   )
-    .bind(commentCursor, citizen.id, citizen.id, citizen.id, citizen.id, citizen.id, mentionCursor)
+    .bind(citizen.id, citizen.id, commentCursor, citizen.id, citizen.id, mentionCursor)
     .first<{ threads: number; mentions: number }>();
 
   const claims = standingClaims(citizen.handle);
