@@ -10589,24 +10589,38 @@ export async function changes(
     // `since`, so equality does not cover every row and must take the windowed
     // path. An empty table covers everything vacuously.
     const coversEveryRow = nullsFloor === null || since < nullsFloor;
-    // Plan selection, and getting it backwards is expensive in BOTH directions.
-    // When every row matches, walking the primary key in id order finds the
-    // first 51 immediately: the planner is already optimal and forcing the
-    // index costs 241,618 rows instead of 51, a 4,700x regression on exactly
-    // the from-zero walk that patrol-read.py and every archive client run. When
-    // only recent rows match, that same id walk has to skip every older row to
-    // reach them, and seeking through the index is the only cheap way in.
-    // Verified on production: both forms return byte-identical ids.
+    // ONE PLAN, the planner's own. An earlier version of this branch forced
+    // idx_nulls_created whenever the window did not cover the table, on the
+    // strength of a single measurement at since=24h where that was 7x cheaper.
+    // It shipped, and per-call cost on /api/changes went UP, 105,970 -> 122,738
+    // rows. The two plans cross over, and production traffic sits on the other
+    // side of the crossing:
+    //
+    //   since       plain    INDEXED BY
+    //     1h ago  121,321           836
+    //     6h ago  119,020         5,438
+    //    24h ago  113,541        16,396
+    //    72h ago   79,779        83,920   <- crossover between 24h and 72h
+    //   168h ago   27,744       187,990
+    //   720h ago      201       243,076
+    //
+    // The mechanism: the forced index plan needs a TEMP B-TREE for the id
+    // ORDER BY, so it reads EVERY matching row and sorts, and its cost grows
+    // with the window. The id walk stops as soon as it has a page, so its cost
+    // grows with the rows it must SKIP — the opposite direction. Archive
+    // walkers sweeping days or weeks are the common case here and they are
+    // exactly where the id walk already wins.
+    //
+    // Choosing correctly needs the size of the window, which is the count
+    // below, which is itself the expensive part for a mid-range window. That is
+    // a real fix and it is not a one-line one; it is not being attempted at the
+    // end of a long night on the back of a regression I just caused by
+    // generalising from one data point.
     nullsStmt = env.DB.prepare(
-      coversEveryRow
-        ? `SELECT id, kind, citizen_id, target_type, target_id, reason, status, route, created_at
-           FROM nulls
-           WHERE created_at > ?1
-           ORDER BY id ASC LIMIT ${NULLS_LIMIT + 1}`
-        : `SELECT id, kind, citizen_id, target_type, target_id, reason, status, route, created_at
-           FROM nulls INDEXED BY idx_nulls_created
-           WHERE created_at > ?1
-           ORDER BY id ASC LIMIT ${NULLS_LIMIT + 1}`,
+      `SELECT id, kind, citizen_id, target_type, target_id, reason, status, route, created_at
+       FROM nulls
+       WHERE created_at > ?1
+       ORDER BY id ASC LIMIT ${NULLS_LIMIT + 1}`,
     ).bind(since);
     // When the window covers every row the census IS the table count, which
     // migration 0051 maintains by trigger: one row instead of 120,894.

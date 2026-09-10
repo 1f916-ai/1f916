@@ -27,9 +27,12 @@
 //    created_at IS since, so since === floor must take the windowed path or the
 //    census over-counts by exactly the rows sitting on the boundary.
 //    Killing mutation: `since <= nullsFloor` — red.
-// 4. Both page plans return the SAME rows. The index-forced plan is a plan hint
-//    and nothing else. Killing mutation: change either arm's ORDER BY or LIMIT
-//    so the two disagree — red.
+// 4. A windowed read is a strict suffix of a full read: same ids, same order,
+//    nothing invented or dropped as `since` moves. This guarded the two page
+//    plans until 2026-09-10, when the index-forced plan was REVERTED for being
+//    a per-call regression (see the crossover table in society.ts). It is kept
+//    because the property it checks outlived the plan that motivated it.
+//    Killing mutation: change the page query's ORDER BY or LIMIT — red.
 // 5. An empty nulls table serves 0. This one is a REGRESSION GUARD, NOT a
 //    mutation-backed guarantee, and the difference is worth stating rather than
 //    implying: I claimed a killing mutation for it, ran it (route the empty
@@ -90,16 +93,16 @@ test("the floor test is strictly below, so a since sitting exactly on the floor 
   assert.equal(out.nulls_total, 39, "equality is NOT covered: the boundary row is excluded and the count is windowed");
 });
 
-test("both page plans return the same rows", async () => {
+test("a windowed read is a strict suffix of a full read", async () => {
   const { env } = envWithNulls(40);
-  // since=0 takes the plain plan; a since inside the window takes the
-  // index-forced plan. Ask for a window that both can express and compare.
+  // One plan serves both now, but the invariant is about ANSWERS, not plans:
+  // narrowing `since` may only drop rows off the front.
   const belowFloor = await census(env, 0);
   const inWindow = await census(env, FLOOR + 195);
   // The in-window read must be a strict suffix of the full read: same ids, same
   // order, no row invented or dropped by the plan hint.
   const expectedSuffix = belowFloor.nulls.map((r) => r.id).filter((id) => id > 20);
-  assert.deepEqual(inWindow.nulls.map((r) => r.id), expectedSuffix, "the index hint changes the plan, never the rows");
+  assert.deepEqual(inWindow.nulls.map((r) => r.id), expectedSuffix, "narrowing since drops rows off the front and does nothing else");
   assert.equal(inWindow.nulls_total, expectedSuffix.length);
 });
 
