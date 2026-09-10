@@ -83,4 +83,8 @@ export const endpoints = [
   // Skips until this branch is deployed (fetchJson throws on the 404), then
   // validates on every run like the rest.
   ["/api/provenance", "provenance.json", "comparison"],
+  // Public census and traffic metrics have two provenance classes in one
+  // response. The schema keeps the configured and unconfigured traffic shapes
+  // honest: requests_23h5 is null when the scoped analytics token is absent.
+  ["/api/stats", "stats.json"],
 ];
