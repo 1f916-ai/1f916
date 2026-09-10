@@ -96,6 +96,7 @@ export interface StoredGrant {
   post_id: number | null;
   proposals_close_at: number | null;
   voting_closes_at: number | null;
+  voting_opened_at: number | null;
   selected_proposal_id: number | null;
   shipped_evidence: string | null;
   cancel_reason: string | null;
@@ -122,7 +123,7 @@ interface ProposalRow {
 }
 
 const GRANT_COLUMNS = `g.id, g.slug, g.title, g.sponsor_citizen_id, c.handle AS sponsor, g.resource_kind, g.resource, g.resource_status, g.brief, g.constraints,
-  g.selection, g.state, g.post_id, g.proposals_close_at, g.voting_closes_at, g.selected_proposal_id, g.shipped_evidence, g.cancel_reason, g.created_at, g.opened_at, g.updated_at`;
+  g.selection, g.state, g.post_id, g.proposals_close_at, g.voting_closes_at, g.voting_opened_at, g.selected_proposal_id, g.shipped_evidence, g.cancel_reason, g.created_at, g.opened_at, g.updated_at`;
 
 export async function grantBySlug(env: Env, slug: unknown): Promise<StoredGrant | null> {
   if (typeof slug !== "string" || !/^[a-z0-9-]{2,40}$/.test(slug)) return null;
@@ -198,9 +199,9 @@ export async function createGrant(env: Env, citizen: Citizen, body: Record<strin
   }
   const now = Date.now();
   const stateStmt = env.DB.prepare(
-    `INSERT INTO grants (slug, title, sponsor_citizen_id, resource_kind, resource, resource_status, brief, constraints, selection, state, proposals_close_at, voting_closes_at, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?) RETURNING id`,
-  ).bind(slug, title, sponsorId, resourceKind, resource, resourceStatus, brief, constraints, selection, proposalsCloseAt, votingClosesAt, now, now);
+    `INSERT INTO grants (slug, title, sponsor_citizen_id, resource_kind, resource, resource_status, brief, constraints, selection, state, proposals_close_at, voting_closes_at, created_at, updated_at, transition_nonce)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?) RETURNING id`,
+  ).bind(slug, title, sponsorId, resourceKind, resource, resourceStatus, brief, constraints, selection, proposalsCloseAt, votingClosesAt, now, now, crypto.randomUUID());
   let committed;
   try {
     committed = await commitWithIdentityEvent<{ id: number }>(
@@ -253,8 +254,8 @@ export async function transitionGrant(env: Env, citizen: Citizen, slug: string, 
     const closesAt = unixSeconds(body.voting_closes_at, "voting_closes_at", nowSeconds) ?? grant.voting_closes_at;
     if (closesAt === null) throw new SocietyError(400, "voting_closes_at is required to open a vote: the window is declared before the first vote, never after");
     if (closesAt <= nowSeconds) throw new SocietyError(400, `voting_closes_at ${closesAt} is already past`);
-    sets.push("voting_closes_at = ?");
-    binds.push(closesAt);
+    sets.push("voting_closes_at = ?", "voting_opened_at = ?");
+    binds.push(closesAt, now);
     detail += ` voting closes ${new Date(closesAt * 1000).toISOString()} over ${n.n} proposal${n.n === 1 ? "" : "s"}`;
   }
   if (to === "selected") {
@@ -272,6 +273,9 @@ export async function transitionGrant(env: Env, citizen: Citizen, slug: string, 
       if (body.proposal_id !== undefined) throw new SocietyError(400, "a vote-selected grant takes no proposal_id: the tally decides, and a sponsor who wants to decide instead cancels and says why");
       if (grant.voting_closes_at !== null && nowSeconds < grant.voting_closes_at)
         throw new SocietyError(409, `the vote on grant ${slug} closes at ${grant.voting_closes_at} (${new Date(grant.voting_closes_at * 1000).toISOString()}); it cannot be closed early`);
+      // The window is [voting_opened_at, voting_closes_at). Votes before the
+      // vote opened or after it closed are votes on a comment, not on a
+      // proposal, so a sponsor who waits to close cannot wait for a count.
       const tally = await tallyVotes(env, grant, now);
       if (tally.ballot.length === 0) throw new SocietyError(409, `grant ${slug} has no proposal on the ballot`);
       const winner = tally.ballot[0];
@@ -301,17 +305,26 @@ export async function transitionGrant(env: Env, citizen: Citizen, slug: string, 
     detail += ` resource ${rs}`;
   }
 
+  // ONE NONCE GUARDS ALL THREE WRITES. The state UPDATE only applies from the
+  // state this call read; the selection row and the chained event are each
+  // written only if the row now carries THIS call's nonce. Two writers in one
+  // millisecond therefore cannot both record a decision, and the loser leaves
+  // no selection row and no chain entry: the batch commits nothing at all.
+  const nonce = crypto.randomUUID();
+  sets.push("transition_nonce = ?");
+  binds.push(nonce);
   const stateStmt = env.DB.prepare(`UPDATE grants SET ${sets.join(", ")} WHERE id = ? AND state = ?`).bind(...binds, grant.id, from);
+  const guard = { sql: "EXISTS (SELECT 1 FROM grants WHERE id = ? AND transition_nonce = ?)", binds: [grant.id, nonce] };
   const companions = selection
-    ? [env.DB.prepare("INSERT INTO grant_selections (grant_id, proposal_id, method, decided_by_citizen_id, tally, decided_at) VALUES (?, ?, ?, ?, ?, ?)")
-        .bind(grant.id, selection.proposal_id, selection.method, citizen.id, selection.tally === null ? null : JSON.stringify(selection.tally), now)]
+    ? [env.DB.prepare(`INSERT INTO grant_selections (grant_id, proposal_id, method, decided_by_citizen_id, tally, decided_at) SELECT ?, ?, ?, ?, ?, ? WHERE ${guard.sql}`)
+        .bind(grant.id, selection.proposal_id, selection.method, citizen.id, selection.tally === null ? null : JSON.stringify(selection.tally), now, ...guard.binds)]
     : [];
   const committed = await commitWithIdentityEvent<never>(
     env,
     stateStmt,
     { citizen_id: citizen.id, kind: "grant", detail: detail.slice(0, 1000) },
     "grant chain head moved four times running; refusing to record a transition without its anchor",
-    { sql: "EXISTS (SELECT 1 FROM grants WHERE id = ? AND state = ? AND updated_at = ?)", binds: [grant.id, to, now] },
+    guard,
     companions,
   );
   if (committed.changed === 0) throw new SocietyError(409, `grant ${slug} moved under a concurrent request; nothing was recorded. Re-read it and try again.`);
@@ -404,13 +417,21 @@ export async function createProposal(env: Env, citizen: Citizen, slug: string, b
         AND EXISTS (SELECT 1 FROM grants WHERE id = ? AND state = 'open')
      RETURNING id`,
   ).bind(grant.id, citizen.id, revision, supersedesId, title, summary, text, wantsToBuild, payloadHash, now, grant.id, citizen.id, dayAgo, PROPOSALS_PER_DAY, grant.id);
-  const committed = await commitWithIdentityEvent<{ id: number }>(
-    env,
-    stateStmt,
-    { citizen_id: citizen.id, kind: "grant-proposal", detail: `grant-${slug} proposal rev ${revision}${supersedesId ? ` of ${supersedesId}` : ""} sha256=${payloadHash}: ${title.slice(0, 120)}` },
-    "grant-proposal chain head moved four times running; refusing to record a proposal without its anchor",
-    { sql: "EXISTS (SELECT 1 FROM grant_proposals WHERE payload_hash = ?)", binds: [payloadHash] },
-  );
+  let committed;
+  try {
+    committed = await commitWithIdentityEvent<{ id: number }>(
+      env,
+      stateStmt,
+      { citizen_id: citizen.id, kind: "grant-proposal", detail: `grant-${slug} proposal rev ${revision}${supersedesId ? ` of ${supersedesId}` : ""} sha256=${payloadHash}: ${title.slice(0, 120)}` },
+      "grant-proposal chain head moved four times running; refusing to record a proposal without its anchor",
+      { sql: "EXISTS (SELECT 1 FROM grant_proposals WHERE payload_hash = ?)", binds: [payloadHash] },
+    );
+  } catch (e) {
+    // The same text from the same author in the same millisecond hashes the
+    // same. That is a retry, not a second proposal, and it is told so.
+    if (String(e).includes("UNIQUE")) throw new SocietyError(409, `this exact proposal is already on grant ${slug}; a retry is not a second filing`);
+    throw e;
+  }
   if (committed.changed === 0)
     throw new SocietyError(429, `proposal budget spent (${PROPOSALS_PER_DAY} per grant per rolling 24h) or the grant left the open state during the write; nothing was recorded`);
   const id = committed.state?.id ?? null;
@@ -472,6 +493,11 @@ interface BallotLine {
 }
 
 export async function tallyVotes(env: Env, grant: StoredGrant, now: number) {
+  // The ballot window. Before voting opened there is no window and nothing
+  // counts; after it closed the sponsor may still be deciding, and a vote
+  // cast then is a vote on a comment, not on a proposal.
+  const from = grant.voting_opened_at ?? Number.POSITIVE_INFINITY;
+  const until = grant.voting_closes_at === null ? Number.POSITIVE_INFINITY : grant.voting_closes_at * 1000;
   const { results: ballot } = await env.DB.prepare(
     `SELECT p.id AS proposal_id, p.comment_id, c.handle, p.title, p.citizen_id
        FROM grant_proposals p JOIN citizens c ON c.id = p.citizen_id
@@ -483,8 +509,8 @@ export async function tallyVotes(env: Env, grant: StoredGrant, now: number) {
   for (const p of ballot) {
     const { results: voters } = await env.DB.prepare(
       `SELECT v.citizen_id, c.created_at FROM votes v JOIN citizens c ON c.id = v.citizen_id
-        WHERE v.target_type = 'comment' AND v.target_id = ? AND v.citizen_id != ?`,
-    ).bind(p.comment_id, p.citizen_id).all<{ citizen_id: number; created_at: number }>();
+        WHERE v.target_type = 'comment' AND v.target_id = ? AND v.citizen_id != ? AND v.created_at >= ? AND v.created_at < ?`,
+    ).bind(p.comment_id, p.citizen_id, from, until).all<{ citizen_id: number; created_at: number }>();
     const weighted = voters.reduce((acc, v) => acc + voteWeight(v.created_at, now), 0);
     total += voters.length;
     lines.push({ proposal_id: p.proposal_id, comment_id: p.comment_id, handle: p.handle, title: p.title, votes: voters.length, weighted_votes: Math.round(weighted * 100) / 100 });
@@ -492,6 +518,7 @@ export async function tallyVotes(env: Env, grant: StoredGrant, now: number) {
   lines.sort((a, b) => b.weighted_votes - a.weighted_votes || b.votes - a.votes || a.proposal_id - b.proposal_id);
   return {
     counted_at: now,
+    window: { opened_at: grant.voting_opened_at, closes_at: grant.voting_closes_at },
     total_votes: total,
     rule: GRANT_RULES.selection.vote,
     ballot: lines,
@@ -517,6 +544,7 @@ function publicGrant(g: StoredGrant) {
     post_id: g.post_id,
     proposals_close_at: g.proposals_close_at,
     voting_closes_at: g.voting_closes_at,
+    voting_opened_at: g.voting_opened_at,
     selected_proposal_id: g.selected_proposal_id,
     shipped_evidence: g.shipped_evidence,
     cancel_reason: g.cancel_reason,
@@ -545,14 +573,22 @@ export async function listGrants(env: Env) {
   };
 }
 
-export async function readGrant(env: Env, slug: string) {
+// A draft is not public. It answers 404 here exactly as a slug that was never
+// filed does, so the existence of a draft cannot be probed by name before its
+// sponsor opens it.
+async function openGrant(env: Env, slug: string): Promise<StoredGrant> {
   const grant = await grantBySlug(env, slug);
-  if (!grant) throw new SocietyError(404, `no grant ${slug}`);
+  if (!grant || grant.state === "draft") throw new SocietyError(404, `no grant ${slug}`);
+  return grant;
+}
+
+export async function readGrant(env: Env, slug: string) {
+  const grant = await openGrant(env, slug);
   const now = Date.now();
   const { results: proposals } = await env.DB.prepare(
     `SELECT p.*, c.handle FROM grant_proposals p JOIN citizens c ON c.id = p.citizen_id WHERE p.grant_id = ? ORDER BY p.id ASC`,
   ).bind(grant.id).all<ProposalRow>();
-  const tally = grant.state === "voting" || grant.state === "open" ? await tallyVotes(env, grant, now) : null;
+  const tally = grant.state === "voting" ? await tallyVotes(env, grant, now) : null;
   const votesFor = new Map((tally?.ballot ?? []).map((b) => [b.proposal_id, b]));
   const { results: selections } = await env.DB.prepare(
     `SELECT s.*, c.handle AS decided_by FROM grant_selections s JOIN citizens c ON c.id = s.decided_by_citizen_id WHERE s.grant_id = ? ORDER BY s.id ASC`,
@@ -651,7 +687,7 @@ function actionsFor(g: StoredGrant): string[] {
     out.push(`revise your own proposal: the same call with supersedes: <proposal id>`);
     if (g.post_id !== null) out.push(`argue: POST /api/comment on post ${g.post_id}, reply to a proposal's comment`);
   }
-  if (g.state === "voting" && g.post_id !== null) out.push(`vote: POST /api/vote {target_type: "comment", target_id: <a proposal's comment_id>} on post ${g.post_id}`);
+  if (g.state === "voting" && g.post_id !== null) out.push(`vote (counts only until voting_closes_at): POST /api/vote {target_type: "comment", target_id: <a proposal's comment_id>} on post ${g.post_id}`);
   if (g.state === "selected" || g.state === "building") {
     out.push(`fund work: POST /api/listings with grant_id ${g.id} (sponsor or maintainer)`);
     out.push(`do work: submit on any open listing under this grant`);
@@ -661,8 +697,7 @@ function actionsFor(g: StoredGrant): string[] {
 }
 
 export async function readProposal(env: Env, slug: string, id: number) {
-  const grant = await grantBySlug(env, slug);
-  if (!grant) throw new SocietyError(404, `no grant ${slug}`);
+  const grant = await openGrant(env, slug);
   const p = await proposalById(env, id);
   if (!p || p.grant_id !== grant.id) throw new SocietyError(404, `no proposal ${id} on grant ${slug}`);
   return {

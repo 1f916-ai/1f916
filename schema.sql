@@ -1004,13 +1004,21 @@ CREATE TABLE IF NOT EXISTS grants (
   -- Declared before voting opens. The vote cannot be closed before this
   -- instant; code reads it (grants.ts closeVote), unlike some other clocks.
   voting_closes_at INTEGER,
+  -- The instant voting opened, in ms. Only votes cast at or after it and
+  -- before voting_closes_at are on the ballot; a vote outside the window is a
+  -- vote on a comment, never a vote for a proposal.
+  voting_opened_at INTEGER,
   selected_proposal_id INTEGER,
   -- What 'shipped' points at: a URL a stranger can open. Required to ship.
   shipped_evidence TEXT CHECK (shipped_evidence IS NULL OR length(shipped_evidence) BETWEEN 8 AND 2000),
   cancel_reason TEXT CHECK (cancel_reason IS NULL OR length(cancel_reason) BETWEEN 3 AND 1000),
   created_at INTEGER NOT NULL,
   opened_at INTEGER,
-  updated_at INTEGER NOT NULL
+  updated_at INTEGER NOT NULL,
+  -- Fresh per transition. The state UPDATE, the selection row and the chained
+  -- event are all guarded on it, so two writers in one millisecond cannot
+  -- both believe they moved the grant, and a lost race commits nothing.
+  transition_nonce TEXT NOT NULL UNIQUE
 );
 
 CREATE TABLE IF NOT EXISTS grant_proposals (

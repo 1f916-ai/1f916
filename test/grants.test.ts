@@ -193,11 +193,20 @@ test("vote mode: the window is declared, revisions stop, self-votes do not count
 
   // Votes: Bob votes for Alice; Alice votes for herself (excluded); the
   // newbie votes for Bob at weight 0.1; the sponsor votes for Bob at 1.0.
-  const vote = (who: Citizen, commentId: number) => db.prepare("INSERT INTO votes (citizen_id, target_type, target_id, created_at) VALUES (?, 'comment', ?, ?)").run(who.id, commentId, NOW);
+  // Cast INSIDE the window: after voting_opened_at, before the close.
+  const openedAt = (await grantBySlug(env, "1f512"))!.voting_opened_at!;
+  assert.ok(openedAt >= NOW, "opening stamps the instant the vote opened");
+  const vote = (who: Citizen, commentId: number, at = openedAt + 1000) => db.prepare("INSERT INTO votes (citizen_id, target_type, target_id, created_at) VALUES (?, 'comment', ?, ?)").run(who.id, commentId, at);
   vote(BOB, a.comment_id!);
   vote(ALICE, a.comment_id!);
   vote(NEWBIE, b.comment_id!);
   vote(SPONSOR, b.comment_id!);
+  // KILLING MUTATION: src/grants.ts tallyVotes, delete `AND v.created_at >= ?`
+  // (and its bind). A vote cast before the vote opened, while the grant was
+  // merely open, would count; the thread says votes are cast inside a
+  // declared window.
+  db.prepare("INSERT INTO citizens (id, handle, model, secret_hash, karma, created_at, last_seen_at) VALUES (97, 'late1', 'm', 'x', 0, ?, ?), (98, 'late2', 'm', 'x', 0, ?, ?), (99, 'early', 'm', 'x', 0, ?, ?)").run(NOW - 30 * DAY, NOW, NOW - 30 * DAY, NOW, NOW - 30 * DAY, NOW);
+  db.prepare("INSERT INTO votes (citizen_id, target_type, target_id, created_at) VALUES (99, 'comment', ?, ?)").run(a.comment_id!, openedAt - 1);
   const grant = (await grantBySlug(env, "1f512"))!;
   const tally = await tallyVotes(env, grant, NOW);
   // KILLING MUTATION: src/grants.ts tallyVotes, delete `AND v.citizen_id != ?`
@@ -215,8 +224,18 @@ test("vote mode: the window is declared, revisions stop, self-votes do not count
   assert.equal(tally.ballot[0].proposal_id, b.id, "Bob leads on weighted votes");
   assert.equal(tally.total_votes, 3);
 
-  // Close after the window. Move the clock by editing the declared close.
-  db.prepare("UPDATE grants SET voting_closes_at = ? WHERE slug = '1f512'").run(Math.floor(NOW / 1000) - 1);
+  // Close after the window. Move the clocks: the window becomes [openedAt,
+  // this second), which holds every vote above and is already past.
+  const closeAt = Math.floor(Date.now() / 1000) + 1;
+  db.prepare("UPDATE grants SET voting_opened_at = ?, voting_closes_at = ? WHERE slug = '1f512'").run(openedAt - 20_000, closeAt);
+  db.prepare("UPDATE votes SET created_at = ? WHERE created_at = ?").run(openedAt - 10_000, openedAt + 1000);
+  db.prepare("UPDATE votes SET created_at = ? WHERE citizen_id = 99").run(openedAt - 20_001);
+  // KILLING MUTATION: src/grants.ts tallyVotes, delete `AND v.created_at < ?`
+  // (and its bind). A vote cast after the close but before the sponsor
+  // records it would count, so a sponsor could wait for the count they want.
+  db.prepare("INSERT INTO votes (citizen_id, target_type, target_id, created_at) VALUES (98, 'comment', ?, ?)").run(a.comment_id!, closeAt * 1000);
+  db.prepare("INSERT INTO votes (citizen_id, target_type, target_id, created_at) VALUES (97, 'comment', ?, ?)").run(a.comment_id!, closeAt * 1000 + 5);
+  while (Math.floor(Date.now() / 1000) < closeAt) await new Promise((r) => setTimeout(r, 50));
   const closed = await transitionGrant(env, SPONSOR, "1f512", { to: "selected" });
   assert.equal(closed.selection?.method, "vote");
   assert.equal(closed.selection?.proposal_id, b.id);
@@ -228,7 +247,7 @@ test("vote mode: the window is declared, revisions stop, self-votes do not count
   const snap = read.selections[0].tally as { ballot: { proposal_id: number; weighted_votes: number }[] };
   assert.equal(snap.ballot[0].proposal_id, b.id, "the tally that decided it is stored");
   // Votes cast after the close do not change the stored decision.
-  vote(NEWBIE, a.comment_id!);
+  vote(NEWBIE, a.comment_id!, Date.now());
   const again = await readGrant(env, "1f512");
   assert.equal((again.selections[0].tally as typeof snap).ballot[0].weighted_votes, 1.1, "stored, never recomputed");
   assert.equal(again.live_tally, null, "no live tally is served once the vote is over");
@@ -323,4 +342,108 @@ test("a concurrent transition loses cleanly: the guard commits nothing and says 
   await refused(() => transitionGrant(env, SPONSOR, "1f512", { to: "open" }), 409, /is cancelled and cannot move to open/, "the fresh read sees the move");
   const after = db.prepare("SELECT COUNT(*) AS n FROM identity_events").get() as { n: number };
   assert.equal(after.n, before.n, "a refused move records no event");
+});
+
+test("the ballot is the latest revision's comment only, and only comment votes count", async () => {
+  const { env, db } = makeEnv();
+  await createGrant(env, MAINTAINER, draft());
+  await transitionGrant(env, SPONSOR, "1f512", { to: "open" });
+  const a = await createProposal(env, ALICE, "1f512", { title: "Vault", summary: "An immutable commitment vault on the lock domain.", body: PROPOSAL_BODY });
+  const a2 = await createProposal(env, ALICE, "1f512", { title: "Vault v2", summary: "The vault after review, with a rate-limited sale policy.", body: PROPOSAL_BODY, supersedes: a.id });
+  await transitionGrant(env, SPONSOR, "1f512", { to: "voting", voting_closes_at: Math.floor(NOW / 1000) + 3600 });
+  const openedAt = (await grantBySlug(env, "1f512"))!.voting_opened_at!;
+  // KILLING MUTATION: src/grants.ts tallyVotes, delete `AND p.superseded_by_id
+  // IS NULL` from the ballot query. The superseded revision would appear as
+  // a ballot line with Bob's vote on it, and the rule says those do not carry.
+  db.prepare("INSERT INTO votes (citizen_id, target_type, target_id, created_at) VALUES (?, 'comment', ?, ?)").run(BOB.id, a.comment_id!, openedAt + 1);
+  // KILLING MUTATION: src/grants.ts tallyVotes, delete `v.target_type =
+  // 'comment' AND`. A post vote whose target_id happens to equal the
+  // comment id would be counted for the proposal.
+  db.prepare("INSERT INTO votes (citizen_id, target_type, target_id, created_at) VALUES (?, 'post', ?, ?)").run(SPONSOR.id, a2.comment_id!, openedAt + 1);
+  const tally = await tallyVotes(env, (await grantBySlug(env, "1f512"))!, Date.now());
+  assert.deepEqual(tally.ballot.map((b) => [b.proposal_id, b.votes]), [[a2.id, 0]], "one line, the latest revision, with no votes");
+});
+
+test("a lost transition race commits nothing: no state, no selection row, no chain entry", async () => {
+  // KILLING MUTATION: src/grants.ts transitionGrant, replace the companion's
+  // `SELECT ... WHERE ${guard.sql}` with plain `VALUES (...)`, or replace the
+  // guard passed to commitWithIdentityEvent with `undefined`. The loser of
+  // the race below would then write a second selection row and a chained
+  // event for a decision that did not happen.
+  const { env, db } = makeEnv();
+  await createGrant(env, MAINTAINER, draft({ selection: "sponsor" }));
+  await transitionGrant(env, SPONSOR, "1f512", { to: "open" });
+  const a = await createProposal(env, ALICE, "1f512", { title: "Vault", summary: "An immutable commitment vault on the lock domain.", body: PROPOSAL_BODY });
+  const b = await createProposal(env, BOB, "1f512", { title: "Registry", summary: "A wallet transparency registry keyed by the lock domain.", body: PROPOSAL_BODY });
+  // Freeze the clock so both writers share a millisecond, the case the old
+  // `state = ? AND updated_at = ?` guard could not tell apart.
+  const realNow = Date.now;
+  const frozen = realNow();
+  Date.now = () => frozen;
+  try {
+    const results = await Promise.allSettled([
+      transitionGrant(env, SPONSOR, "1f512", { to: "selected", proposal_id: a.id }),
+      transitionGrant(env, MAINTAINER, "1f512", { to: "selected", proposal_id: b.id }),
+    ]);
+    const won = results.filter((r) => r.status === "fulfilled");
+    const lost = results.filter((r) => r.status === "rejected") as PromiseRejectedResult[];
+    assert.equal(won.length, 1, "exactly one writer moves the grant");
+    assert.equal(lost.length, 1);
+    assert.match(String(lost[0].reason.message), /moved under a concurrent request; nothing was recorded/);
+  } finally {
+    Date.now = realNow;
+  }
+  const rows = db.prepare("SELECT COUNT(*) AS n FROM grant_selections").get() as { n: number };
+  assert.equal(rows.n, 1, "one selection row, never two");
+  const events = db.prepare("SELECT COUNT(*) AS n FROM identity_events WHERE detail LIKE '%-> selected%'").get() as { n: number };
+  assert.equal(events.n, 1, "one chained decision, never two");
+  const g = (await readGrant(env, "1f512"));
+  assert.equal(g.selections.length, 1);
+  assert.equal(g.selections[0].proposal_id, g.grant.selected_proposal_id, "the stored decision names the proposal the column names");
+});
+
+test("a proposal cannot land on a grant that left the open state during the write", async () => {
+  // KILLING MUTATION: src/grants.ts createProposal, delete `AND EXISTS
+  // (SELECT 1 FROM grants WHERE id = ? AND state = 'open')` from the INSERT
+  // (and its bind). The pre-check read 'open', the grant was cancelled
+  // between read and write, and the proposal would land on a cancelled grant.
+  const { env, db } = makeEnv();
+  await createGrant(env, MAINTAINER, draft());
+  await transitionGrant(env, SPONSOR, "1f512", { to: "open" });
+  const realPrepare = env.DB.prepare.bind(env.DB);
+  let flipped = false;
+  (env.DB as unknown as { prepare: typeof realPrepare }).prepare = (sql: string) => {
+    if (!flipped && /INSERT INTO grant_proposals/.test(sql)) {
+      flipped = true;
+      db.prepare("UPDATE grants SET state = 'cancelled', cancel_reason = 'raced' WHERE slug = '1f512'").run();
+    }
+    return realPrepare(sql);
+  };
+  await refused(() => createProposal(env, ALICE, "1f512", { title: "Vault", summary: "An immutable commitment vault on the lock domain.", body: PROPOSAL_BODY }), 429, /left the open state during the write/, "the insert guard holds");
+  assert.equal((db.prepare("SELECT COUNT(*) AS n FROM grant_proposals").get() as { n: number }).n, 0);
+});
+
+test("a draft is 404 by slug until it opens, and a same-instant duplicate proposal is a 409", async () => {
+  // KILLING MUTATION: src/grants.ts openGrant, delete `|| grant.state ===
+  // "draft"`. A draft's full brief would be readable by anyone who guessed
+  // the slug, while GET /api/grants and the surface both say it is not public.
+  const { env } = makeEnv();
+  await createGrant(env, MAINTAINER, draft());
+  await refused(() => readGrant(env, "1f512"), 404, /no grant 1f512/, "a draft reads as absent");
+  await refused(() => readProposal(env, "1f512", 1), 404, /no grant 1f512/, "and so do its proposals");
+  await transitionGrant(env, SPONSOR, "1f512", { to: "open" });
+  assert.equal((await readGrant(env, "1f512")).grant.state, "open");
+  // KILLING MUTATION: src/grants.ts createProposal, delete the catch that
+  // maps a UNIQUE failure to 409. The same bytes in the same millisecond
+  // would surface as a raw constraint error, a 500 for a retry.
+  const realNow = Date.now;
+  const frozen = realNow();
+  Date.now = () => frozen;
+  try {
+    const body = { title: "Vault", summary: "An immutable commitment vault on the lock domain.", body: PROPOSAL_BODY };
+    await createProposal(env, ALICE, "1f512", body);
+    await refused(() => createProposal(env, ALICE, "1f512", body), 409, /already on grant 1f512; a retry is not a second filing/, "a retry is named as one");
+  } finally {
+    Date.now = realNow;
+  }
 });

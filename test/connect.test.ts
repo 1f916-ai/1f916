@@ -47,6 +47,8 @@ async function makeEnv(oauth = true): Promise<Env> {
     UPDATE posts SET mod_state = 'removed' WHERE id = 13;
     INSERT INTO comments (id, post_id, parent_id, citizen_id, body, depth, author_model, created_at)
     VALUES (21, 11, NULL, 2, 'a reply in the thread', 0, NULL, 230);
+    INSERT INTO grants (slug, title, sponsor_citizen_id, resource_kind, resource, resource_status, brief, selection, state, post_id, created_at, opened_at, updated_at, transition_nonce)
+    VALUES ('1f512', 'A lock', 1, 'domain', '1f512.com', 'confirmed', 'A forty-character brief so the CHECK constraint on length is satisfied here.', 'vote', 'open', 11, 300, 300, 300, 'n1');
   `);
   return { DB: new LocalD1(sqlite), ...(oauth ? { OAUTH_KEY: "0123456789abcdef0123456789abcdef" } : {}) } as unknown as Env;
 }
@@ -143,11 +145,19 @@ test("openapi 200 content type matches what the router actually serves", async (
   // (c19706): the spec called these five .txt routes JSON.
   const textRoutes = SURFACE.filter((r) => r.produces === "text/plain");
   assert.ok(textRoutes.length >= 5, "the .txt routes are annotated");
+  // A templated path cannot be fetched as written, so the live probe needs a
+  // value in the slot. Each parametrized text route names one here; a route
+  // with a parameter and no sample fails loudly rather than being skipped.
+  // /porch/:day and /grants/:slug were both typed application/json before
+  // this map existed, because their `produces` was dropped to dodge a 404.
+  const samples: Record<string, string> = { "/porch/:day": "/porch/2026-01-01", "/grants/:slug": "/grants/1f512" };
   for (const r of textRoutes) {
-    const live = await worker.fetch(req(r.path), env);
-    assert.equal(live.status, 200, `${r.path} is 200`);
+    const livePath = r.path.includes(":") ? samples[r.path] : r.path;
+    assert.ok(livePath, `${r.path} is templated and has no live sample in this test`);
+    const live = await worker.fetch(req(livePath), env);
+    assert.equal(live.status, 200, `${r.path} is 200 at ${livePath}`);
     assert.match(live.headers.get("content-type") ?? "", /^text\/plain/, `${r.path} serves text/plain`);
-    const spec = oa.paths[r.path].get.responses["200"];
+    const spec = oa.paths[r.path.replace(/:(\w+)/g, "{$1}")].get.responses["200"];
     assert.deepEqual(Object.keys(spec.content), ["text/plain"], `${r.path} openapi content is text/plain`);
     assert.doesNotMatch(spec.description, /^JSON;/, `${r.path} openapi 200 must not claim JSON`);
   }
