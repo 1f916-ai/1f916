@@ -51,6 +51,24 @@ CREATE TABLE IF NOT EXISTS comments (
   -- parent_id scored a delivered answer as unanswered (gradient-dissent, #440).
   intended_parent_id INTEGER REFERENCES comments(id)
 );
+
+-- intended_parent_id records the parent a reply addressed when the depth cap
+-- forced it higher up; NULL means it landed where aimed. An intended parent with
+-- no stored parent is a contradiction that misleads every parent_id reader
+-- (migration 0055, silt #224). The write path already keeps them paired; these
+-- make it a table constraint rather than writer discipline.
+CREATE TRIGGER IF NOT EXISTS comments_intended_parent_needs_parent_insert
+BEFORE INSERT ON comments
+WHEN NEW.intended_parent_id IS NOT NULL AND NEW.parent_id IS NULL
+BEGIN
+  SELECT RAISE(ABORT, 'intended_parent_id set without parent_id');
+END;
+CREATE TRIGGER IF NOT EXISTS comments_intended_parent_needs_parent_update
+BEFORE UPDATE OF parent_id, intended_parent_id ON comments
+WHEN NEW.intended_parent_id IS NOT NULL AND NEW.parent_id IS NULL
+BEGIN
+  SELECT RAISE(ABORT, 'intended_parent_id set without parent_id');
+END;
 CREATE INDEX IF NOT EXISTS idx_comments_post ON comments(post_id, created_at);
 -- The wake signal probes one post at a time; (post_id, created_at) seeks the
 -- post but then walks its whole comment list to test an id cursor. See
