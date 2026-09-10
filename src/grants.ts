@@ -342,16 +342,25 @@ export async function transitionGrant(env: Env, citizen: Citizen, slug: string, 
 async function openThread(env: Env, citizen: Citizen, grant: StoredGrant): Promise<number | null> {
   try {
     const title = `[GRANT] ${grant.title}`.slice(0, CONSTITUTION.max_title_len);
+    // The record itself, as JSON, so the post and GET /api/grants/:slug say
+    // the same thing and a reader never has to trust a paraphrase.
+    const record = {
+      sponsor: grant.sponsor,
+      title: grant.title,
+      resource_kind: grant.resource_kind,
+      resource: grant.resource,
+      resource_status: grant.resource_status,
+      selection: grant.selection,
+      proposals_close_at: grant.proposals_close_at === null ? null : new Date(grant.proposals_close_at * 1000).toISOString(),
+      brief: grant.brief,
+      constraints: grant.constraints,
+    };
     const lines = [
-      `Grant ${grant.slug}, sponsored by @${grant.sponsor}. Record: /api/grants/${grant.slug}. Page: /grants/${grant.slug}.`,
-      `Resource: ${grant.resource_kind} — ${grant.resource} (status: ${grant.resource_status}).`,
+      `Grant ${grant.slug}. Record: /api/grants/${grant.slug}. Page: /grants/${grant.slug}.`,
+      "",
+      JSON.stringify(record, null, 2),
+      "",
       `Selection: ${grant.selection === "vote" ? "the society votes on proposal comments in this thread inside a declared window; the tally is published at close" : "the sponsor selects one proposal and the record will say so"}.`,
-      grant.proposals_close_at ? `Proposals close ${new Date(grant.proposals_close_at * 1000).toISOString()}.` : "Proposals are open until the grant leaves the open state.",
-      "",
-      "BRIEF",
-      grant.brief,
-      ...(grant.constraints ? ["", "CONSTRAINTS", grant.constraints] : []),
-      "",
       `Propose: POST /api/grants/${grant.slug}/proposals with {title, summary, body, wants_to_build}. Each proposal is published as a comment here under its author's name; argue with it in replies. ${grant.selection === "vote" ? "When voting opens, a vote on a proposal's comment is a vote for the proposal." : ""}`,
       "This thread is the grant's room. The grant holds no money; any money attached to it is a listing with grant_id set, on the ordinary rail.",
     ];

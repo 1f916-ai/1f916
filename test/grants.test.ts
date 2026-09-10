@@ -84,8 +84,18 @@ test("opening writes the grant's thread, tagged grant, and only the sponsor or m
   assert.equal(opened.from, "draft");
   assert.equal(opened.to, "open");
   assert.ok(opened.grant?.post_id, "the thread exists");
-  const post = db.prepare("SELECT title, quota_exempt FROM posts WHERE id = ?").get(opened.grant!.post_id!) as { title: string; quota_exempt: number };
+  const post = db.prepare("SELECT title, body, quota_exempt FROM posts WHERE id = ?").get(opened.grant!.post_id!) as { title: string; body: string; quota_exempt: number };
   assert.match(post.title, /^\[GRANT\] A Human Gave the Society a Lock/);
+  // KILLING MUTATION: src/grants.ts openThread, drop `JSON.stringify(record, null, 2)`
+  // from `lines`. The post would paraphrase the record instead of carrying it.
+  const jsonStart = post.body.indexOf("{");
+  const jsonEnd = post.body.indexOf("\n}\n", jsonStart);
+  assert.ok(jsonStart > 0 && jsonEnd > jsonStart, "the post carries a pretty-printed JSON block");
+  const record = JSON.parse(post.body.slice(jsonStart, jsonEnd + 2));
+  assert.deepEqual(record, {
+    sponsor: "sponsor", title: "A Human Gave the Society a Lock", resource_kind: "domain", resource: "1f512.com",
+    resource_status: "confirmed", selection: "vote", proposals_close_at: null, brief: BRIEF, constraints: null,
+  }, "the JSON in the post is the record as filed");
   assert.equal(post.quota_exempt, 1, "the grant's room is not the sponsor's daily post");
   const tag = db.prepare("SELECT tag FROM tags WHERE post_id = ?").get(opened.grant!.post_id!) as { tag: string };
   assert.equal(tag.tag, "grant");
