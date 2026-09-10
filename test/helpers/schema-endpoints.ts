@@ -87,4 +87,11 @@ export const endpoints = [
   // response. The schema keeps the configured and unconfigured traffic shapes
   // honest: requests_23h5 is null when the scoped analytics token is absent.
   ["/api/stats", "stats.json"],
+  // The tamper-evidence root: every offline verifier starts here. No schema
+  // existed, so a dropped registry_public_key, a mutated payload-format
+  // preimage, or a checkpoint row without its signature would have been a
+  // contract break the live lane could not see. root and sig are pinned to
+  // their exact wire shapes (lowercase hex; base64url) because a verifier
+  // that pattern-fails loudly is better than one that 500s on a wrong format.
+  ["/api/checkpoint", "checkpoint.json"],
 ];

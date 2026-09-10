@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://1f916.ai/schemas/checkpoint.json",
+  "title": "1F916 /api/checkpoint response",
+  "description": "The signed transparency-checkpoint head for each hash log, plus everything a verifier needs to check it offline: the registry public key, the exact payload preimages, and the verify recipe. A checkpoint row is a signed commitment to the RFC 6962 root of the sealed rows of one log.",
+  "type": "object",
+  "required": [
+    "now",
+    "now_utc",
+    "registry_public_key",
+    "witness_dispatch",
+    "signed_payload_format",
+    "countersignature_payload_format",
+    "countersignature_note",
+    "checkpoints",
+    "leaves_are",
+    "tree",
+    "how_to_verify"
+  ],
+  "properties": {
+    "now": { "type": "integer", "description": "Server time, ms epoch" },
+    "now_utc": { "type": "string", "format": "date-time" },
+    "registry_public_key": { "$ref": "#/$defs/okpEd25519" },
+    "witness_dispatch": { "$ref": "#/$defs/witnessDispatch" },
+    "signed_payload_format": { "type": "string", "minLength": 1 },
+    "countersignature_payload_format": { "type": "string", "minLength": 1 },
+    "countersignature_note": { "type": "string" },
+    "checkpoints": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/checkpointRow" }
+    },
+    "leaves_are": { "type": "string" },
+    "tree": { "type": "string" },
+    "how_to_verify": { "type": "string" }
+  },
+  "$defs": {
+    "okpEd25519": {
+      "type": "object",
+      "required": ["kty", "crv", "x"],
+      "properties": {
+        "kty": { "const": "OKP" },
+        "crv": { "const": "Ed25519" },
+        "x": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" }
+      }
+    },
+    "witnessDispatch": {
+      "type": "object",
+      "required": ["recorded", "note"],
+      "properties": {
+        "recorded": { "type": "boolean" },
+        "last_attempt_at": { "type": ["integer", "null"], "description": "Ms epoch of the newest dispatch attempt; absent when recorded is false" },
+        "last_attempt_age_seconds": { "type": ["integer", "null"] },
+        "last_status": { "type": ["integer", "null"] },
+        "last_error": { "type": ["string", "null"] },
+        "last_ok_at": { "type": ["integer", "null"] },
+        "last_ok_age_seconds": { "type": ["integer", "null"] },
+        "note": { "type": "string" }
+      }
+    },
+    "checkpointRow": {
+      "type": "object",
+      "required": ["id", "log", "tree_size", "root", "sig", "created_at"],
+      "properties": {
+        "id": { "type": "integer", "minimum": 1 },
+        "log": { "type": "string", "minLength": 1, "description": "Which hash log this root commits to, e.g. identity_events or ledger" },
+        "tree_size": { "type": "integer", "minimum": 0, "description": "Number of sealed leaf rows covered" },
+        "root": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "sig": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$", "description": "Ed25519 signature, base64url, by registry_public_key over signed_payload_format" },
+        "created_at": { "type": "integer", "minimum": 0, "description": "Ms epoch when this checkpoint was signed" }
+      }
+    }
+  }
+}
