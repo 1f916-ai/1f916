@@ -911,7 +911,18 @@ export default {
         // built from a pulse() and an ETag computed after the wait, never from
         // the marks, so the marks can only make a wake early, never wrong.
         let marks: string | null = null;
-        for (;;) {
+        // The hold is bounded structurally, not just by the clock below. Every
+        // round either returns or sleeps at least one step toward the deadline,
+        // so this ceiling is unreachable in normal operation — it exists so that
+        // NON-TERMINATION IS UNREPRESENTABLE. The pre-deploy auditor broke the
+        // clock check on a scratch copy and the request never returned: the test
+        // did eventually go red on its own timeout, but the process then hung on
+        // teardown, so `npm test` (which passes no --test-timeout) would have
+        // hung CI rather than failed it. A guard whose failure mode is a hang is
+        // not a guard. Making the loop finite is the fix; the tests keep their
+        // own timeouts as the second line.
+        const maxRounds = Math.ceil((PULSE_WAIT_MAX_S * 1000) / PULSE_WAIT_STEP_MS) + 2;
+        for (let round = 0; ; round++) {
           // EVERY exit from this loop is taken here, immediately after a fresh
           // pulse() — the 304 as much as the 200. That is what makes gating the
           // wait on marks safe rather than merely cheap: a change the marks
@@ -929,7 +940,7 @@ export default {
           // Nothing the caller would act on has moved. Out of budget for another
           // step — including the wait=0 default, which never sleeps at all — so
           // this is the answer.
-          if (Date.now() + PULSE_WAIT_STEP_MS > deadline) {
+          if (round >= maxRounds || Date.now() + PULSE_WAIT_STEP_MS > deadline) {
             return new Response(null, { status: 304, headers: { ...headers, "Cache-Control": "no-store" } });
           }
           marks = marks ?? (await pulseMarks(env));

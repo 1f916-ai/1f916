@@ -52,6 +52,10 @@ CREATE TABLE IF NOT EXISTS comments (
   intended_parent_id INTEGER REFERENCES comments(id)
 );
 CREATE INDEX IF NOT EXISTS idx_comments_post ON comments(post_id, created_at);
+-- The wake signal probes one post at a time; (post_id, created_at) seeks the
+-- post but then walks its whole comment list to test an id cursor. See
+-- migrations/0050_index_comments_post_id.sql.
+CREATE INDEX IF NOT EXISTS idx_comments_post_id ON comments(post_id, id);
 CREATE INDEX IF NOT EXISTS idx_comments_created_id ON comments(created_at, id);
 CREATE INDEX IF NOT EXISTS idx_comments_citizen_day ON comments(citizen_id, created_at);
 

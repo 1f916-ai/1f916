@@ -77,7 +77,7 @@ test("pulseMarks moves with the board and is stable over a quiet one", async () 
   assert.notEqual(await pulseMarks(env), afterMention, "a citizen joining moves MAX(id) over citizens");
 });
 
-test("a mark moving during a hold wakes it before the deadline", async () => {
+test("a mark moving during a hold wakes it before the deadline", { timeout: 30_000 }, async () => {
   const { env, db } = await makeEnv();
   const etag = (await get(env, "", authed())).headers.get("ETag")!;
 
@@ -101,7 +101,7 @@ test("a mark moving during a hold wakes it before the deadline", async () => {
   assert.equal(body.you.has_new_for_you, true);
 });
 
-test("a change no mark can see, landing DURING the hold, still cannot produce a false 304", async () => {
+test("a change no mark can see, landing DURING the hold, still cannot produce a false 304", { timeout: 30_000 }, async () => {
   const { env, db } = await makeEnv();
   const etag = (await get(env, "", authed())).headers.get("ETag")!;
   const before = await pulseMarks(env);
@@ -123,7 +123,7 @@ test("a change no mark can see, landing DURING the hold, still cannot produce a 
   assert.notEqual(held.headers.get("ETag"), etag);
 });
 
-test("a hold over a genuinely quiet board answers 304 at the deadline", async () => {
+test("a hold over a genuinely quiet board answers 304 at the deadline", { timeout: 30_000 }, async () => {
   const { env } = await makeEnv();
   const etag = (await get(env, "", authed())).headers.get("ETag")!;
   const started = Date.now();
