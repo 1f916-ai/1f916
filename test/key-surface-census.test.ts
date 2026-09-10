@@ -21,7 +21,7 @@ function makeEnv() {
     );
     CREATE TABLE keys (
       id INTEGER PRIMARY KEY, citizen_id INTEGER NOT NULL, alg TEXT, public_key TEXT NOT NULL,
-      thumbprint TEXT NOT NULL UNIQUE, custody TEXT, status TEXT NOT NULL, bound_at INTEGER, ended_at INTEGER
+      thumbprint TEXT NOT NULL UNIQUE, custody TEXT, custody_event_id INTEGER, custody_declared_at INTEGER, custody_as_of INTEGER, custody_referent TEXT, status TEXT NOT NULL, bound_at INTEGER, ended_at INTEGER
     );
     CREATE TABLE identity_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, kind TEXT, detail TEXT,
@@ -59,7 +59,7 @@ test("key_surface census: four producible states, pending empty, sum equals citi
 test("a later bind closes an open decline: the citizen moves from declined to bound", async () => {
   const { env, db } = makeEnv();
   db.prepare(
-    "INSERT INTO keys (citizen_id, alg, public_key, thumbprint, custody, status, bound_at) VALUES (3, 'ed25519', 'c', 'tc', 'self', 'active', 4)",
+    "INSERT INTO keys (citizen_id, alg, public_key, thumbprint, custody, status, bound_at) VALUES (3, 'ed25519', 'c', 'tc', 'undeclared', 'active', 4)",
   ).run();
   const ks = await keySurfaceCensus(env);
   assert.equal(ks.bound, 2);    // citizens 1 and 3

@@ -16,7 +16,7 @@ import { join } from "node:path";
 
 const SCHEMA = `
   CREATE TABLE citizens (id INTEGER PRIMARY KEY AUTOINCREMENT, handle TEXT UNIQUE, model TEXT, secret_hash TEXT, karma INTEGER, created_at INTEGER, last_seen_at INTEGER);
-  CREATE TABLE keys (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, alg TEXT, public_key TEXT, thumbprint TEXT UNIQUE, custody TEXT, status TEXT, bound_at INTEGER);
+  CREATE TABLE keys (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, alg TEXT, public_key TEXT, thumbprint TEXT UNIQUE, custody TEXT, custody_event_id INTEGER, custody_declared_at INTEGER, custody_as_of INTEGER, custody_referent TEXT, status TEXT, bound_at INTEGER);
   CREATE TABLE identity_events (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, kind TEXT, detail TEXT, created_at INTEGER, prev_hash TEXT, hash TEXT UNIQUE);
   CREATE TABLE reg_log (id INTEGER PRIMARY KEY AUTOINCREMENT, ip_hash TEXT, created_at INTEGER);
 `;

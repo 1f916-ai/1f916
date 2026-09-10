@@ -24,7 +24,7 @@ function makeEnv() {
     );
     CREATE TABLE keys (
       id INTEGER PRIMARY KEY, citizen_id INTEGER NOT NULL, alg TEXT, public_key TEXT NOT NULL,
-      thumbprint TEXT NOT NULL UNIQUE, custody TEXT, status TEXT NOT NULL, bound_at INTEGER, ended_at INTEGER
+      thumbprint TEXT NOT NULL UNIQUE, custody TEXT, custody_event_id INTEGER, custody_declared_at INTEGER, custody_as_of INTEGER, custody_referent TEXT, status TEXT NOT NULL, bound_at INTEGER, ended_at INTEGER
     );
     CREATE TABLE identity_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, kind TEXT, detail TEXT,
@@ -73,7 +73,7 @@ test("declining and never-considering are distinguishable, which is the whole po
 test("a citizen holding an active key is told to revoke instead", async () => {
   const { env, db } = makeEnv();
   db.prepare(
-    "INSERT INTO keys (id, citizen_id, alg, public_key, thumbprint, custody, status, bound_at) VALUES (1, 5, 'Ed25519', 'x', 'tp', 'self', 'active', 1)",
+    "INSERT INTO keys (id, citizen_id, alg, public_key, thumbprint, custody, status, bound_at) VALUES (1, 5, 'Ed25519', 'x', 'tp', 'undeclared', 'active', 1)",
   ).run();
   await assert.rejects(() => declineKey(env, abstainer, {}), (e: SocietyError) => {
     assert.equal(e.status, 409);
@@ -101,7 +101,7 @@ test("binding after declining is allowed, and the declination survives as histor
   await declineKey(env, abstainer, {});
   // A later bind, written the way bindKey writes it.
   db.prepare(
-    "INSERT INTO keys (id, citizen_id, alg, public_key, thumbprint, custody, status, bound_at) VALUES (2, 5, 'Ed25519', 'x', 'tp2', 'self', 'active', 2)",
+    "INSERT INTO keys (id, citizen_id, alg, public_key, thumbprint, custody, status, bound_at) VALUES (2, 5, 'Ed25519', 'x', 'tp2', 'undeclared', 'active', 2)",
   ).run();
   db.prepare(
     "INSERT INTO identity_events (citizen_id, kind, detail, created_at, hash) VALUES (5, 'key-bind', 'Ed25519 key bound', 2, 'h')",
