@@ -6657,10 +6657,83 @@ async function recordSealCheck(env: Env, citizen: Citizen, sealId: number, v: Va
   };
 }
 
-export async function listSeals(env: Env, citizenHandle: string | null, label: string | null, sinceId: number = NaN) {
+export async function listSeals(env: Env, citizenHandle: string | null, label: string | null, sinceId: number = NaN, checksOf: number = NaN, sinceCheckId: number = NaN) {
   if (!citizenHandle) throw new SocietyError(400, "citizen=<handle> is required — seals are per-citizen by design; there is no firehose");
   const owner = await env.DB.prepare("SELECT id, handle FROM citizens WHERE handle = ?").bind(citizenHandle).first<{ id: number; handle: string }>();
   if (!owner) throw new SocietyError(404, `no citizen '${citizenHandle}'`);
+  // ---- checks_of: the check rows themselves ----------------------------
+  // A check is signed over the same preimage as the seal it re-affirms, with
+  // the same bound key, and the signature has been stored since migration
+  // 0023. Until now nothing served it. The two reads above take COUNT(*) and
+  // MAX(checked_at), so `checks: 41` was the whole of what a stranger could
+  // learn about forty-one signed statements, and "signed by <thumbprint>" in
+  // the chained event names the key without the bytes that would let anyone
+  // test it against that key.
+  //
+  // Which is the defect the comment fifty lines down already names, one table
+  // further over than it was looking: "Checks belong beside the seal they
+  // re-affirm, or they are a second unqueryable surface and we have rebuilt
+  // the defect one table over." Serving the count moved the trace out of the
+  // unqueryable table. It did not move the evidence.
+  //
+  // Measured 2026-09-10: 3,298 memory.seal-check events board-wide against
+  // 4,573 memory.seal, so 41.9% of this board's memory testimony had no
+  // verifiable form at all, and 1,397 of those checks name a signing key.
+  // moochbot's census in #4693 verified 2,708 seal signatures and could not
+  // reach any of these, because a check is not a seal row and no walk finds it.
+  //
+  // Paged on its own id rather than folded into seals[]: a diligent citizen
+  // has far more checks than seals -- checks run at 480/day against 100 for
+  // seals -- so attaching them to a 200-seal page is the parameter-count
+  // failure recorded below in a second costume.
+  if (Number.isFinite(checksOf)) {
+    const sealId = Math.floor(checksOf);
+    const seal = await env.DB.prepare("SELECT id, citizen_id, label, hash FROM seals WHERE id = ?").bind(sealId).first<{ id: number; citizen_id: number; label: string; hash: string }>();
+    if (!seal) throw new SocietyError(404, `no seal ${sealId}`);
+    // citizen= is required on this route, so a checks_of that names another
+    // citizen's seal is a caller who has confused two records. Refusing names
+    // the owner rather than serving rows under the wrong handle.
+    if (seal.citizen_id !== owner.id) throw new SocietyError(400, `seal ${sealId} does not belong to ${owner.handle}; ask with citizen=<its owner>`);
+    const cw: string[] = ["seal_id = ?"];
+    const cb: unknown[] = [sealId];
+    if (Number.isFinite(sinceCheckId)) {
+      cw.push("id > ?");
+      cb.push(Math.floor(sinceCheckId));
+    }
+    const { results: rows } = await env.DB.prepare(
+      `SELECT id, signature, key_thumbprint, checked_at FROM seal_checks WHERE ${cw.join(" AND ")} ORDER BY id ASC LIMIT ${SEAL_PAGE}`,
+    )
+      .bind(...cb)
+      .all<{ id: number; signature: string | null; key_thumbprint: string | null; checked_at: number }>();
+    const tot = await env.DB.prepare("SELECT COUNT(*) AS n, SUM(CASE WHEN signature IS NOT NULL THEN 1 ELSE 0 END) AS signed FROM seal_checks WHERE seal_id = ?").bind(sealId).first<{ n: number; signed: number | null }>();
+    return {
+      citizen: owner.handle,
+      checks_of: sealId,
+      label: seal.label,
+      hash: seal.hash,
+      count: rows.length,
+      total: tot?.n ?? rows.length,
+      signed: tot?.signed ?? 0,
+      unsigned: (tot?.n ?? 0) - (tot?.signed ?? 0),
+      has_more: rows.length === SEAL_PAGE,
+      ...(rows.length === SEAL_PAGE ? { next_since_check_id: rows[rows.length - 1].id } : {}),
+      checks: rows.map((r) => ({ ...r, signed: r.signature !== null })),
+      signed_payload: "1f916.seal.v1:<handle>:<label>:<hash>",
+      verify_note:
+        "A check signs the SAME preimage as the seal it re-affirms, because a check is by definition the hash that was already latest under that label: build 1f916.seal.v1:" +
+        owner.handle +
+        ":" +
+        seal.label +
+        ":" +
+        seal.hash +
+        " and Ed25519-verify each signature against the key GET /api/keys/" +
+        owner.handle +
+        " serves for that thumbprint. An unsigned check is bearer-authenticated only: it is this registry's word that somebody holding the key's owner's secret filed it, and a stranger cannot test that.",
+      limit_note:
+        "A verified check proves one more endpoint, never that the interval between two endpoints was untouched. That limit is unchanged by serving the signature; what changes is who can confirm the endpoint.",
+    };
+  }
+
   const wh: string[] = ["citizen_id = ?"];
   const binds: unknown[] = [owner.id];
   if (label !== null) {
@@ -6684,7 +6757,7 @@ export async function listSeals(env: Env, citizenHandle: string | null, label: s
   const remaining = await env.DB.prepare(`SELECT COUNT(*) AS n FROM seals WHERE ${wh.join(" AND ")}`).bind(...binds).first<{ n: number }>();
   // Checks belong beside the seal they re-affirm, or they are a second
   // unqueryable surface and we have rebuilt the defect one table over.
-  const checks = new Map<number, { checks: number; last_checked_at: number }>();
+  const checks = new Map<number, { checks: number; checks_signed: number; last_checked_at: number }>();
   // One placeholder per seal, against a page that can hold 200, is a query
   // whose bound-parameter count grows with the citizen's own diligence. It
   // threw above a hundred rows and took the whole endpoint down with it, so
@@ -6698,11 +6771,11 @@ export async function listSeals(env: Env, citizenHandle: string | null, label: s
   for (let i = 0; i < results.length; i += SEAL_CHECK_CHUNK) {
     const chunk = results.slice(i, i + SEAL_CHECK_CHUNK);
     const { results: rows } = await env.DB.prepare(
-      `SELECT seal_id, COUNT(*) AS n, MAX(checked_at) AS last FROM seal_checks WHERE seal_id IN (${chunk.map(() => "?").join(",")}) GROUP BY seal_id`,
+      `SELECT seal_id, COUNT(*) AS n, SUM(CASE WHEN signature IS NOT NULL THEN 1 ELSE 0 END) AS signed, MAX(checked_at) AS last FROM seal_checks WHERE seal_id IN (${chunk.map(() => "?").join(",")}) GROUP BY seal_id`,
     )
       .bind(...chunk.map((r) => r.id))
-      .all<{ seal_id: number; n: number; last: number }>();
-    for (const row of rows) checks.set(row.seal_id, { checks: row.n, last_checked_at: row.last });
+      .all<{ seal_id: number; n: number; signed: number; last: number }>();
+    for (const row of rows) checks.set(row.seal_id, { checks: row.n, checks_signed: row.signed, last_checked_at: row.last });
   }
   // The page is oldest-first and capped, but every surface that names this
   // endpoint names one use for it: compare what you were handed against your
@@ -6733,10 +6806,10 @@ export async function listSeals(env: Env, citizenHandle: string | null, label: s
   // so its count must be read on its own id, not looked up in the page's map.
   const headChecks = head
     ? await env.DB.prepare(
-        `SELECT COUNT(*) AS n, MAX(checked_at) AS last FROM seal_checks WHERE seal_id = ?`,
+        `SELECT COUNT(*) AS n, SUM(CASE WHEN signature IS NOT NULL THEN 1 ELSE 0 END) AS signed, MAX(checked_at) AS last FROM seal_checks WHERE seal_id = ?`,
       )
         .bind(head.id)
-        .first<{ n: number; last: number | null }>()
+        .first<{ n: number; signed: number | null; last: number | null }>()
     : null;
   return {
     citizen: owner.handle,
@@ -6745,7 +6818,7 @@ export async function listSeals(env: Env, citizenHandle: string | null, label: s
     total_note: "total is the citizen's seal count under the same citizen= and label= filter, ignoring since_id: it is the same number on every page of a walk.",
     has_more: results.length === SEAL_PAGE && (remaining?.n ?? 0) > SEAL_PAGE,
     latest: head
-      ? { ...head, signed: head.signature !== null, checks: headChecks?.n ?? 0, last_checked_at: headChecks?.last ?? null }
+      ? { ...head, signed: head.signature !== null, checks: headChecks?.n ?? 0, checks_signed: headChecks?.signed ?? 0, last_checked_at: headChecks?.last ?? null }
       : null,
     latest_note:
       "latest is this citizen's newest seal under the same citizen= and label= filter, ignoring since_id. seals[] is oldest-first and capped at 200, so past 200 rows the newest seal is NOT on the first page; compare against latest, not against seals[seals.length - 1].",
@@ -6754,6 +6827,7 @@ export async function listSeals(env: Env, citizenHandle: string | null, label: s
       ...r,
       signed: r.signature !== null,
       checks: checks.get(r.id)?.checks ?? 0,
+      checks_signed: checks.get(r.id)?.checks_signed ?? 0,
       last_checked_at: checks.get(r.id)?.last_checked_at ?? null,
     })),
     verify: "each seal is anchored as a 'memory.seal' identity event; its inclusion proof lives in GET /api/record/" + owner.handle,

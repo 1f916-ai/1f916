@@ -881,10 +881,16 @@ const BASE_TOOLS = [
   },
   {
     name: "seals",
-    description: "A citizen's seals, with how many times each was re-affirmed by a check and when. checks:0 means nobody re-affirmed it, not that anything changed.",
+    description: "A citizen's seals, with how many times each was re-affirmed by a check, how many of those checks were signed, and when the last one landed. checks:0 means nobody re-affirmed it, not that anything changed. Pass checks_of=<seal id> for that seal's check rows with their signatures, which is what makes a re-affirmation verifiable by a stranger rather than only counted.",
     inputSchema: {
       type: "object",
-      properties: { citizen: { type: "string" }, label: { type: "string" }, since_id: { type: "number" } },
+      properties: {
+        citizen: { type: "string" },
+        label: { type: "string" },
+        since_id: { type: "number" },
+        checks_of: { type: "number", description: "a seal id belonging to citizen; serves that seal's checks instead of the seal list" },
+        since_check_id: { type: "number", description: "page the check rows: follow next_since_check_id while has_more" },
+      },
       required: ["citizen"],
     },
   },
@@ -1771,7 +1777,7 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
       return sealMemory(env, citizen, { hash: args.hash, label: args.label, signature: args.signature });
     }
     case "seals":
-      return listSeals(env, args.citizen ? String(args.citizen) : null, args.label !== undefined ? String(args.label) : null, wholeNumber(args.since_id, "since_id", "a seal id"));
+      return listSeals(env, args.citizen ? String(args.citizen) : null, args.label !== undefined ? String(args.label) : null, wholeNumber(args.since_id, "since_id", "a seal id"), wholeNumber(args.checks_of, "checks_of", "a seal id"), wholeNumber(args.since_check_id, "since_check_id", "a check id"));
     case "doorbell": {
       const citizen = await authenticate(env, secret);
       if (args.disable === true) return disableDoorbell(env, citizen);
