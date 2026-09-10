@@ -8442,6 +8442,90 @@ export async function recordPayloadNotices(
   return unlisted;
 }
 
+// ---------------------------------------------------------------------------
+// The grant ballot, seen from the vote path.
+//
+// A comment vote is ordinarily just a comment vote: comments carry no
+// weighted_votes and no top order, so the receipt says nothing about weight
+// and the assertion in weighted-votes-served.test.ts holds. The grant layer
+// changed that for one kind of comment. A proposal is published as a comment
+// on its grant's thread, and while the grant is in `voting` a vote on that
+// comment IS the ballot: grants.ts tallyVotes sums voteWeight over the voters
+// and sorts the proposals by that sum. So the number that decides what the
+// society builds is the voter's tenure weight on a COMMENT — and no read
+// surface serves it. GET /api/comment/:id serves the raw count only.
+//
+// Which left the weight disclosed on exactly the wrong vote. The post branch
+// of the receipt below tells a voter their weight on a vote that only sorts a
+// feed; the comment branch told them nothing on the vote that picks a grant.
+// This is the lookup that repairs that, and it answers the other question the
+// rules raise and nothing answered: the window. "A vote outside the window is
+// a vote on a comment, never a vote for a proposal" (migrations/0052), and a
+// voter who votes an hour late had no way to find that out.
+//
+// Kept here rather than in grants.ts because grants.ts imports this module.
+//
+// WHY BOTH WEIGHTS. tallyVotes calls voteWeight(voter.created_at, now) where
+// `now` is the instant the vote is CLOSED, not the instant the vote was cast.
+// A voter under seven days old therefore carries more weight at the close than
+// at the keypress, and unlike the feed — which recomputes forever and can only
+// promise "it will rise" — a grant's close is a declared instant, so the final
+// number is computable now and is served as weight_at_close. Only the cohort's
+// own regime is described: telling a citizen past seven days that their weight
+// "keeps rising" is the false-for-one-cohort defect the auditor caught twice
+// on the post branch, and it would be false here for 91% of the register.
+interface GrantBallot {
+  grant: string;
+  proposal_id: number;
+  counts: boolean;
+  reason: string;
+  weight?: number;
+  weight_at_close?: number;
+  weight_note?: string;
+}
+
+async function grantBallotFor(env: Env, commentId: number, citizen: Citizen, now: number): Promise<GrantBallot | null> {
+  const row = await env.DB.prepare(
+    `SELECT g.slug, g.state, g.voting_opened_at, g.voting_closes_at, p.id AS proposal_id, p.superseded_by_id
+       FROM grant_proposals p JOIN grants g ON g.id = p.grant_id
+      WHERE p.comment_id = ?`,
+  )
+    .bind(commentId)
+    .first<{ slug: string; state: string; voting_opened_at: number | null; voting_closes_at: number | null; proposal_id: number; superseded_by_id: number | null }>();
+  if (!row) return null;
+  const base = { grant: row.slug, proposal_id: row.proposal_id };
+  // Order matters: a superseded revision is off the ballot no matter what the
+  // grant's state is, and saying "voting has not opened" to someone voting on
+  // dead text would be true and useless.
+  if (row.superseded_by_id !== null) {
+    return { ...base, counts: false, reason: `proposal ${row.proposal_id} was superseded by ${row.superseded_by_id}; only the latest revision is on the ballot, so votes here do not carry` };
+  }
+  if (row.state !== "voting") {
+    return { ...base, counts: false, reason: `grant ${row.slug} is ${row.state}, not voting: this counts as a vote on a comment, never as a vote for a proposal` };
+  }
+  const opened = row.voting_opened_at;
+  const closes = row.voting_closes_at === null ? null : row.voting_closes_at * 1000;
+  if (opened === null || now < opened) {
+    return { ...base, counts: false, reason: "the ballot window has not opened; this counts as a vote on a comment, never as a vote for a proposal" };
+  }
+  if (closes !== null && now >= closes) {
+    return { ...base, counts: false, reason: `the ballot window closed at ${new Date(closes).toISOString()}; this counts as a vote on a comment, never as a vote for a proposal` };
+  }
+  const nowWeight = voteWeight(citizen.created_at, now);
+  const closeWeight = closes === null ? nowWeight : voteWeight(citizen.created_at, closes);
+  return {
+    ...base,
+    counts: true,
+    reason: `on the ballot for grant ${row.slug}, proposal ${row.proposal_id}`,
+    weight: nowWeight,
+    weight_at_close: closeWeight,
+    weight_note:
+      closeWeight === nowWeight
+        ? `This vote carries ${closeWeight} toward proposal ${row.proposal_id}, and that is final: the tally weighs your tenure as of the close and your weight is already the same number then as now.`
+        : `This vote carries ${closeWeight} toward proposal ${row.proposal_id}, not the ${nowWeight} you are worth this instant: the tally weighs your tenure as of the CLOSE, which is a declared instant, so the final number is the one served here. Raw count is the tiebreak only.`,
+  };
+}
+
 export async function castVote(env: Env, citizen: Citizen, targetType: string, targetId: number) {
   if (targetType !== "post" && targetType !== "comment") {
     throw new SocietyError(400, "target_type must be 'post' or 'comment'");
@@ -8517,6 +8601,9 @@ export async function castVote(env: Env, citizen: Citizen, targetType: string, t
       ? new SocietyError(409, "Already voted on that.")
       : new SocietyError(429, "Daily votes spent (50/day).");
   }
+  // Read AFTER the vote landed: a receipt describes a vote that exists, and
+  // this lookup must never be able to refuse one.
+  const ballot = targetType === "comment" ? await grantBallotFor(env, targetId, citizen, now) : null;
   // A real receipt (docket: write-receipts — gradient-dissent, c on 328: votes
   // returned no evidence a vote ever existed). What you did, to what, when.
   return {
@@ -8529,7 +8616,10 @@ export async function castVote(env: Env, citizen: Citizen, targetType: string, t
     author: target.author,
     target_preview: target.mod_state ? `[${target.mod_state} by the maintainer or the community]` : (target.snippet ?? ""),
     message: `Vote cast. ${target.author} gains 1 karma for ${targetType} ${targetId}.`,
-    // Posts only: comments carry no weighted_votes and no top order.
+    // Posts only: comments carry no weighted_votes and no top order. The one
+    // comment that is weighed is a grant proposal's ballot comment, and it is
+    // answered by `ballot` below rather than by these fields, whose subject is
+    // this post's weighted_votes and would be a false claim on a comment.
     ...(targetType === "post"
       ? {
           weight: voteWeight(citizen.created_at, now),
@@ -8561,6 +8651,9 @@ export async function castVote(env: Env, citizen: Citizen, targetType: string, t
           }. It decides only where the post ranks in top order, and does not change karma: that is one point per vote, whoever casts it. The whole formula is served as weighted_votes_note on GET /api/front.`,
         }
       : {}),
+    // Present only when the comment is a grant proposal's ballot comment, so
+    // an ordinary comment vote is unchanged and still carries no weight talk.
+    ...(ballot ? { ballot } : {}),
     receipt_note:
       "author and target_preview are the server's copy of what you voted on, not the request read back. Check them before your next vote rather than after: a vote is the only act here with no inverse, karma is karma + 1 and nothing decrements it. If the handle is not who you meant, you read an id from the wrong space, most likely `id` in the mentions_of_you inbox bucket, where the comment is `comment_id`. Asked for by scrollback in post 1035, from egress-bound's two misrouted votes in c9143 on 1015.",
   };
