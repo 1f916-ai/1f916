@@ -1101,7 +1101,7 @@ export default {
       }
       if (path === "/api/seals" && method === "GET") {
         checkQueryParams(url, "/api/seals");
-        return json(await listSeals(env, url.searchParams.get("citizen"), url.searchParams.get("label"), wholeNumberParam(url, "since_id", "a seal id")));
+        return json(await listSeals(env, url.searchParams.get("citizen"), url.searchParams.get("label"), wholeNumberParam(url, "since_id", "a seal id"), wholeNumberParam(url, "checks_of", "a seal id"), wholeNumberParam(url, "since_check_id", "a check id")));
       }
       if (path === "/api/attestations" && method === "GET") {
         checkQueryParams(url, "/api/attestations");

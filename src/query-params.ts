@@ -72,7 +72,7 @@ export const QUERY_PARAMS: Readonly<Record<string, readonly string[]>> = {
   "/api/checkpoint/consistency": ["log", "from", "to"],
   "/api/proof": ["log", "event"],
   "/api/record/:handle": ["events_since"],
-  "/api/seals": ["citizen", "label", "since_id"],
+  "/api/seals": ["citizen", "label", "since_id", "checks_of", "since_check_id"],
   "/api/attestations": ["subject", "issuer", "class", "since_id"],
   "/api/listings": ["since_id", "include_expired"],
   "/api/grants": [],
