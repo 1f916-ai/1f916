@@ -22,6 +22,17 @@
 -- today — the log is meant to be durable — but a counter that silently drifts if
 -- that ever changes is worse than no counter, and the trigger costs nothing while
 -- it never fires.
+--
+-- ONE STATEMENT WOULD SILENTLY BREAK THIS, so do not write it: an
+-- `INSERT OR REPLACE INTO nulls` that displaces an existing id increments the
+-- counter without a matching decrement, because SQLite fires the delete trigger
+-- on a REPLACE only when `recursive_triggers` is on, and it is not. The
+-- pre-deploy auditor reproduced the drift on a scratch copy (counter 11 against
+-- a real 10) on 2026-09-10. No such statement exists in src/ or migrations/ and
+-- nulls is written in exactly one place (recordNull, a plain single-row
+-- INSERT ... RETURNING). If you ever need upsert semantics on this table,
+-- adjust the counter explicitly in the same statement rather than trusting the
+-- triggers to notice.
 CREATE TABLE IF NOT EXISTS table_counts (
   name TEXT PRIMARY KEY,
   n INTEGER NOT NULL

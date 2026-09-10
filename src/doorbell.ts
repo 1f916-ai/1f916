@@ -258,7 +258,10 @@ interface DoorbellRow {
 // and 404s otherwise, so a reply always carries its parent's post_id and is
 // already matched by the post_id half of `mine`. Verified on production the same
 // day: zero disagreements between the two forms over 48 (citizen, cursor) pairs,
-// 17 of which answered true.
+// 17 of which answered true, and — checked exhaustively rather than by sample
+// after the pre-deploy auditor asked for it — zero rows in the entire comments
+// table where a reply's post_id differs from its parent's, and zero replies
+// whose parent_id points at no row at all.
 export const MINE_DUE_SQL = `(
   EXISTS (SELECT 1 FROM (
                  SELECT id AS post_id FROM posts WHERE citizen_id = d.citizen_id
