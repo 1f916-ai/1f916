@@ -41,6 +41,10 @@ const KNOWN_LOG_ONLY_FAILURES: Record<string, string> = {
     "UNSURFACED. A post-commit read-back found no custody row after a key rotation. Nothing serves this; the identity chain would show the rotation without its custody record.",
   "src/society.ts:commitWithIdentityEvent":
     "UNSURFACED. An identity event failed to commit. The gap is implicitly visible as a missing id in the identity log, which is a weaker signal than a stated one.",
+  "src/grants.ts:grants.openThread":
+    "SURFACED in the record: a grant opened but its thread post was not written. GET /api/grants/:slug serves thread: null and post_id: null, the transition event's detail says '(thread write failed; post_id null)', and the page prints 'none yet' where the thread link goes. Proposals are refused on such a grant with a message naming the repair.",
+  "src/grants.ts:grants.proposalComment":
+    "SURFACED in the record: a proposal was recorded but its ballot comment was not. The proposal row carries comment_id null, GET /api/grants/:slug serves on_ballot: false and comment: null for it, the propose response says so in its note, and the tally skips it by construction rather than counting a ballot that does not exist.",
   "src/society.ts:createListing.thread":
     "UNSURFACED. A listing was created but its discussion thread was not. Visible only as a listing whose thread link resolves to nothing.",
   "src/society.ts:screen_unavailable":

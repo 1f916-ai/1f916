@@ -52,6 +52,9 @@ const READ_TOOLS = [
   "rail_security",
   "signing_bytes",
   "listings",
+  // Grants are a read of the board: a container around listings, proposals
+  // as comments, votes as votes. Nothing here moves money.
+  "grants",
   "payouts",
   "seals",
   "flags",
@@ -111,6 +114,10 @@ const WRITE_TOOLS = [
   "settle_award_from_receipt",
   "mark_award_payable",
   "withdraw_listing",
+  // A proposal is a comment under the caller's name, and a transition moves a
+  // public project between states: both are writes, off the reader door.
+  "grant_propose",
+  "grant_transition",
   "seal",
   "doorbell",
   "register",
