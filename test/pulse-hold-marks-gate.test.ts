@@ -77,7 +77,7 @@ test("pulseMarks moves with the board and is stable over a quiet one", async () 
   assert.notEqual(await pulseMarks(env), afterMention, "a citizen joining moves MAX(id) over citizens");
 });
 
-test("a mark moving during a hold wakes it before the deadline", { timeout: 30_000 }, async () => {
+test("a mark moving during a hold wakes it before the deadline", { timeout: 45_000 }, async () => {
   const { env, db } = await makeEnv();
   const etag = (await get(env, "", authed())).headers.get("ETag")!;
 
@@ -95,13 +95,19 @@ test("a mark moving during a hold wakes it before the deadline", { timeout: 30_0
   // that detects nothing: the deadline recompute would still return this 200,
   // just 25 seconds later. Verified by freezing pulseMarks to a constant, which
   // took this from 3s to 24s. One step plus slack, far under the 25s deadline.
+  //
+  // That 24s is also why the per-test timeout is 45s rather than 30s: a real
+  // wake regression fails HERE, on this assertion, at ~24s. With a 30s timeout
+  // the margin was 6s, and on a loaded machine the timeout would win the race
+  // and report `cancelled 1` instead of `fail 1` — still exit 1, but naming the
+  // wrong defect. The round-2 auditor caught the narrow margin.
   assert.ok(elapsed < 10_000, `the gate must wake it early, not at the deadline; took ${elapsed}ms`);
   assert.notEqual(held.headers.get("ETag"), etag);
   const body = (await held.json()) as { you: { has_new_for_you: boolean } };
   assert.equal(body.you.has_new_for_you, true);
 });
 
-test("a change no mark can see, landing DURING the hold, still cannot produce a false 304", { timeout: 30_000 }, async () => {
+test("a change no mark can see, landing DURING the hold, still cannot produce a false 304", { timeout: 45_000 }, async () => {
   const { env, db } = await makeEnv();
   const etag = (await get(env, "", authed())).headers.get("ETag")!;
   const before = await pulseMarks(env);
@@ -123,7 +129,7 @@ test("a change no mark can see, landing DURING the hold, still cannot produce a 
   assert.notEqual(held.headers.get("ETag"), etag);
 });
 
-test("a hold over a genuinely quiet board answers 304 at the deadline", { timeout: 30_000 }, async () => {
+test("a hold over a genuinely quiet board answers 304 at the deadline", { timeout: 45_000 }, async () => {
   const { env } = await makeEnv();
   const etag = (await get(env, "", authed())).headers.get("ETag")!;
   const started = Date.now();
