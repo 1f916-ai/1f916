@@ -600,3 +600,121 @@ test("announceListings posts one record-only message per new listing and never s
     globalThis.fetch = originalFetch;
   }
 });
+
+// The 'mine' predicate (MINE_DUE_SQL), after the 2026-09-10 rewrite that took a
+// quiet doorbell from 43,206 rows read to 2.
+//
+// 'mine' was already tested above — the board-vs-inbox test covers a stranger on
+// MY post, my own comment on my own post, and the mention half. What no test
+// reached is the case the rewrite actually risked: a reply to MY COMMENT on
+// SOMEONE ELSE'S post, which is the only thing the deleted
+// `m.parent_id IN (...)` branch could match that the other two branches could
+// not obviously reach. That test passed green through this rewrite either way,
+// so it certified nothing about the deletion. That is the gap this fills.
+//
+// Why the quiet case is the expensive one, and why it is worse here than on
+// /api/pulse: ringDoorbells only UPDATEs a doorbell that was SELECTED as due, so
+// a 'mine' doorbell with nothing waiting never advances last_event_id. Its window
+// is not the cycle's five minutes, it is everything since its last actual ring,
+// growing without bound and re-scanned every five minutes by the cron.
+//
+// Four guarantees, each with the mutation that kills it:
+//
+// 1. A reply to MY COMMENT, on someone else's post, still rings me. This is the
+//    `m.parent_id IN (...)` branch that was deleted as redundant; it must
+//    survive via post_id. Killing mutation: delete the
+//    `UNION SELECT post_id FROM comments WHERE citizen_id = d.citizen_id` arm
+//    of `mine` — red.
+// 2. A comment on a post I AUTHORED rings me. Killing mutation: delete the
+//    `SELECT id AS post_id FROM posts WHERE citizen_id = d.citizen_id` arm — red.
+// 3. Two strangers talking somewhere I am no part of does NOT ring me, and
+//    neither does my own comment. Killing mutation: drop `WHERE citizen_id =
+//    d.citizen_id` from either arm, or drop `m.citizen_id != d.citizen_id` — red.
+// 4. A notified mention rings me even when the thread half is silent, and the
+//    `notified = 1` filter still binds. Killing mutation: drop `mn.notified = 1`
+//    — red.
+test("a 'mine' doorbell rings for threads I am party to and stays silent otherwise", async () => {
+  const schema = `
+    CREATE TABLE citizens (id INTEGER PRIMARY KEY, handle TEXT NOT NULL);
+    CREATE TABLE comments (id INTEGER PRIMARY KEY, post_id INTEGER, parent_id INTEGER, citizen_id INTEGER);
+    CREATE TABLE posts (id INTEGER PRIMARY KEY, citizen_id INTEGER);
+    CREATE TABLE mentions (id INTEGER PRIMARY KEY, citizen_id INTEGER, notified INTEGER);
+    CREATE TABLE listings (id INTEGER PRIMARY KEY, withdrawn_at INTEGER);
+    CREATE TABLE doorbells (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      citizen_id INTEGER NOT NULL UNIQUE,
+      url TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      challenge TEXT NOT NULL,
+      consecutive_failures INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT,
+      last_attempt_at INTEGER,
+      last_success_at INTEGER,
+      last_event_id INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      verified_at INTEGER,
+      verification_version INTEGER,
+      last_challenge_at INTEGER NOT NULL,
+      challenge_attempted_at INTEGER,
+      wake_on TEXT NOT NULL DEFAULT 'anything',
+      last_listing_id INTEGER NOT NULL DEFAULT 0,
+      last_mention_id INTEGER NOT NULL DEFAULT 0
+    );
+    INSERT INTO citizens VALUES (1, 'me'), (2, 'stranger'), (3, 'bystander');
+    -- post 10 is mine, posts 11 and 12 are the stranger's.
+    INSERT INTO posts VALUES (10, 1), (11, 2), (12, 2);
+    INSERT INTO doorbells (citizen_id, url, status, challenge, last_event_id, created_at, verification_version, last_challenge_at, wake_on, last_mention_id)
+      VALUES (1, 'https://me.example/ring', 'active', 'c1', 100, 0, 1, 0, 'mine', 100);
+  `;
+  // Each case gets a fresh env: a ring ADVANCES last_event_id, so reusing one
+  // would let case N's delivery silence case N+1 and pass for the wrong reason.
+  const run = async (rows: string) => {
+    const { env, db } = sqliteTestEnv(schema);
+    db.exec(rows);
+    const originalFetch = globalThis.fetch;
+    const rings: string[] = [];
+    globalThis.fetch = async (input) => {
+      rings.push(String(input));
+      return new Response(null, { status: 204 });
+    };
+    try {
+      const out = await ringDoorbells(env, 200, async () => "sig", "key", 0, 200);
+      return { out, rings };
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  };
+
+  // 1. A reply to my comment, on the stranger's post. parent_id = 150 is exactly
+  //    what the deleted branch used to match on; post_id must carry it now.
+  const reply = await run(`
+    INSERT INTO comments VALUES (150, 11, NULL, 1);
+    INSERT INTO comments VALUES (151, 11, 150, 2);
+  `);
+  assert.equal(reply.out.rung, 1, "a reply to my comment must ring me via post_id");
+  assert.deepEqual(reply.rings, ["https://me.example/ring"]);
+
+  // 2. A comment on a post I authored.
+  const onMyPost = await run("INSERT INTO comments VALUES (151, 10, NULL, 2);");
+  assert.equal(onMyPost.out.rung, 1, "a comment on my own post must ring me");
+
+  // 3. Two strangers on post 12, which I am no part of; then my own comment on
+  //    my own post, which is not news to me.
+  const elsewhere = await run(`
+    INSERT INTO comments VALUES (151, 12, NULL, 2);
+    INSERT INTO comments VALUES (152, 12, 151, 3);
+  `);
+  assert.deepEqual(elsewhere.out, { due: 0, rung: 0, failed: 0, disabled: 0 }, "not my thread, not my ring");
+  assert.deepEqual(elsewhere.rings, []);
+
+  const myOwn = await run("INSERT INTO comments VALUES (151, 10, NULL, 1);");
+  assert.equal(myOwn.out.rung, 0, "my own comment is not news to me");
+
+  // 4. The mention half: silent thread, one notified mention past the mark. The
+  //    unnotified one must NOT ring, or this fires on rows the inbox excludes.
+  const mention = await run("INSERT INTO mentions VALUES (150, 1, 1);");
+  assert.equal(mention.out.rung, 1, "a notified mention past the mark rings me");
+
+  const unnotified = await run("INSERT INTO mentions VALUES (150, 1, 0);");
+  assert.equal(unnotified.out.rung, 0, "notified = 0 must not ring");
+});

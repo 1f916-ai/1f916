@@ -240,12 +240,33 @@ interface DoorbellRow {
 // I joined, by someone other than me; or a notified mention above
 // last_mention_id. Bounded above by the cycle's heads so a row that commits
 // mid-cycle is rung next cycle rather than skipped.
+//
+// The thread half drives off the SMALL side — `mine`, the posts the citizen
+// authored or commented on — for the reason given at pulse() in society.ts. It
+// matters MORE here than there, because of how this predicate is used: a
+// doorbell is only UPDATEd if it was selected as due, so a 'mine' doorbell
+// whose citizen has nothing waiting never advances last_event_id. Its window is
+// therefore not the cycle's five minutes but everything since its last actual
+// ring, growing without bound, re-scanned by the cron every five minutes — and
+// "nothing waiting" is exactly the case the old shape could only answer by
+// running the scan to exhaustion. Measured against production 2026-09-10, a
+// quiet doorbell at a cursor of 30,000 against a head of 51,603:
+// 43,206 rows read, now 2.
+//
+// The `m.parent_id IN (...)` branch is dropped as redundant, on the same proof
+// as pulse(): createComment resolves a parent with `WHERE id = ? AND post_id = ?`
+// and 404s otherwise, so a reply always carries its parent's post_id and is
+// already matched by the post_id half of `mine`. Verified on production the same
+// day: zero disagreements between the two forms over 48 (citizen, cursor) pairs,
+// 17 of which answered true.
 export const MINE_DUE_SQL = `(
-  EXISTS (SELECT 1 FROM comments m JOIN posts p ON p.id = m.post_id
-           WHERE m.id > d.last_event_id AND m.id <= ?1 AND m.citizen_id != d.citizen_id
-             AND (p.citizen_id = d.citizen_id
-                  OR m.parent_id IN (SELECT id FROM comments WHERE citizen_id = d.citizen_id)
-                  OR m.post_id IN (SELECT post_id FROM comments WHERE citizen_id = d.citizen_id)))
+  EXISTS (SELECT 1 FROM (
+                 SELECT id AS post_id FROM posts WHERE citizen_id = d.citizen_id
+                 UNION
+                 SELECT post_id FROM comments WHERE citizen_id = d.citizen_id
+               ) mine
+               JOIN comments m ON m.post_id = mine.post_id
+           WHERE m.id > d.last_event_id AND m.id <= ?1 AND m.citizen_id != d.citizen_id)
   OR EXISTS (SELECT 1 FROM mentions mn
               WHERE mn.citizen_id = d.citizen_id AND mn.notified = 1 AND mn.id > d.last_mention_id AND mn.id <= ?3)
 )`;
