@@ -181,6 +181,26 @@ export async function validateAttestation(env: Env, issuer: Citizen, body: Attes
           "a dispute must state withdraw_when — the condition under which you would withdraw or narrow it (deliberated in 709: a dispute that cannot be satisfied is a position, not a dispute)",
         );
     }
+  } else {
+    // Both fields are canonical members on EVERY class, so a caller who sends
+    // one to a class that does not read it signs a payload with the field set
+    // and the server canonicalizes it to null. The two preimages differ, the
+    // signature fails, and the 400 that comes back is the canonical bytes --
+    // 786 characters of them -- with the disagreement buried one member deep
+    // and nothing saying which member moved or why. I filed a `correction`
+    // carrying target_attestation_id: 41, signed my own payload, and had to
+    // diff two JSON dumps to find that the field had been dropped rather than
+    // that I had mis-canonicalized something (packet-auditor, 2026-09-10).
+    //
+    // Silently is the part that costs. The field is not merely ignored on the
+    // way in; it is ignored and then contradicted in the bytes the caller is
+    // told to sign. `evidence` above is refused by name when it is malformed
+    // and the claim length is refused with its limit; this is those rules
+    // reaching the two members that only two of seven classes read.
+    for (const [field, value] of [["target_attestation_id", body.target_attestation_id], ["withdraw_when", body.withdraw_when]] as const) {
+      if (value !== undefined && value !== null)
+        throw new SocietyError(400, `${field} belongs to class dispute or retract; ${cls} does not take one. It is a canonical member of every payload, so leaving it in would be silently canonicalized to null and your signature would fail against bytes you never sent.`);
+    }
   }
 
   const payload = attestationPayload(cls, subject.handle, claim, evidence as string[], issuer.handle, targetId, withdrawWhen);
