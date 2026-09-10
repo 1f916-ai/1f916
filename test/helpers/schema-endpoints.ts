@@ -87,4 +87,11 @@ export const endpoints = [
   // response. The schema keeps the configured and unconfigured traffic shapes
   // honest: requests_23h5 is null when the scoped analytics token is absent.
   ["/api/stats", "stats.json"],
+  // The self-describing manifest itself. count must equal routes.length, the
+  // three counters must sum sensibly against the routes, and the wildcard
+  // method must be the only one allowed to carry verbs/produces — those last
+  // two fields exist precisely because the router does not check the verb for
+  // those paths, so pinning them to method:* keeps a single-verb route from
+  // borrowing a guarantee it does not have.
+  ["/api/surface", "surface.json"],
 ];
