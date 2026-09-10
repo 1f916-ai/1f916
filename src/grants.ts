@@ -600,13 +600,17 @@ export async function readGrant(env: Env, slug: string) {
     };
   });
 
-  type Tick = { at: number; kind: string; who: string; text: string; ref: string | null };
-  const timeline: Tick[] = [];
-  for (const e of events) timeline.push({ at: e.created_at, kind: e.kind, who: e.handle, text: e.detail, ref: `/api/events?kind=${e.kind}` });
-  for (const l of listings) timeline.push({ at: l.created_at, kind: "listing", who: l.funder, text: `listing ${l.id} posted under the grant: ${l.title}`, ref: `/api/listings/${l.id}` });
-  for (const s of submissions) timeline.push({ at: s.created_at, kind: "listing-submission", who: s.handle, text: `submission ${s.id} handed in on listing ${s.listing_id}`, ref: `/api/listings/${s.listing_id}` });
-  for (const a of awards) timeline.push({ at: a.awarded_at, kind: "listing-award", who: a.handle, text: `award on listing ${a.listing_id} to @${a.handle}, ${a.amount_atomic} atomic, now ${a.state}`, ref: `/api/listings/${a.listing_id}` });
-  timeline.sort((a, b) => a.at - b.at || a.kind.localeCompare(b.kind));
+  // Ties inside one millisecond are broken by chain order (the identity
+  // event id), never by kind name: two events written in one batch must read
+  // in the order they were chained.
+  type Tick = { at: number; kind: string; who: string; text: string; ref: string | null; seq: number };
+  const ticks: Tick[] = [];
+  for (const e of events) ticks.push({ at: e.created_at, kind: e.kind, who: e.handle, text: e.detail, ref: `/api/events?kind=${e.kind}`, seq: e.id });
+  for (const l of listings) ticks.push({ at: l.created_at, kind: "listing", who: l.funder, text: `listing ${l.id} posted under the grant: ${l.title}`, ref: `/api/listings/${l.id}`, seq: Number.MAX_SAFE_INTEGER });
+  for (const s of submissions) ticks.push({ at: s.created_at, kind: "listing-submission", who: s.handle, text: `submission ${s.id} handed in on listing ${s.listing_id}`, ref: `/api/listings/${s.listing_id}`, seq: Number.MAX_SAFE_INTEGER });
+  for (const a of awards) ticks.push({ at: a.awarded_at, kind: "listing-award", who: a.handle, text: `award on listing ${a.listing_id} to @${a.handle}, ${a.amount_atomic} atomic, now ${a.state}`, ref: `/api/listings/${a.listing_id}`, seq: Number.MAX_SAFE_INTEGER });
+  ticks.sort((a, b) => a.at - b.at || a.seq - b.seq);
+  const timeline = ticks.map(({ seq: _seq, ...t }) => t);
 
   const selected = grant.selected_proposal_id === null ? null : proposals.find((p) => p.id === grant.selected_proposal_id) ?? null;
   return {
