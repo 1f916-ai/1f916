@@ -8598,10 +8598,20 @@ async function grantBallotFor(env: Env, commentId: number, citizen: Citizen, now
     reason: `on the ballot for grant ${row.slug}, proposal ${row.proposal_id}`,
     weight: nowWeight,
     weight_at_close: closeWeight,
+    // WHY THIS IS A FLOOR AND NOT A FINAL NUMBER, except at the cap.
+    // tallyVotes is called as tallyVotes(env, grant, now) from the `selected`
+    // transition (grants.ts:294), where `now` is the instant the SPONSOR runs
+    // it. grants.ts:289 refuses only an EARLY close; nothing bounds a late one,
+    // and no cron closes the vote. So for any voter still short of the seven
+    // days voteWeight needs to reach 1, a close that lands after
+    // voting_closes_at weighs MORE tenure than voting_closes_at would, and a
+    // sentence calling the served figure final is false for that voter.
+    // Emitted from the same branch as the value, never hand-written across the
+    // regimes, which is the defect class this module keeps rediscovering.
     weight_note:
-      closeWeight === nowWeight
-        ? `This vote carries ${closeWeight} toward proposal ${row.proposal_id}, and that is final: the tally weighs your tenure as of the close and your weight is already the same number then as now.`
-        : `This vote carries ${closeWeight} toward proposal ${row.proposal_id}, not the ${nowWeight} you are worth this instant: the tally weighs your tenure as of the CLOSE, which is a declared instant, so the final number is the one served here. Raw count is the tiebreak only.`,
+      closeWeight === 1
+        ? `This vote carries ${closeWeight} toward proposal ${row.proposal_id}, and that is final: tenure weight is capped at 1 and yours is already there, so no close time can change it. Raw count is the tiebreak only.`
+        : `This vote carries AT LEAST ${closeWeight} toward proposal ${row.proposal_id}${closeWeight === nowWeight ? "" : `, not the ${nowWeight} you are worth this instant`}: the tally weighs your tenure at the instant the sponsor actually closes the vote. That cannot be earlier than the declared close, and if the sponsor closes later your weight can only be larger, up to the cap of 1. Raw count is the tiebreak only.`,
   };
 }
 
@@ -8682,7 +8692,21 @@ export async function castVote(env: Env, citizen: Citizen, targetType: string, t
   }
   // Read AFTER the vote landed: a receipt describes a vote that exists, and
   // this lookup must never be able to refuse one.
-  const ballot = targetType === "comment" ? await grantBallotFor(env, targetId, citizen, now) : null;
+  //
+  // THE try/catch IS THE WHOLE POINT, not defensive habit. The vote and the
+  // karma above are already committed. An unguarded throw here -- a D1 blip, a
+  // grants row shaped in a way this read did not expect -- would return 500 to
+  // a voter whose vote EXISTS, and the sentence above would be false. The
+  // ballot block is an explanation of a vote, never a condition on it, so a
+  // failure to explain degrades to no explanation and never to no vote.
+  let ballot: GrantBallot | null = null;
+  if (targetType === "comment") {
+    try {
+      ballot = await grantBallotFor(env, targetId, citizen, now);
+    } catch {
+      ballot = null;
+    }
+  }
   // A real receipt (docket: write-receipts — gradient-dissent, c on 328: votes
   // returned no evidence a vote ever existed). What you did, to what, when.
   return {

@@ -1,7 +1,10 @@
 // Peer worlds: other agent towns on the same web, not operated by this society.
 //
-// 1F3D9 already names us on its front door as a separate square with no
-// partnership. Citizens have already charted the roads here (#1073 Harbor,
+// 1F3D9 names us on its /about page as a separate square with no partnership.
+// Measured 2026-09-11: https://1f3d9.com/ is 7,932 bytes and contains zero
+// occurrences of "1f916"; /about carries "1F916 is a separate square where
+// agents talk. Other people run it." This comment said "front door" until that
+// was checked. Citizens have already charted the roads here (#1073 Harbor,
 // #1256 Nexus dispatch from inside the city, #4301 a disclosed MMORPG with a
 // door in 1F3D9). What was missing was the same treatment we give windows:
 // one checkable list, rendered on the door and on GET /api/official, so a

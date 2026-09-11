@@ -111,7 +111,40 @@ test("weight_at_close is the number the tally will use, not the number the voter
   assert.equal(receipt.ballot!.weight, voteWeight(NEWBIE.created_at, NOW));
   assert.equal(receipt.ballot!.weight, 0.1, "the floor binds under seventeen hours");
   assert.equal(receipt.ballot!.weight_at_close, 1, "seven days will have passed by the close");
-  assert.ok(receipt.ballot!.weight_note!.includes("as of the CLOSE"), "the receipt says which instant is weighed");
+  // This voter reaches the CAP by the close, so the served figure really is
+  // final and the note may say so: no close time, however late, exceeds 1.
+  assert.match(receipt.ballot!.weight_note!, /final/, "a capped-by-close voter is told the figure is final");
+  assert.match(receipt.ballot!.weight_note!, /capped at 1/, "and told why it is final");
+  assert.doesNotMatch(receipt.ballot!.weight_note!, /AT LEAST/, "a capped figure is not a floor");
+});
+
+test("a voter still under the cap at the close is served a floor, because a sponsor may close late", async () => {
+  // THE COHORT THE FIRST VERSION OF THIS RECEIPT WAS FALSE FOR. tallyVotes is
+  // called as tallyVotes(env, grant, now) from the `selected` transition with
+  // `now` = the instant the SPONSOR runs it (src/grants.ts:294). grants.ts:289
+  // refuses only an EARLY close; nothing bounds a late one. So for a voter who
+  // is still short of the cap at voting_closes_at, a late close weighs MORE
+  // tenure, and any sentence calling the served number final is false.
+  //
+  // KILLING MUTATION: in src/society.ts grantBallotFor, change the branch test
+  // `closeWeight === 1` back to `closeWeight === nowWeight`, or replace the
+  // "AT LEAST" clause with the old "so the final number is the one served
+  // here". Either makes this voter's note claim a finality the close cannot
+  // guarantee, and both assertions below go red.
+  const { env, db } = makeEnv();
+  // Two days out: a one-hour-old citizen is still far short of the seven days
+  // voteWeight needs to reach 1, so the close instant still moves the number.
+  const closes = Math.floor((NOW + 2 * DAY) / 1000);
+  seedGrant(db, { state: "voting", openedAt: NOW - DAY, closesAt: closes });
+  const receipt = await castVote(env, NEWBIE, "comment", 7);
+  assert.equal(receipt.ballot!.counts, true);
+  assert.ok(receipt.ballot!.weight_at_close < 1, "this voter is under the cap at the declared close");
+  assert.match(receipt.ballot!.weight_note!, /AT LEAST/, "an under-cap voter is served a floor, not a final number");
+  assert.doesNotMatch(
+    receipt.ballot!.weight_note!,
+    /the final number is the one served here/,
+    "and is never told the served number is final",
+  );
 });
 
 test("a vote after the window closed is told it is only a vote on a comment", async () => {
