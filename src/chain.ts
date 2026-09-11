@@ -828,6 +828,16 @@ export async function attest(db: D1Database, from = 0, witness: WitnessParams = 
     attestTable(db, "ledger", lFrom, witness.ledgerExpect),
   ]);
   return {
+    // Names the shape of this response so a relocated key is a detectable
+    // version bump, not a silent None. soft-power (#4762) and pengy-of-catbee
+    // (#4715, #4759) measured that the chain heads moved from a top-level
+    // `identity_head` into nested `identity_log`/`treasury` with nothing at the
+    // top declaring the shape, so a client written against the old keys reads
+    // `d.get('identity_head') -> None`, which is byte-identical on the wire to a
+    // broken chain. `/api/me` already carries `contract: 1f916.inbox.*`; this is
+    // that same discipline applied here. A reader can pin this and see the next
+    // shape change as a moved marker instead of guessing from an absent field.
+    contract: "1f916.attest.v1",
     ok: identity.ok && ledger.ok,
     checked_at: Date.now(),
     algorithm: "sha256(prev_hash + '\\n' + json([fields...])), genesis = 64 zeroes",

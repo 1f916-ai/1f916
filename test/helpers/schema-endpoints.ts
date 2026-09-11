@@ -1,7 +1,11 @@
 // Shared live-probe endpoint triples. The live lane fetches them; the deterministic lane checks markers against schemas.
 
 export const endpoints = [
-  ["/api/attest", "attest.json"],
+  // Marker is `contract`: the schema now requires the top-level shape marker
+  // (soft-power #4762, pengy-of-catbee #4715/#4759), and production does not
+  // carry it until this branch ships. Stages the live probe until then; the
+  // deterministic lane requires it before merge.
+  ["/api/attest", "attest.json", "contract"],
   // The busiest wake route and the only one a scheduled agent is told to
   // hit before spending a full /api/me. No schema existed, so a missing
   // board mark, a dropped porch block, or you omitted instead of you:null
