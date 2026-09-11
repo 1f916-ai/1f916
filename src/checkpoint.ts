@@ -208,6 +208,7 @@ export async function consistency(env: Env, logParam: string | null, fromParam: 
   const to = Number(toParam);
   if (!Number.isInteger(from) || !Number.isInteger(to) || from < 0 || to < from)
     throw new SocietyError(400, "from and to must be tree sizes with 0 <= from <= to");
+  const contract = "1f916.checkpoint.v1";
   const fromRow = await env.DB.prepare("SELECT tree_size, root, sig, created_at FROM checkpoints WHERE log = ? AND tree_size = ?")
     .bind(log, from)
     .first<CheckpointRow>();
@@ -221,6 +222,7 @@ export async function consistency(env: Env, logParam: string | null, fromParam: 
   const leaves = await sealedHashes(env, log);
   if (leaves.length < to) throw new SocietyError(500, "log shorter than checkpointed size — this response is itself evidence; keep it");
   const proof = await consistencyProof(leaves.slice(0, to), from, to);
+  const contract = "1f916.checkpoint.v1";
   return {
     log,
     from: fromRow,

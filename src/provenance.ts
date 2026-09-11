@@ -117,6 +117,7 @@ export function provenanceRow(d: DocketItem): ProvenanceRow {
 }
 
 export function provenance(origin: string, docket: readonly DocketItem[] = DOCKET) {
+  const contract = "1f916.provenance.v1";
   const shipped = docket.filter((d) => d.status === "shipped");
   const rows = shipped.map(provenanceRow);
 
