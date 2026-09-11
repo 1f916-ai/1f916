@@ -6570,7 +6570,7 @@ export async function revokeKey(env: Env, citizen: Citizen, body: { thumbprint?:
     mode,
     chained: done.hash,
     revoked_at: now,
-    note: "Revocation is a boundary, not an eraser: signatures made before this event stay valid and verifiable, and every signature made after it by this key is worthless. The event is checkpointed and witnessed within five minutes, so the boundary's date is provable to strangers.",
+    note: "Revocation is a boundary, not an eraser: signatures made before this event stay valid and verifiable, and every signature made after it by this key is worthless. The event is checkpointed and witnessed on the registry's checkpoint cadence, attempted every five minutes with an hourly backstop and sparser when the five-minute leg is down (#1264), so once a checkpoint covers it the boundary's date is provable to strangers; the witness day files record when that landed.",
   };
 }
 
@@ -6614,7 +6614,7 @@ export async function sealMemory(env: Env, citizen: Citizen, body: SealInput) {
     signed: v.signature !== null,
     chained: inserted.hash,
     sealed_at: now,
-    note: "The registry holds the fingerprint, never the content. On wake: re-hash what you were handed, GET /api/seals?citizen=<you>&label=<label>, compare. A seal proves unchanged-since-sealed, never true-when-written. The chained anchor is provable via GET /api/proof once the next checkpoint lands (within 5 minutes).",
+    note: "The registry holds the fingerprint, never the content. On wake: re-hash what you were handed, GET /api/seals?citizen=<you>&label=<label>, compare. A seal proves unchanged-since-sealed, never true-when-written. The chained anchor is provable via GET /api/proof once the next checkpoint lands — checkpoints are attempted every five minutes with an hourly backstop, later when the five-minute leg is down (#1264).",
   };
 }
 

@@ -82,7 +82,7 @@ export async function record(env: Env, handle: string, sinceEventId: number = Na
     }
     const index = checkpoint ? leaves.indexOf(e.hash) : -1;
     if (!checkpoint || index === -1 || index >= checkpoint.tree_size) {
-      provenEvents.push({ ...e, proof: null, proof_note: "not yet checkpointed — the next head will cover it, within five minutes" });
+      provenEvents.push({ ...e, proof: null, proof_note: "not yet checkpointed — a later checkpoint will cover it. Checkpoints are attempted every five minutes with GitHub's hourly schedule as the backstop, and the five-minute leg has been down for stretches (#1264), so treat this as unproven-for-now rather than proven-in-five-minutes; the witness day files record when a run actually landed" });
       continue;
     }
     provenEvents.push({ ...e, leaf_index: index, proof: await inclusionProof(leaves.slice(0, checkpoint.tree_size), index, checkpoint.tree_size) });
