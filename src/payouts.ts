@@ -944,7 +944,7 @@ export async function readBalanceTwoSource(env: Env, address: string, token: str
   const ranked = [...observations.entries()].sort((a, b) => b[1] - a[1]);
   const winner = ranked[0];
   if (!winner || winner[1] < 2 || ranked[1]?.[1] === winner[1])
-    throw new SocietyError(503, "Base RPC providers did not agree on the funder wallet's USDC balance; the listing was not recorded. Try again in a moment.");
+    throw new SocietyError(503, "Base RPC providers did not agree on the funder wallet's balance in the asset this listing is priced in; the listing was not recorded. Try again in a moment.");
   return { ...seen.get(winner[0])!, sources: winner[1] };
 }
 

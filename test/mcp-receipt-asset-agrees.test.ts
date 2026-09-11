@@ -42,26 +42,50 @@ test("receipt tool descriptions name every asset the rail settles in", () => {
   assert.deepEqual(wrong, [], `MCP receipt prose disagrees with payout_assets.accepted:\n${wrong.join("\n")}`);
 });
 
-test("no served string binds the receipt/Transfer mechanism to a single asset", () => {
-  // Source scan across BOTH served surfaces: the same false fact lived on the
-  // MCP tools (mcp.ts) AND in served notes/errors in society.ts (the payout-
-  // binding list note, the funder-statement 400s, and the rail-census receipts
-  // line). Any of them can be reintroduced. A receipt or payout Transfer is
-  // "the binding's own asset (USDC or 1F916)"; describing it as a single "USDC
-  // Transfer" / "Base-USDC receipt" is the defect.
+test("no served string names USDC alone while describing a multi-asset mechanism", () => {
+  // WHY THIS REPLACED A BLOCKLIST. The first version scanned for the literal
+  // shapes /USDC[\s-]+Transfer\b/ and /Base-USDC receipts?/. The pre-deploy
+  // auditor broke it in one try, with a sentence that is false for a 1F916
+  // binding and matches neither pattern:
   //
-  // ALLOWLIST: treasury donations ("direct USDC transfer to the treasury") are a
-  // different mechanism and are legitimately USDC. They are excluded by the two
-  // markers below, which never co-occur with the receipt-binding phrasing.
+  //   "two RPC sources agreed on one canonical finalized net-positive transfer
+  //    of USDC on Base, the only asset a receipt may be denominated in"
+  //
+  // A blocklist of phrasings can always be re-said. So this asserts INCLUSION
+  // instead: a served line that names USDC while describing a mechanism whose
+  // asset is the binding's or the listing's must name every settlement asset.
+  // Word order cannot evade that, because the test does not read word order.
+  //
+  // ALLOWLIST, and each entry is a mechanism that really is USDC-only:
+  //   - treasury donations (direct USDC transfer to the treasury address)
+  //   - x402 patron intake, priced in dollars
+  //   - escrow: GET /api/official publishes that this registry refuses to
+  //     publish an escrow-backed listing in any asset but USDC. That limit is
+  //     ours and it is real, so prose saying so is true and must not be flagged.
+  //
+  // Killing mutation: in any non-allowlisted served string, describe the
+  // receipt, preimage, or funder-balance mechanism as USDC without naming
+  // 1F916. This goes red however the sentence is worded.
+  const MECHANISM = /\b(transfer|receipt|preimage|balance|contract\b|denominat)/i;
+  //   - MEASURED.*: a recorded historical quantity of USDC that actually moved,
+  //     not a description of what a mechanism accepts.
+  const ALLOWED = /treasury|escrow|x402|patron|donation|still_refused|MEASURED\./i;
+  const others = SETTLEMENT_ASSETS.filter((a) => a.symbol !== "USDC").map((a) => a.symbol);
   const offenders: string[] = [];
-  for (const file of ["../src/mcp.ts", "../src/society.ts"]) {
+  for (const file of ["../src/mcp.ts", "../src/society.ts", "../src/payouts.ts"]) {
     const src = readFileSync(new URL(file, import.meta.url), "utf8");
-    for (const line of src.split("\n")) {
-      if (/treasury/i.test(line) || /direct\s+USDC\s+transfer/i.test(line)) continue; // treasury donation, USDC-only by design
-      if (/USDC[\s-]+Transfer\b/.test(line) || /Base-USDC\s+receipts?\b/i.test(line)) {
-        offenders.push(`${file}: ${line.trim().slice(0, 120)}`);
-      }
-    }
+    src.split("\n").forEach((line, i) => {
+      if (/^\s*(\/\/|\*)/.test(line)) return; // source comments are not served
+      if (!/USDC/.test(line)) return;
+      if (ALLOWED.test(line)) return;
+      if (!MECHANISM.test(line)) return;
+      if (others.every((sym) => line.includes(sym))) return;
+      offenders.push(`${file}:${i + 1}: ${line.trim().slice(0, 130)}`);
+    });
   }
-  assert.deepEqual(offenders, [], `a served string pins the receipt/Transfer mechanism to USDC only; the rail settles in USDC or 1F916:\n${offenders.join("\n")}`);
+  assert.deepEqual(
+    offenders,
+    [],
+    `a served string names USDC alone while describing a mechanism that carries the binding's or listing's own asset (${others.join(", ")} also settle here):\n${offenders.join("\n")}`,
+  );
 });

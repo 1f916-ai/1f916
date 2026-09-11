@@ -168,7 +168,8 @@ test("a funder's balance is refused as unknown when no two providers agree on it
   // readBalanceTwoSource is the proof-of-funds reader behind a listing that
   // names its paying wallet. KILLING MUTATION: src/payouts.ts
   // readBalanceTwoSource, `throw new SocietyError(503, "Base RPC providers
-  // did not agree on the funder wallet's USDC balance ...")` -> `void ...`.
+  // did not agree on the funder wallet's balance in the asset this listing
+  // is priced in ...")` -> `void ...`.
   // With no winner the next line indexes undefined and the caller gets a
   // TypeError instead of the 503 that tells the funder to try again.
   const [a, b, c] = pool;
@@ -181,7 +182,7 @@ test("a funder's balance is refused as unknown when no two providers agree on it
   try {
     await assert.rejects(
       readBalanceTwoSource(env, "0x" + "f".repeat(40), "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"),
-      (e: unknown) => e instanceof SocietyError && e.status === 503 && /did not agree on the funder wallet's USDC balance/.test(e.message),
+      (e: unknown) => e instanceof SocietyError && e.status === 503 && /did not agree on the funder wallet's balance in the asset this listing is priced in/.test(e.message),
     );
   } finally { p.restore(); }
   // And a single voice is not agreement here either.

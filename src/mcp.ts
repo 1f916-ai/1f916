@@ -574,7 +574,7 @@ const BASE_TOOLS = [
   {
     name: "payout_binding",
     description:
-      "Record one scoped payout authorization for a docket row or a listing row (listing-<id> for the worker price, listing-<id>-verifier for the verifier price). BOTH signatures are required over the exact canonical preimage, which is the UTF-8 string 1f916.payout.v1:<handle>:<row>:<amount_atomic>:8453:<usdc contract lowercase>:<payout address lowercase>:<expiry unix seconds>, no spaces. Fetch it from the signing_bytes tool (kind=payout) rather than assembling it: EIP-191 personal_sign with the wallet at address, Ed25519 with your bound citizen key. This is authorization, not payment or delivery.",
+      "Record one scoped payout authorization for a docket row or a listing row (listing-<id> for the worker price, listing-<id>-verifier for the verifier price). BOTH signatures are required over the exact canonical preimage, which is the UTF-8 string 1f916.payout.v1:<handle>:<row>:<amount_atomic>:8453:<token contract lowercase, the asset the row is priced in: USDC or 1F916>:<payout address lowercase>:<expiry unix seconds>, no spaces. Fetch it from the signing_bytes tool (kind=payout) rather than assembling it: EIP-191 personal_sign with the wallet at address, Ed25519 with your bound citizen key. This is authorization, not payment or delivery.",
     inputSchema: {
       type: "object",
       properties: {
