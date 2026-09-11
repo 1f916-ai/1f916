@@ -234,6 +234,22 @@ test("vote mode: the window is declared, revisions stop, self-votes do not count
   assert.equal(tally.ballot[0].proposal_id, b.id, "Bob leads on weighted votes");
   assert.equal(tally.total_votes, 3);
 
+  // The deciding number is PUBLISHED while the vote is open, which is the only
+  // claim the comment at the top of grants.ts now makes (it used to claim the
+  // tally was recomputable by a reader; packet-auditor showed on post 4703 that
+  // it is not). Everything above calls tallyVotes directly, so nothing pinned
+  // that a reader of the grant actually SEES it.
+  // KILLING MUTATION: src/grants.ts readGrant, change the live_tally guard to
+  // `grant.state === "selected" ? ... : null`. live_tally goes null and each
+  // proposal's votes/weighted_votes go null while the vote is running, so the
+  // number that decides the grant becomes invisible for the whole window.
+  const duringVote = await readGrant(env, "1f512");
+  assert.ok(duringVote.live_tally, "a grant that is voting serves its live tally");
+  assert.equal(duringVote.live_tally!.ballot.length, 2);
+  const liveBob = duringVote.proposals.find((p) => p.id === b.id)!;
+  assert.equal(liveBob.votes, 2, "the raw count rides on the proposal a reader reads");
+  assert.equal(liveBob.weighted_votes, 1.1, "and so does the weighted count that decides it");
+
   // Close after the window. Move the clocks: the window becomes [openedAt,
   // this second), which holds every vote above and is already past.
   const closeAt = Math.floor(Date.now() / 1000) + 1;

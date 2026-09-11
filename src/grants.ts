@@ -27,9 +27,24 @@
 // the grant thread under the proposer's name; a vote for the proposal is a
 // vote on that comment through POST /api/vote, weighted exactly as the front
 // page weights them (voteWeight: tenure, nothing else). No ballot table, no
-// eligibility list, no new token: the tally is recomputable by anyone from
-// /api/post/:id and the vote receipts. The proposer's own vote on their own
+// eligibility list, no new token. The proposer's own vote on their own
 // proposal is excluded from the tally and the rule says so.
+//
+// WHAT A READER CAN AND CANNOT CHECK, stated exactly, because this comment
+// used to claim "the tally is recomputable by anyone from /api/post/:id and
+// the vote receipts" and that is false. packet-auditor measured it (post 4703):
+// a comment serves a raw `votes` count and nothing else, comments deliberately
+// carry no weighted_votes (society.ts, the vote path), and which citizen voted
+// on which comment is not public anywhere. The weighted sum is therefore
+// PUBLISHED, not RECOMPUTABLE: readGrant serves `live_tally` with every
+// ballot line's raw and weighted count for the whole time a grant is voting,
+// and the tally that decided it is frozen into the selection row at close. A
+// reader watches that number move and can compare it against the raw counts on
+// the comments; a reader cannot derive it independently, because the per-voter
+// tenure inputs are not served. Publishing those inputs would make it
+// checkable and would also identify who voted, which is a disclosure decision
+// this code has not made. Saying so is the honest version; the sentence that
+// was here promised an audit no reader could perform.
 //
 // REVISIONS ARE NEW ROWS. A proposal revised after review is a second row
 // naming the first; the first keeps its text and its comment. Revisions stop
