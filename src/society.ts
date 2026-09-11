@@ -4886,9 +4886,9 @@ export async function funderStatementFor(env: Env, bindingId: number, q: { tx_ha
   const source = (q.source_address ?? "").trim().toLowerCase();
   const logIndex = Number(q.log_index);
   const relationship = (q.relationship ?? "").trim();
-  if (!/^0x[0-9a-f]{64}$/.test(txHash)) throw new SocietyError(400, "tx_hash is required: the 0x transaction hash of your USDC transfer");
+  if (!/^0x[0-9a-f]{64}$/.test(txHash)) throw new SocietyError(400, "tx_hash is required: the 0x transaction hash of your payout Transfer (the binding's own asset, USDC or 1F916)");
   if (!/^0x[0-9a-f]{40}$/.test(source)) throw new SocietyError(400, "source_address is required: the wallet the Transfer came from (yours)");
-  if (!Number.isSafeInteger(logIndex) || logIndex < 0) throw new SocietyError(400, "log_index is required: the index of the USDC Transfer log inside that transaction (a block explorer shows it)");
+  if (!Number.isSafeInteger(logIndex) || logIndex < 0) throw new SocietyError(400, "log_index is required: the index of the Transfer log (the binding's own asset, USDC or 1F916) inside that transaction (a block explorer shows it)");
   // A FUNDER BUILDS THE SAME SENTENCE WITHOUT A RELATIONSHIP. Omitting the
   // parameter selects the funder form, which signs "undeclared" in that
   // position, because the payee's testimony is not the funder's to give. Any
@@ -5101,7 +5101,7 @@ export async function listPayouts(env: Env, docketId: string | null, sinceId = 0
     has_more: results.length > PAYOUT_PAGE,
     ...(results.length > PAYOUT_PAGE ? { next_since_id: Number(pageRows[pageRows.length - 1]!.id) } : {}),
     note:
-      "Bindings are authorizations, not delivery verdicts or exclusive reservations. A joined receipt means two RPC sources agreed on a canonical finalized net-positive Base-USDC Transfer; funding_relationship is the payee's declaration, not an on-chain identity fact.",
+      "Bindings are authorizations, not delivery verdicts or exclusive reservations. A joined receipt means two RPC sources agreed on a canonical finalized net-positive Base Transfer of the binding's own asset (USDC or 1F916); funding_relationship is the payee's declaration, not an on-chain identity fact.",
   };
 }
 
@@ -5796,7 +5796,7 @@ export async function railCensus(env: Env) {
       v2_listings: "Listings at settlement_version 2 or above, which are the only ones that can hold an award ledger. Every v2_ figure on this page is derived from these and from nothing else.",
       legacy_listings_without_declared_cap: "Listings serving a null max_liability_atomic, which is exactly the pre-v2 set: their funders declared no cap and this registry will not invent one. They contribute nothing to v2_maximum_remaining_liability_atomic.",
       bindings: "COUNT(*) over payout_bindings grouped by docket_id, both the worker row listing-<id> and the verifier row listing-<id>-verifier.",
-      receipts: "The same rows LEFT JOINed to payout_receipts, counting those with a receipt. A receipt is two Base RPC sources agreeing on one finalized USDC Transfer, signed for by its source.",
+      receipts: "The same rows LEFT JOINed to payout_receipts, counting those with a receipt. A receipt is two Base RPC sources agreeing on one finalized Transfer of the binding's own asset (USDC or 1F916), signed for by its source.",
       lapsed_bindings: "Bindings with no receipt whose OWN expiry is already past. A binding's `expiry` is unix SECONDS while `now` on this page is milliseconds, so the check is `expiry * 1000 <= now` (equivalently `expiry <= now / 1000`). This counts routing records that went stale. It is not a debt, not a broken promise, and not a count of unpaid people.",
       awards: "Every row in the award ledger for this listing, in any state, counted without a filter of any kind: a lapse never deletes a row, so this figure is the same before and after the clocks are applied. Which clock governs a row follows THE STATE IT IS IN, not how it was born, and the row is re-clocked when it moves: while a row is `awarded` it is a reserved seat running award_ttl_seconds, and lapsing there makes it expired_unmet, where nothing was earned and nothing is owed. The moment it becomes `payable` its deadline is REPLACED with a fresh payable_ttl_seconds window from that instant, and lapsing there makes it overdue_unpaid or expired_unclaimed depending on whether the payee had supplied a payout destination. So a reserved seat that is later marked payable stops running the reserve clock entirely: it is then an entitlement on the claim clock like any other, and it can lapse still owed. See award_states on each listing for the split.",
       awarded_slots_used: "Per listing: how many of this listing's award rows occupy a seat, which is every award row EXCEPT the expired_unmet ones, because expired_unmet is the only state that returns its slot. On an open listing available_award_capacity is max_awards minus this figure, and it is 0 once the listing closes. It is a count of seats, not an amount of money.",
