@@ -450,7 +450,7 @@ test("same-millisecond identical fifth requests cannot alias the event guard", a
     return stmt;
   };
   const realNow = Date.now;
-  Date.now = () => 1_786_637_000_000;
+  Date.now = () => NOW * 1000;
   try {
     const results = await Promise.allSettled([
       createPayoutBinding(env, CITIZEN as never, fifth),
