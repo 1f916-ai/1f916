@@ -56,15 +56,29 @@ function servedLogicalLines(file: string): { line: string; n: number }[] {
     kept.push({ line: raw, n: i + 1 });
   });
   const joined: { line: string; n: number }[] = [];
+  // Backticks that are still open at the end of a line mean the NEXT line is
+  // inside the same template literal. Round 3 of the audit escaped the first
+  // version of this joiner with exactly that: a two-line template literal put
+  // "denominated in" and "USDC" on separate physical lines, so neither line
+  // tripped the scan and a sentence false for a 1F916 binding served silently.
+  const opensTemplate = (line: string) => {
+    const ticks = (line.match(/(?<!\\)`/g) ?? []).length;
+    return ticks % 2 === 1;
+  };
+  let inTemplate = false;
   for (const row of kept) {
     const prev = joined[joined.length - 1];
-    // `"..." +` on one line and a string literal on the next is ONE served
-    // sentence. Join them so the scan sees the sentence, not the fragments.
-    if (prev && /\+\s*$/.test(prev.line) && /^\s*["`']/.test(row.line)) {
-      prev.line = prev.line.replace(/\+\s*$/, "") + row.line.trim();
-      continue;
+    // A served sentence continues when the previous line ends in `+`, or when
+    // we are still inside an unterminated template literal. Join either way, so
+    // the scan reads the sentence rather than its fragments.
+    const continues = prev && (inTemplate || /\+\s*$/.test(prev.line));
+    if (continues) {
+      prev.line = prev.line.replace(/\+\s*$/, " ") + " " + row.line.trim();
+    } else {
+      joined.push({ ...row });
     }
-    joined.push({ ...row });
+    const consider = continues ? joined[joined.length - 1]!.line : row.line;
+    inTemplate = continues ? opensTemplate(consider) : opensTemplate(row.line);
   }
   return joined;
 }
@@ -101,7 +115,7 @@ const USDC_ONLY_APPROVED = new Map<string, string>([
   // because the treasury holds dollars. A reader reproducing the number needs
   // the actual contract, so naming 1F916 here would make the recipe wrong.
   ["95c53ecb9c19521d", "treasury: onchain_cents is balanceOf for USDC, the asset the treasury holds"],
-  ["5ff8257295d9f016", "treasury: the eth_call recipe for that same balance"],
+  ["26a7b9c4bf5d4a5c", "treasury: the chain recipe carrying that same balanceOf line"],
 ]);
 
 function digest(line: string): string {
@@ -134,4 +148,20 @@ test("no served string names USDC alone while describing a multi-asset mechanism
     [],
     `a served string names USDC alone while describing a mechanism that carries the binding's or listing's own asset (${others.join(", ")} also settle here).\nIf one of these really is USDC-only, add its digest to USDC_ONLY_APPROVED with the reason:\n${offenders.join("\n")}`,
   );
+});
+
+test("every approved USDC-only digest still matches a line that exists", () => {
+  // AN ALLOWLIST THAT MATCHES NOTHING IS NOT AN ALLOWLIST, it is dead weight
+  // that hides how much is actually being excused. A digest is pinned to exact
+  // bytes on purpose, so any edit to an approved sentence retires its entry;
+  // this test makes that retirement visible instead of silent.
+  //
+  // Killing mutation: add a digest for a line that does not exist (e.g.
+  // "0000000000000000"). This goes red naming it.
+  const live = new Set<string>();
+  for (const file of ["../src/mcp.ts", "../src/society.ts", "../src/payouts.ts", "../src/listings.ts", "../src/settlement.ts", "../src/funded.ts"]) {
+    for (const { line } of servedLogicalLines(file)) live.add(digest(line));
+  }
+  const stale = [...USDC_ONLY_APPROVED.entries()].filter(([d]) => !live.has(d)).map(([d, why]) => `${d} (${why})`);
+  assert.deepEqual(stale, [], `approved digests matching no served line; the sentence changed, so re-read it and re-approve or drop it:\n${stale.join("\n")}`);
 });
