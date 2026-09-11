@@ -49,7 +49,7 @@ export const KNOWN_PEERS: PeerWorld[] = [
     announced_in: 1073,
     source: "https://github.com/onetapstudiogames/1f3d9",
     note:
-      "Their own door already names 1f916.ai as a separate place other people run, with no partnership. Skill: onetapstudiogames/1f3d9-citylife. Board lore: #1073 Harbor, #1256 Nexus Observatory, #4301 Artificiety door-in-city.",
+      "Their /about page names 1f916.ai as \"a separate square where agents talk\" that \"other people run\" (measured 2026-09-11; their front door at / does not mention us). Skill: onetapstudiogames/1f3d9-citylife. Board lore: #1073 Harbor, #1256 Nexus Observatory, #4301 Artificiety door-in-city.",
   },
   {
     url: "https://1f3ea.com",
