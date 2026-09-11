@@ -19,7 +19,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { TOOLS } from "../src/mcp.ts";
 import { SETTLEMENT_ASSETS } from "../src/payouts.ts";
@@ -42,6 +42,26 @@ test("receipt tool descriptions name every asset the rail settles in", () => {
   }
   assert.deepEqual(wrong, [], `MCP receipt prose disagrees with payout_assets.accepted:\n${wrong.join("\n")}`);
 });
+
+// EVERY module under src/, derived rather than listed.
+//
+// The hardcoded six-file list was the fourth escape the audit found, and the
+// most embarrassing one: it omitted src/surface.ts and src/doc.ts, two files
+// the very commit that created this guard had edited for this very defect.
+// Rewriting one line of src/surface.ts to "a net-positive USDC Transfer, the
+// only asset a receipt may be denominated in" left the suite fully green.
+//
+// A guard whose coverage is a list somebody has to remember to extend is a
+// guard that decays every time the codebase grows. So the list is read from
+// disk. A new module is scanned the day it appears, without anyone deciding to
+// scan it.
+function servedModules(): string[] {
+  const dir = new URL("../src/", import.meta.url);
+  return readdirSync(dir)
+    .filter((f) => f.endsWith(".ts"))
+    .sort()
+    .map((f) => `../src/${f}`);
+}
 
 // Served source, with source comments removed and adjacent string literals
 // joined. BOTH are required. Comments are not served, so flagging them trains
@@ -116,6 +136,13 @@ const USDC_ONLY_APPROVED = new Map<string, string>([
   // the actual contract, so naming 1F916 here would make the recipe wrong.
   ["95c53ecb9c19521d", "treasury: onchain_cents is balanceOf for USDC, the asset the treasury holds"],
   ["26a7b9c4bf5d4a5c", "treasury: the chain recipe carrying that same balanceOf line"],
+  // assets.ts is the treasury's own accounting. The treasury holds dollars, so
+  // every one of these reads the USDC contract on purpose: naming 1F916 here
+  // would make the stated reproduction recipe wrong, not more complete.
+  ["26da42711d244656", "treasury: eth_getLogs recipe for USDC inflows to the treasury address"],
+  ["62465ec1a65c176e", "treasury: balanceOf call target is the USDC contract, by design"],
+  ["b6c8004db5cc2f2d", "treasury: the error raised when that USDC balanceOf does not answer"],
+  ["c14cdd935dec029e", "treasury: the published verify recipe for the treasury's USDC balance"],
 ]);
 
 function digest(line: string): string {
@@ -134,7 +161,7 @@ test("no served string names USDC alone while describing a multi-asset mechanism
   const MECHANISM = /\b(transfer|receipt|preimage|balance|contract\b|denominat)/i;
   const others = SETTLEMENT_ASSETS.filter((a) => a.symbol !== "USDC").map((a) => a.symbol);
   const offenders: string[] = [];
-  for (const file of ["../src/mcp.ts", "../src/society.ts", "../src/payouts.ts", "../src/listings.ts", "../src/settlement.ts", "../src/funded.ts"]) {
+  for (const file of servedModules()) {
     for (const { line, n } of servedLogicalLines(file)) {
       if (!/USDC/.test(line)) continue;
       if (!MECHANISM.test(line)) continue;
@@ -159,7 +186,7 @@ test("every approved USDC-only digest still matches a line that exists", () => {
   // Killing mutation: add a digest for a line that does not exist (e.g.
   // "0000000000000000"). This goes red naming it.
   const live = new Set<string>();
-  for (const file of ["../src/mcp.ts", "../src/society.ts", "../src/payouts.ts", "../src/listings.ts", "../src/settlement.ts", "../src/funded.ts"]) {
+  for (const file of servedModules()) {
     for (const { line } of servedLogicalLines(file)) live.add(digest(line));
   }
   const stale = [...USDC_ONLY_APPROVED.entries()].filter(([d]) => !live.has(d)).map(([d, why]) => `${d} (${why})`);

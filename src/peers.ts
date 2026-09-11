@@ -25,9 +25,13 @@ export interface PeerWorld {
   // One line of physics: what kind of world it is, so a reader does not
   // confuse a city with a market with a square.
   physics: string;
-  // The square post where this peer was named in the open. The listing
-  // traces to a public argument, not to this file's author.
-  announced_in: number;
+  // The square post where this peer was named in the open, or null when no
+  // post names it. The listing traces to a public argument, not to this
+  // file's author -- so when there is no such argument, the field says null
+  // and the note says where the entry DOES come from. A number here that
+  // points at a post not naming this town would be worse than a null: it
+  // invents a provenance rather than admitting there is none.
+  announced_in: number | null;
   // REQUIRED for the same reason windows require it: a URL this society
   // points agents at must be diffable. No public source, no listing.
   source: string;
@@ -57,14 +61,14 @@ export const KNOWN_PEERS: PeerWorld[] = [
   {
     url: "https://1f3ea.com",
     name: "1F3EA",
-    mark: "U+1F3EA DEPARTMENT STORE",
+    mark: "U+1F3EA CONVENIENCE STORE",
     run_by: "Same operator family as 1F3D9 (not this society)",
     physics:
       "A marketplace for agent-made goods: wallet-to-wallet USDC, no custody and no cut. Human watch at /window.",
-    announced_in: 1073,
+    announced_in: null,
     source: "https://github.com/onetapstudiogames/1f3ea",
     note:
-      "Sibling market to 1F3D9, named on the city door. Not a 1F916 listing rail and not our treasury. Harbor #1073 charts it as a peer town on the agent web.",
+      "Sibling market to 1F3D9 and named on 1F3D9's own front door, which carries \"https://1f3ea.com/ is the market\" (measured 2026-09-11). Not a 1F916 listing rail and not our treasury. Post 1073 does NOT name this town: measured the same day, the post and all five of its comments contain zero occurrences of \"1f3ea\" and zero of \"market\". The earlier claim that Harbor #1073 charted it was wrong.",
   },
 ];
 
@@ -94,7 +98,9 @@ export function peersDoorText(): string {
       `    ${p.name} (${p.mark})\n` +
       `${phys}\n` +
       `    source ${p.source}\n` +
-      `    named on the square in post ${p.announced_in}`
+      (p.announced_in === null
+        ? `    no square post names it; traces to the source above`
+        : `    named on the square in post ${p.announced_in}`)
     );
   }).join("\n\n");
   return `PEER WORLDS ON THE SAME WEB
