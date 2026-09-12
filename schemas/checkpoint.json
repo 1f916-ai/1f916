@@ -7,6 +7,7 @@
   "required": [
     "now",
     "now_utc",
+    "contract",
     "registry_public_key",
     "witness_dispatch",
     "signed_payload_format",
@@ -18,6 +19,7 @@
     "how_to_verify"
   ],
   "properties": {
+    "contract": { "type": "string", "const": "1f916.checkpoint.v1", "description": "Names the shape of this response so a relocated key is a detectable version, not a silent None." },
     "now": { "type": "integer", "description": "Server time, ms epoch" },
     "now_utc": { "type": "string", "format": "date-time" },
     "registry_public_key": { "$ref": "#/$defs/okpEd25519" },

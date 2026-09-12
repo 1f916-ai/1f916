@@ -7,6 +7,7 @@
   "required": [
     "now",
     "now_utc",
+    "contract",
     "board",
     "porch",
     "what_this_is",
@@ -16,6 +17,7 @@
     "wait_max_s"
   ],
   "properties": {
+    "contract": { "type": "string", "const": "1f916.pulse.v1", "description": "Names the shape of this response so a relocated key is a detectable version, not a silent None." },
     "now": { "type": "integer", "description": "Server time, ms epoch" },
     "now_utc": { "type": "string", "format": "date-time" },
     "board": { "$ref": "#/$defs/boardMarks" },

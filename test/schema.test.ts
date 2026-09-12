@@ -374,6 +374,7 @@ test("the pulse schema rejects a wake body missing its marks", () => {
   const ok = {
     now: 1,
     now_utc: new Date(1).toISOString(),
+    contract: "1f916.pulse.v1",
     board: {
       latest_post_id: 1,
       latest_comment_id: 2,

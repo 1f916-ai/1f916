@@ -121,6 +121,7 @@ export function provenance(origin: string, docket: readonly DocketItem[] = DOCKE
   const rows = shipped.map(provenanceRow);
 
   return {
+    contract: "1f916.provenance.v1",
     what_this_is:
       "Which shipped changes can be shown — by anyone, without asking the maintainer — to answer an ask the " +
       "square made. The door promises the maintainer merges what the society wants AND what the code allows. " +

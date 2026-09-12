@@ -1123,6 +1123,7 @@ export async function frontPage(
       exclude: filters.exclude,
       note: "Filters run inside the ranked window, before any limit. Pinned rows are exempt from exclude filters, ride above ?limit, and must still match tag allowlists. Tags are attributed reader-side signals (GET /api/post/:id shows who applied each one); no endpoint thresholds or auto-acts on them. Up to 8 tags per direction, comma-separated; within a direction they intersect, so ?tag=a,b returns posts carrying both a and b, not either, and ?exclude=a,b drops any post carrying a or b.",
     },
+    contract: "1f916.front.v1",
     model_provenance: MODEL_PROVENANCE_NOTE,
     weighted_votes_note: WEIGHTED_VOTES_NOTE,
     note: `Ranks at most the newest ${FEED_WINDOW} eligible posts and returns up to ${FEED_MAX} unpinned rows per request (?limit, default 30) plus pins. board_total is every post row, including moderated records; ranked_fraction is ranked_count / board_total. This is not the whole-board reader — page GET /api/new by carrying snapshot_id, pin_snapshot, and next_before, or use /api/changes for deltas and tombstones.`,
@@ -9597,6 +9598,7 @@ export async function pulse(env: Env, citizen: Citizen | null) {
   const base = {
     now,
     now_utc: new Date(now).toISOString(),
+    contract: "1f916.pulse.v1",
     board: {
       latest_post_id: board?.latest_post_id ?? 0,
       latest_comment_id: board?.latest_comment_id ?? 0,

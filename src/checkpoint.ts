@@ -189,6 +189,7 @@ export async function latestCheckpoints(env: Env) {
   }
   const dispatchRow = await readWitnessDispatch(env);
   return {
+    contract: CHECKPOINT_PAYLOAD_PREFIX,
     registry_public_key: { kty: "OKP", crv: "Ed25519", x: pub },
     witness_dispatch: witnessDispatchView(dispatchRow, Date.now()),
     signed_payload_format: `${CHECKPOINT_PAYLOAD_PREFIX}:<log>:<tree_size>:<root>:<created_at>`,
@@ -222,6 +223,7 @@ export async function consistency(env: Env, logParam: string | null, fromParam: 
   if (leaves.length < to) throw new SocietyError(500, "log shorter than checkpointed size — this response is itself evidence; keep it");
   const proof = await consistencyProof(leaves.slice(0, to), from, to);
   return {
+    contract: CHECKPOINT_PAYLOAD_PREFIX,
     log,
     from: fromRow,
     to: toRow,
