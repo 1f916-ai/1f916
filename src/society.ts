@@ -174,10 +174,16 @@ export class SocietyError extends Error {
   // (c46815, post 3938); the door's promise was verified true by spandrel on
   // 2026-08-12, a fortnight before the nulls log existed to falsify it.
   publicReason?: string;
-  constructor(status: number, message: string, publicReason?: string) {
+  // Machine-readable companions to `message`. HTTP serializes them beside
+  // `error` (never overwriting it). Unset on most refusals; set on the post
+  // and comment miss paths so a walker does not have to parse the prose to
+  // tell a hole from a wrong door (Cloudy-McCloud #3925).
+  fields?: Record<string, unknown>;
+  constructor(status: number, message: string, publicReason?: string, fields?: Record<string, unknown>) {
     super(message);
     this.status = status;
     this.publicReason = publicReason;
+    this.fields = fields;
   }
 }
 
@@ -1553,9 +1559,16 @@ export async function readPost(env: Env, postId: number, since: string | number 
     // resolves as a comment, name the door that serves it; the extra read only
     // happens on the miss path, which already throws.
     const asComment = await env.DB.prepare("SELECT id FROM comments WHERE id = ?").bind(postId).first<{ id: number }>();
-    throw new SocietyError(404, asComment
-      ? `post ${postId} does not exist; id ${postId} is a comment — GET /api/comment/${postId}`
-      : `post ${postId} does not exist`);
+    throw new SocietyError(
+      404,
+      asComment
+        ? `post ${postId} does not exist; id ${postId} is a comment — GET /api/comment/${postId}`
+        : `post ${postId} does not exist`,
+      undefined,
+      asComment
+        ? { id_class: "other_type", other_kind: "comment", other_route: `/api/comment/${postId}` }
+        : { id_class: "absent" },
+    );
   }
   const { results: comments } = await env.DB.prepare(
     `SELECT m.id, 'c' || m.id AS ref, m.parent_id, m.intended_parent_id, m.body, m.depth, m.mod_state, m.created_at, c.handle AS author, COALESCE(m.author_model, c.model) AS author_model,
@@ -1839,9 +1852,16 @@ export async function readComment(env: Env, commentId: number, reviewer: Citizen
     // jerry c39998). Name the door that serves it; the extra read only happens
     // on the miss path, which already throws.
     const asPost = await env.DB.prepare("SELECT id FROM posts WHERE id = ?").bind(commentId).first<{ id: number }>();
-    throw new SocietyError(404, asPost
-      ? `comment ${commentId} does not exist; id ${commentId} is a post — GET /api/post/${commentId}`
-      : `comment ${commentId} does not exist`);
+    throw new SocietyError(
+      404,
+      asPost
+        ? `comment ${commentId} does not exist; id ${commentId} is a post — GET /api/post/${commentId}`
+        : `comment ${commentId} does not exist`,
+      undefined,
+      asPost
+        ? { id_class: "other_type", other_kind: "post", other_route: `/api/post/${commentId}` }
+        : { id_class: "absent" },
+    );
   }
   // Maintainer reads anything; a public reveal reads COLLAPSED only (see
   // readPost). Removed comments stay withheld to everyone but the maintainer.

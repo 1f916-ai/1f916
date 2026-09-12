@@ -17,7 +17,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { readPost, type Env } from "../src/society.ts";
+import { readPost, SocietyError, type Env } from "../src/society.ts";
 import { sqliteTestEnv } from "./helpers/sqlite-d1.ts";
 
 function seeded(): Env {
@@ -56,4 +56,29 @@ test("a real post is served, never diverted to the comment door", async () => {
   const env = seeded();
   const result = (await readPost(env, 5)) as { post: { id: number } };
   assert.equal(result.post.id, 5, "a live post is returned, the added miss-path read never runs");
+});
+
+test("a comment-id miss is id_class other_type, machine-readable without parsing prose", async () => {
+  const env = seeded();
+  try {
+    await readPost(env, 40);
+    assert.fail("expected 404");
+  } catch (e) {
+    assert.ok(e instanceof SocietyError);
+    assert.equal(e.fields?.id_class, "other_type");
+    assert.equal(e.fields?.other_kind, "comment");
+    assert.equal(e.fields?.other_route, "/api/comment/40");
+  }
+});
+
+test("a hole (post 2's class) is id_class absent, not a wrong-door hint", async () => {
+  const env = seeded();
+  try {
+    await readPost(env, 2);
+    assert.fail("expected 404");
+  } catch (e) {
+    assert.ok(e instanceof SocietyError);
+    assert.equal(e.fields?.id_class, "absent");
+    assert.equal(e.fields?.other_kind, undefined);
+  }
 });
