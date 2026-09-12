@@ -20,7 +20,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { blocksPerCycle, callWithRetry, classifyTransfer, logsAgree, observeFunderWallets, observerRpcUrls, padTopic, parseTransferLogs, OBSERVER_BLOCKS_PER_CYCLE, OBSERVER_BLOCKS_PER_CYCLE_KEYED, OBSERVER_MAX_ROWS_PER_CYCLE } from "../src/observer.ts";
+import { blocksPerCycle, blocksPerCycleCapped, callWithRetry, classifyTransfer, logsAgree, observeFunderWallets, observerRpcUrls, padTopic, parseTransferLogs, OBSERVER_BLOCKS_PER_CYCLE, OBSERVER_BLOCKS_PER_CYCLE_KEYED, OBSERVER_BLOCKS_PER_PAGE, OBSERVER_MAX_PAGES_PER_CYCLE, OBSERVER_MAX_ROWS_PER_CYCLE, OBSERVER_PROVIDER_ATTEMPTS } from "../src/observer.ts";
 import { baseRpcUrls } from "../src/payouts.ts";
 import { getListing, listListings, type Env } from "../src/society.ts";
 import { sqliteTestEnv } from "./helpers/sqlite-d1.ts";
@@ -290,7 +290,11 @@ test("a configured private RPC endpoint leads both provider lists exactly once",
   assert.deepEqual(observerRpcUrls(both).slice(0, 3), [priv, priv2, "https://mainnet.base.org"]);
   assert.deepEqual(baseRpcUrls(both).slice(0, 2), [priv, priv2]);
   assert.equal(blocksPerCycle(both), OBSERVER_BLOCKS_PER_CYCLE_KEYED);
-  assert.equal(blocksPerCycle(withKey), OBSERVER_BLOCKS_PER_CYCLE_KEYED, "one keyed endpoint plus mainnet.base.org both accept the wide range (killing mutation: require both keyed)");
+  // One keyed endpoint widens the STRIDE, not the width of one question:
+  // mainnet.base.org caps eth_getLogs at 2,000 blocks (re-measured 2026-09-12,
+  // c56583) and cannot second a 10,000-block question at all. The stride is
+  // reached by paging; see the page tests below.
+  assert.equal(blocksPerCycle(withKey), OBSERVER_BLOCKS_PER_CYCLE_KEYED, "one keyed endpoint widens the stride (killing mutation: require both keyed)");
   assert.equal(blocksPerCycle(without), OBSERVER_BLOCKS_PER_CYCLE);
   assert.ok(OBSERVER_BLOCKS_PER_CYCLE_KEYED <= 10_000);
 });
@@ -322,4 +326,143 @@ test("callWithRetry retries exactly once on HTTP 429 and never on anything else"
   const twice = async () => { k++; throw new Error("rpc unavailable (HTTP 429)"); };
   await assert.rejects(() => callWithRetry(twice as never, "u", "m", [], 1), /429/);
   assert.equal(k, 2, "at most one retry");
+});
+
+// ---------------------------------------------------------------------------
+// Paging: one question is never wider than the public pool answers.
+//
+// The regression these three guard, measured live 2026-09-12 (c56583 on #3525):
+// with one keyed endpoint the cycle asked all five providers for 10,000 blocks
+// at once. mainnet.base.org caps eth_getLogs at 2,000, tenderly at under 2,000,
+// publicnode refuses 10,000, drpc refuses every width. Only the keyed voice
+// could answer, so "two independently operated providers" was unsatisfiable by
+// construction and all four marks on /api/rail read "no two providers agreed
+// (1 answered)" with last_block 22 to 26 days behind finality.
+// ---------------------------------------------------------------------------
+
+// A pool that behaves like the real one: `cap` is the widest inclusive range a
+// provider will answer, and anything wider throws the way mainnet.base.org
+// does. `failFrom` refuses exactly one page, to model a mid-walk 429.
+function cappedRpc(answers: Record<string, { logs: unknown[]; cap: number; failFrom?: number }>, finalized = 51_000_000) {
+  const calls: Array<{ url: string; method: string; from?: number; to?: number }> = [];
+  const rpc = async (url: string, method: string, params: unknown[]) => {
+    const who = answers[url];
+    if (!who) throw new Error("rpc unavailable");
+    if (method === "eth_chainId") { calls.push({ url, method }); return "0x2105"; }
+    if (method === "eth_getBlockByNumber") { calls.push({ url, method }); return { number: "0x" + finalized.toString(16), timestamp: "0x1" }; }
+    if (method === "eth_getLogs") {
+      const p = params[0] as { fromBlock: string; toBlock: string };
+      const from = Number(BigInt(p.fromBlock)), to = Number(BigInt(p.toBlock));
+      calls.push({ url, method, from, to });
+      if (to - from + 1 > who.cap) throw new Error(`rpc error -32614: eth_getLogs is limited to a ${who.cap.toLocaleString("en-US")} range`);
+      if (who.failFrom === from) throw new Error("rpc unavailable (HTTP 429)");
+      return (who.logs as Array<{ blockNumber: string }>).filter((l) => { const b = Number(BigInt(l.blockNumber)); return b >= from && b <= to; });
+    }
+    throw new Error("unexpected " + method);
+  };
+  return { rpc, calls };
+}
+
+// Killing mutation: ask the whole stride in one eth_getLogs (revert the page
+// split in walkWallet) -> only the keyed voice answers, sources drops to 1 and
+// the walk writes nothing. That mutation IS the production bug.
+test("a provider that caps eth_getLogs below the cycle stride still votes, because the question is one page wide", async () => {
+  const { env, db } = makeEnv();
+  (env as unknown as { BASE_RPC_PRIVATE_URL: string }).BASE_RPC_PRIVATE_URL = "https://keyed.example/k";
+  const finalized = 51_000_000;
+  db.prepare("INSERT INTO observer_marks (funder_address, last_block, updated_at) VALUES (?, ?, ?)").run(FUNDER, finalized - 100_000, 1);
+  const paid = log(PAYEE, 500000n, finalized - 95_000, tx(1)); // inside page 3
+  const { rpc, calls } = cappedRpc({
+    "https://keyed.example/k": { logs: [paid], cap: 10_000 },
+    // Exactly mainnet.base.org: it can never answer 10,000, and it is the only
+    // other operator in this pool.
+    "https://mainnet.base.org": { logs: [paid], cap: OBSERVER_BLOCKS_PER_PAGE },
+  }, finalized);
+  const r = await observeFunderWallets(env, { rpc, urls: () => ["https://keyed.example/k", "https://mainnet.base.org"] });
+
+  assert.equal(r.error, undefined, "a capped public provider is a voter again");
+  assert.equal(r.sources, 2, "two independently operated providers, not one");
+  assert.equal(r.pages, OBSERVER_BLOCKS_PER_CYCLE_KEYED / OBSERVER_BLOCKS_PER_PAGE);
+  assert.equal(r.to_block - r.from_block + 1, OBSERVER_BLOCKS_PER_CYCLE_KEYED, "the stride is unchanged: paging costs no ground");
+  assert.equal(r.payments, 1);
+  assert.equal(db.prepare("SELECT last_block FROM observer_marks").get()!.last_block, r.to_block);
+  assert.equal(db.prepare("SELECT last_error FROM observer_marks").get()!.last_error, null, "a full stride leaves no error behind");
+  // No single question was ever wider than a page, on ANY provider.
+  const widest = Math.max(...calls.filter((c) => c.method === "eth_getLogs").map((c) => c.to! - c.from! + 1));
+  assert.equal(widest, OBSERVER_BLOCKS_PER_PAGE, "no eth_getLogs is wider than one page");
+});
+
+// Killing mutations: on a page failure, throw instead of breaking (the pages
+// behind it are lost: first assertion red); or set the mark to toBlock rather
+// than the last agreed block (the resume assertion red, and the walk would be
+// claiming blocks nobody seconded).
+test("a page nobody seconds ends the cycle at the last agreed block, and the pages behind it are kept", async () => {
+  const { env, db } = makeEnv();
+  (env as unknown as { BASE_RPC_PRIVATE_URL: string }).BASE_RPC_PRIVATE_URL = "https://keyed.example/k";
+  const finalized = 51_000_000;
+  const start = finalized - 100_000;
+  db.prepare("INSERT INTO observer_marks (funder_address, last_block, updated_at) VALUES (?, ?, ?)").run(FUNDER, start, 1);
+  const from = start + 1;
+  const page2End = from + 2 * OBSERVER_BLOCKS_PER_PAGE - 1;
+  const inPage1 = log(PAYEE, 500000n, from + 10, tx(1));
+  const inPage2 = log(STRANGER, 7n, from + OBSERVER_BLOCKS_PER_PAGE + 10, tx(2));
+  const inPage3 = log(PAYEE, 500000n, page2End + 50, tx(3));
+  const logs = [inPage1, inPage2, inPage3];
+  const { rpc } = cappedRpc({
+    "https://keyed.example/k": { logs, cap: 10_000 },
+    // Page 3 is refused with the 429 the production marks actually record.
+    "https://mainnet.base.org": { logs, cap: OBSERVER_BLOCKS_PER_PAGE, failFrom: page2End + 1 },
+  }, finalized);
+  const urls = () => ["https://keyed.example/k", "https://mainnet.base.org"];
+  const r = await observeFunderWallets(env, { rpc, urls });
+
+  assert.equal(r.pages, 2, "two pages agreed, the third did not");
+  assert.equal(r.to_block, page2End, "the mark holds the last block two operators agreed on");
+  assert.equal(r.rows, 2, "pages 1 and 2 are banked, not discarded");
+  assert.match(String(r.partial), /429/);
+  const mark = db.prepare("SELECT last_block, last_error FROM observer_marks").get() as { last_block: number; last_error: string };
+  assert.equal(mark.last_block, page2End);
+  assert.match(mark.last_error, /429/, "a short walk says why it was short (killing mutation: bind NULL last_error) ");
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM observed_transfers").get()!.n, 2);
+
+  // The next cycle resumes at the refused page and, with it answered, covers
+  // the rest without re-writing anything.
+  const clean = cappedRpc({
+    "https://keyed.example/k": { logs, cap: 10_000 },
+    "https://mainnet.base.org": { logs, cap: OBSERVER_BLOCKS_PER_PAGE },
+  }, finalized);
+  const again = await observeFunderWallets(env, { rpc: clean.rpc, urls });
+  assert.equal(again.from_block, page2End + 1, "resumed exactly where the refusal stopped it");
+  assert.equal(again.rows, 1, "only the row in the page that was missed");
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM observed_transfers").get()!.n, 3, "no row written twice");
+  assert.equal(db.prepare("SELECT last_error FROM observer_marks").get()!.last_error, null, "the error clears when the stride completes");
+});
+
+// The cron shares its subrequest budget with the checkpoint pass, which is the
+// one thing in that invocation that must never be skipped. Killing mutation:
+// drop the OBSERVER_MAX_PAGES_PER_CYCLE clamp in blocksPerCycleCapped and the
+// cost grows with whatever anyone sets the stride to.
+test("the cycle's outbound cost is bounded by the page budget, not by how far behind the mark is", async () => {
+  const withKey = { BASE_RPC_PRIVATE_URL: "https://keyed.example/k" } as unknown as Env;
+  assert.equal(blocksPerCycleCapped(withKey), OBSERVER_BLOCKS_PER_PAGE * OBSERVER_MAX_PAGES_PER_CYCLE);
+  assert.ok(blocksPerCycleCapped(withKey) <= OBSERVER_BLOCKS_PER_PAGE * OBSERVER_MAX_PAGES_PER_CYCLE);
+  assert.equal(blocksPerCycleCapped({} as unknown as Env), OBSERVER_BLOCKS_PER_CYCLE, "no keyed endpoint is still one page");
+
+  const { env, db } = makeEnv();
+  (env as unknown as { BASE_RPC_PRIVATE_URL: string }).BASE_RPC_PRIVATE_URL = "https://keyed.example/k";
+  const finalized = 51_000_000;
+  // A mark a million blocks behind: the cost of this cycle must not notice.
+  db.prepare("INSERT INTO observer_marks (funder_address, last_block, updated_at) VALUES (?, ?, ?)").run(FUNDER, finalized - 1_126_794, 1);
+  const { rpc, calls } = cappedRpc({
+    "https://keyed.example/k": { logs: [], cap: 10_000 },
+    "https://mainnet.base.org": { logs: [], cap: OBSERVER_BLOCKS_PER_PAGE },
+  }, finalized);
+  const r = await observeFunderWallets(env, { rpc, urls: () => ["https://keyed.example/k", "https://mainnet.base.org"] });
+  assert.equal(r.pages, OBSERVER_MAX_PAGES_PER_CYCLE);
+  const gets = calls.filter((c) => c.method === "eth_getLogs").length;
+  // One getLogs per provider on page one (at most OBSERVER_PROVIDER_ATTEMPTS),
+  // then two per remaining page.
+  assert.ok(gets <= OBSERVER_PROVIDER_ATTEMPTS + 2 * (OBSERVER_MAX_PAGES_PER_CYCLE - 1), `getLogs calls ${gets} within budget`);
+  assert.equal(gets, 2 + 2 * (OBSERVER_MAX_PAGES_PER_CYCLE - 1), "two voices, every page, no re-asking the providers that lost");
+  assert.ok(calls.filter((c) => c.method === "eth_getBlockByNumber").length <= OBSERVER_PROVIDER_ATTEMPTS, "the finalized head is read once per provider, never once per page");
 });

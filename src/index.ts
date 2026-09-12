@@ -1562,7 +1562,10 @@ export default {
         // a provider outage is logged and never reaches the checkpoint.
         try {
           const observed = await observeFunderWallets(env);
-          if (observed.wallet && (observed.rows > 0 || observed.error)) console.log(JSON.stringify({ level: observed.error ? "warn" : "info", what: "observer", ...observed }));
+          // A stride cut short by a refused page writes rows and still needs
+          // saying, even when the pages it did get held nothing.
+          if (observed.wallet && (observed.rows > 0 || observed.error || observed.partial))
+            console.log(JSON.stringify({ level: observed.error || observed.partial ? "warn" : "info", what: "observer", ...observed }));
         } catch (e) {
           console.log(JSON.stringify({ level: "error", what: "observer", message: String(e).slice(0, 200) }));
         }
