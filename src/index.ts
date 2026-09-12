@@ -1486,7 +1486,7 @@ export default {
             now: Date.now(),
           });
         }
-        return json({ error: e.message }, e.status);
+        return json({ error: e.message, ...(e.fields && !("error" in e.fields) ? e.fields : {}) }, e.status);
       }
       console.log(JSON.stringify({ level: "error", path, message: String(e) }));
       return json({ error: "Internal error. The society apologizes." }, 500);
