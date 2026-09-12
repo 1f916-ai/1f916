@@ -19,7 +19,10 @@
 //
 // Budget: the cron shares a subrequest budget with checkpoints and doorbells.
 // One wallet per cycle, at most OBSERVER_PROVIDER_ATTEMPTS providers, one
-// getLogs each, plus one finalized-head read per provider that answers.
+// getLogs each over the FIRST page, plus one finalized-head read per provider
+// that answers, plus one getLogs per remaining page from each of the two that
+// agreed. At most OBSERVER_MAX_PAGES_PER_CYCLE pages, so the walk's cost is
+// bounded by a constant and not by how far behind the mark has fallen.
 
 import type { Env } from "./society.ts";
 import { baseRpcUrls, rpc } from "./payouts.ts";
@@ -29,16 +32,65 @@ import { baseRpcUrls, rpc } from "./payouts.ts";
 // 1,000; 1rpc at 50; mainnet.base.org takes more but one provider is not
 // agreement). Measured by the pre-deploy auditor 2026-09-08.
 export const OBSERVER_BLOCKS_PER_CYCLE = 1_000;
-// With a keyed endpoint configured the range per cycle grows tenfold: Infura
-// (measured 2026-09-08) and https://mainnet.base.org both accept 10,000-block
-// log queries, so the keyed voice and the public Base endpoint can agree on
-// the wide range; the providers that cap lower simply do not vote. (QuickNode's
-// free trial caps eth_getLogs at FIVE blocks and was removed the same night.)
-// No keyed endpoint: the 1,000 that tenderly accepts, so any two of the
-// public pool can still agree.
+// With a keyed endpoint configured the BLOCKS COVERED per cycle grow tenfold.
+// This is the cycle's stride, not the width of one question; see
+// OBSERVER_BLOCKS_PER_PAGE. (QuickNode's free trial caps eth_getLogs at FIVE
+// blocks and was removed the same night.) No keyed endpoint: the 1,000 that
+// tenderly accepts, so any two of the public pool can still agree.
 export const OBSERVER_BLOCKS_PER_CYCLE_KEYED = 10_000;
 export function blocksPerCycle(env: Env): number {
   return env.BASE_RPC_PRIVATE_URL || env.BASE_RPC_PRIVATE_URL_2 ? OBSERVER_BLOCKS_PER_CYCLE_KEYED : OBSERVER_BLOCKS_PER_CYCLE;
+}
+
+// ONE QUESTION IS NEVER WIDER THAN THE PUBLIC POOL ANSWERS, however wide the
+// cycle's stride is. Until now the two were the same number, and the comment
+// that justified the wide one rested on a single measurement that does not
+// hold: mainnet.base.org does NOT answer a 10,000-block eth_getLogs.
+//
+// Re-measured 2026-09-12 from outside Cloudflare's egress, at the exact
+// inclusive widths walkWallet asks for, against the five endpoints this file
+// actually tries (reported in c56583 on #3525):
+//   mainnet.base.org         2,000 ok; 5,000+ -32614 "eth_getLogs is limited to a 2,000 range"
+//   base-rpc.publicnode.com  5,000 ok; 10,000 -32602 "Archive requests require a personal token"
+//   base.gateway.tenderly.co 1,000 ok; 1,500+ -32602 "invalid params"
+//   base.drpc.org            refuses EVERY width, 1,000 included, error 35
+//   1rpc.io/base             50 blocks
+// So with one keyed endpoint the keyed voice was the only one that could
+// answer the wide question, and "two independently operated providers return
+// the same logs for the same range" was unsatisfiable by construction. Every
+// mark on /api/rail read "no two providers agreed (1 answered)", and the four
+// funder wallets sat 22 to 26 days behind finality.
+//
+// The page width is 1,000 rather than 2,000 because of who can vote at each.
+// Re-measured 2026-09-12T15:20Z, asking each provider five times per width
+// with the observer's own query shape (span = toBlock - fromBlock):
+//   span 1,000  mainnet.base.org 5/5, publicnode 5/5, tenderly 5/5 (42 logs each)
+//   span 2,000  mainnet.base.org 5/5, publicnode 5/5, tenderly 0/5 (-32602)
+// At 1,000 three independently operated providers answer, so any two can agree
+// and one may fail without stalling the walk. At 2,000 exactly two can, and
+// the rule has no margin left: one bad minute at either and the cycle banks
+// nothing. A 1,000-block page is a 999-block span, inside every one of those
+// three caps.
+//
+// The cost is subrequests, and it is not free. Worst case per cycle is
+// OBSERVER_PROVIDER_ATTEMPTS getLogs on page 1, one finalized-head read per
+// provider that answers, then two getLogs per remaining page: 5 + 5 + 9x2 = 28
+// at ten pages, against 5 + 5 + 4x2 = 18 at five pages of 2,000, and the cron
+// shares that budget with checkpoints and doorbells. If that budget matters
+// more than the third voter, 2_000 x 5 is the same 10,000 stride in one line.
+//
+// NOT MEASURED HERE, and it may be the binding constraint rather than this
+// one: what Cloudflare's egress sees. Those same marks record their last
+// failure as "Error: rpc unavailable (HTTP 429)" (c1574), which a narrower
+// question does not by itself fix. What paging does fix is that a page that
+// DID get two answers is now kept: see the partial-progress rule below.
+export const OBSERVER_BLOCKS_PER_PAGE = 1_000;
+// The hard subrequest bound. blocksPerCycle is the stride we WANT; this is the
+// most pages one cycle may spend to get it, so raising the stride can never
+// silently multiply the cron's outbound calls. 1,000 x 10 is today's 10,000.
+export const OBSERVER_MAX_PAGES_PER_CYCLE = 10;
+export function blocksPerCycleCapped(env: Env): number {
+  return Math.min(blocksPerCycle(env), OBSERVER_BLOCKS_PER_PAGE * OBSERVER_MAX_PAGES_PER_CYCLE);
 }
 
 // The public Base endpoint answers 429 under burst and is the observer's
@@ -212,6 +264,11 @@ export interface ObserverResult {
   payments: number;
   zero_value: number;
   sources: number;
+  // How many pages of OBSERVER_BLOCKS_PER_PAGE the two agreeing providers
+  // actually answered. Fewer than the cycle asked for means a later page was
+  // refused or disagreed and the walk banked what it had; partial names why.
+  pages: number;
+  partial?: string;
   error?: string;
 }
 
@@ -220,7 +277,7 @@ export interface ObserverResult {
 // anywhere is simply retried from the same block next time.
 export async function observeFunderWallets(env: Env, deps: ObserverDeps = {}): Promise<ObserverResult> {
   const wallet = await nextWallet(env);
-  if (!wallet) return { wallet: null, from_block: 0, to_block: 0, rows: 0, payments: 0, zero_value: 0, sources: 0 };
+  if (!wallet) return { wallet: null, from_block: 0, to_block: 0, rows: 0, payments: 0, zero_value: 0, sources: 0, pages: 0 };
   try {
     return await walkWallet(env, wallet, deps);
   } catch (e) {
@@ -252,8 +309,15 @@ async function walkWallet(env: Env, wallet: WalletRow, deps: ObserverDeps): Prom
   const answers: Answer[] = [];
   let fromBlock = 0;
   let toBlock = 0;
+  let pageTo = 0;
   let agreed: Answer[] | null = null;
   let lastError = "";
+  const getLogs = async (url: string, from: number, to: number): Promise<TransferLog[]> => {
+    const raw = await callWithRetry(call, url, "eth_getLogs", [
+      { address: [...OBSERVED_TOKENS], fromBlock: "0x" + from.toString(16), toBlock: "0x" + to.toString(16), topics: [TRANSFER_TOPIC, padTopic(funder)] },
+    ]);
+    return parseTransferLogs(raw).filter((l) => l.from === funder);
+  };
   for (const url of urls.slice(0, OBSERVER_PROVIDER_ATTEMPTS)) {
     try {
       const chain = await call(url, "eth_chainId", []);
@@ -269,14 +333,13 @@ async function walkWallet(env: Env, wallet: WalletRow, deps: ObserverDeps): Prom
           ? wallet.last_block + 1
           : Math.max(1, finalized - Math.floor((now() - wallet.earliest_created_at) / 1000 / BASE_BLOCK_SECONDS) - OBSERVER_START_MARGIN_BLOCKS);
         fromBlock = start;
-        toBlock = Math.min(finalized, start + blocksPerCycle(env) - 1);
+        toBlock = Math.min(finalized, start + blocksPerCycleCapped(env) - 1);
+        // Every provider is asked for the FIRST page, never the whole stride.
+        pageTo = Math.min(toBlock, fromBlock + OBSERVER_BLOCKS_PER_PAGE - 1);
       }
       if (finalized < toBlock) continue;
-      if (fromBlock > toBlock) return { wallet: funder, from_block: fromBlock, to_block: toBlock, rows: 0, payments: 0, zero_value: 0, sources: 0 };
-      const raw = await callWithRetry(call, url, "eth_getLogs", [
-        { address: [...OBSERVED_TOKENS], fromBlock: "0x" + fromBlock.toString(16), toBlock: "0x" + toBlock.toString(16), topics: [TRANSFER_TOPIC, padTopic(funder)] },
-      ]);
-      const logs = parseTransferLogs(raw).filter((l) => l.from === funder);
+      if (fromBlock > toBlock) return { wallet: funder, from_block: fromBlock, to_block: toBlock, rows: 0, payments: 0, zero_value: 0, sources: 0, pages: 0 };
+      const logs = await getLogs(url, fromBlock, pageTo);
       const answer = { url, finalized, logs };
       const twin = answers.find((a) => logsAgree(a.logs, logs));
       answers.push(answer);
@@ -295,15 +358,50 @@ async function walkWallet(env: Env, wallet: WalletRow, deps: ObserverDeps): Prom
       `INSERT INTO observer_marks (funder_address, last_block, updated_at, last_error) VALUES (?, NULL, ?, ?)
        ON CONFLICT(funder_address) DO UPDATE SET updated_at = excluded.updated_at, last_error = excluded.last_error`,
     )
-      .bind(funder, now(), `no two providers agreed (${answers.length} answered)${lastError ? ": " + lastError : ""}`)
+      .bind(funder, now(), `no two providers agreed over ${pageTo - fromBlock + 1} blocks (${answers.length} answered)${lastError ? ": " + lastError : ""}`)
       .run();
-    return { wallet: funder, from_block: fromBlock, to_block: toBlock, rows: 0, payments: 0, zero_value: 0, sources: answers.length, error: "no two providers agreed" };
+    return { wallet: funder, from_block: fromBlock, to_block: pageTo, rows: 0, payments: 0, zero_value: 0, sources: answers.length, pages: 0, error: "no two providers agreed" };
   }
 
-  const logs = agreed[1]!.logs.slice(0, OBSERVER_MAX_ROWS_PER_CYCLE);
+  // The rest of the stride, one OBSERVER_BLOCKS_PER_PAGE page at a time, asked
+  // of the SAME two providers that agreed on page one. Each page has to agree
+  // on its own: the two-operator rule is per range, not per cycle.
+  //
+  // PARTIAL PROGRESS IS KEPT. A page that is refused, or on which the two
+  // disagree, ends the walk here rather than discarding the pages behind it.
+  // That is the difference from the old one-question cycle, where a single 429
+  // cost the whole stride: the mark now advances to the last block two
+  // operators actually agreed on, and the next cycle resumes from there.
+  const pageLogs: TransferLog[] = [...agreed[1]!.logs];
+  let walkedTo = pageTo;
+  let pages = 1;
+  let partial = "";
+  while (walkedTo < toBlock && pageLogs.length < OBSERVER_MAX_ROWS_PER_CYCLE) {
+    const from = walkedTo + 1;
+    const to = Math.min(toBlock, from + OBSERVER_BLOCKS_PER_PAGE - 1);
+    let both: TransferLog[][];
+    try {
+      both = [await getLogs(agreed[0]!.url, from, to), await getLogs(agreed[1]!.url, from, to)];
+    } catch (e) {
+      partial = `page ${from}-${to} threw: ${String(e).slice(0, 100)}`;
+      break;
+    }
+    if (!logsAgree(both[0]!, both[1]!)) {
+      partial = `page ${from}-${to}: the two providers disagreed`;
+      break;
+    }
+    // Pages are contiguous, ascending and disjoint, and parseTransferLogs
+    // already sorts within a page, so the concatenation is globally ordered
+    // and the cap below still cuts at a real boundary.
+    pageLogs.push(...both[1]!);
+    walkedTo = to;
+    pages++;
+  }
+
+  const logs = pageLogs.slice(0, OBSERVER_MAX_ROWS_PER_CYCLE);
   // A page cut at the cap advances only to the last block fully covered, so
   // nothing in a partially read block is skipped.
-  const coveredTo = logs.length === OBSERVER_MAX_ROWS_PER_CYCLE ? logs[logs.length - 1]!.block_number - 1 : toBlock;
+  const coveredTo = logs.length === OBSERVER_MAX_ROWS_PER_CYCLE ? logs[logs.length - 1]!.block_number - 1 : walkedTo;
   const index = await bindingIndexFor(env, funder);
   let payments = 0;
   let zero = 0;
@@ -337,13 +435,17 @@ async function walkWallet(env: Env, wallet: WalletRow, deps: ObserverDeps): Prom
   });
   statements.push(
     env.DB.prepare(
-      `INSERT INTO observer_marks (funder_address, last_block, updated_at, last_error, last_range_from, last_range_to, last_range_rows) VALUES (?, ?, ?, NULL, ?, ?, ?)
-       ON CONFLICT(funder_address) DO UPDATE SET last_block = excluded.last_block, updated_at = excluded.updated_at, last_error = NULL,
+      // last_error carries the partial reason when the stride was cut short.
+      // A short walk is still progress and still writes its rows, so the mark
+      // says BOTH how far it got and why it stopped rather than reading as a
+      // clean full cycle.
+      `INSERT INTO observer_marks (funder_address, last_block, updated_at, last_error, last_range_from, last_range_to, last_range_rows) VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(funder_address) DO UPDATE SET last_block = excluded.last_block, updated_at = excluded.updated_at, last_error = excluded.last_error,
          last_range_from = excluded.last_range_from, last_range_to = excluded.last_range_to, last_range_rows = excluded.last_range_rows`,
-    ).bind(funder, coveredTo, stamp, fromBlock, coveredTo, covered.length),
+    ).bind(funder, coveredTo, stamp, partial || null, fromBlock, coveredTo, covered.length),
   );
   await env.DB.batch(statements);
-  return { wallet: funder, from_block: fromBlock, to_block: coveredTo, rows: covered.length, payments, zero_value: zero, sources: 2 };
+  return { wallet: funder, from_block: fromBlock, to_block: coveredTo, rows: covered.length, payments, zero_value: zero, sources: 2, pages, ...(partial ? { partial } : {}) };
 }
 
 // What the read surfaces serve. Kept here so every page that mentions an
