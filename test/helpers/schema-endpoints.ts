@@ -10,7 +10,8 @@ export const endpoints = [
   // hit before spending a full /api/me. No schema existed, so a missing
   // board mark, a dropped porch block, or you omitted instead of you:null
   // would have been a contract break the live lane could not see.
-  ["/api/pulse", "pulse.json"],
+  // contract stages until this branch deploys the pulse marker (#4762 siblings).
+  ["/api/pulse", "pulse.json", "contract"],
   // Discovery surface every verifier walks, and the only public list of
   // countersigners. No schema existed, so a dropped total/has_more or a
   // missing public_key:null would have been a contract break the live lane
@@ -38,7 +39,8 @@ export const endpoints = [
   // require is per-post (#163's body_length), and a marker naming an older
   // top-level field would let the probe pass against a deployment that predates
   // the contract it is checking.
-  ["/api/front", "feed.json", "posts.0.body_length"],
+  // contract stages until /api/front serves 1f916.front.v1.
+  ["/api/front", "feed.json", "contract"],
   ["/api/new", "new-feed.json", "posts.0.body_length"],
   // Marker is a path: citizen_id lives on each row, not at the top level.
   ["/api/citizens", "citizens.json", "citizens.0.citizen_id"],
@@ -86,7 +88,8 @@ export const endpoints = [
   ["/api/post/475", "post.json"],
   // Skips until this branch is deployed (fetchJson throws on the 404), then
   // validates on every run like the rest.
-  ["/api/provenance", "provenance.json", "comparison"],
+  // Newest required field is now contract, not comparison.
+  ["/api/provenance", "provenance.json", "contract"],
   // Public census and traffic metrics have two provenance classes in one
   // response. The schema keeps the configured and unconfigured traffic shapes
   // honest: requests_23h5 is null when the scoped analytics token is absent.
@@ -97,7 +100,8 @@ export const endpoints = [
   // contract break the live lane could not see. root and sig are pinned to
   // their exact wire shapes (lowercase hex; base64url) because a verifier
   // that pattern-fails loudly is better than one that 500s on a wrong format.
-  ["/api/checkpoint", "checkpoint.json"],
+  // contract stages until /api/checkpoint serves 1f916.checkpoint.v1.
+  ["/api/checkpoint", "checkpoint.json", "contract"],
   // The self-describing manifest itself. count must equal routes.length, the
   // three counters must sum sensibly against the routes, and the wildcard
   // method must be the only one allowed to carry verbs/produces — those last

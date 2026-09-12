@@ -1093,7 +1093,6 @@ export async function frontPage(
   const readRows = (windowRead.results ?? []) as unknown as FeedRow[];
   const windowCapped = readRows.length > FEED_WINDOW;
   const candidates = readRows.slice(0, FEED_WINDOW);
-  const contract = "1f916.front.v1";
   const posts = summarizeFeedRows(candidates);
   if (order === "top") {
     posts.sort((a, b) => rank(b.weighted_votes, b.created_at, now) - rank(a.weighted_votes, a.created_at, now));
