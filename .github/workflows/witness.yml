@@ -61,9 +61,33 @@ jobs:
               echo "$resp" | jq -c --arg at "$at" --arg bucket "$bucket" --argjson cp "$cpj" '{
                 at: $at, bucket: $bucket,
                 status: (if (.identity_log.status == "verified" and .treasury.status == "verified") then "verified" else "unverified" end),
-                identity: (.identity_log | {status, head, verified_through_id, sealed_entries, total_rows}),
-                treasury: (.treasury | {status, head, verified_through_id, sealed_entries, total_rows})
-              } + $cp' >> "witness/$day.jsonl"
+                identity: (.identity_log | {status, head, verified_through_id, sealed_entries, sealed_entries_total, total_rows}),
+                treasury: (.treasury | {status, head, verified_through_id, sealed_entries, sealed_entries_total, total_rows})
+              } + $cp
+              # checkpoint-lag-window (docket, discussion 4341): the two reads
+              # above happen in a fixed order, checkpoint first and attest
+              # second. Both counters are cardinalities of the same relation
+              # (rows of the log WHERE hash IS NOT NULL: src/checkpoint.ts
+              # sealedHashes, src/chain.ts sealed_entries_total), one stored at
+              # the cut, one counted at the later read, so on a healthy chain
+              # tree_size <= sealed_entries_total. Pair them on the line instead
+              # of merging them unread. delta > 0 is the count gap seen across
+              # this checkpoint-then-attest transaction (the lag the row
+              # measures); 0 means no gap was visible at the second read, not
+              # that the checkpoint is fresh; < 0 is a checkpoint covering rows
+              # the seal has not reached, an invariant violation, not a race.
+              # unpaired: one side missing (checkpoint fetch failed, or no
+              # checkpoint for that log). sealed_entries_total, never
+              # sealed_entries: that one is windowed to the caller's anchor and
+              # bounded by the verify page, and the source says not to compare it.
+              | def lag($chain; $log):
+                  ([.checkpoints[]? | select(.log == $log) | .tree_size] | first) as $ts
+                  | $chain.sealed_entries_total as $se
+                  | if ($ts == null or $se == null)
+                    then {state: "unpaired", tree_size: $ts, sealed_entries_total: $se, delta: null}
+                    else {state: (if $se < $ts then "inverted" elif $se == $ts then "aligned" else "lagging" end), tree_size: $ts, sealed_entries_total: $se, delta: ($se - $ts)}
+                    end;
+                .lag = {order: "checkpoint_then_attest", identity: lag(.identity; "identity_events"), treasury: lag(.treasury; "ledger")}' >> "witness/$day.jsonl"
             else
               echo "{\"at\":\"$at\",\"bucket\":\"$bucket\",\"status\":\"fetch_failed\"}" | jq -c --argjson cp "$cpj" '. + $cp' >> "witness/$day.jsonl"
             fi

@@ -46,6 +46,30 @@ The first countersignature line in any day file is at
 same content without the `type` and `created_at` keys, which were added at
 that moment; nothing else about them differs.
 
+## Head lines pair the two counters (docket row `checkpoint-lag-window`)
+
+From the first head line that carries a `lag` key, the job reconciles the two
+reads it was already making instead of merging them unread. The reads happen
+in a fixed order, `/api/checkpoint` first and `/api/attest` second, and the
+two counters are cardinalities of the same relation — rows of the log with a
+hash (`src/checkpoint.ts` `sealedHashes`; `src/chain.ts` `sealed_entries_total`)
+— one stored at the cut, one counted at the later read. So on a healthy chain a
+checkpoint's `tree_size` never exceeds the `sealed_entries_total` read after it.
+`lag.order` records that order; `lag.identity` and `lag.treasury` each carry
+`tree_size` (from the checkpoint for that log), `sealed_entries_total` (from
+attest), `delta` = `sealed_entries_total - tree_size`, and a `state`:
+`lagging` (positive: the count gap visible across this transaction, the window
+the docket row measures), `aligned` (zero: no gap visible at the second read,
+which says nothing about checkpoint freshness), `inverted` (negative: a
+checkpoint covering rows the seal had not reached, an invariant violation, not
+a race), or `unpaired` (one side missing: checkpoint fetch failed, or no
+checkpoint for that log; `delta` is null). The comparand is
+`sealed_entries_total`, not `sealed_entries`: the latter is windowed to the
+caller's anchor and bounded by the verify page, as `/api/attest` itself notes.
+Lines written before this change have no `lag` key and no
+`sealed_entries_total`; for them, an unanchored read within one verify page,
+`identity.sealed_entries` equals `sealed_entries_total`, so recompute from it.
+
 So "the witness has covered this since 2026-08-09" means two different claims
 either side of that day: corroboration of the chain heads before it, and a
 countersignature over the signed checkpoint after it. Both are in these files;
