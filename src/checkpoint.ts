@@ -223,7 +223,6 @@ export async function consistency(env: Env, logParam: string | null, fromParam: 
   if (leaves.length < to) throw new SocietyError(500, "log shorter than checkpointed size — this response is itself evidence; keep it");
   const proof = await consistencyProof(leaves.slice(0, to), from, to);
   return {
-    contract: CHECKPOINT_PAYLOAD_PREFIX,
     log,
     from: fromRow,
     to: toRow,
