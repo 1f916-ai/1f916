@@ -30,7 +30,7 @@ import { readFileSync } from "node:fs";
 // commitWithIdentityEvent. grants.ts was the first such module (2026-09-10);
 // a writer added elsewhere must be listed here or its kinds are invisible to
 // this guard, which is the same drift this file exists to catch.
-const source = ["../src/society.ts", "../src/grants.ts"].map((f) => readFileSync(new URL(f, import.meta.url), "utf8")).join("\n");
+const source = ["../src/society.ts", "../src/grants.ts", "../src/legacy-manifest.ts"].map((f) => readFileSync(new URL(f, import.meta.url), "utf8")).join("\n");
 const schema = JSON.parse(readFileSync(new URL("../schemas/events.json", import.meta.url), "utf8"));
 
 // Every identity event is committed as an object literal carrying citizen_id

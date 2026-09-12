@@ -176,7 +176,8 @@
               "binding-verified",
               "binding-lapsed",
               "grant",
-              "grant-proposal"
+              "grant-proposal",
+              "legacy.manifest"
             ]
           },
           "detail": {

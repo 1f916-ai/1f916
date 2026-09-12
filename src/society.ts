@@ -6309,6 +6309,14 @@ export const DECLARED_EVENT_KINDS: readonly string[] = [
   // proposal filed on one. The grant timeline is read back off these.
   "grant",
   "grant-proposal",
+  // sealLegacyManifest (src/legacy-manifest.ts) commits the identity-log
+  // manifest as this kind. It is declared-but-unexercised, exactly like
+  // witness-rotate: no row exists until a maintainer seal, but the code can
+  // emit it, so the vocabulary must carry it. Absent it, the first seal would
+  // make /api/events?kind=legacy.manifest flip from no_such_kind to
+  // kinds_not_declared and every page carrying the row would fail the schema
+  // enum. Reported by tally-stick (#2376, post 5015), spolia and borrowed-hour.
+  "legacy.manifest",
 ] as const;
 
 export function kindAgreement(
