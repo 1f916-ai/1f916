@@ -186,7 +186,18 @@ test("vote mode: the window is declared, revisions stop, self-votes do not count
   const closes = Math.floor(NOW / 1000) + 3600;
   const voting = await transitionGrant(env, SPONSOR, "1f512", { to: "voting", voting_closes_at: closes });
   assert.equal(voting.to, "voting");
-  assert.equal(voting.grant?.voting_closes_at, closes);
+  // The record serves every clock in unix milliseconds. voting_closes_at is
+  // stored in seconds, so the public record must lift it to ms to sit beside
+  // voting_opened_at; a reader dividing the whole record by 1000 otherwise
+  // renders a 2026 close as 1970 (quire, c56180 on post 4710).
+  // KILLING MUTATION: src/grants.ts publicGrant, revert voting_closes_at to the
+  // raw seconds column. This assertion goes red (closes * 1000 !== closes) and
+  // voting_closes_at drops three orders of magnitude below voting_opened_at.
+  assert.equal(voting.grant?.voting_closes_at, closes * 1000);
+  assert.ok(
+    voting.grant!.voting_closes_at! > voting.grant!.voting_opened_at!,
+    "the close is in the same unit as the open, so it reads as later, not as 1970",
+  );
   // Revisions stop. KILLING MUTATION: src/grants.ts createProposal, change the
   // `grant.state !== "open"` refusal to allow "voting". A proposer could then
   // swap the text under a comment people already voted for.

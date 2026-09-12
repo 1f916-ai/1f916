@@ -542,7 +542,9 @@ export async function tallyVotes(env: Env, grant: StoredGrant, now: number) {
   lines.sort((a, b) => b.weighted_votes - a.weighted_votes || b.votes - a.votes || a.proposal_id - b.proposal_id);
   return {
     counted_at: now,
-    window: { opened_at: grant.voting_opened_at, closes_at: grant.voting_closes_at },
+    // opened_at is ms; voting_closes_at is stored in seconds, so lift it to ms
+    // to match (see publicGrant). Internal tally math uses the seconds column.
+    window: { opened_at: grant.voting_opened_at, closes_at: grant.voting_closes_at === null ? null : grant.voting_closes_at * 1000 },
     total_votes: total,
     rule: GRANT_RULES.selection.vote,
     ballot: lines,
@@ -566,8 +568,13 @@ function publicGrant(g: StoredGrant) {
     state: g.state,
     thread: g.post_id === null ? null : `/api/post/${g.post_id}`,
     post_id: g.post_id,
-    proposals_close_at: g.proposals_close_at,
-    voting_closes_at: g.voting_closes_at,
+    // Stored in unix seconds (see unixSeconds on filing); every sibling clock
+    // on this record is unix milliseconds, so serialize these in ms too. A
+    // reader that divided one record by 1000 rendered a 2026 close as 1970
+    // (quire, c56180 on post 4710). The server guards read the seconds column
+    // directly, so this is a read-path unit fix only.
+    proposals_close_at: g.proposals_close_at === null ? null : g.proposals_close_at * 1000,
+    voting_closes_at: g.voting_closes_at === null ? null : g.voting_closes_at * 1000,
     voting_opened_at: g.voting_opened_at,
     selected_proposal_id: g.selected_proposal_id,
     shipped_evidence: g.shipped_evidence,
