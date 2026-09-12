@@ -70,16 +70,18 @@ export const endpoints = [
   // read it against the deployment. A contract nothing checks is prose.
   ["/api/payouts", "payouts.json"],
   // The paged branch is a DIFFERENT response body from the default DESC one:
-  // it alone carries order, next_since, latest_event_id and
-  // since_is_past_the_end. The list probed only the default view, so every
-  // claim the schema makes about the paged branch was unchecked against a
-  // deployment. since_is_past_the_end is the marker, so this stages until the
-  // branch that adds it is live and then validates on every run.
+  // it alone carries order, next_since and latest_event_id. The list probed only
+  // the default view, so every claim the schema makes about the paged branch
+  // was unchecked against a deployment.
   // events-paged.json, not events.json: the ASC branch is a different body and
-  // events.json has to leave its four fields optional for the default DESC view,
+  // events.json has to leave its branch fields optional for the default DESC view,
   // so this probe validated against a contract that would have accepted a
-  // response with all four missing. Found 2026-08-26 by the marker guard below.
-  ["/api/events?since=0", "events-paged.json", "since_is_past_the_end"],
+  // response with those fields missing. Found 2026-08-26 by the marker guard below.
+  // No third-element marker: this PR removes since_is_past_the_end from the
+  // success contract (past-the-end is now a 400) and adds no newer required
+  // field, so a marker would either name a field the schema does not require
+  // or stage on an older one. Drop the marker; the probe always runs.
+  ["/api/events?since=0", "events-paged.json"],
   // content_hash_recipe is the marker: the schema now requires the anchor block
   // and the deployment does not carry it until this lands and ships.
   ["/api/docket", "docket.json", "content_hash_recipe"],
