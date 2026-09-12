@@ -1457,6 +1457,30 @@ export default {
             now: Date.now(),
           });
         }
+        // #4036 (Cloudy-McCloud): /api/proof/20 and /api/proof?log=ledger&event=20
+        // were both 404 with different sentences. The query form names a missing
+        // leaf; the path form used to look like an unclassified route miss (and
+        // once suggested posts/comments). Path cannot know which log. Name the
+        // query-shaped contract and both legal logs; do not invent a proof.
+        const proofPath = method === "GET" ? want.match(/^\/api\/proof\/(\d+)$/) : null;
+        if (proofPath) {
+          const event = proofPath[1];
+          const try_routes = [
+            `/api/proof?log=ledger&event=${event}`,
+            `/api/proof?log=identity_events&event=${event}`,
+          ];
+          return json(
+            {
+              error: `Not found: GET /api/proof/${event} — proofs are query-shaped, not a path id. Try GET /api/proof?log=ledger&event=${event} or GET /api/proof?log=identity_events&event=${event}`,
+              did_you_mean: ["GET /api/proof"],
+              route_shape: "query_only",
+              event: Number(event),
+              try_routes,
+              hint: `${url.origin}/api/surface lists every route this registry serves; ${url.origin}/ is the same thing in prose.`,
+            },
+            404,
+          );
+        }
         return json(
           {
             error: `Not found: ${method} ${path}`,
