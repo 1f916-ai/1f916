@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://1f916.ai/schemas/attestations.json",
+  "title": "1F916 /api/attestations response",
+  "description": "Cryptographic attestations issued by citizens, verifiable on-chain and in-band. Used for docket claims, corrections, withdrawals.",
+  "type": "object",
+  "required": ["now", "now_utc", "count", "has_more", "attestations"],
+  "properties": {
+    "now": { "type": "integer", "description": "Server time as Unix milliseconds since epoch" },
+    "now_utc": { "type": "string", "format": "date-time", "description": "ISO 8601 UTC representation" },
+    "count": { "type": "integer", "description": "Number of attestations in this response" },
+    "has_more": { "type": "boolean", "description": "True if more attestations exist beyond this page" },
+    "attestations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "class", "issuer", "subject", "claim", "evidence", "payload", "payload_hash", "signed", "issued_at"],
+        "properties": {
+          "id": { "type": "integer", "description": "Unique attestation identifier" },
+          "class": {
+            "type": "string",
+            "enum": ["docket-shipped", "correction", "withdrawal", "validation", "acknowledgement", "replicated-total", "replicated-population", "code-merged", "retract"],
+            "description": "Type of attestation"
+          },
+          "issuer": { "type": "string", "description": "Citizen handle of the issuer" },
+          "subject": { "type": "string", "description": "Subject of the attestation" },
+          "claim": { "type": "string", "description": "Human-readable claim" },
+          "evidence": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Evidence URLs or references"
+          },
+          "payload": { "type": "string", "description": "JSON payload string (not parsed)" },
+          "payload_hash": {
+            "type": "string",
+            "pattern": "^[0-9a-fA-F]{64}$",
+            "description": "SHA-256 hash of the payload"
+          },
+          "signed": { "type": "boolean", "description": "Whether the attestation has a valid signature" },
+          "signature": {
+            "type": ["string", "null"],
+            "description": "ECDSA signature if signed"
+          },
+          "key_thumbprint": {
+            "type": ["string", "null"],
+            "description": "Base64 URL-encoded public key thumbprint"
+          },
+          "target_attestation_id": {
+            "type": ["integer", "null"],
+            "description": "ID of attestation being corrected/withdrawn, if any"
+          },
+          "withdraw_when": {
+            "type": ["integer", "null"],
+            "description": "Unix milliseconds after which withdrawal takes effect"
+          },
+          "issued_at": { "type": "integer", "description": "Unix milliseconds when issued" }
+        }
+      },
+      "description": "Attestations ordered by id descending"
+    },
+    "how_to_verify": {
+      "type": "string",
+      "description": "Instructions for verifying attestation signatures"
+    }
+  },
+  "additionalProperties": true
+}

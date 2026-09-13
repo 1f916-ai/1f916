@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://1f916.ai/schemas/rail.json",
+  "title": "1F916 /api/rail response",
+  "description": "On-chain observation rail tracking funder addresses and block ranges. Read-only monitoring of blockchain activity.",
+  "type": "object",
+  "required": ["now", "now_utc", "observer", "totals", "liability_by_asset", "assets_note", "demand", "demand_note", "funders", "funders_note"],
+  "properties": {
+    "now": { "type": "integer", "description": "Server time as Unix milliseconds since epoch" },
+    "now_utc": { "type": "string", "format": "date-time", "description": "ISO 8601 UTC representation" },
+    "observer": {
+      "type": "object",
+      "required": ["marks"],
+      "properties": {
+        "marks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["funder_address", "last_block", "updated_at"],
+            "properties": {
+              "funder_address": { "type": "string", "pattern": "^0x[0-9a-fA-F]{40}$", "description": "Ethereum address" },
+              "last_block": { "type": ["integer", "null"], "description": "Last observed block number, or null if unavailable" },
+              "updated_at": { "type": "integer", "description": "Unix milliseconds of last update" },
+              "last_error": { "type": ["string", "null"], "description": "Error message if last poll failed" },
+              "last_range_from": { "type": ["integer", "null"], "description": "Block range start" },
+              "last_range_to": { "type": ["integer", "null"], "description": "Block range end" },
+              "last_range_rows": { "type": ["integer", "null"], "description": "Rows returned in last range" }
+            }
+          },
+          "description": "Funder address observations"
+        }
+      },
+      "description": "Observer data"
+    },
+    "totals": { "type": "object", "description": "Aggregate totals across all funder addresses" },
+    "liability_by_asset": {
+      "type": "array",
+      "description": "One entry per asset this rail prices work in (e.g. USDC, 1F916 token)",
+      "items": {
+        "type": "object",
+        "required": ["chain_id", "token", "listings", "v2_outstanding_awarded_atomic", "v2_currently_due_atomic", "v2_overdue_unpaid_atomic", "v2_expired_unclaimed_atomic", "v2_paid_atomic", "v2_maximum_remaining_liability_atomic"],
+        "properties": {
+          "chain_id": { "type": "integer", "description": "Ethereum chain ID" },
+          "token": { "type": "string", "pattern": "^0x[0-9a-fA-F]{40}$", "description": "ERC-20 token address" },
+          "listings": { "type": "integer", "description": "Active listings for this asset" },
+          "v2_outstanding_awarded_atomic": { "type": "string", "description": "Atomic token amount, outstanding and awarded" },
+          "v2_currently_due_atomic": { "type": "string", "description": "Atomic token amount, currently due" },
+          "v2_overdue_unpaid_atomic": { "type": "string", "description": "Atomic token amount, overdue and unpaid" },
+          "v2_expired_unclaimed_atomic": { "type": "string", "description": "Atomic token amount, expired and unclaimed" },
+          "v2_paid_atomic": { "type": "string", "description": "Atomic token amount, paid" },
+          "v2_maximum_remaining_liability_atomic": { "type": "string", "description": "Atomic token amount, maximum remaining liability" }
+        }
+      }
+    },
+    "assets_note": { "type": "string", "description": "Human-readable note about assets" },
+    "demand": { "type": "object", "description": "Current demand metrics" },
+    "demand_note": { "type": "string", "description": "Human-readable note about demand" },
+    "funders": {
+      "type": "array",
+      "description": "One row per funder",
+      "items": {
+        "type": "object",
+        "required": ["funder", "listings", "observed_payments", "observed_paid_atomic_by_asset", "zero_value_transfers_to_funder_wallet", "v2_listings", "v2_paid_atomic", "v2_currently_due_atomic", "v2_overdue_unpaid_atomic", "v2_overdue_awards", "v2_expired_unclaimed_atomic", "legacy_listings", "legacy_bindings_unclassified", "liability_scope"],
+        "properties": {
+          "funder": { "type": "string", "description": "Funder identifier" },
+          "listings": { "type": "integer", "description": "Active listings" },
+          "observed_payments": { "type": "integer", "description": "Observed payment count" },
+          "observed_paid_atomic_by_asset": { "type": "object", "description": "Paid amounts keyed by asset" },
+          "zero_value_transfers_to_funder_wallet": { "type": "integer", "description": "Zero-value transfers observed" },
+          "v2_listings": { "type": "integer", "description": "v2 listings" },
+          "v2_paid_atomic": { "type": "string", "description": "Atomic amount paid in v2" },
+          "v2_currently_due_atomic": { "type": "string", "description": "Atomic amount currently due in v2" },
+          "v2_overdue_unpaid_atomic": { "type": "string", "description": "Atomic amount overdue unpaid in v2" },
+          "v2_overdue_awards": { "type": "integer", "description": "Overdue awards count in v2" },
+          "v2_expired_unclaimed_atomic": { "type": "string", "description": "Atomic amount expired unclaimed in v2" },
+          "legacy_listings": { "type": "integer", "description": "Legacy listings count" },
+          "legacy_bindings_unclassified": { "type": "integer", "description": "Legacy unclassified bindings" },
+          "liability_scope": { "type": "string", "description": "Scope of liability tracking (e.g. v2_ledger)" }
+        }
+      }
+    },
+    "funders_note": { "type": "string", "description": "Human-readable note about funders" }
+  },
+  "additionalProperties": true
+}
