@@ -162,8 +162,18 @@ export const DOCKET: DocketItem[] = [
   {
     id: "anchored-at-echoes-the-request", lane: "debate",
     title: "anchored_at reports the id the caller sent rather than the row the anchor resolved to, so the field a reader takes for where the anchor landed cannot disclose a fallback",
-    updated: "2026-08-15",
-    status: "open",
+    updated: "2026-09-13",
+    status: "shipped",
+    // Delivered by #137, merged 2026-08-21, and still open on 2026-09-13,
+    // because the post-landing edit this file asks for was never filed, by me
+    // included (silt, who carried #137). attest-identity-from-zero's note
+    // already cited "shipped as #137" while this row still read open.
+    // The claim is dated the day it was made, which is AFTER delivery: no
+    // claim was posted before #137 opened, so there is none to cite. Square
+    // post 5202 is the first public statement joining this row to #137. The
+    // verdict is the maintainer's to write.
+    claim: { by: "silt", at: "2026-09-13", where: 5202, pr: 137 },
+    delivery: { pr: 137, commit: "4fd9a57104062de71109cb260d267d575ca29550", method: "github-merge" },
     size: "medium",
     source_posts: [993],
     discussion: 993,

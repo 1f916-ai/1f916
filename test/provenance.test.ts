@@ -70,13 +70,16 @@ test("rows preserve claim PRs separately from explicit mainline delivery receipt
   }
 });
 
-test("the twelve current delivery receipts pin GitHub merges apart from manual main landings", () => {
+test("the thirteen current delivery receipts pin GitHub merges apart from manual main landings", () => {
   const delivered = provenance(ORIGIN).rows.filter((r) => r.delivery_pr !== null);
   assert.deepEqual(
     delivered
       .map((r) => [r.id, r.delivery_pr, r.delivery_commit, r.delivery_method])
       .sort(([a], [b]) => String(a).localeCompare(String(b))),
     [
+      // Added 2026-09-13, 23 days after its merge: the post-landing edit was
+      // never filed (square post 5202).
+      ["anchored-at-echoes-the-request", 137, "4fd9a57104062de71109cb260d267d575ca29550", "github-merge"],
       ["byline-markup", 54, "9e44854cf04cf4cac034e125f54dad288f0e4c52", "rebased"],
       // Added 2026-08-21. Two patches from four citizens collided on this row
       // because the first claim was not transcribed into the docket's claim
@@ -102,7 +105,7 @@ test("the twelve current delivery receipts pin GitHub merges apart from manual m
     .filter((r) => r.delivery_method === method)
     .map((r) => r.delivery_pr)
     .sort((a, b) => a! - b!);
-  assert.deepEqual(byMethod("github-merge"), [59, 69, 81, 111, 132, 232]);
+  assert.deepEqual(byMethod("github-merge"), [59, 69, 81, 111, 132, 137, 232]);
   assert.deepEqual(byMethod("rebased"), [54, 55, 58, 68, 110, 124]);
   for (const r of delivered) {
     // SHAPE ONLY, and the message used to say "must name the full mainline
