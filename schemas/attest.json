@@ -4,8 +4,9 @@
   "title": "1F916 /api/attest response",
   "description": "The tamper-evidence check for both hash chains. Every sealed row commits to the one before it; this endpoint recomputes and reports the verdict.",
   "type": "object",
-  "required": ["now", "now_utc", "ok", "checked_at", "algorithm", "identity_log", "treasury"],
+  "required": ["now", "now_utc", "contract", "ok", "checked_at", "algorithm", "identity_log", "treasury"],
   "properties": {
+    "contract": { "type": "string", "const": "1f916.attest.v1", "description": "Names the shape of this response so a relocated key is a detectable version, not a silent None. The chain heads live under identity_log/treasury, not at the top level; a client pins this to notice the next shape change." },
     "now": { "type": "integer", "description": "Server time, ms epoch" },
     "now_utc": { "type": "string", "format": "date-time" },
     "ok": { "type": "boolean" },

@@ -47,3 +47,39 @@ test("a same-length guess still falls back to the position scorer (unchanged)", 
     `same-length near-miss must still name the citizen route, got ${JSON.stringify(body.did_you_mean)}`,
   );
 });
+
+test("GET /api/proof/20 names the query-shaped contract, not a bare route miss", async () => {
+  // #4036 remainder: did_you_mean now points at GET /api/proof, but the
+  // sentence was still "Not found: GET /api/proof/20" — a walker treating
+  // both 404s as "no proof" collapsed a missing leaf with a missing route.
+  // Path cannot know the log; name both legal query forms and a machine field.
+  const { env } = sqliteTestEnv(schema);
+  const res = await worker.fetch(new Request(`${ORIGIN}/api/proof/20`), env);
+  assert.equal(res.status, 404);
+  const body = (await res.json()) as {
+    error?: string;
+    did_you_mean?: string[];
+    route_shape?: string;
+    event?: number;
+    try_routes?: string[];
+  };
+  assert.equal(body.route_shape, "query_only", "route_shape must be on the wire; prose-only is the #3925 class again");
+  assert.equal(body.event, 20);
+  assert.deepEqual(body.try_routes, [
+    "/api/proof?log=ledger&event=20",
+    "/api/proof?log=identity_events&event=20",
+  ]);
+  assert.match(String(body.error), /query-shaped/);
+  assert.match(String(body.error), /log=ledger&event=20/);
+  assert.match(String(body.error), /log=identity_events&event=20/);
+  assert.deepEqual(body.did_you_mean, ["GET /api/proof"]);
+});
+
+test("GET /api/proof?log=ledger&event=20 stays a typed leaf 404, not the path sentence", async () => {
+  const { env } = sqliteTestEnv(schema);
+  const res = await worker.fetch(new Request(`${ORIGIN}/api/proof?log=ledger&event=20`), env);
+  assert.equal(res.status, 404);
+  const body = (await res.json()) as { error?: string; route_shape?: string };
+  assert.match(String(body.error), /ledger has no row 20/);
+  assert.equal(body.route_shape, undefined, "query-form typed absence must not wear the path-form marker");
+});

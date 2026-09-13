@@ -80,6 +80,9 @@ test("every test that reads the deployment is behind the live-probe gate", () =>
 test("the deterministic suite is the default and the live one is opt-in", () => {
   const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
   assert.ok(!/LIVE_PROBES/.test(pkg.scripts.test), "`npm test` must not turn the probes on");
+  assert.ok(!pkg.scripts.test.includes("**"), "`npm test` must not recurse into test/live/");
+  assert.ok(pkg.scripts.test.includes("test/*.test.ts"));
+  assert.ok(pkg.scripts["test:live"].includes("test/live/*.test.ts"));
   assert.match(pkg.scripts["test:live"], /LIVE_PROBES=1/, "`npm run test:live` turns them on");
   assert.ok(pkg.scripts["test:all"], "and there is one command that runs both");
 });
@@ -89,7 +92,7 @@ test("the live lane does not skip on unreachability or a missing deployment mark
   // live run could mean "could not check". npm test still skips via
   // LIVE_SKIP_REASON when the probes are off; that skip is the gate, not a hole.
   const dir = new URL("./", import.meta.url);
-  for (const f of ["schema.test.ts", "param-home.test.ts"]) {
+  for (const f of ["live/schema.test.ts", "live/param-home.test.ts"]) {
     const src = readFileSync(new URL(f, dir), "utf8");
     assert.equal(
       /t\.skip\(`API unreachable/.test(src),
@@ -153,7 +156,7 @@ test("the live-probe inventory is the three files that call liveFetch", () => {
   // #151 remaining: a mechanical inventory of production probes. Helper-lock
   // tests import liveFetch to stub fetch; they do not read the deployment.
   // A new liveFetch import outside this list is an unlisted probe until the
-  // list moves with it. The physical move under test/live/ is a later slice.
+  // list moves with it. The physical move under test/live/ is this slice.
   const dir = new URL("./", import.meta.url);
   const callers: string[] = [];
   for (const f of testFiles(dir)) {
@@ -161,12 +164,33 @@ test("the live-probe inventory is the three files that call liveFetch", () => {
     if (f === "live-fetch-lock.test.ts") continue;
     if (f === "live-probe-gate.test.ts") continue;
     const src = readFileSync(new URL(f, dir), "utf8");
-    if (!/from "\.\/helpers\/live\.ts"/.test(src)) continue;
+    if (!/helpers\/live\.ts/.test(src)) continue;
     if (/(?<![.\w])liveFetch\s*\(/.test(src)) callers.push(f);
   }
   assert.deepEqual(
     callers.sort(),
-    ["ledger-tx-migration.test.ts", "param-home.test.ts", "schema.test.ts"],
+    ["live/ledger-tx-migration.test.ts", "live/param-home.test.ts", "live/schema.test.ts"],
     `liveFetch callers changed: ${callers.join(", ")}`,
+  );
+});
+
+
+test("every .test.ts file sits in the deterministic lane or the live lane", () => {
+  // Narrowing npm test to test/*.test.ts and test:live to test/live/*.test.ts
+  // makes any other subdirectory invisible to both lanes. A failing file at
+  // test/sub/zz-misfiled.test.ts would keep both suites green.
+  const dir = new URL("./", import.meta.url);
+  const misfiled: string[] = [];
+  for (const f of testFiles(dir)) {
+    if (!f.endsWith(".test.ts")) continue;
+    const slash = f.lastIndexOf("/");
+    if (slash === -1) continue; // directly under test/
+    const parent = f.slice(0, slash);
+    if (parent !== "live") misfiled.push(f);
+  }
+  assert.deepEqual(
+    misfiled,
+    [],
+    `these .test.ts files sit outside test/ and test/live/, so neither npm test nor test:live will run them: ${misfiled.join(", ")}`,
   );
 });

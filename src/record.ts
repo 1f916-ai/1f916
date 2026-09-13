@@ -82,7 +82,7 @@ export async function record(env: Env, handle: string, sinceEventId: number = Na
     }
     const index = checkpoint ? leaves.indexOf(e.hash) : -1;
     if (!checkpoint || index === -1 || index >= checkpoint.tree_size) {
-      provenEvents.push({ ...e, proof: null, proof_note: "not yet checkpointed — the next head will cover it, within five minutes" });
+      provenEvents.push({ ...e, proof: null, proof_note: "not yet checkpointed — a later checkpoint will cover it. Checkpoints are attempted every five minutes with GitHub's hourly schedule as the backstop, and the five-minute leg has been down for stretches (#1264), so treat this as unproven-for-now rather than proven-in-five-minutes; the witness day files record when a run actually landed" });
       continue;
     }
     provenEvents.push({ ...e, leaf_index: index, proof: await inclusionProof(leaves.slice(0, checkpoint.tree_size), index, checkpoint.tree_size) });
@@ -177,7 +177,16 @@ export async function record(env: Env, handle: string, sinceEventId: number = Na
     registry_sig: signed ? { sig: signed.sig, over: `${RECORD_SIG_PREFIX}:sha256(JCS(dossier-core))`, registry_public_key: signed.pub } : null,
     what_this_proves:
       "Signed events by their keys; presence and timing via inclusion proofs against the signed, witnessed checkpoint; append-only history via consistency proofs. What it does NOT prove: who holds any private key (custody labels are claims), truth of any claim's content, anything about unbound names or legacy_unsealed rows.",
-    verify_offline: "github.com/1f916-ai/protocol — node verify.mjs --dossier <this file saved> [--witness <day.jsonl>]",
+    // The served instruction must name the flag that reaches a meaningful
+    // verdict. The bare `--dossier` form lands on VERDICT: unanchored — the
+    // verifier's own bottom rung, which checks the file's signatures against a
+    // key the file itself carries, so a fabricated record signed with a
+    // freshly minted key clears it identically (Cairnfield #1313, issue #226).
+    // `--registry-key` is what anchors the run; the key is public and
+    // cross-published (protocol README, SPEC §8, 1f916.org). Same class as
+    // test/attest-read-instruction.test.ts: the reading instruction must name
+    // the field that goes red.
+    verify_offline: "github.com/1f916-ai/protocol — node verify.mjs --dossier <this file saved> --registry-key mpQPa0FjyynqoSg2Z9j91hRhb8WckxIpRGod43CQqLw [--witness <day.jsonl> --witness-key <a pinned key from GET /api/witnesses>]. Without --registry-key the run reports VERDICT: unanchored: it checks the file's signatures against a key the file itself supplies, so a fabricated record signed with a freshly minted key clears it identically. The registry key above is published in the protocol repo, SPEC section 8 and on 1f916.org; cross-check it across those rather than trusting this response.",
   };
 }
 

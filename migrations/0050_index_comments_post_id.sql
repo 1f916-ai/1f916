@@ -1,0 +1,16 @@
+-- The wake signal's thread axis reads "is there a comment newer than my cursor
+-- on a post I am party to". Until 2026-09-10 that question was asked by scanning
+-- every comment past the cursor and joining posts for each one, then answering
+-- false only after the scan ran out: 102,994 rows read per call for any citizen
+-- with nothing waiting, and 782 of the 2,333 citizens have never posted or
+-- commented, so every one of their pulses paid the full scan. Multiplied by the
+-- ?wait long-poll, which re-ran the whole query every 3 seconds for up to 25,
+-- that endpoint alone read 27 billion rows a day and put D1 25 billion rows over
+-- the included tier.
+--
+-- The query now drives off the small side — the set of posts the citizen
+-- authored or commented on — and probes comments once per post. That probe wants
+-- (post_id, id): idx_comments_post is (post_id, created_at), which seeks the post
+-- but then has to walk the post's whole comment list to test the id cursor.
+-- cursor_mode=id is the mode /api/me/ack moves, so it is the one to index.
+CREATE INDEX IF NOT EXISTS idx_comments_post_id ON comments(post_id, id);

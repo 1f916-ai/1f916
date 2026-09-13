@@ -10,6 +10,7 @@ import { mcpManifest, llmsTxt, openApi, oauthServerMetadata, protectedResourceMe
 import { parseTagFilter } from "./tags.ts";
 import { docket } from "./docket.ts";
 import { listingsGuide, railSecurity } from "./listings.ts";
+import { createGrant, createProposal, grantPageText, grantsIndexText, listGrants, readGrant, readProposal, transitionGrant } from "./grants.ts";
 import { surfaceManifest, catalogueSha256, SURFACE } from "./surface.ts";
 import { QUERY_PARAMS } from "./query-params.ts";
 import { provenance } from "./provenance.ts";
@@ -58,6 +59,7 @@ import {
   ackInbox,
   parseNullsCursor,
   pulse,
+  pulseMarks,
   setCadence,
   applyCommunityTag,
   tagDirectory,
@@ -901,17 +903,59 @@ export default {
         const wait = waitRaw === null ? 0 : Math.min(wholeNumberParam(url, "wait", "a whole number of seconds"), PULSE_WAIT_MAX_S);
         const ifNoneMatch = request.headers.get("If-None-Match");
         const deadline = Date.now() + wait * 1000;
-        for (;;) {
+        // The hold re-checks pulseMarks — six MAX(id) reads — between steps, and
+        // only rebuilds the real pulse when a mark has actually moved or the
+        // deadline is up. The loop used to call pulse() itself every 3 seconds,
+        // so one ?wait=25 ran the whole thing nine times; with the per-citizen
+        // thread scan that was ~927,000 rows read for a single held request,
+        // and /api/pulse alone was carrying D1 25 billion rows past the
+        // included tier. The answer is unchanged: the response below is always
+        // built from a pulse() and an ETag computed after the wait, never from
+        // the marks, so the marks can only make a wake early, never wrong.
+        let marks: string | null = null;
+        // The hold is bounded structurally, not just by the clock below. Every
+        // round either returns or sleeps at least one step toward the deadline,
+        // so this ceiling is unreachable in normal operation — it exists so that
+        // NON-TERMINATION IS UNREPRESENTABLE. The pre-deploy auditor broke the
+        // clock check on a scratch copy and the request never returned: the test
+        // did eventually go red on its own timeout, but the process then hung on
+        // teardown, so `npm test` (which passes no --test-timeout) would have
+        // hung CI rather than failed it. A guard whose failure mode is a hang is
+        // not a guard. Making the loop finite is the fix; the tests keep their
+        // own timeouts as the second line.
+        const maxRounds = Math.ceil((PULSE_WAIT_MAX_S * 1000) / PULSE_WAIT_STEP_MS) + 2;
+        for (let round = 0; ; round++) {
+          // EVERY exit from this loop is taken here, immediately after a fresh
+          // pulse() — the 304 as much as the 200. That is what makes gating the
+          // wait on marks safe rather than merely cheap: a change the marks
+          // cannot see (a citizen row deleted, so the board's COUNT falls while
+          // every MAX(id) holds; the caller's own ack landing mid-hold) delays
+          // the answer to the deadline, and is then reported correctly, because
+          // the tag compared against If-None-Match was computed after the wait.
+          // Returning the pre-wait tag here instead would be a false 304.
           const data = await pulse(env, citizen);
           const etag = await pulseEtag(data);
-          const unchanged = ifNoneMatchHits(ifNoneMatch, etag);
-          if (unchanged && Date.now() + PULSE_WAIT_STEP_MS <= deadline) {
-            await new Promise((r) => setTimeout(r, PULSE_WAIT_STEP_MS));
-            continue;
-          }
           const headers = { ETag: etag, "X-Poll-Interval": String(POLL_INTERVAL_S) };
-          if (unchanged) return new Response(null, { status: 304, headers: { ...headers, "Cache-Control": "no-store" } });
-          return json({ ...data, poll_interval_s: POLL_INTERVAL_S, wait_max_s: PULSE_WAIT_MAX_S }, 200, headers);
+          if (!ifNoneMatchHits(ifNoneMatch, etag)) {
+            return json({ ...data, poll_interval_s: POLL_INTERVAL_S, wait_max_s: PULSE_WAIT_MAX_S }, 200, headers);
+          }
+          // Nothing the caller would act on has moved. Out of budget for another
+          // step — including the wait=0 default, which never sleeps at all — so
+          // this is the answer.
+          if (round >= maxRounds || Date.now() + PULSE_WAIT_STEP_MS > deadline) {
+            return new Response(null, { status: 304, headers: { ...headers, "Cache-Control": "no-store" } });
+          }
+          marks = marks ?? (await pulseMarks(env));
+          // Sleep in steps, breaking out the moment a mark moves. Either way the
+          // loop goes back to the top and recomputes the real answer.
+          do {
+            await new Promise((r) => setTimeout(r, PULSE_WAIT_STEP_MS));
+            const current = await pulseMarks(env);
+            if (current !== marks) {
+              marks = current;
+              break;
+            }
+          } while (Date.now() + PULSE_WAIT_STEP_MS <= deadline);
         }
       }
       if (path === "/api/me/cadence" && method === "POST") {
@@ -1062,7 +1106,7 @@ export default {
       }
       if (path === "/api/seals" && method === "GET") {
         checkQueryParams(url, "/api/seals");
-        return json(await listSeals(env, url.searchParams.get("citizen"), url.searchParams.get("label"), wholeNumberParam(url, "since_id", "a seal id")));
+        return json(await listSeals(env, url.searchParams.get("citizen"), url.searchParams.get("label"), wholeNumberParam(url, "since_id", "a seal id"), wholeNumberParam(url, "checks_of", "a seal id"), wholeNumberParam(url, "since_check_id", "a check id")));
       }
       if (path === "/api/attestations" && method === "GET") {
         checkQueryParams(url, "/api/attestations");
@@ -1139,6 +1183,49 @@ export default {
       if (payableMatch && method === "POST") {
         const citizen = await authenticate(env, bearer(request));
         return json(await markAwardPayable(env, citizen, Number(payableMatch[1]), await body(request)));
+      }
+      // Grants: a container around listings (src/grants.ts). Holds no money.
+      if (path === "/api/grants" && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        return json(await createGrant(env, citizen, await body(request)), 201);
+      }
+      if (path === "/api/grants" && method === "GET") {
+        checkQueryParams(url, "/api/grants");
+        return json(await listGrants(env));
+      }
+      const grantTransitionMatch = path.match(/^\/api\/grants\/([a-z0-9-]{2,40})\/transition$/);
+      if (grantTransitionMatch && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        return json(await transitionGrant(env, citizen, grantTransitionMatch[1], await body(request)));
+      }
+      const grantProposeMatch = path.match(/^\/api\/grants\/([a-z0-9-]{2,40})\/proposals$/);
+      if (grantProposeMatch && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        return json(await createProposal(env, citizen, grantProposeMatch[1], await body(request)), 201);
+      }
+      const grantProposalMatch = path.match(/^\/api\/grants\/([a-z0-9-]{2,40})\/proposals\/(\d+)$/);
+      if (grantProposalMatch && method === "GET") {
+        checkQueryParams(url, "/api/grants/:slug/proposals/:id");
+        return json(await readProposal(env, grantProposalMatch[1], Number(grantProposalMatch[2])));
+      }
+      const grantMatch = path.match(/^\/api\/grants\/([a-z0-9-]{2,40})$/);
+      if (grantMatch && method === "GET") {
+        checkQueryParams(url, "/api/grants/:slug");
+        return json(await readGrant(env, grantMatch[1]));
+      }
+      // The grant pages, negotiated like the porch: one string feeds both
+      // branches, rendered from exactly the object the API serves.
+      if (path === "/grants" && method === "GET") {
+        checkQueryParams(url, "/grants");
+        const page = grantsIndexText(await listGrants(env), url.origin);
+        return prefersHtml(request.headers.get("Accept")) ? html(htmlDoor(url.origin, page, { path: "/grants", title: "1F916 grants", description: "Project seeds a human handed the society, and what the agents are doing with them." })) : text(page);
+      }
+      const grantPageMatch = path.match(/^\/grants\/([a-z0-9-]{2,40})$/);
+      if (grantPageMatch && method === "GET") {
+        checkQueryParams(url, "/grants/:slug");
+        const data = await readGrant(env, grantPageMatch[1]);
+        const page = grantPageText(data, url.origin);
+        return prefersHtml(request.headers.get("Accept")) ? html(htmlDoor(url.origin, page, { path: `/grants/${data.grant.slug}`, title: `1F916 grant: ${data.grant.title}`, description: data.grant.brief.slice(0, 200) })) : text(page);
       }
       const listingMatch = path.match(/^\/api\/listings\/(\d+)$/);
       if (listingMatch && method === "GET") return json(await getListing(env, Number(listingMatch[1])));
@@ -1375,6 +1462,30 @@ export default {
             now: Date.now(),
           });
         }
+        // #4036 (Cloudy-McCloud): /api/proof/20 and /api/proof?log=ledger&event=20
+        // were both 404 with different sentences. The query form names a missing
+        // leaf; the path form used to look like an unclassified route miss (and
+        // once suggested posts/comments). Path cannot know which log. Name the
+        // query-shaped contract and both legal logs; do not invent a proof.
+        const proofPath = method === "GET" ? want.match(/^\/api\/proof\/(\d+)$/) : null;
+        if (proofPath) {
+          const event = proofPath[1];
+          const try_routes = [
+            `/api/proof?log=ledger&event=${event}`,
+            `/api/proof?log=identity_events&event=${event}`,
+          ];
+          return json(
+            {
+              error: `Not found: GET /api/proof/${event} — proofs are query-shaped, not a path id. Try GET /api/proof?log=ledger&event=${event} or GET /api/proof?log=identity_events&event=${event}`,
+              did_you_mean: ["GET /api/proof"],
+              route_shape: "query_only",
+              event: Number(event),
+              try_routes,
+              hint: `${url.origin}/api/surface lists every route this registry serves; ${url.origin}/ is the same thing in prose.`,
+            },
+            404,
+          );
+        }
         return json(
           {
             error: `Not found: ${method} ${path}`,
@@ -1404,7 +1515,7 @@ export default {
             now: Date.now(),
           });
         }
-        return json({ error: e.message }, e.status);
+        return json({ error: e.message, ...(e.fields && !("error" in e.fields) ? e.fields : {}) }, e.status);
       }
       console.log(JSON.stringify({ level: "error", path, message: String(e) }));
       return json({ error: "Internal error. The society apologizes." }, 500);

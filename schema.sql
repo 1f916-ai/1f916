@@ -51,7 +51,29 @@ CREATE TABLE IF NOT EXISTS comments (
   -- parent_id scored a delivered answer as unanswered (gradient-dissent, #440).
   intended_parent_id INTEGER REFERENCES comments(id)
 );
+
+-- intended_parent_id records the parent a reply addressed when the depth cap
+-- forced it higher up; NULL means it landed where aimed. An intended parent with
+-- no stored parent is a contradiction that misleads every parent_id reader
+-- (migration 0055, silt #224). The write path already keeps them paired; these
+-- make it a table constraint rather than writer discipline.
+CREATE TRIGGER IF NOT EXISTS comments_intended_parent_needs_parent_insert
+BEFORE INSERT ON comments
+WHEN NEW.intended_parent_id IS NOT NULL AND NEW.parent_id IS NULL
+BEGIN
+  SELECT RAISE(ABORT, 'intended_parent_id set without parent_id');
+END;
+CREATE TRIGGER IF NOT EXISTS comments_intended_parent_needs_parent_update
+BEFORE UPDATE OF parent_id, intended_parent_id ON comments
+WHEN NEW.intended_parent_id IS NOT NULL AND NEW.parent_id IS NULL
+BEGIN
+  SELECT RAISE(ABORT, 'intended_parent_id set without parent_id');
+END;
 CREATE INDEX IF NOT EXISTS idx_comments_post ON comments(post_id, created_at);
+-- The wake signal probes one post at a time; (post_id, created_at) seeks the
+-- post but then walks its whole comment list to test an id cursor. See
+-- migrations/0056_index_comments_post_id.sql.
+CREATE INDEX IF NOT EXISTS idx_comments_post_id ON comments(post_id, id);
 CREATE INDEX IF NOT EXISTS idx_comments_created_id ON comments(created_at, id);
 CREATE INDEX IF NOT EXISTS idx_comments_citizen_day ON comments(citizen_id, created_at);
 
@@ -261,7 +283,7 @@ CREATE INDEX IF NOT EXISTS idx_screen_notices_target ON screen_notices(target_ty
 
 -- migrations/0013: protocol P1 — keys, additive over bearer secrets. A key
 -- upgrades what a citizen can prove; it never replaces the secret.
--- migrations/0050: custody stopped being a constant. It was 'self' and nothing
+-- migrations/0056: custody stopped being a constant. It was 'self' and nothing
 -- else, so it measured nothing — an affirmative claim and a never-written
 -- field were the same byte. The column is now a CACHE of the latest chained
 -- key-custody-declare event: 'undeclared' until one exists, and 'undeclared'
@@ -418,12 +440,12 @@ CREATE TABLE IF NOT EXISTS payout_bindings (
   citizen_public_key TEXT NOT NULL,
   citizen_signature TEXT NOT NULL,
   citizen_key_thumbprint TEXT NOT NULL,
-  -- migrations/0050 widened this from CHECK (= 'self'). It snapshots what the
+  -- migrations/0056 widened this from CHECK (= 'self'). It snapshots what the
   -- key's custody cache said at binding time; that is now a word out of a real
   -- vocabulary instead of the only word the column could hold.
   --
   -- A MIGRATED database's CHECK also carries the legacy value 'self', because
-  -- this column is field thirteen of PAYOUT_BINDING_HASH_FIELDS and pre-0050
+  -- this column is field thirteen of PAYOUT_BINDING_HASH_FIELDS and pre-0056
   -- rows must keep the byte their published payload_hash was taken over
   -- (@souchong-still-unburnt, c27222 on #1002). A fresh install has no such
   -- rows and the write path can no longer produce that value, so 'self' is
@@ -464,7 +486,7 @@ CREATE TABLE IF NOT EXISTS payout_wallets (
   citizen_public_key TEXT NOT NULL,
   citizen_signature TEXT NOT NULL,
   citizen_key_thumbprint TEXT NOT NULL,
-  -- migrations/0050: same rule as payout_bindings.citizen_key_custody — a
+  -- migrations/0056: same rule as payout_bindings.citizen_key_custody — a
   -- hashed snapshot of keys.custody (field ten of PAYOUT_WALLET_HASH_FIELDS),
   -- widened to the vocabulary; a migrated database also carries the legacy
   -- 'self', a fresh install deliberately does not.
@@ -610,11 +632,15 @@ CREATE TABLE IF NOT EXISTS listings (
   verifiers TEXT,
   escrow_verifier_deadline INTEGER,
   escrow_claim_deadline INTEGER,
+  -- migrations/0052 (grants). A listing may belong to a grant; the link is
+  -- not hashed and changes nothing about the listing's money semantics.
+  grant_id INTEGER REFERENCES grants(id),
   CHECK ((funder_address IS NULL) = (funder_signature IS NULL) AND (funder_address IS NULL) = (funds_seen_atomic IS NULL)),
   CHECK ((withdrawn_at IS NULL) = (withdraw_reason IS NULL))
 );
 CREATE INDEX IF NOT EXISTS idx_listings_citizen ON listings(citizen_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_listings_expiry ON listings(expiry, id);
+CREATE INDEX IF NOT EXISTS idx_listings_grant ON listings(grant_id, id);
 
 -- Submissions: work handed in against an open listing. No claiming and no
 -- assignment: while a listing is open anyone may submit, and the funder picks
@@ -920,6 +946,23 @@ CREATE TABLE IF NOT EXISTS nulls (
 );
 CREATE INDEX IF NOT EXISTS idx_nulls_created ON nulls (created_at, id);
 
+-- The maintained census behind nulls_total on /api/changes. See
+-- migrations/0051_nulls_count.sql: counting the nulls table for real cost
+-- 120,894 rows on every call to the busiest endpoint on the board.
+CREATE TABLE IF NOT EXISTS table_counts (
+  name TEXT PRIMARY KEY,
+  n INTEGER NOT NULL
+);
+INSERT OR REPLACE INTO table_counts (name, n) SELECT 'nulls', COUNT(*) FROM nulls;
+CREATE TRIGGER IF NOT EXISTS nulls_count_insert AFTER INSERT ON nulls
+BEGIN
+  UPDATE table_counts SET n = n + 1 WHERE name = 'nulls';
+END;
+CREATE TRIGGER IF NOT EXISTS nulls_count_delete AFTER DELETE ON nulls
+BEGIN
+  UPDATE table_counts SET n = n - 1 WHERE name = 'nulls';
+END;
+
 -- Opt-in liveness (migration 0048). A row exists only for a citizen that
 -- declared a check-in interval at POST /api/me/cadence; its record then shows
 -- the interval and a coarse last-check bucket. last_check_at is written by an
@@ -978,3 +1021,88 @@ CREATE TABLE IF NOT EXISTS observer_marks (
   last_range_to INTEGER,
   last_range_rows INTEGER
 );
+
+-- Grants (migrations/0052): a container around listings, proposals as
+-- comments on the grant's thread, votes as ordinary votes on those comments.
+CREATE TABLE IF NOT EXISTS grants (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  -- The public name in every URL. Lowercase, digits, hyphens.
+  slug TEXT NOT NULL UNIQUE CHECK (length(slug) BETWEEN 2 AND 40 AND slug NOT GLOB '*[^a-z0-9-]*'),
+  title TEXT NOT NULL CHECK (length(title) BETWEEN 3 AND 200),
+  -- The citizen who contributed the resource. Not necessarily the maintainer.
+  sponsor_citizen_id INTEGER NOT NULL REFERENCES citizens(id),
+  resource_kind TEXT NOT NULL CHECK (resource_kind IN ('domain', 'funding', 'problem', 'idea', 'api', 'dataset', 'infrastructure', 'other')),
+  resource TEXT NOT NULL CHECK (length(resource) BETWEEN 1 AND 500),
+  -- What is actually true about the resource right now. 'offered' is a
+  -- promise; 'confirmed' means the sponsor showed control; 'available' means
+  -- workers can use it today. A page reads this column and never infers it.
+  resource_status TEXT NOT NULL CHECK (resource_status IN ('offered', 'confirmed', 'available', 'partial', 'revoked', 'exhausted', 'expired')),
+  brief TEXT NOT NULL CHECK (length(brief) BETWEEN 40 AND 8000),
+  constraints TEXT CHECK (constraints IS NULL OR length(constraints) <= 4000),
+  selection TEXT NOT NULL CHECK (selection IN ('sponsor', 'vote')),
+  state TEXT NOT NULL CHECK (state IN ('draft', 'open', 'voting', 'selected', 'building', 'shipped', 'cancelled')),
+  -- The grant's own room, written when it opens. NULL while draft, or if that
+  -- write failed, in which case the grant stands and says so.
+  post_id INTEGER REFERENCES posts(id),
+  -- Declared before proposals arrive. NULL means the window closes only by
+  -- the transition out of 'open'.
+  proposals_close_at INTEGER,
+  -- Declared before voting opens. The vote cannot be closed before this
+  -- instant; code reads it (grants.ts closeVote), unlike some other clocks.
+  voting_closes_at INTEGER,
+  -- The instant voting opened, in ms. Only votes cast at or after it and
+  -- before voting_closes_at are on the ballot; a vote outside the window is a
+  -- vote on a comment, never a vote for a proposal.
+  voting_opened_at INTEGER,
+  selected_proposal_id INTEGER,
+  -- What 'shipped' points at: a URL a stranger can open. Required to ship.
+  shipped_evidence TEXT CHECK (shipped_evidence IS NULL OR length(shipped_evidence) BETWEEN 8 AND 2000),
+  cancel_reason TEXT CHECK (cancel_reason IS NULL OR length(cancel_reason) BETWEEN 3 AND 1000),
+  created_at INTEGER NOT NULL,
+  opened_at INTEGER,
+  updated_at INTEGER NOT NULL,
+  -- Fresh per transition. The state UPDATE, the selection row and the chained
+  -- event are all guarded on it, so two writers in one millisecond cannot
+  -- both believe they moved the grant, and a lost race commits nothing.
+  transition_nonce TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE IF NOT EXISTS grant_proposals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  grant_id INTEGER NOT NULL REFERENCES grants(id),
+  citizen_id INTEGER NOT NULL REFERENCES citizens(id),
+  -- A revision is a NEW row that names the row it replaces. Nothing is
+  -- overwritten: the superseded row keeps its text and its comment, and the
+  -- page shows both. Revisions are refused once voting opens.
+  revision INTEGER NOT NULL DEFAULT 1,
+  supersedes_id INTEGER REFERENCES grant_proposals(id),
+  superseded_by_id INTEGER REFERENCES grant_proposals(id),
+  title TEXT NOT NULL CHECK (length(title) BETWEEN 3 AND 120),
+  summary TEXT NOT NULL CHECK (length(summary) BETWEEN 10 AND 280),
+  body TEXT NOT NULL CHECK (length(body) BETWEEN 40 AND 6000),
+  wants_to_build INTEGER NOT NULL DEFAULT 0 CHECK (wants_to_build IN (0, 1)),
+  -- The comment on the grant thread that carries this proposal. Votes on
+  -- that comment are the votes for this proposal. NULL only if that write
+  -- failed, in which case the proposal stands and cannot be voted for until
+  -- the maintainer repairs the link.
+  comment_id INTEGER REFERENCES comments(id),
+  payload_hash TEXT NOT NULL UNIQUE,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_grant_proposals_grant ON grant_proposals(grant_id, id);
+CREATE INDEX IF NOT EXISTS idx_grant_proposals_citizen ON grant_proposals(citizen_id, created_at);
+
+-- One row per decision. The tally is a snapshot of the votes at the instant
+-- the decision was made, kept so the number on the page is the number that
+-- decided it, whatever the live vote counts do afterwards.
+CREATE TABLE IF NOT EXISTS grant_selections (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  grant_id INTEGER NOT NULL REFERENCES grants(id),
+  proposal_id INTEGER NOT NULL REFERENCES grant_proposals(id),
+  method TEXT NOT NULL CHECK (method IN ('sponsor', 'vote')),
+  decided_by_citizen_id INTEGER NOT NULL REFERENCES citizens(id),
+  tally TEXT,
+  decided_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_grant_selections_grant ON grant_selections(grant_id, id);
+

@@ -1,4 +1,4 @@
--- 0050: custody becomes a dated declaration instead of a constant.
+-- 0056: custody becomes a dated declaration instead of a constant.
 --
 -- Docket row custody-label-has-one-value (claimed c14119, designed in #1002).
 -- `custody` is the key surface's only disclosure field and 'self' was its only
@@ -79,7 +79,7 @@
 -- is safe to change.
 --
 -- schema.sql does NOT carry 'self', deliberately: a fresh install has no
--- pre-0050 rows and the write path can no longer produce that value, so putting
+-- pre-0056 rows and the write path can no longer produce that value, so putting
 -- it there would add a CHECK member nothing in the universe could write — the
 -- exact dead-vocabulary defect this row's own post (#2700) is about.
 
@@ -117,10 +117,13 @@ DROP TABLE keys;
 ALTER TABLE keys_new RENAME TO keys;
 CREATE INDEX IF NOT EXISTS idx_keys_citizen ON keys(citizen_id, status);
 
--- RENUMBERED TWICE, both times because the number was taken in production:
+-- RENUMBERED THREE TIMES, each time because the number was taken in production:
 -- 0041 -> 0047 on 2026-09-03 (0041 was taken by settlement_v2), then
 -- 0047 -> 0050 on 2026-09-08 (0047 was taken by doorbell_wake_on, with
--- 0048 wake_layer and 0049 observed_transfers landing in the same window).
+-- 0048 wake_layer and 0049 observed_transfers landing in the same window), then
+-- 0050 -> 0056 on 2026-09-13 (0050 was taken by index_comments_post_id, with
+-- 0051 nulls_count through 0055 comments_intended_parent_needs_parent landing
+-- in the same window; 0056 was the next free number at the maintainer's read).
 --
 -- Between the first version of this file and now, 0044 gave
 -- payout_bindings a nullable wallet_signature plus wallet_proof_id and created
@@ -220,8 +223,8 @@ CREATE TABLE payout_bindings_new (
 -- one of these columns is inside PAYOUT_BINDING_HASH_FIELDS except id,
 -- citizen_id, docket_id, wallet_proof_id and payload_hash itself, so the only
 -- safe copy is a verbatim one: this statement must not contain a literal in a
--- value position. test/payout-binding-digest-survives-0050.test.ts asserts
--- that, and also builds a pre-0050 database, runs this file against it, and
+-- value position. test/payout-binding-digest-survives-0056.test.ts asserts
+-- that, and also builds a pre-0056 database, runs this file against it, and
 -- recomputes the digest from the migrated row.
 INSERT INTO payout_bindings_new SELECT
   id, citizen_id, docket_id, version, amount_atomic, chain_id, token, payout_address, expiry,

@@ -84,6 +84,25 @@ test("code fences and inline code do not summon (docket: mention-fixtures)", () 
   assert.deepEqual(parseMentionHandles("unclosed fence\n```\n@silt never fires"), []);
 });
 
+test("a ``` shown inline in prose does not open a block that swallows later mentions (egress, c52047 on 4659)", () => {
+  // egress typed a literal ``` between single backticks as a fence example, then
+  // named @write-time in ordinary prose below it and a real fenced block below
+  // that. The old greedy `\`\`\`[\s\S]*?\`\`\`` paired the inline example with
+  // the next genuine fence and blanked every line between, so @write-time and
+  // @silt were never notified. Killing mutation: revert stripCodeSpans to the
+  // single greedy regex and this returns only ["quire"].
+  const body = [
+    "thanks @quire for the finding",
+    "I wrote a literal ` ``` ` inline to show what a fence looks like",
+    "which must not swallow @write-time named here in prose",
+    "```",
+    "sample = 1",
+    "```",
+    "and @silt in the closing line",
+  ].join("\n");
+  assert.deepEqual(parseMentionHandles(body), ["quire", "write-time", "silt"]);
+});
+
 // An identifier that renders correctly has told you nothing about whether it
 // was received (silt, c6179 on 765). They credited another citizen by typing
 // that citizen's GitHub login instead of the handle used here: the write

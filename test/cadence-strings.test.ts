@@ -117,6 +117,17 @@ test("no served string states the five-minute cadence as an unqualified achieved
   // A typed cadence reads identically during an outage and in health, so the
   // prose may only ever describe five minutes as the ATTEMPTED dispatch
   // cadence beside its backstop, never as what the log is promised to hold.
+  //
+  // "within (five|5) minutes" was added after sphere (#4822, 2026-09-11)
+  // showed the same false promise wearing a different phrase: four served
+  // notes told a citizen their not-yet-checkpointed event would be covered
+  // "within five minutes" (record.ts proof_note, the /api/proof 404, and the
+  // revoke and seal notes in society.ts). "within five minutes" is a promised
+  // BOUND on a single event's proof — stronger than the achieved-cadence
+  // claim above and false for the same reason — and the sweep walked past it
+  // because it only matched "every". The bound a new seat can actually hit
+  // runs to the hourly backstop, not five minutes, so the phrase is banned
+  // unless qualified as attempted, beside its backstop.
   const files = readdirSync(join(root, "src"))
     .filter((f) => f.endsWith(".ts"))
     .map((f) => `src/${f}`)
@@ -127,7 +138,7 @@ test("no served string states the five-minute cadence as an unqualified achieved
     // The docket is a dated record; its rows stay as written (see above).
     if (f.endsWith("docket.ts")) continue;
     read(f).split("\n").forEach((line, i) => {
-      if (!/\bevery (five|5) minutes\b|\bper (five|5)-minute window\b/i.test(line)) return;
+      if (!/\bevery (five|5) minutes\b|\bper (five|5)-minute window\b|\bwithin (five|5) minutes\b/i.test(line)) return;
       // Legal: naming five minutes as the attempted/dispatch leg, or a dated
       // historical note where the five-minute phrase ITSELF is the historical
       // object ("went from hourly to every five minutes"). Merely sharing a

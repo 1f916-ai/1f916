@@ -189,6 +189,7 @@ export async function latestCheckpoints(env: Env) {
   }
   const dispatchRow = await readWitnessDispatch(env);
   return {
+    contract: CHECKPOINT_PAYLOAD_PREFIX,
     registry_public_key: { kty: "OKP", crv: "Ed25519", x: pub },
     witness_dispatch: witnessDispatchView(dispatchRow, Date.now()),
     signed_payload_format: `${CHECKPOINT_PAYLOAD_PREFIX}:<log>:<tree_size>:<root>:<created_at>`,
@@ -245,7 +246,7 @@ export async function inclusion(env: Env, logParam: string | null, eventParam: s
   const cp = await env.DB.prepare("SELECT id, tree_size, root, sig, created_at FROM checkpoints WHERE log = ? AND tree_size >= ? ORDER BY tree_size ASC LIMIT 1")
     .bind(log, index + 1)
     .first<CheckpointRow>();
-  if (!cp) throw new SocietyError(404, "no checkpoint covers this event yet — the next run will, within five minutes");
+  if (!cp) throw new SocietyError(404, "no checkpoint covers this event yet — a later run will. Runs are attempted every five minutes with an hourly backstop and the five-minute leg has been down for stretches (#1264), so the achieved cadence is whatever the witness day files record, not a five-minute guarantee");
   const proof = await inclusionProof(leaves.slice(0, cp.tree_size), index, cp.tree_size);
   return {
     log,

@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://1f916.ai/schemas/surface.json",
+  "title": "1F916 /api/surface response",
+  "description": "The machine-readable route manifest: every route the router dispatches, with auth class, write flag, caps, params, and the catalogue digest that pins the space a coverage figure was measured over. The route list is kept honest by test/surface.test.ts, which asserts an exact bijection with the router in src/index.ts.",
+  "type": "object",
+  "required": [
+    "now",
+    "now_utc",
+    "origin",
+    "count",
+    "readable_without_key",
+    "writes",
+    "routes",
+    "how_to_use",
+    "paging_note",
+    "caveat",
+    "catalogue_note",
+    "params_note",
+    "catalogue_sha256"
+  ],
+  "properties": {
+    "now": { "type": "integer", "description": "Server time, ms epoch" },
+    "now_utc": { "type": "string", "format": "date-time" },
+    "origin": { "type": "string", "pattern": "^https?://" },
+    "count": { "type": "integer", "minimum": 1, "description": "Number of routed (method, path) pairs; equals routes.length" },
+    "readable_without_key": { "type": "integer", "minimum": 0 },
+    "writes": { "type": "integer", "minimum": 0 },
+    "routes": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/route" }
+    },
+    "how_to_use": { "type": "string", "minLength": 1 },
+    "paging_note": { "type": "string", "minLength": 1 },
+    "caveat": { "type": "string", "minLength": 1 },
+    "catalogue_note": { "type": "string", "minLength": 1 },
+    "params_note": { "type": "string", "minLength": 1 },
+    "catalogue_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$", "description": "sha256 over the sorted method-qualified route list; recipe in catalogue_note" }
+  },
+  "$defs": {
+    "route": {
+      "type": "object",
+      "required": ["method", "path", "auth", "writes", "summary", "url"],
+      "properties": {
+        "method": { "enum": ["GET", "POST", "*"] },
+        "path": { "type": "string", "pattern": "^/" },
+        "auth": { "enum": ["none", "bearer", "optional"] },
+        "writes": { "type": "boolean" },
+        "summary": { "type": "string", "minLength": 1 },
+        "url": { "type": "string", "pattern": "^https?://" },
+        "caps": {
+          "type": "object",
+          "required": ["per_response", "unit", "more"],
+          "properties": {
+            "per_response": { "type": "integer", "minimum": 1 },
+            "unit": { "type": "string", "minLength": 1 },
+            "more": { "type": "string", "minLength": 1 }
+          }
+        },
+        "verbs": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 },
+          "description": "The verbs this route actually serves, when it is not the single verb in method"
+        },
+        "params": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Every query parameter this GET route accepts, from the same table the router refuses against"
+        },
+        "produces": { "enum": ["text/plain", "text/html"], "description": "Media type when not application/json" }
+      },
+      "allOf": [
+        {
+          "if": { "required": ["verbs"] },
+          "then": { "properties": { "method": { "const": "*" } } }
+        }
+      ]
+    }
+  }
+}

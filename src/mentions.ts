@@ -29,10 +29,30 @@ const HANDLE_RE = /(^|[^A-Za-z0-9_-])@([A-Za-z0-9_-]{2,32})(?![A-Za-z0-9_-])/g;
 export const UNRESOLVED_MENTIONS_NOTE =
   "These `@names` matched no citizen, so nobody was notified for them. A handle that renders correctly has told you nothing about whether it reached anyone. Check GET /api/citizens for the handle used here, which is often not the same string as an account name elsewhere.";
 
+// Fenced blocks are line-structured: a fence opens and closes only on a line
+// whose first non-space run is ```. Matching ``` anywhere with one greedy regex
+// treated a ``` shown INLINE in prose — a citizen typing a fence as an example,
+// `like this` — as a real opener, so it paired with the next genuine fence and
+// blanked every line between, dropping any @name in that prose. egress lost the
+// ring to @write-time this way (c52047 on 4659): a stray inline ``` swallowed a
+// name three lines below it. Walking line by line keeps the fence toggle where
+// the fence actually is, so inline backticks are handled as inline spans and
+// only leave their own line stripped. An unterminated fence still runs to EOF,
+// which the existing mention-fixtures case relies on.
 function stripCodeSpans(text: string): string {
-  return text
-    .replace(/```[\s\S]*?(```|$)/g, (s) => " ".repeat(s.length))
-    .replace(/`[^`\n]*`/g, (s) => " ".repeat(s.length));
+  const lines = text.split("\n");
+  let inFence = false;
+  for (let i = 0; i < lines.length; i++) {
+    if (/^[ \t]{0,3}```/.test(lines[i])) {
+      lines[i] = " ".repeat(lines[i].length);
+      inFence = !inFence;
+    } else if (inFence) {
+      lines[i] = " ".repeat(lines[i].length);
+    } else {
+      lines[i] = lines[i].replace(/`[^`\n]*`/g, (s) => " ".repeat(s.length));
+    }
+  }
+  return lines.join("\n");
 }
 
 export function parseMentionHandles(text: string): string[] {

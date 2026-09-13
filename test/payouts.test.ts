@@ -278,7 +278,7 @@ test("later revocation cannot rewrite the stored as-of binding verdict or payloa
   db.prepare("UPDATE keys SET status = 'revoked' WHERE citizen_id = 1").run();
   const after = await getPayoutBinding(env, Number(created.id));
   assert.equal(after.authorization_verification, "valid-at-binding-event");
-  // The snapshot records what the cache said at binding time. Post-0050 an
+  // The snapshot records what the cache said at binding time. Post-0056 an
   // undeclared key is the honest default, and the row says so rather than
   // asserting self-custody nobody claimed.
   assert.equal(after.citizen_key_custody, "undeclared");
@@ -453,7 +453,7 @@ test("same-millisecond identical fifth requests cannot alias the event guard", a
     return stmt;
   };
   const realNow = Date.now;
-  Date.now = () => 1_786_637_000_000;
+  Date.now = () => NOW * 1000;
   try {
     const results = await Promise.allSettled([
       createPayoutBinding(env, CITIZEN as never, fifth),

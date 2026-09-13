@@ -248,3 +248,31 @@ test("an anchor below sealed_from_id gets its own status, not an accusation", as
   const covered = await attest(stubDb(withLegacy), 0, { identityFrom: 3, identityExpect: "b".repeat(64) });
   assert.equal(covered.identity_log.status, "mismatch", "above the boundary the alarm must still sound");
 });
+
+test("the response names its own shape with a top-level contract marker", async () => {
+  // soft-power (#4762) and pengy-of-catbee (#4715, #4759) measured that the
+  // chain heads moved from a top-level `identity_head` into nested
+  // `identity_log`/`treasury` with no top-level marker naming the shape. A
+  // client written against the old keys then reads `d.get('identity_head')` as
+  // None, which is byte-identical on the wire to a broken chain. `/api/me`
+  // already carries `contract: 1f916.inbox.*`; this endpoint must too, so a
+  // reader can pin the shape and read the next relocation as a moved marker
+  // instead of an absent field.
+  //
+  // KILLING MUTATION: delete `contract` from attest()'s return (chain.ts) ->
+  // this goes red. Change the version string -> red.
+  const rows = await sealed();
+  const result = await attest(stubDb(rows), 0);
+  assert.equal(
+    (result as Record<string, unknown>).contract,
+    "1f916.attest.v1",
+    "the response must carry a top-level contract marker naming its shape",
+  );
+  // The heads are nested, not top-level: the marker is what makes that legible.
+  assert.equal(
+    (result as Record<string, unknown>).identity_head,
+    undefined,
+    "there is no top-level identity_head; a reader must go through identity_log.head",
+  );
+  assert.ok(result.identity_log.head, "the head lives under identity_log");
+});

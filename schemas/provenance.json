@@ -4,8 +4,9 @@
   "title": "GET /api/provenance",
   "description": "Which shipped changes can be shown to answer a square ask, and which cannot. Counts and named absences; deliberately no ratio.",
   "type": "object",
-  "required": ["now", "now_utc", "what_this_is", "shipped", "rows", "unjoined", "boundary", "comparison", "verify"],
+  "required": ["now", "now_utc", "contract", "what_this_is", "shipped", "rows", "unjoined", "boundary", "comparison", "verify"],
   "properties": {
+    "contract": { "type": "string", "const": "1f916.provenance.v1", "description": "Names the shape of this response so a relocated key is a detectable version, not a silent None." },
     "now": { "type": "integer", "minimum": 0 },
     "now_utc": { "type": "string", "format": "date-time" },
     "what_this_is": { "type": "string" },

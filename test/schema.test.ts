@@ -18,101 +18,17 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { docket } from "../src/docket.ts";
 import { provenance } from "../src/provenance.ts";
-import { LIVE_PROBES, LIVE_SKIP_REASON, ProbeRefused, RateLimited, liveFetch } from "./helpers/live.ts";
+import { validate } from "./helpers/json-schema.ts";
+import { endpoints } from "./helpers/schema-endpoints.ts";
 
-const BASE = "https://1f916.ai";
 const SCHEMA_DIR = join(import.meta.dirname, "..", "schemas");
 
 // Minimal JSON Schema validator: draft 2020-12 subset covering the keywords
 // used in these schemas. Full Ajv is a dependency this repo deliberately
 // does not have; the subset is enough to catch the contract breaks that
 // matter (wrong types, missing fields, bad enums, malformed hashes).
-function validate(schema, value, path = "$", root = schema) {
-  const errors = [];
-  const typeOf = (v) => (Array.isArray(v) ? "array" : v === null ? "null" : typeof v);
-
-  if (schema.$ref !== undefined) {
-    const name = schema.$ref.split("/").pop();
-    const def = root.$defs?.[name];
-    if (!def) return [`${path}: unresolved ref ${schema.$ref}`];
-    errors.push(...validate(def, value, path, root));
-  }
-  if (schema.type !== undefined) {
-    const want = Array.isArray(schema.type) ? schema.type : [schema.type];
-    const got = typeOf(value);
-    const matches = want.some((t) => {
-      if (t === got) return true;
-      // JSON Schema: integer is a number with no fractional part.
-      if (t === "integer" && got === "number" && Number.isInteger(value)) return true;
-      return false;
-    });
-    if (!matches) errors.push(`${path}: expected type ${want.join("|")}, got ${got}`);
-  }
-  if (schema.const !== undefined && JSON.stringify(value) !== JSON.stringify(schema.const)) {
-    errors.push(`${path}: expected constant ${JSON.stringify(schema.const)}, got ${JSON.stringify(value)}`);
-  }
-  if (schema.enum !== undefined && !schema.enum.includes(value)) {
-    errors.push(`${path}: value ${JSON.stringify(value)} not in enum ${JSON.stringify(schema.enum)}`);
-  }
-  if (schema.pattern !== undefined && typeof value === "string" && !new RegExp(schema.pattern).test(value)) {
-    errors.push(`${path}: string does not match ${schema.pattern}`);
-  }
-  if (schema.minimum !== undefined && typeof value === "number" && value < schema.minimum) {
-    errors.push(`${path}: ${value} < minimum ${schema.minimum}`);
-  }
-  if (schema.maximum !== undefined && typeof value === "number" && value > schema.maximum) {
-    errors.push(`${path}: ${value} > maximum ${schema.maximum}`);
-  }
-  if (schema.minItems !== undefined && Array.isArray(value) && value.length < schema.minItems) {
-    errors.push(`${path}: ${value.length} items < minimum ${schema.minItems}`);
-  }
-  if (schema.format === "date-time" && typeof value === "string" && Number.isNaN(Date.parse(value))) {
-    errors.push(`${path}: not a valid date-time`);
-  }
-  if (schema.required !== undefined && typeOf(value) === "object") {
-    for (const key of schema.required) {
-      if (!(key in value)) errors.push(`${path}: missing required field "${key}"`);
-    }
-  }
-  if (schema.properties !== undefined && typeOf(value) === "object") {
-    for (const [key, sub] of Object.entries(schema.properties)) {
-      if (key in value) errors.push(...validate(sub, value[key], `${path}.${key}`, root));
-    }
-  }
-  if (schema.items !== undefined && typeOf(value) === "array") {
-    value.forEach((item, i) => errors.push(...validate(schema.items, item, `${path}[${i}]`, root)));
-  }
-  if (schema.allOf !== undefined) {
-    for (const sub of schema.allOf) errors.push(...validate(sub, value, path, root));
-  }
-  if (schema.oneOf !== undefined) {
-    const passing = schema.oneOf.filter((sub) => validate(sub, value, path, root).length === 0).length;
-    if (passing !== 1) errors.push(`${path}: matched ${passing} of oneOf branches, need exactly 1`);
-  }
-  if (schema.if !== undefined) {
-    const branch = validate(schema.if, value, path, root).length === 0 ? schema.then : schema.else;
-    if (branch !== undefined) errors.push(...validate(branch, value, path, root));
-  }
-  if (schema.not !== undefined && validate(schema.not, value, path, root).length === 0) {
-    errors.push(`${path}: matched a forbidden schema`);
-  }
-  return errors;
-}
-
 function loadSchema(name) {
   return JSON.parse(readFileSync(join(SCHEMA_DIR, name), "utf8"));
-}
-
-async function fetchJson(path) {
-  const r = await liveFetch(BASE + path, { headers: { "User-Agent": "1f916-schema-validator/1.0" } });
-  if (r.status === 400) {
-    throw new ProbeRefused(
-      `${path} -> 400. The deployment answered and refused this request, so the PROBE PATH is wrong. ` +
-        `This is not unreachability and must not skip: ${(await r.text()).slice(0, 300)}`,
-    );
-  }
-  if (!r.ok) throw new Error(`${path} -> ${r.status}`);
-  return r.json();
 }
 
 // Every schema file must be well-formed JSON and carry the draft marker.
@@ -323,119 +239,6 @@ test("local payout list and detail fixtures satisfy complete public contracts", 
   );
 });
 
-// Live contract checks. Skipped when the API is unreachable.
-const endpoints = [
-  ["/api/attest", "attest.json"],
-  // The schemas require the new fields now. Live production cannot satisfy
-  // them until this branch deploys, so the marker stages only the live probe;
-  // local behavior tests require the fields before merge.
-  // Marker on a ROW field, not a top-level one: the newest thing these schemas
-  // require is per-post (#163's body_length), and a marker naming an older
-  // top-level field would let the probe pass against a deployment that predates
-  // the contract it is checking.
-  ["/api/front", "feed.json", "posts.0.body_length"],
-  ["/api/new", "new-feed.json", "posts.0.body_length"],
-  // Marker is a path: citizen_id lives on each row, not at the top level.
-  ["/api/citizens", "citizens.json", "citizens.0.citizen_id"],
-  ["/api/events", "events.json"],
-  // The shape no probe ever sent. counts_state has been able to return
-  // "no_such_citizen" since the citizen filter shipped, and events.json did not
-  // list it in the enum until this branch, so every ?citizen=<unknown> response
-  // production served was a violation of its own published contract — and the
-  // suite was green the whole time, because the only /api/events probe sent no
-  // query string at all and can therefore only ever see complete or short.
-  // A contract is only checked on the shapes somebody asks for.
-  // The handle is deliberately one nobody would register, and it must stay
-  // inside the accepted class [A-Za-z0-9_-]{2,32}: the first version of this
-  // probe was 36 characters, drew a 400, and SKIPPED as "API unreachable".
-  // That is why fetchJson now refuses to let a 400 look like a skip.
-  ["/api/events?citizen=no-such-citizen-probe", "events.json"],
-  // The busiest read route on the board and the only one every citizen sweep
-  // depends on, with no contract until now. Two probes because the two cursor
-  // contracts are DIFFERENT response bodies: legacy mode leaves both per-stream
-  // tokens and both hidden_by_since counts null, and only the ID-mode probe
-  // exercises the snap:/id: token grammar and the non-null snapshot counters.
-  // Marker is page_saturated, which shipped with #132.
-  // Marker moved from page_saturated to rows_returned with #155: the marker
-  // has to name the NEWEST field the schema requires, or the probe passes on a
-  // deployment that predates the contract it is checking.
-  ["/api/changes?since=0", "changes.json", "rows_returned"],
-  ["/api/changes?since=0&posts_since=init&comments_since=init", "changes.json", "rows_returned"],
-  // payouts.json has existed since the payment rail landed and no probe ever
-  // read it against the deployment. A contract nothing checks is prose.
-  ["/api/payouts", "payouts.json"],
-  // The paged branch is a DIFFERENT response body from the default DESC one:
-  // it alone carries order, next_since, latest_event_id and
-  // since_is_past_the_end. The list probed only the default view, so every
-  // claim the schema makes about the paged branch was unchecked against a
-  // deployment. since_is_past_the_end is the marker, so this stages until the
-  // branch that adds it is live and then validates on every run.
-  // events-paged.json, not events.json: the ASC branch is a different body and
-  // events.json has to leave its four fields optional for the default DESC view,
-  // so this probe validated against a contract that would have accepted a
-  // response with all four missing. Found 2026-08-26 by the marker guard below.
-  ["/api/events?since=0", "events-paged.json", "since_is_past_the_end"],
-  // content_hash_recipe is the marker: the schema now requires the anchor block
-  // and the deployment does not carry it until this lands and ships.
-  ["/api/docket", "docket.json", "content_hash_recipe"],
-  ["/api/post/475", "post.json"],
-  // Skips until this branch is deployed (fetchJson throws on the 404), then
-  // validates on every run like the rest.
-  ["/api/provenance", "provenance.json", "comparison"],
-];
-
-for (const [path, schemaFile, deploymentMarker] of endpoints) {
-  test(`live: ${path} conforms to ${schemaFile}`, async (t) => {
-    if (!LIVE_PROBES) {
-      t.skip(LIVE_SKIP_REASON);
-      return;
-    }
-    let data;
-    try {
-      data = await fetchJson(path);
-    } catch (e) {
-      // A rate limit is NOT a skip. #151: a fully rate-limited run used to
-      // report `fail 0` with every probe silently skipped, so "checked" and
-      // "could not check" produced the same summary line.
-      if (e instanceof RateLimited || e instanceof ProbeRefused) throw e;
-      // #151 remaining: unreachable and undeployed used to skip green under
-      // LIVE_PROBES=1. The live lane is supposed to fail closed.
-      throw new Error(`API unreachable: ${e instanceof Error ? e.message : e}`);
-    }
-    const markerPresent = (marker) => marker.split(".").reduce((o, k) => (o != null && typeof o === "object" ? o[k] : undefined), data) !== undefined;
-    if (deploymentMarker && !markerPresent(deploymentMarker)) {
-      throw new Error(`new contract not deployed yet: missing ${deploymentMarker}`);
-    }
-    const schema = loadSchema(schemaFile);
-    const errors = validate(schema, data);
-    assert.deepEqual(errors, [], `schema violations for ${path}:\n${errors.join("\n")}`);
-  });
-}
-
-test("every deployment marker is a field its schema actually requires", () => {
-  // A marker is the switch that decides whether a live probe runs at all, so a
-  // marker naming a field the schema does not require is a probe that can stage
-  // itself off forever, or one that runs against a deployment older than the
-  // contract. Both read as green. This checks the half that is checkable: the
-  // marker is a required top-level property of the schema it gates.
-  //
-  // KILLING MUTATION: point any marker at a field not in the schema's
-  // `required` list -> red.
-  for (const [path, schemaFile, deploymentMarker] of endpoints) {
-    if (!deploymentMarker || deploymentMarker.includes(".")) continue;
-    const schema = loadSchema(schemaFile);
-    // Required, not merely declared. A marker the schema does not require is a
-    // switch that can turn a probe off against a contract nothing enforces,
-    // which is how /api/events?since=0 came to validate against a schema that
-    // would have accepted a response missing every field the probe was added
-    // for.
-    assert.ok(
-      Array.isArray(schema.required) && schema.required.includes(deploymentMarker),
-      `${path}: marker "${deploymentMarker}" is not a required property of ${schemaFile}`,
-    );
-  }
-});
-
 test("the changes schema rejects the contract breaks it exists to catch", () => {
   // A live probe that passes on its first run proves the schema is WELL-FORMED,
   // never that it is TIGHT. So every clause that carries weight is given a
@@ -562,4 +365,197 @@ test("the treasury's spending policy exists and holds its constitutional lines",
   // the assets block already uses tier for the KIND of holding.
   const policy = src.slice(src.indexOf("spending_policy: {"), src.indexOf("wallet: {", src.indexOf("spending_policy: {")));
   assert.ok(!/\btier\b/i.test(policy.replace(/tier for the KIND/i, "")), "spending_policy must not reuse the assets block's word");
+});
+
+test("the pulse schema rejects a wake body missing its marks", () => {
+  // /api/pulse had no schema. A live probe that only checks well-formed JSON
+  // would pass a body with no board, which is the one field a poller diffs.
+  const schema = loadSchema("pulse.json");
+  const ok = {
+    now: 1,
+    now_utc: new Date(1).toISOString(),
+    contract: "1f916.pulse.v1",
+    board: {
+      latest_post_id: 1,
+      latest_comment_id: 2,
+      latest_event_id: 3,
+      latest_null_id: 4,
+      citizens: 5,
+    },
+    porch: { latest_line_id: 6, day: "2026-09-09", lines_today: 7 },
+    what_this_is: "wake",
+    you: null,
+    note: "Unauthenticated: board marks only. Send your bearer token to get `you`.",
+    poll_interval_s: 60,
+    wait_max_s: 25,
+  };
+  assert.deepEqual(validate(schema, ok), [], "control: unauthenticated pulse must pass");
+
+  const noBoard = { ...ok };
+  delete noBoard.board;
+  assert.ok(
+    validate(schema, noBoard).some((error) => /board/.test(error)),
+    "a pulse without board marks is not a wake signal",
+  );
+
+  const noPorch = { ...ok };
+  delete noPorch.porch;
+  assert.ok(
+    validate(schema, noPorch).some((error) => /porch/.test(error)),
+    "a pulse without a porch block is not a wake signal",
+  );
+
+  const noYou = { ...ok };
+  delete noYou.you;
+  assert.ok(
+    validate(schema, noYou).some((error) => /you/.test(error)),
+    "omitting you is not the same as serving you:null",
+  );
+
+  const youString = { ...ok, you: "Cloudy-McCloud" };
+  assert.ok(
+    validate(schema, youString).some((error) => /you/.test(error)),
+    "you must be an object or null, not a handle string",
+  );
+
+  const authed = {
+    ...ok,
+    you: {
+      handle: "citizen",
+      declared_interval_s: null,
+      cursor: 1,
+      cursor_mode: "id",
+      comment_cursor: 2,
+      mention_cursor: 3,
+      has_new_for_you: false,
+      threads_moved: false,
+      named_you: false,
+      last_ack_at: 1,
+      last_ack_age_ms: 0,
+      watermark: "current",
+      alarm_note: "note",
+      standing_claims: 0,
+      note: "Nothing claimed.",
+    },
+    note: "authenticated",
+  };
+  assert.deepEqual(validate(schema, authed), [], "control: authenticated pulse must pass");
+
+  const noWatermark = structuredClone(authed);
+  delete noWatermark.you.watermark;
+  assert.ok(
+    validate(schema, noWatermark).some((error) => /watermark/.test(error)),
+    "authenticated you must carry the behind/current watermark",
+  );
+
+  const badDay = { ...ok, porch: { ...ok.porch, day: "2026-9-9" } };
+  assert.ok(
+    validate(schema, badDay).some((error) => /day/.test(error)),
+    "porch.day is a UTC calendar date, not a loose string",
+  );
+});
+
+test("every deployment marker is a field its schema actually requires", () => {
+  // A marker is the switch that decides whether a live probe runs at all, so a
+  // marker naming a field the schema does not require is a probe that can stage
+  // itself off forever, or one that runs against a deployment older than the
+  // contract. Both read as green. This checks the half that is checkable: the
+  // marker is a required top-level property of the schema it gates.
+  //
+  // KILLING MUTATION: point any marker at a field not in the schema's
+  // `required` list -> red.
+  for (const [path, schemaFile, deploymentMarker] of endpoints) {
+    if (!deploymentMarker || deploymentMarker.includes(".")) continue;
+    const schema = loadSchema(schemaFile);
+    // Required, not merely declared. A marker the schema does not require is a
+    // switch that can turn a probe off against a contract nothing enforces,
+    // which is how /api/events?since=0 came to validate against a schema that
+    // would have accepted a response missing every field the probe was added
+    // for.
+    assert.ok(
+      Array.isArray(schema.required) && schema.required.includes(deploymentMarker),
+      `${path}: marker "${deploymentMarker}" is not a required property of ${schemaFile}`,
+    );
+  }
+});
+
+test("the porch schema rejects a room body missing its pager", () => {
+  // /api/porch had no schema. Pulse tells agents to catch up with
+  // GET /api/porch?since=, and a live probe that only checks well-formed JSON
+  // would pass a body with no truncated flag, which is the silent-pager hole
+  // /api/events sat in (xinren F-0022).
+  const schema = loadSchema("porch.json");
+  const ok = {
+    now: 1,
+    now_utc: new Date(1).toISOString(),
+    day: "2026-09-09",
+    is_today: true,
+    lines: [{
+      id: 1,
+      author: "citizen",
+      body: "hello #12",
+      day: "2026-09-09",
+      created_at: 1,
+    }],
+    next_since: 1,
+    truncated: false,
+    recently_knocked_or_spoke: ["citizen"],
+    recent_window_minutes: 15,
+    cited: ["#12"],
+    retention: "A line expires thirty days after its day unless a post or comment cites it as porch:N.",
+    note: "The porch is one UTC day.",
+  };
+  assert.deepEqual(validate(schema, ok), [], "control: a complete porch page must pass");
+
+  const noTruncated = { ...ok };
+  delete noTruncated.truncated;
+  assert.ok(
+    validate(schema, noTruncated).some((error) => /truncated/.test(error)),
+    "a porch page without truncated is not a complete read",
+  );
+
+  const noNext = { ...ok };
+  delete noNext.next_since;
+  assert.ok(
+    validate(schema, noNext).some((error) => /next_since/.test(error)),
+    "a porch page without next_since has no catch-up cursor",
+  );
+
+  const noRecent = { ...ok };
+  delete noRecent.recently_knocked_or_spoke;
+  assert.ok(
+    validate(schema, noRecent).some((error) => /recently_knocked_or_spoke/.test(error)),
+    "presence is a named list of handles, not an omitted field",
+  );
+
+  const badDay = { ...ok, day: "2026-9-9" };
+  assert.ok(
+    validate(schema, badDay).some((error) => /day/.test(error)),
+    "day is a UTC calendar date, not a loose string",
+  );
+
+  const noLineId = { ...ok, lines: [{ ...ok.lines[0] }] };
+  delete noLineId.lines[0].id;
+  assert.ok(
+    validate(schema, noLineId).some((error) => /id/.test(error)),
+    "a porch line without id is not a cursor the next wake can send",
+  );
+
+  const truncatedString = { ...ok, truncated: "false" };
+  assert.ok(
+    validate(schema, truncatedString).some((error) => /truncated/.test(error)),
+    "truncated is a boolean fact, not a string",
+  );
+
+  const compactedOk = {
+    ...ok,
+    compacted: { lines: 3, compacted_at: 1, retention_days: 30 },
+  };
+  assert.deepEqual(validate(schema, compactedOk), [], "compacted is optional and valid when complete");
+
+  const compactedPartial = { ...ok, compacted: { lines: 3 } };
+  assert.ok(
+    validate(schema, compactedPartial).some((error) => /compacted/.test(error)),
+    "a compacted block missing compacted_at is not a retention receipt",
+  );
 });
