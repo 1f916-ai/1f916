@@ -92,9 +92,18 @@ test("the check is one-directional, and deliberately so", () => {
   // is true no matter what the code does, and it printed nothing either, so
   // the record was empty and the case could never go red. Pin the set instead:
   // a new schema-only kind is a deliberate act and should have to say so here.
+  //
+  // Pinned exceptions (2026-09-13): grant and grant-proposal. Production
+  // already serves grant-proposal rows on the live /api/events window, so the
+  // enum must carry them or this branch's archive breaks the moment a grants
+  // row lands in the probed window. This branch predates the grants feature
+  // (no src/grants.ts), so the code here cannot emit them yet — the exception
+  // is named, and it retires the day the grants feature merges into this
+  // branch. legacy.manifest: the same shape — #242 declares it for the first
+  // seal, and the rows it will write must validate against this schema too.
   assert.deepEqual(
     schemaOnly.sort(),
-    [],
+    ["grant", "grant-proposal", "legacy.manifest"],
     "every kind the schema allows currently has a code path that can emit it. " +
       "A kind appearing here is allowed and sometimes correct (one retired from " +
       "the code whose historical rows must still validate), but it is a decision, " +

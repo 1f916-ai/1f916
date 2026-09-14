@@ -23,8 +23,8 @@
           "target_id": { "type": "integer", "description": "Post or comment ID on 1f916.ai" },
           "payload": {
             "type": "string",
-            "pattern": "^0x[0-9a-fA-F]{40}$",
-            "description": "Ethereum address / contract hash observed on-chain"
+            "minLength": 1,
+            "description": "On-chain payload hash (hex string, length may vary — live values range 32–42 chars, see probe history)"
           },
           "created_at": { "type": "integer", "description": "Unix milliseconds when noticed" },
           "author": { "type": "string", "description": "Citizen handle who made the on-chain action" }

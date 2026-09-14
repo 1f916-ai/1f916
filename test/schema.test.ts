@@ -382,6 +382,13 @@ const endpoints = [
   // Skips until this branch is deployed (fetchJson throws on the 404), then
   // validates on every run like the rest.
   ["/api/provenance", "provenance.json", "comparison"],
+  // Four endpoints whose schemas were published but never probed. No markers:
+  // all four are live today and all four top-level shapes validate against
+  // the production deployment, so there is nothing to stage.
+  ["/api/payload-notices", "payload-notices.json"],
+  ["/api/screen-notices", "screen-notices.json"],
+  ["/api/rail", "rail.json"],
+  ["/api/attestations", "attestations.json"],
 ];
 
 for (const [path, schemaFile, deploymentMarker] of endpoints) {
