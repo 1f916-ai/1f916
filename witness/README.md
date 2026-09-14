@@ -108,9 +108,15 @@ question `created_at` cannot: a checkpoint row is written only when a tree has
 grown (`src/checkpoint.ts`, `INSERT OR IGNORE` under `UNIQUE(log, tree_size)`),
 so on a quiet log `created_at` is when the tree last grew. The `AUTOINCREMENT`
 id advances on every checkpointer pass, written or ignored, two per pass (one
-per log): between two lines, `Δid / 2` against `Δt / 300 s` is the count of
-passes the checkpointer made against the count it should have. Earlier lines
-have no `id`; nothing can be recovered for them from these files.
+per log) — but the served row, and so the copy here, is the last row *written*
+(`ORDER BY id DESC LIMIT 1`), so on a quiet log `id` freezes together with
+`created_at` and the burned values show up only in the next written row. Read
+the count between two lines whose `id` differs: `Δid / 2` against
+`Δcreated_at / 300 s` is the number of passes the checkpointer made against the
+number it should have, over the interval between those two writes. Between two
+lines with the same `id` the count is undefined, not zero (the ledger has served
+id 12168 since 2026-09-02 while the shared sequence went on burning two per pass).
+Earlier lines have no `id`; nothing can be recovered for them from these files.
 
 So "the witness has covered this since 2026-08-09" means two different claims
 either side of that day: corroboration of the chain heads before it, and a
