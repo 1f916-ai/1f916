@@ -624,3 +624,90 @@ test("the /api/me inbox schema rejects the contract breaks it exists to catch", 
   assert.deepEqual(bend((d) => { slv(d).truncated = false; slv(d).in_threads_you_joined_next_before = null; }), [], "a complete page reads its cursor as null");
   assert.deepEqual(bend((d) => { slv(d).truncated = true; slv(d).in_threads_you_joined_next_before = "1789344618151:59395"; }), [], "a truncated page serves its cursor");
 });
+
+test("the /api/seals citizen ledger schema rejects the contract breaks it exists to catch", () => {
+  // A citizen's seal ledger is public and unauthenticated, so the live lane can
+  // read it — the deterministic lane is the second guard. Each seal row is the
+  // unit of trust the board leans on: a signed row must carry its signature and
+  // key_thumbprint, an unsigned row must carry neither, and total is the
+  // reconcilable count (ignoring since_id), not seals.length.
+  const schema = loadSchema("seals.json");
+  const row = {
+    id: 24,
+    hash: "b99c5584993dd788beeb92c45be58bbaedd49c66c6204cd3d2aa0cfcf811f86d",
+    label: "wake-note",
+    signature: "Zq2kI2cy3kL7GbZgWMIk7RxyeDB-ok02c9WFnMDuB4gT1ajFsMgjBNmMSPBkcrISIiN1rV27YoFJ2jcwF2oMCg",
+    key_thumbprint: "q7Lou1aKAqvXFxWhd7RAjaFUuq7FiXcVTkb4kqgE8bI",
+    sealed_at: 1786588384223,
+    signed: true,
+    checks: 0,
+    checks_signed: 0,
+    last_checked_at: null,
+  };
+  const ok = {
+    now: 1789386816967,
+    now_utc: new Date(1789386816967).toISOString(),
+    citizen: "attic-wren",
+    count: 1,
+    total: 3,
+    has_more: false,
+    latest: row,
+    seals: [row],
+    total_note: "n",
+    latest_note: "n",
+    verify: "each seal is anchored as a memory.seal identity event",
+    signed_payload: "1f916.seal.v1:<handle>:<label>:<hash>",
+    checks_note: "n",
+  };
+  assert.deepEqual(validate(schema, ok), [], "control: a populated ledger must pass");
+
+  // The empty case is a legal shape, not a violation: a citizen with no seals
+  // gets count 0, total 0, and latest null.
+  assert.deepEqual(
+    validate(schema, { ...ok, count: 0, total: 0, latest: null, seals: [] }),
+    [],
+    "a citizen with no seals reads latest as null"
+  );
+
+  const bend = (mutate) => {
+    const copy = JSON.parse(JSON.stringify(ok));
+    mutate(copy);
+    return validate(schema, copy);
+  };
+  const rejects = (label, mutate) => assert.ok(bend(mutate).length > 0, label);
+  const rowMutate = (fn) => (d) => fn(d.seals[0]);
+
+  // The signed flag is the trust disclosure: a signed row must carry its
+  // signature and key_thumbprint. A row that claims signed:true while its proof
+  // fields are null is a row that asserts custody it cannot show.
+  rejects("a signed row with a null signature", rowMutate((r) => { r.signature = null; }));
+  rejects("a signed row with a null key_thumbprint", rowMutate((r) => { r.key_thumbprint = null; }));
+  // The other direction is just as load-bearing: an unsigned row carrying a
+  // signature string is a row that has a signature it does not disclose.
+  rejects("an unsigned row carrying a signature", rowMutate((r) => { r.signed = false; r.signature = "abc"; r.key_thumbprint = "xyz"; }));
+  // And the legal unsigned shape must NOT be rejected: null proof fields with
+  // signed:false is how the board honestly reports the majority case.
+  assert.deepEqual(bend((d) => { const r = d.seals[0]; r.signed = false; r.signature = null; r.key_thumbprint = null; d.latest = r; }), [], "an unsigned row reads its proof fields as null");
+
+  // The hash is a sha256 and the board writes it lowercase. An uppercase hash is
+  // a byte-identical-looking value that a verifier pin keyed on the canonical
+  // form would no longer match.
+  rejects("a seal row with an uppercase hash", rowMutate((r) => { r.hash = r.hash.toUpperCase(); }));
+  rejects("a seal row with a short hash", rowMutate((r) => { r.hash = "b99c5584993dd788beeb"; }));
+  // A row must carry its own id; the ledger is ordered by it.
+  rejects("a seal row with a null id", rowMutate((r) => { r.id = null; }));
+  rejects("a seal row losing its id", rowMutate((r) => { delete r.id; }));
+  // Completeness is count/total/has_more. total is the reconcilable count; a
+  // page that drops it pushes readers back to trusting seals.length past the
+  // 200-row cap, where it is wrong.
+  rejects("a ledger losing total", (d) => { delete d.total; });
+  rejects("a ledger losing has_more", (d) => { delete d.has_more; });
+  rejects("a ledger losing latest", (d) => { delete d.latest; });
+  rejects("a ledger with a negative count", (d) => { d.count = -1; });
+  // The signed_payload template and the disclosure notes are part of the
+  // contract: a reader reconstructs the canonical payload from signed_payload
+  // and reconciles the walk from the notes. Dropping either silences the
+  // reader's ability to check the response against itself.
+  rejects("a ledger losing signed_payload", (d) => { delete d.signed_payload; });
+  rejects("a ledger losing latest_note", (d) => { delete d.latest_note; });
+});

@@ -118,4 +118,12 @@ export const endpoints = [
   // contract, and missing either is the class of bug this schema exists to
   // catch. limit=1 keeps the live body small without changing the shape.
   ["/api/search?q=a&limit=1", "search.json"],
+  // A citizen's seal ledger, oldest-first, under one label filter. Public and
+  // unauthenticated. No schema existed, so a dropped total/has_more, a latest
+  // that drifted off the newest seal past the 200-row cap, or a row that
+  // claims signed while its signature/key_thumbprint are null would have been a
+  // contract break the live lane could not see. The probe is a long-standing,
+  // active citizen so the row shape is exercised in production; total is the
+  // reconcilable count (ignoring since_id), not seals.length.
+  ["/api/seals?citizen=attic-wren", "seals.json"],
 ];
