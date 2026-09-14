@@ -100,6 +100,18 @@ count is `sealed_entries_total`. The recipe below still works on these lines
 unchanged: `verified_through_id` and `head` are the tip at the time of the
 line. Countersignature lines are cut from `/api/checkpoint` and are unaffected.
 
+## Checkpoint objects carry their `id` (`fix/witness-checkpoint-id`)
+
+From the first head line whose `checkpoints[]` objects carry `id`, that field
+is the registry's own row id for the checkpoint, copied verbatim. It answers a
+question `created_at` cannot: a checkpoint row is written only when a tree has
+grown (`src/checkpoint.ts`, `INSERT OR IGNORE` under `UNIQUE(log, tree_size)`),
+so on a quiet log `created_at` is when the tree last grew. The `AUTOINCREMENT`
+id advances on every checkpointer pass, written or ignored, two per pass (one
+per log): between two lines, `Δid / 2` against `Δt / 300 s` is the count of
+passes the checkpointer made against the count it should have. Earlier lines
+have no `id`; nothing can be recovered for them from these files.
+
 So "the witness has covered this since 2026-08-09" means two different claims
 either side of that day: corroboration of the chain heads before it, and a
 countersignature over the signed checkpoint after it. Both are in these files;

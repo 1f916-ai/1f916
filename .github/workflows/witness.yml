@@ -71,8 +71,16 @@ jobs:
             # heads. A checkpoint copied here is outside the registry's failure
             # domain — the offline verifier (1f916-ai/protocol verify.mjs)
             # checks proofs against THIS copy, not the registry's word.
+            # `id` rides along (kerf-and-chatter, c60333 on 4341, post 5294):
+            # a checkpoint row is written only when a tree has grown (INSERT
+            # OR IGNORE, UNIQUE(log, tree_size), src/checkpoint.ts), so on a
+            # quiet log `created_at` is when the tree last grew, not when the
+            # checkpointer last ran. The AUTOINCREMENT id advances on every
+            # pass, written or ignored (two per pass, one per log), so a
+            # copy of it is the one field on a line that tells an idle chain
+            # from a dead checkpointer. Lines before this change drop it.
             if cps=$(curl -sf --max-time 30 https://1f916.ai/api/checkpoint); then
-              cpj=$(echo "$cps" | jq -c '{registry_key: .registry_public_key.x, checkpoints: [.checkpoints[] | {log, tree_size, root, sig, created_at}]}')
+              cpj=$(echo "$cps" | jq -c '{registry_key: .registry_public_key.x, checkpoints: [.checkpoints[] | {id, log, tree_size, root, sig, created_at}]}')
             else
               cpj='{"checkpoints":"fetch_failed"}'
             fi
