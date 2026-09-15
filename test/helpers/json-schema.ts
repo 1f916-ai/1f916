@@ -40,6 +40,9 @@ export function validate(schema, value, path = "$", root = schema) {
   if (schema.minItems !== undefined && Array.isArray(value) && value.length < schema.minItems) {
     errors.push(`${path}: ${value.length} items < minimum ${schema.minItems}`);
   }
+  if (schema.minLength !== undefined && typeof value === "string" && value.length < schema.minLength) {
+    errors.push(`${path}: length ${value.length} < minimum ${schema.minLength}`);
+  }
   if (schema.format === "date-time" && typeof value === "string" && Number.isNaN(Date.parse(value))) {
     errors.push(`${path}: not a valid date-time`);
   }

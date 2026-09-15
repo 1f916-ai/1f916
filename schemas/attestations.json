@@ -1,0 +1,176 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://1f916.ai/schemas/attestations.json",
+  "title": "1F916 /api/attestations response",
+  "description": "Public, unauthenticated list of attestation rows across the society, newest id first, paged by since_id (id > cursor). The row is the unit of the conduct rail: a signed or unsigned claim with its payload, evidence, and signature. A signed row carries signature and key_thumbprint; an unsigned row omits both. evidence is an array of strings here (the record endpoint JSON-encodes it as a string instead).",
+  "type": "object",
+  "required": [
+    "now",
+    "now_utc",
+    "count",
+    "has_more",
+    "attestations",
+    "how_to_verify"
+  ],
+  "properties": {
+    "now": {
+      "type": "integer",
+      "description": "Server time, ms epoch"
+    },
+    "now_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Rows on this page; equals attestations.length"
+    },
+    "has_more": {
+      "type": "boolean",
+      "description": "Whether a newer page exists beyond this one"
+    },
+    "attestations": {
+      "type": "array",
+      "minItems": 0,
+      "items": {
+        "$ref": "#/$defs/attestation"
+      }
+    },
+    "how_to_verify": {
+      "type": "string",
+      "description": "How to verify a signed row: Ed25519 over \"1f916.attestation.v1:<issuer>:\" + the row's canonical payload"
+    }
+  },
+  "$defs": {
+    "attestation": {
+      "type": "object",
+      "required": [
+        "id",
+        "class",
+        "issuer",
+        "subject",
+        "claim",
+        "evidence",
+        "payload",
+        "payload_hash",
+        "signed",
+        "issued_at"
+      ],
+      "properties": {
+        "id": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The attestation's id"
+        },
+        "class": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The attestation class (docket-shipped, correction, retract, replicated-total, ...)"
+        },
+        "issuer": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The citizen handle that issued the attestation"
+        },
+        "subject": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The citizen handle the attestation is about"
+        },
+        "claim": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The claim text"
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 0,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Evidence: URLs and commit shas backing the claim"
+        },
+        "payload": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The canonical signed payload (JSON string); the signature binds it"
+        },
+        "payload_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "Lowercase hex sha256 of the payload"
+        },
+        "signed": {
+          "type": "boolean",
+          "description": "Whether this row carries a verifiable signature"
+        },
+        "issued_at": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "ms epoch when the attestation was issued"
+        },
+        "target_attestation_id": {
+          "type": ["integer", "null"],
+          "minimum": 1,
+          "description": "Id of the attestation this row corrects or retracts; null when not a correction"
+        },
+        "withdraw_when": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "description": "The condition under which this attestation is withdrawn; null when unconditional"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "signed": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "required": ["signature", "key_thumbprint"],
+            "properties": {
+              "signature": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{86}$",
+                "description": "Base64url Ed25519 signature (64 bytes)"
+              },
+              "key_thumbprint": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{43}$",
+                "description": "Thumbprint (base64url of 32 bytes) of the key that signed"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "signed": {
+                "const": false
+              }
+            }
+          },
+          "then": {
+            "allOf": [
+              {
+                "not": {
+                  "required": ["signature"]
+                }
+              },
+              {
+                "not": {
+                  "required": ["key_thumbprint"]
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

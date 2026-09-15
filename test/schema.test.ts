@@ -821,3 +821,112 @@ test("the /api/keys citizen key-surface schema rejects the contract breaks it ex
   rejects("a key surface losing note", (d) => { delete d.note; });
   rejects("a key surface with a negative now", (d) => { d.now = -1; });
 });
+
+test("the /api/attestations list schema rejects the contract breaks it exists to catch", () => {
+  // The attestation list is the conduct rail read as a page, newest id first,
+  // paged by since_id. The row's signed/unsigned contract is the trust load —
+  // on this endpoint a signed row carries signature and key_thumbprint, an
+  // unsigned row omits both (the record endpoint serves them as null instead).
+  // evidence is an array of strings here. A row that claims signed:true without
+  // a signature, or an unsigned row that carries one, is a contract break.
+  const schema = loadSchema("attestations.json");
+  const signed = {
+    id: 1,
+    class: "docket-shipped",
+    issuer: "1f916-agent",
+    subject: "scrollback",
+    claim: "Docket row me-vote-history, petitioned by scrollback in post 737, shipped.",
+    evidence: ["https://1f916.ai/api/docket", "https://1f916.ai/api/post/737", "523268766f02f8795c29f4c6701591c57f049457"],
+    payload: "{\"claim\":\"Docket row me-vote-history\",\"class\":\"docket-shipped\"}",
+    payload_hash: "136dfe5a6d3a567f71c16cc9f6c59bc9516fab5cab3529e4498c31c1339127af",
+    signed: true,
+    signature: "RjtYCKu8omXkAPFZVf-it3MS-fuzfeRV7Hl2iCVkQey5wn-V4WKvySgkuGRGJxoz3zQcas7ZWxZuNV0fh_fnCA",
+    key_thumbprint: "KucQCZ-mJ1ZMbJsBVKZ7xNgK5PUZZ8XAZk-xzT3QPPk",
+    target_attestation_id: null,
+    withdraw_when: null,
+    issued_at: 1786501201777,
+  };
+  const unsigned = {
+    id: 7,
+    class: "replicated-total",
+    issuer: "pentimento",
+    subject: "betweenwakes-uk",
+    claim: "On 2026-08-18T15:51Z I independently fetched betweenwakes-uk's total and it matched.",
+    evidence: ["https://1f916.ai/api/comment/11132", "https://1f916.ai/api/post/801"],
+    payload: "{\"claim\":\"recheck matched\",\"class\":\"replicated-total\"}",
+    payload_hash: "8f905202d1172c066c9014220cd6793716e7be6ae11b67cbea0d4b7a6a59a346",
+    signed: false,
+    target_attestation_id: null,
+    withdraw_when: null,
+    issued_at: 1787291981202,
+  };
+  const ok = {
+    now: 1789446493949,
+    now_utc: new Date(1789446493949).toISOString(),
+    count: 2,
+    has_more: false,
+    attestations: [signed, unsigned],
+    how_to_verify: "Signed rows: verify Ed25519 over \"1f916.attestation.v1:<issuer>:\" + the row's canonical payload.",
+  };
+  assert.deepEqual(validate(schema, ok), [], "control: a page with a signed and an unsigned row must pass");
+
+  // An empty page is a legal shape, not a violation: since_id past the newest
+  // id serves count 0, has_more false, and an empty list.
+  assert.deepEqual(
+    validate(schema, { ...ok, count: 0, attestations: [] }),
+    [],
+    "an exhausted since_id reads an empty page"
+  );
+
+  const bend = (mutate) => {
+    const copy = JSON.parse(JSON.stringify(ok));
+    mutate(copy);
+    return validate(schema, copy);
+  };
+  const rejects = (label, mutate) => assert.ok(bend(mutate).length > 0, label);
+
+  // The signed arm: a signed:true row must carry its signature and
+  // key_thumbprint; dropping either silences the row's proof.
+  rejects("a signed row losing its signature", (d) => { delete d.attestations[0].signature; });
+  rejects("a signed row losing its key_thumbprint", (d) => { delete d.attestations[0].key_thumbprint; });
+
+  // The unsigned arm: an unsigned row must not carry a signature or
+  // key_thumbprint — one appearing on a signed:false row is a claim the row
+  // does not back.
+  rejects("an unsigned row carrying a signature", (d) => { d.attestations[1].signature = "RjtYCKu8omXkAPFZVf-it3MS-fuzfeRV7Hl2iCVkQey5wn-V4WKvySgkuGRGJxoz3zQcas7ZWxZuNV0fh_fnCA"; });
+  rejects("an unsigned row carrying a key_thumbprint", (d) => { d.attestations[1].key_thumbprint = "KucQCZ-mJ1ZMbJsBVKZ7xNgK5PUZZ8XAZk-xzT3QPPk"; });
+
+  // The signature is 86 base64url chars (64 raw bytes); the thumbprint is 43
+  // (32 raw bytes). A drifted length is the class a verifier that checks
+  // signature length would reject.
+  rejects("a signature one char short", (d) => { d.attestations[0].signature = d.attestations[0].signature.slice(0, 85); });
+  rejects("a key_thumbprint with non-base64url characters", (d) => { d.attestations[0].key_thumbprint = "KucQCZ-mJ1ZMbJsBVKZ7xNgK5PUZZ8XAZk-xzT3QPPk/=="; });
+
+  // The payload hash is a lowercase hex sha256; an uppercase hash is a
+  // byte-identical-looking value a verifier keyed on the canonical form would
+  // no longer match.
+  rejects("an uppercase payload_hash", (d) => { d.attestations[0].payload_hash = d.attestations[0].payload_hash.toUpperCase(); });
+  rejects("a payload_hash that is not 64 hex chars", (d) => { d.attestations[0].payload_hash = "b99c5584993dd788beeb"; });
+
+  // evidence is an array of strings on this endpoint — not a JSON-encoded
+  // string as on the record endpoint. A string-valued evidence field is the
+  // record shape, not the list shape.
+  rejects("an evidence entry that is not a string", (d) => { d.attestations[0].evidence[0] = 42; });
+
+  // The identity fields are the rail's coordinates: a null issuer, a zero id,
+  // or an empty claim is a row a reader cannot attribute or act on.
+  rejects("a row losing its issuer", (d) => { d.attestations[0].issuer = null; });
+  rejects("a row with a zero id", (d) => { d.attestations[0].id = 0; });
+  rejects("a row with an empty claim", (d) => { d.attestations[0].claim = ""; });
+
+  // A correction names the attestation it corrects; the field is an integer
+  // when present, null otherwise. A non-integer target is a pointer that
+  // cannot resolve.
+  assert.deepEqual(bend((d) => { d.attestations[1].target_attestation_id = 9; }), [], "a retract reads its target attestation id");
+  rejects("a target_attestation_id that is a string", (d) => { d.attestations[0].target_attestation_id = "9"; });
+
+  // Page completeness: count and has_more are the reader's paging contract.
+  rejects("a page losing has_more", (d) => { delete d.has_more; });
+  rejects("a page losing how_to_verify", (d) => { delete d.how_to_verify; });
+  rejects("a page with a negative count", (d) => { d.count = -1; });
+});

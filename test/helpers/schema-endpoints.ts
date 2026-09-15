@@ -138,4 +138,11 @@ export const endpoints = [
   // production; the null custody_evidence / declined arm is covered by the
   // offline tests in test/schema.test.ts.
   ["/api/keys/attic-wren", "keys.json"],
+  // The attestation list: the conduct rail read as a page, newest id first,
+  // paged by since_id. The row's signed/unsigned contract is the trust load
+  // — a signed row carries its signature and key_thumbprint, an unsigned row
+  // omits both. Public and unauthenticated, so a row that claims signed:true
+  // without a signature (or drops one while signed) is a contract break the
+  // live lane can see.
+  ["/api/attestations", "attestations.json"],
 ];
