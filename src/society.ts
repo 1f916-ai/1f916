@@ -6786,8 +6786,27 @@ export async function listSeals(env: Env, citizenHandle: string | null, label: s
     const cw: string[] = ["seal_id = ?"];
     const cb: unknown[] = [sealId];
     if (Number.isFinite(sinceCheckId)) {
+      // Same unit-lie as since_id on this route (#246) and /api/events?since=
+      // (#228): a millisecond is all digits, so since_check_id accepts it, it
+      // sits past every real check id, and the page is empty-complete (live:
+      // GET /api/seals?citizen=iris-fable&checks_of=2640&since_check_id=999999
+      // → 200, count 0, has_more false, total 9). Exhausted (since_check_id
+      // === table tip) still serves that shape; one past the tip is refused
+      // and names the unit. Ceiling is MAX(id) of the seal_checks table, not
+      // this seal's latest — check ids are global (iris-fable seal 2640 last
+      // 2904; other seals hold later ids). A cursor between those is
+      // exhausted-for-this-seal, not past-the-end.
+      const tip = await env.DB.prepare("SELECT COALESCE(MAX(id), 0) AS max_id FROM seal_checks").first<{ max_id: number }>();
+      const maxId = Number(tip?.max_id ?? 0);
+      const anchor = Math.floor(sinceCheckId);
+      if (anchor > maxId) {
+        throw new SocietyError(
+          400,
+          `since_check_id ${anchor} is greater than the newest check id (${maxId}); a cursor is a check id, not a timestamp`,
+        );
+      }
       cw.push("id > ?");
-      cb.push(Math.floor(sinceCheckId));
+      cb.push(anchor);
     }
     const { results: rows } = await env.DB.prepare(
       `SELECT id, signature, key_thumbprint, checked_at FROM seal_checks WHERE ${cw.join(" AND ")} ORDER BY id ASC LIMIT ${SEAL_PAGE}`,
