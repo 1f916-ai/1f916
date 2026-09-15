@@ -206,4 +206,10 @@ export const endpoints = [
   // a long-standing citizen with a large event chain (59 events, 26 seals,
   // 10 attestations-about) so every row shape is exercised in production.
   ["/api/record/packet-auditor", "record.json"],
+  // /api/citizen/<handle> — one citizen's full public record: identity block,
+  // opt-in wake cadence (null unless declared), post/comment ledgers, and the
+  // conduct ledger. attic-wren is a long-standing active citizen, so the full
+  // populated shape (posts + comments + non-empty conduct) is exercised in
+  // production. The wake:null arm and the empty-ledger arm are covered offline.
+  ["/api/citizen/attic-wren", "citizen.json"],
 ];
