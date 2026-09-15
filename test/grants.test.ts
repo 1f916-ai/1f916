@@ -11,7 +11,7 @@ import { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "node:fs";
 import { SqliteD1 } from "./helpers/sqlite-d1.ts";
 import { createGrant, createProposal, grantPageText, grantsIndexText, listGrants, readGrant, readProposal, tallyVotes, transitionGrant, grantBySlug, PROPOSALS_PER_DAY } from "../src/grants.ts";
-import { MAINTAINER_ID, SocietyError, createListing, type Citizen, type Env } from "../src/society.ts";
+import { MAINTAINER_ID, SocietyError, createListing, voteWeight, type Citizen, type Env } from "../src/society.ts";
 
 const DAY = 86_400_000;
 const NOW = Date.now();
@@ -238,7 +238,7 @@ test("vote mode: the window is declared, revisions stop, self-votes do not count
   assert.equal(alice.votes, 1, "Alice's own vote is not counted");
   assert.equal(alice.weighted_votes, 1);
   assert.equal(bob.votes, 2);
-  // KILLING MUTATION: src/grants.ts tallyVotes, replace `voteWeight(v.created_at, now)`
+  // KILLING MUTATION: src/grants.ts tallyVotes, replace `voteWeight(v.created_at, weighAt)`
   // with `1`. The newbie's vote would weigh a full point and Bob would win
   // 2.0 to 1.0 instead of 1.1 to 1.0; the page says tenure weighs.
   assert.equal(bob.weighted_votes, 1.1, "a one-hour-old citizen weighs 0.1");
@@ -290,6 +290,46 @@ test("vote mode: the window is declared, revisions stop, self-votes do not count
   assert.equal(again.live_tally, null, "no live tally is served once the vote is over");
   const ev = db.prepare("SELECT detail FROM identity_events WHERE kind = 'grant' ORDER BY id DESC LIMIT 1").get() as { detail: string };
   assert.match(ev.detail, /^grant-1f512 voting -> selected vote closed: proposal \d+ \(@bob\) won with 1\.1 weighted \/ 2 raw of 3 counted$/);
+});
+
+test("vote mode: a close recorded late weighs tenure at the declared close, not at the instant it was recorded", async () => {
+  // The window bounds WHICH votes count. This pins what each one WEIGHS. A
+  // voter under seven days old gains 1/168 of a point per hour, so if tenure
+  // were measured to the instant the sponsor records the close, the sponsor
+  // could reorder two close rows by choosing when to record it.
+  const { env, db } = makeEnv();
+  await createGrant(env, MAINTAINER, draft());
+  await transitionGrant(env, SPONSOR, "1f512", { to: "open" });
+  const a = await createProposal(env, ALICE, "1f512", { title: "Vault", summary: "An immutable commitment vault on the lock domain.", body: PROPOSAL_BODY });
+  const b = await createProposal(env, BOB, "1f512", { title: "Registry", summary: "A wallet transparency registry keyed by the lock domain.", body: PROPOSAL_BODY });
+  await transitionGrant(env, SPONSOR, "1f512", { to: "voting", voting_closes_at: Math.floor(NOW / 1000) + 3600 });
+  const openedAt = (await grantBySlug(env, "1f512"))!.voting_opened_at!;
+  // Close declared one day after the vote opened; the tally is then taken
+  // three days after that. `young` is one day old at the close, four at the
+  // late tally: 1/7 against 4/7. Two capped voters sit on the other row.
+  const closesMs = openedAt + DAY;
+  db.prepare("UPDATE grants SET voting_closes_at = ? WHERE slug = '1f512'").run(Math.floor(closesMs / 1000));
+  const closesAt = Math.floor(closesMs / 1000) * 1000;
+  db.prepare("INSERT INTO citizens (id, handle, model, secret_hash, karma, created_at, last_seen_at) VALUES (90, 'young1', 'm', 'x', 0, ?, ?), (91, 'young2', 'm', 'x', 0, ?, ?), (92, 'young3', 'm', 'x', 0, ?, ?), (93, 'young4', 'm', 'x', 0, ?, ?)")
+    .run(closesAt - DAY, NOW, closesAt - DAY, NOW, closesAt - DAY, NOW, closesAt - DAY, NOW);
+  const vote = (id: number, commentId: number) => db.prepare("INSERT INTO votes (citizen_id, target_type, target_id, created_at) VALUES (?, 'comment', ?, ?)").run(id, commentId, openedAt + 1000);
+  for (const id of [90, 91, 92, 93]) vote(id, b.comment_id!);
+  vote(SPONSOR.id, a.comment_id!);
+  const grant = (await grantBySlug(env, "1f512"))!;
+  const late = closesAt + 3 * DAY;
+  const tally = await tallyVotes(env, grant, late);
+  const bobLine = tally.ballot.find((l) => l.proposal_id === b.id)!;
+  // KILLING MUTATION: src/grants.ts tallyVotes, change `voteWeight(v.created_at, weighAt)`
+  // back to `voteWeight(v.created_at, now)`. Four one-day-old voters then weigh
+  // 4 x 4/7 = 2.29 at the late tally instead of 4 x 1/7 = 0.57, and Bob
+  // overtakes Alice's single capped vote purely because the close was late.
+  assert.equal(bobLine.weighted_votes, Math.round(4 * voteWeight(closesAt - DAY, closesAt) * 100) / 100, "tenure is measured to the declared close");
+  assert.equal(tally.ballot[0].proposal_id, a.id, "and a late close cannot reorder the ballot");
+  assert.equal(tally.weighed_at, closesAt, "the tally says which instant it weighed at");
+  assert.equal(tally.counted_at, late, "and, separately, when it was counted");
+  // While the vote runs, nothing changes: tenure is measured to now.
+  const live = await tallyVotes(env, grant, openedAt + 2000);
+  assert.equal(live.weighed_at, openedAt + 2000, "a running vote weighs at now");
 });
 
 test("sponsor mode: the sponsor names the proposal, only its latest revision, and the record says the sponsor chose", async () => {

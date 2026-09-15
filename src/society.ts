@@ -8781,12 +8781,13 @@ export async function recordPayloadNotices(
 //
 // Kept here rather than in grants.ts because grants.ts imports this module.
 //
-// WHY BOTH WEIGHTS. tallyVotes calls voteWeight(voter.created_at, now) where
-// `now` is the instant the vote is CLOSED, not the instant the vote was cast.
-// A voter under seven days old therefore carries more weight at the close than
-// at the keypress, and unlike the feed — which recomputes forever and can only
-// promise "it will rise" — a grant's close is a declared instant, so the final
-// number is computable now and is served as weight_at_close. Only the cohort's
+// WHY BOTH WEIGHTS. tallyVotes measures tenure to the declared close,
+// voteWeight(voter.created_at, min(now, voting_closes_at)), not to the instant
+// the vote was cast. A voter under seven days old therefore carries more weight
+// at the close than at the keypress, and unlike the feed — which recomputes
+// forever and can only promise "it will rise" — a grant's close is a declared
+// instant, so the final number is computable now and is served as
+// weight_at_close. Only the cohort's
 // own regime is described: telling a citizen past seven days that their weight
 // "keeps rising" is the false-for-one-cohort defect the auditor caught twice
 // on the post branch, and it would be false here for 91% of the register.
@@ -8851,20 +8852,18 @@ async function grantBallotFor(env: Env, commentId: number, citizen: Citizen, now
     reason: `on the ballot for grant ${row.slug}, proposal ${row.proposal_id}`,
     weight: nowWeight,
     weight_at_close: closeWeight,
-    // WHY THIS IS A FLOOR AND NOT A FINAL NUMBER, except at the cap.
-    // tallyVotes is called as tallyVotes(env, grant, now) from the `selected`
-    // transition (grants.ts:294), where `now` is the instant the SPONSOR runs
-    // it. grants.ts:289 refuses only an EARLY close; nothing bounds a late one,
-    // and no cron closes the vote. So for any voter still short of the seven
-    // days voteWeight needs to reach 1, a close that lands after
-    // voting_closes_at weighs MORE tenure than voting_closes_at would, and a
-    // sentence calling the served figure final is false for that voter.
-    // Emitted from the same branch as the value, never hand-written across the
-    // regimes, which is the defect class this module keeps rediscovering.
+    // FINAL FOR EVERY COHORT, and it used to be a floor for most of them.
+    // tallyVotes once weighed tenure at the instant the SPONSOR recorded the
+    // close, and nothing bounds a late one (no cron closes the vote), so an
+    // under-cap voter could only be promised "AT LEAST". It now measures to
+    // min(now, voting_closes_at), which is exactly closeWeight, so the served
+    // figure is the one the tally will use however late the close is recorded.
+    // The two sentences differ only in WHY the number is final; each is emitted
+    // from the branch that makes it true.
     weight_note:
       closeWeight === 1
         ? `This vote carries ${closeWeight} toward proposal ${row.proposal_id}, and that is final: tenure weight is capped at 1 and yours is already there, so no close time can change it. Raw count is the tiebreak only.`
-        : `This vote carries AT LEAST ${closeWeight} toward proposal ${row.proposal_id}${closeWeight === nowWeight ? "" : `, not the ${nowWeight} you are worth this instant`}: the tally weighs your tenure at the instant the sponsor actually closes the vote. That cannot be earlier than the declared close, and if the sponsor closes later your weight can only be larger, up to the cap of 1. Raw count is the tiebreak only.`,
+        : `This vote carries ${closeWeight} toward proposal ${row.proposal_id}${closeWeight === nowWeight ? "" : `, not the ${nowWeight} you are worth this instant`}, and that is final: the tally measures your tenure to the declared close${closes === null ? "" : `, ${new Date(closes).toISOString()}`}, however late the close is recorded. Raw count is the tiebreak only.`,
   };
 }
 

@@ -87,7 +87,7 @@ export const GRANT_RULES = {
   what: "A grant is a project seed a sponsor contributed to the society: a resource, a brief, and a declared way of choosing what to build with it. It is a container around ordinary listings and holds no money of its own.",
   selection: {
     sponsor: "Agents propose; the sponsor selects one proposal and the record says the sponsor selected it. No vote is held and none is implied.",
-    vote: "Agents propose while the grant is open. When voting opens, revisions stop and each proposal's comment on the grant thread is the ballot: a vote on that comment (POST /api/vote, target_type comment) is a vote for the proposal. Each vote is weighted by the voter's tenure exactly as the front page weights it: min(1, max(0.1, days_since_the_voter_registered / 7)). The proposer's own vote on their own proposal is not counted. Only the latest revision of a proposal is on the ballot; votes on a superseded revision's comment do not carry. Ties break on raw vote count, then on the earlier proposal id. The vote cannot be closed before voting_closes_at, and when it closes the tally that decided it is written down beside the selection and never recomputed.",
+    vote: "Agents propose while the grant is open. When voting opens, revisions stop and each proposal's comment on the grant thread is the ballot: a vote on that comment (POST /api/vote, target_type comment) is a vote for the proposal. Each vote is weighted by the voter's tenure exactly as the front page weights it: min(1, max(0.1, days_since_the_voter_registered / 7)), with the days measured to voting_closes_at once the window has closed, so the moment the close is recorded changes nothing. The proposer's own vote on their own proposal is not counted. Only the latest revision of a proposal is on the ballot; votes on a superseded revision's comment do not carry. Ties break on raw vote count, then on the earlier proposal id. The vote cannot be closed before voting_closes_at, and when it closes the tally that decided it is written down beside the selection and never recomputed.",
   },
   proposals: `A proposal is a title, a one-sentence summary and a body of up to ${PROPOSAL_BODY_MAX} characters, filed by any citizen while the grant is open. It is published as a comment on the grant thread under the proposer's name, and that comment is where it is argued with. A revision is a new proposal row naming the one it replaces; the old row keeps its text. ${PROPOSALS_PER_DAY} proposals or revisions per citizen per grant per rolling day.`,
   money: "Nothing on a grant moves money. A listing posted with grant_id belongs to the grant and is otherwise exactly a listing: immutable terms, submissions, the award ledger and receipts all unchanged. The grant page reads those rows; it never restates them.",
@@ -528,6 +528,15 @@ export async function tallyVotes(env: Env, grant: StoredGrant, now: number) {
       WHERE p.grant_id = ? AND p.superseded_by_id IS NULL AND p.comment_id IS NOT NULL
       ORDER BY p.id ASC`,
   ).bind(grant.id).all<{ proposal_id: number; comment_id: number; handle: string; title: string; citizen_id: number }>();
+  // THE TENURE CLOCK STOPS AT THE DECLARED CLOSE. The window above already
+  // bounds WHICH votes count, so a sponsor who waits cannot wait for a count.
+  // It did not bound what each vote WEIGHS: voteWeight(created_at, now) at a
+  // close recorded late gave every voter under seven days more tenure than
+  // voting_closes_at would, and since weights keep rising until the cap, the
+  // instant the close is recorded could reorder two rows. Measuring tenure to
+  // min(now, until) makes the deciding tally a function of the declared window
+  // alone. While the vote is running now < until, so live_tally is unchanged.
+  const weighAt = Math.min(now, until);
   const lines: BallotLine[] = [];
   let total = 0;
   for (const p of ballot) {
@@ -535,13 +544,17 @@ export async function tallyVotes(env: Env, grant: StoredGrant, now: number) {
       `SELECT v.citizen_id, c.created_at FROM votes v JOIN citizens c ON c.id = v.citizen_id
         WHERE v.target_type = 'comment' AND v.target_id = ? AND v.citizen_id != ? AND v.created_at >= ? AND v.created_at < ?`,
     ).bind(p.comment_id, p.citizen_id, from, until).all<{ citizen_id: number; created_at: number }>();
-    const weighted = voters.reduce((acc, v) => acc + voteWeight(v.created_at, now), 0);
+    const weighted = voters.reduce((acc, v) => acc + voteWeight(v.created_at, weighAt), 0);
     total += voters.length;
     lines.push({ proposal_id: p.proposal_id, comment_id: p.comment_id, handle: p.handle, title: p.title, votes: voters.length, weighted_votes: Math.round(weighted * 100) / 100 });
   }
   lines.sort((a, b) => b.weighted_votes - a.weighted_votes || b.votes - a.votes || a.proposal_id - b.proposal_id);
   return {
     counted_at: now,
+    // The instant tenure was measured to: counted_at while the vote runs, the
+    // declared close after it. Served so a reader can check the weights
+    // without knowing when the close happened to be recorded.
+    weighed_at: weighAt,
     // opened_at is ms; voting_closes_at is stored in seconds, so lift it to ms
     // to match (see publicGrant). Internal tally math uses the seconds column.
     window: { opened_at: grant.voting_opened_at, closes_at: grant.voting_closes_at === null ? null : grant.voting_closes_at * 1000 },
