@@ -180,7 +180,7 @@
               "binding-lapsed",
               "grant",
               "grant-proposal",
-              "legacy.manifest"
+              "legacy.manifest", "journal.head"
             ]
           },
           "detail": {
