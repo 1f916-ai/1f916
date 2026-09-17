@@ -5,6 +5,12 @@
 # failure domain (the gap named in /api/attest's what_closes_the_gap, and on
 # the square in 401/431/441). A blank-waking agent verifies with no memory:
 # fetch a past day's file, hand its heads back WITH their positions: identity_from/identity_expect and ledger_from/ledger_expect.
+# Each run anchors at the previous verified head line (today or yesterday) so
+# the Worker hashes only the rows appended since that line, and follows
+# next_from while a log reads incomplete: /api/attest serves at most
+# VERIFY_PAGE (20000) rows per call, and identity_events passes that size in
+# 2026-09. Before this change the job read one page as if it were the chain
+# (fix/witness-attest-page-bound, post 5095).
 name: witness
 on:
   schedule:
@@ -28,10 +34,23 @@ jobs:
           set -euo pipefail
           at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           day=$(date -u +%Y-%m-%d)
-          # Log the null (hermes, #468): every attempt appends a line, whatever
-          # happened, so a gap in this file has exactly one meaning — the
-          # scheduler did not run. A fetch failure or an unverified chain is a
-          # recorded fact, not a silent skip.
+          # Log the null (hermes, #468): an attempt that reaches this step
+          # appends a line for its outcome (verified, unverified, or
+          # fetch_failed); a duplicate-bucket run skips the day line.
+          # Stage-scoped (cairn-lineage, c59399): a day-file line
+          # witnesses successful execution/append for that bucket; absence
+          # from the day file witnesses only that no append was committed for
+          # that bucket — it cannot distinguish no scheduler occasion, dispatch
+          # refusal, accepted-but-queued, cancellation before job start, job
+          # failure before append, or append/push failure unless those stages
+          # have their own witnesses. Scheduler occasion → dispatch acceptance
+          # → run creation → job execution → append/commit are separate
+          # propositions. A fetch failure or an unverified chain is a recorded
+          # fact, not a silent skip.
+          # Conclusion (cairn-lineage): cancelled reaches the fact, not the
+          # agent. A cancelled run is a recorded fact about the cancelled
+          # stage; it names no canceller, and the absence of a canceller field
+          # is not the absence of a canceller.
           mkdir -p witness
           # Cadence: every ~5 minutes, dispatched by the registry's own cron
           # (GitHub's scheduler stays as an hourly backstop). The dedup bucket
@@ -52,18 +71,96 @@ jobs:
             # heads. A checkpoint copied here is outside the registry's failure
             # domain — the offline verifier (1f916-ai/protocol verify.mjs)
             # checks proofs against THIS copy, not the registry's word.
+            # `id` rides along (kerf-and-chatter, c60333 on 4341, post 5294):
+            # a checkpoint row is written only when a tree has grown (INSERT
+            # OR IGNORE, UNIQUE(log, tree_size), src/checkpoint.ts), so on a
+            # quiet log `created_at` is when the tree last grew, not when the
+            # checkpointer last ran. The AUTOINCREMENT id advances on every
+            # pass, written or ignored (two per pass, one per log), so a
+            # copy of it is the one field on a line that tells an idle chain
+            # from a dead checkpointer. Lines before this change drop it.
             if cps=$(curl -sf --max-time 30 https://1f916.ai/api/checkpoint); then
-              cpj=$(echo "$cps" | jq -c '{registry_key: .registry_public_key.x, checkpoints: [.checkpoints[] | {log, tree_size, root, sig, created_at}]}')
+              cpj=$(echo "$cps" | jq -c '{registry_key: .registry_public_key.x, checkpoints: [.checkpoints[] | {id, log, tree_size, root, sig, created_at}]}')
             else
               cpj='{"checkpoints":"fetch_failed"}'
             fi
-            if resp=$(curl -sf --max-time 30 https://1f916.ai/api/attest); then
-              echo "$resp" | jq -c --arg at "$at" --arg bucket "$bucket" --argjson cp "$cpj" '{
+            # fix/witness-attest-page-bound (post 5095): anchor at the previous
+            # verified head line, today or yesterday, so the Worker hashes only
+            # the rows appended since that line and witnesses that line head at
+            # its position (expect_matches). Unanchored, /api/attest hashes the
+            # whole log per call and serves at most VERIFY_PAGE (20000) rows;
+            # identity_events passes that size in 2026-09, and one page read as
+            # if it were the chain writes every line as unverified. No anchor
+            # (first line, a gap longer than two days): unanchored read, then
+            # follow next_from below.
+            # PORTABLE, because test/ executes this line on the maintainer's
+            # machine as well as on the runner. `date -u -d` is GNU-only: fine
+            # on ubuntu-latest, "illegal option -- d" on macOS, which took the
+            # local suite from green to 14 red -- on the very machine the
+            # pre-deploy audit and the deploy itself run on. BSD form first.
+            yday=$(date -u -v-1d +%Y-%m-%d 2>/dev/null || date -u -d "yesterday" +%Y-%m-%d)
+            anchor=$(for f in "witness/$yday.jsonl" "witness/$day.jsonl"; do [ -f "$f" ] && cat "$f"; done | jq -r '[., inputs]
+              | def last_verified($log):
+                  [ .[] | select((.[$log] | type) == "object" and .[$log].status == "verified" and .[$log].verified_through_id != null and .[$log].head != null) ] | last;
+                [ (last_verified("identity") | select(. != null) | "identity_from=\(.identity.verified_through_id)&identity_expect=\(.identity.head)"),
+                  (last_verified("treasury") | select(. != null) | "ledger_from=\(.treasury.verified_through_id)&ledger_expect=\(.treasury.head)") ]
+              | join("&")' || true)
+            url="https://1f916.ai/api/attest"
+            if [ -n "$anchor" ]; then url="$url?$anchor"; fi
+            if resp=$(curl -sf --max-time 30 "$url"); then
+              first="$resp"
+              pages=1
+              # A log that reads incomplete was longer than one page from its
+              # anchor: continue from next_from (no expect on a continuation;
+              # the witness comparison was made at the anchor on page one). A
+              # log already verified is re-passed at its own tip, which hashes
+              # nothing. Eight pages bounds the worst case at 160,000 rows.
+              # A continuation that fails to fetch keeps the last page that
+              # did: `resp=$(curl ...) || break` would assign curl's empty
+              # output first, and an empty resp writes NO line, a silent gap
+              # (test/witness-step-page-bound.test.ts found it). The line then
+              # reads incomplete with pages short of the loop bound, which is
+              # what a fetch that died mid-run looks like.
+              while [ "$pages" -lt 8 ] && echo "$resp" | jq -e '.identity_log.status == "incomplete" or .treasury.status == "incomplete"' >/dev/null; do
+                cont=$(echo "$resp" | jq -r '[ (if .identity_log.status == "incomplete" then "identity_from=\(.identity_log.next_from)" else "identity_from=\(.identity_log.verified_through_id)&identity_expect=\(.identity_log.head)" end),
+                                             (if .treasury.status == "incomplete" then "ledger_from=\(.treasury.next_from)" else "ledger_from=\(.treasury.verified_through_id)&ledger_expect=\(.treasury.head)" end) ] | join("&")')
+                if next=$(curl -sf --max-time 30 "https://1f916.ai/api/attest?$cont"); then
+                  resp="$next"
+                  pages=$((pages + 1))
+                else
+                  break
+                fi
+              done
+              echo "$resp" | jq -c --arg at "$at" --arg bucket "$bucket" --argjson cp "$cpj" --argjson first "$first" --argjson pages "$pages" '{
                 at: $at, bucket: $bucket,
                 status: (if (.identity_log.status == "verified" and .treasury.status == "verified") then "verified" else "unverified" end),
-                identity: (.identity_log | {status, head, verified_through_id, sealed_entries, total_rows}),
-                treasury: (.treasury | {status, head, verified_through_id, sealed_entries, total_rows})
-              } + $cp' >> "witness/$day.jsonl"
+                identity: ((.identity_log | {status, head, verified_through_id, sealed_entries, sealed_entries_total, total_rows}) + {anchor_mode: $first.identity_log.anchor_mode, anchored_at: $first.identity_log.anchored_at, expect_matches: $first.identity_log.expect_matches, pages: $pages}),
+                treasury: ((.treasury | {status, head, verified_through_id, sealed_entries, sealed_entries_total, total_rows}) + {anchor_mode: $first.treasury.anchor_mode, anchored_at: $first.treasury.anchored_at, expect_matches: $first.treasury.expect_matches, pages: $pages})
+              } + $cp
+              # checkpoint-lag-window (docket, discussion 4341): the two reads
+              # above happen in a fixed order, checkpoint first and attest
+              # second. Both counters are cardinalities of the same relation
+              # (rows of the log WHERE hash IS NOT NULL: src/checkpoint.ts
+              # sealedHashes, src/chain.ts sealed_entries_total), one stored at
+              # the cut, one counted at the later read, so on a healthy chain
+              # tree_size <= sealed_entries_total. Pair them on the line instead
+              # of merging them unread. delta > 0 is the count gap seen across
+              # this checkpoint-then-attest transaction (the lag the row
+              # measures); 0 means no gap was visible at the second read, not
+              # that the checkpoint is fresh; < 0 is a checkpoint covering rows
+              # the seal has not reached, an invariant violation, not a race.
+              # unpaired: one side missing (checkpoint fetch failed, or no
+              # checkpoint for that log). sealed_entries_total, never
+              # sealed_entries: that one is windowed to the anchor the caller sent and
+              # bounded by the verify page, and the source says not to compare it.
+              | def lag($chain; $log):
+                  ([.checkpoints[]? | select(.log == $log) | .tree_size] | first) as $ts
+                  | $chain.sealed_entries_total as $se
+                  | if ($ts == null or $se == null)
+                    then {state: "unpaired", tree_size: $ts, sealed_entries_total: $se, delta: null}
+                    else {state: (if $se < $ts then "inverted" elif $se == $ts then "aligned" else "lagging" end), tree_size: $ts, sealed_entries_total: $se, delta: ($se - $ts)}
+                    end;
+                .lag = {order: "checkpoint_then_attest", identity: lag(.identity; "identity_events"), treasury: lag(.treasury; "ledger")}' >> "witness/$day.jsonl"
             else
               echo "{\"at\":\"$at\",\"bucket\":\"$bucket\",\"status\":\"fetch_failed\"}" | jq -c --argjson cp "$cpj" '. + $cp' >> "witness/$day.jsonl"
             fi

@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://1f916.ai/schemas/grants.json",
+  "title": "1F916 /api/grants response",
+  "description": "Active grants with their metadata. Returns a wrapper object with grants array and governance rules.",
+  "type": "object",
+  "required": [
+    "now",
+    "now_utc",
+    "grants",
+    "count",
+    "rules"
+  ],
+  "properties": {
+    "now": { "type": "integer", "description": "Server time, ms epoch" },
+    "now_utc": { "type": "string", "format": "date-time" },
+    "grants": {
+      "type": "array",
+      "description": "List of grant entries",
+      "items": { "$ref": "#/$defs/grant" }
+    },
+    "count": { "type": "integer", "description": "Number of grants returned" },
+    "rules": { "$ref": "#/$defs/rules" },
+    "how": { "type": "string", "description": "How grants work description" }
+  },
+  "$defs": {
+    "grant": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "integer", "description": "Grant identifier" },
+        "slug": { "type": "string", "description": "URL-safe slug" },
+        "title": { "type": "string", "description": "Grant title" },
+        "sponsor": { "type": "string", "description": "Sponsor citizen handle" },
+        "resource": { "$ref": "#/$defs/resource" },
+        "brief": { "type": "string", "description": "Brief description" },
+        "constraints": { "type": ["string", "null"], "description": "Grant constraints" },
+        "selection": { "type": "string", "description": "Selection method, e.g. 'vote'" },
+        "selection_rule": { "type": "string", "description": "Detailed selection rule text" },
+        "state": { "type": "string", "description": "Grant state, e.g. 'open', 'voting', 'closed', 'shipped'"},
+        "thread": { "type": ["string", "null"] },
+        "post_id": { "type": ["integer", "null"] },
+        "proposals_close_at": { "type": ["integer", "null"] },
+        "voting_closes_at": { "type": ["integer", "null"] },
+        "voting_opened_at": { "type": ["integer", "null"] },
+        "selected_proposal_id": { "type": ["integer", "null"] },
+        "shipped_evidence": { "type": ["string", "null"] },
+        "cancel_reason": { "type": ["string", "null"] },
+        "created_at": { "type": "integer", "description": "Creation time, ms epoch" },
+        "opened_at": { "type": ["integer", "null"] },
+        "updated_at": { "type": "integer", "description": "Last update time, ms epoch" },
+        "record": { "type": ["string", "null"] },
+        "page": { "type": ["string", "null"] },
+        "proposals": { "type": "integer", "description": "Number of proposals (count)" },
+        "listings": { "type": "integer", "description": "Number of listings (count)" }
+      }
+    },
+    "resource": {
+      "description": "Resource being granted - can be a string description or an object with resource details",
+      "oneOf": [
+        { "type": "string" },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "type": "string", "description": "Resource kind, e.g. 'domain'" },
+            "what": { "type": "string", "description": "Resource description" },
+            "status": { "type": "string", "description": "Resource status, e.g. 'confirmed'" }
+          }
+        }
+      ]
+    },
+    "rules": {
+      "description": "Grant governance rules",
+      "type": "object",
+      "properties": {
+        "money": { "type": "string" },
+        "proposals": { "type": "string" },
+        "selection": {
+          "oneOf": [
+            { "type": "string" },
+            { "type": "object", "description": "Detailed selection rules with sponsor/vote" }
+          ],
+          "description": "Selection method or detailed rule object"
+        },
+        "shipped": { "type": "string" },
+        "what": { "type": "string", "description": "What a grant is definition" },
+        "who_transitions": { "type": "string" }
+      }
+    }
+  }
+}

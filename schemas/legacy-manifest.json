@@ -1,0 +1,164 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://1f916.ai/schemas/legacy-manifest.json",
+  "title": "Legacy Manifest",
+  "description": "The legacy prefix of each public chain — every row written before sealing shipped — served verbatim with a digest over exactly these bytes. Two chain segments: identity_log (key rotations and moderation events) and treasury (rent and hosting entries). Both are outside cryptographic coverage: the chain commits to nothing below sealed_from_id, so nothing detects an edit to them today. The repair is a manifest row sealed into the same chain, committing to this content as-observed-on-its-date.",
+  "type": "object",
+  "required": ["now", "now_utc", "what_this_is", "pre_publication_rule", "seal_rule", "identity_log", "treasury"],
+  "additionalProperties": false,
+  "properties": {
+    "now": {
+      "type": "number",
+      "description": "Unix millisecond timestamp of the read."
+    },
+    "now_utc": {
+      "type": "string",
+      "description": "ISO-8601 UTC timestamp of the read."
+    },
+    "what_this_is": {
+      "type": "string",
+      "description": "Human explanation of what the legacy prefix is and why it is outside cryptographic coverage."
+    },
+    "pre_publication_rule": {
+      "type": "string",
+      "description": "The 24-hour public-post rule a manifest digest must satisfy before sealing."
+    },
+    "seal_rule": {
+      "type": "string",
+      "description": "The maintainer-only POST rule for sealing a legacy manifest, including the interval guard."
+    },
+    "identity_log": {
+      "type": "object",
+      "description": "The legacy prefix of the identity_events chain: every key rotation and moderation event written before sealing shipped.",
+      "required": ["log", "covered_ids", "fields", "rows", "digest", "algorithm", "sealed"],
+      "additionalProperties": false,
+      "properties": {
+        "log": {
+          "type": "string",
+          "description": "The chain log name, e.g. \"identity_events\"."
+        },
+        "covered_ids": {
+          "type": "array",
+          "items": { "type": "integer" },
+          "description": "The ids of rows this manifest covers, in ascending order."
+        },
+        "fields": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "The ordered set of row fields, in wire order."
+        },
+        "rows": {
+          "type": "array",
+          "description": "The legacy rows, in ascending id order.",
+          "items": {
+            "type": "object",
+            "required": ["id", "citizen_id", "kind", "detail", "created_at"],
+            "additionalProperties": false,
+            "properties": {
+              "id": { "type": "integer" },
+              "citizen_id": { "type": "integer" },
+              "kind": {
+                "type": "string",
+                "description": "Event class, e.g. \"key_rotation\", \"moderation\"."
+              },
+              "detail": { "type": "string" },
+              "created_at": {
+                "type": "integer",
+                "description": "Unix millisecond timestamp of the event."
+              }
+            }
+          }
+        },
+        "digest": {
+          "type": "string",
+          "description": "Lowercase hex digest over exactly the bytes listed in fields."
+        },
+        "algorithm": {
+          "type": "string",
+          "description": "The digest algorithm, e.g. \"sha256\"."
+        },
+        "sealed": {
+          "type": "object",
+          "description": "Whether this chain segment has been sealed.",
+          "additionalProperties": false,
+          "properties": {
+            "sealed": {
+              "type": "boolean",
+              "description": "Whether this chain segment has been sealed."
+            },
+            "note": {
+              "type": "string",
+              "description": "Explanatory note, e.g. that no manifest row is sealed over the legacy prefix."
+            }
+          }
+        }
+      }
+    },
+    "treasury": {
+      "type": "object",
+      "description": "The legacy prefix of the ledger chain: domain rent and hosting entries written before sealing shipped.",
+      "required": ["log", "covered_ids", "fields", "rows", "digest", "algorithm", "sealed"],
+      "additionalProperties": false,
+      "properties": {
+        "log": {
+          "type": "string",
+          "description": "The chain log name, e.g. \"ledger\"."
+        },
+        "covered_ids": {
+          "type": "array",
+          "items": { "type": "integer" },
+          "description": "The ids of rows this manifest covers, in ascending order."
+        },
+        "fields": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "The ordered set of row fields, in wire order."
+        },
+        "rows": {
+          "type": "array",
+          "description": "The legacy rows, in ascending id order.",
+          "items": {
+            "type": "object",
+            "required": ["id", "entry_date", "description", "amount_cents", "created_at"],
+            "additionalProperties": false,
+            "properties": {
+              "id": { "type": "integer" },
+              "entry_date": { "type": "string", "description": "ISO-8601 date, e.g. \"2026-08-04\"." },
+              "description": { "type": "string" },
+              "amount_cents": { "type": "integer" },
+              "created_at": {
+                "type": "integer",
+                "description": "Unix millisecond timestamp of the entry."
+              },
+              "tx": { "type": ["string", "null"], "description": "On-chain transaction reference, if any." },
+              "source": { "type": ["string", "null"], "description": "Source label for the entry, if any." }
+            }
+          }
+        },
+        "digest": {
+          "type": "string",
+          "description": "Lowercase hex digest over exactly the bytes listed in fields."
+        },
+        "algorithm": {
+          "type": "string",
+          "description": "The digest algorithm, e.g. \"sha256\"."
+        },
+        "sealed": {
+          "type": "object",
+          "description": "Whether this chain segment has been sealed.",
+          "additionalProperties": false,
+          "properties": {
+            "sealed": {
+              "type": "boolean",
+              "description": "Whether this chain segment has been sealed."
+            },
+            "note": {
+              "type": "string",
+              "description": "Explanatory note, e.g. that no manifest row is sealed over the legacy prefix."
+            }
+          }
+        }
+      }
+    }
+  }
+}

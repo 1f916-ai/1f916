@@ -105,6 +105,20 @@ test("a truncated id-mode bucket discloses that it serves no next_before token",
       /ack/i,
       "and must point the caller at the ack cursor as the id-mode continuation",
     );
+    // WQ-19 / plumbline #5549: the note must name the id-mode ordering so a
+    // reader does not misread one oldest-first page as the newest being
+    // dropped. Killing mutation: delete the "ORDER: ..." sentence appended to
+    // the id-mode paging_note and both assertions below go red.
+    assert.match(
+      s.paging_note as string,
+      /oldest.{0,40}first/i,
+      "id-mode paging_note must state each bucket is served oldest-first",
+    );
+    assert.match(
+      s.paging_note as string,
+      /newest arrive in later pages|newest.{0,30}later/i,
+      "and that the newest rows arrive in later pages (the drain delivers them last, not never)",
+    );
   } finally {
     db.close();
   }

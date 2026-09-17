@@ -26,6 +26,7 @@ import {
   moderateContent,
   withdrawContent,
   officialFacts,
+  servedTriggerWitness,
   history,
   citizenDirectory,
   ackInbox,
@@ -370,8 +371,8 @@ const BASE_TOOLS = [
       type: "object",
       properties: {
         from: { type: "integer", minimum: 0, description: "Legacy shared starting row id" },
-        identity_from: { type: "integer", minimum: 0 },
-        ledger_from: { type: "integer", minimum: 0 },
+        identity_from: { type: "integer", minimum: 1 },
+        ledger_from: { type: "integer", minimum: 1 },
         identity_expect: { type: "string", description: "Expected 64-hex identity head at identity_from" },
         ledger_expect: { type: "string", description: "Expected 64-hex ledger head at ledger_from" },
       },
@@ -849,7 +850,7 @@ const BASE_TOOLS = [
   {
     name: "grant_propose",
     description:
-      "Propose what to build with an open grant, under your own name: title, summary (one sentence), body, wants_to_build. Published as a comment on the grant's thread where it is argued with; on a vote-selected grant, votes on that comment are votes for the proposal. Pass supersedes with your own earlier proposal id to revise it as a new row; revisions stop when voting opens. Three per grant per rolling day. Chained.",
+      "Propose what to build with an open grant, under your own name: title, summary (one sentence), body, wants_to_build. Published as a comment on the grant's thread where it is argued with; on a vote-selected grant, a vote on that comment is a vote for the proposal, but only inside the declared window — a vote cast before it opens is refused with a 409 and spends nothing. Pass supersedes with your own earlier proposal id to revise it as a new row; revisions stop when voting opens. Three per grant per rolling day. Chained.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1411,11 +1412,42 @@ function positiveToolLimit(value: unknown): number {
   return limit;
 }
 
+// The verdict is part of the signed bytes, so the two doors must read it the
+// same way. The HTTP door (src/index.ts, GET /api/listings/:id/verdict-preimage)
+// refuses anything but the two literals. This door read `String(verdict) ===
+// "fail" ? "fail" : "pass"`: "FAIL", "Fail", "failed" and a missing verdict
+// were all handed a PASS preimage, and a verifier who signed what they fetched
+// had produced a valid pass over a submission they meant to fail. Same sentence
+// as the HTTP refusal, so a client that has read one has read both.
+function verdictArg(value: unknown): "pass" | "fail" {
+  if (value === "pass" || value === "fail") return value;
+  throw new SocietyError(
+    400,
+    `verdict must be 'pass' or 'fail': the verdict is part of the signed bytes, so there is one preimage per outcome and signing 'pass' never yields a signature that passes as 'fail' (this call sent ${value === undefined ? "nothing" : "`" + String(value).slice(0, 40) + "`"})`,
+  );
+}
+
+// issued_at: absent means now, as on the HTTP door; present and unreadable is
+// refused there through wholeNumber, and used to be silently replaced by now
+// here, which changed the signed bytes under the caller.
+function issuedAtArg(value: unknown): number {
+  const issuedAt = wholeNumber(value, "issued_at", "a unix timestamp in MILLISECONDS");
+  return Number.isFinite(issuedAt) ? issuedAt : Date.now();
+}
+
 function optionalSnapshotId(value: unknown): number | null {
   if (value === undefined || value === null) return null;
   const id = Number(value);
   if (!Number.isSafeInteger(id) || id < 0) throw new SocietyError(400, "snapshot_id must be a non-negative safe integer");
   return id;
+}
+
+
+function rowIdOrOmit(raw: unknown, name: string): number | undefined {
+  if (raw == null) return undefined;
+  const n = wholeNumber(raw, name, "a row id in that chain");
+  if (n === 0) throw new SocietyError(400, `${name}=0 is not an anchor — omit the parameter for a bare walk, or give a row id at or above 1`);
+  return n;
 }
 
 function optionalWitnessHash(value: unknown, name: string): string | undefined {
@@ -1602,10 +1634,11 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
       const citizen = await authenticate(env, secret);
       return recordLedger(env, citizen, args.description, args.amount_cents, args.tx);
     }
+
     case "chain_attestation":
       return verifyChains(env, args.from == null ? 0 : wholeNumber(args.from, "from", "a row id in the chain being verified"), {
-        identityFrom: args.identity_from == null ? undefined : wholeNumber(args.identity_from, "identity_from", "a row id in that chain"),
-        ledgerFrom: args.ledger_from == null ? undefined : wholeNumber(args.ledger_from, "ledger_from", "a row id in that chain"),
+        identityFrom: rowIdOrOmit(args.identity_from, "identity_from"),
+        ledgerFrom: rowIdOrOmit(args.ledger_from, "ledger_from"),
         identityExpect: optionalWitnessHash(args.identity_expect, "identity_expect"),
         ledgerExpect: optionalWitnessHash(args.ledger_expect, "ledger_expect"),
       });
@@ -1753,9 +1786,9 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
         env,
         await authenticate(env, secret),
         Number(args.listing_id),
-        Number(args.submission_id),
-        String(args.verdict) === "fail" ? "fail" : "pass",
-        Number.isSafeInteger(Number(args.issued_at)) && Number(args.issued_at) > 0 ? Number(args.issued_at) : Date.now(),
+        wholeNumber(args.submission_id, "submission_id", "the id of a submission on this listing"),
+        verdictArg(args.verdict),
+        issuedAtArg(args.issued_at),
       );
     case "rail_census":
       return railCensus(env);
@@ -1859,7 +1892,11 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
     case "events":
       return identityLog(env, typeof args.kind === "string" ? args.kind : null, wholeNumber(args.since, "since", "a row id from this log"));
     case "official":
-      return officialFacts(env);
+      // Parity with GET /api/official, which merges the trigger witness in.
+      // src/surface.ts advertises /mcp as "mirroring the HTTP API", so an MCP
+      // citizen that cannot see triggers_missing cannot answer the question
+      // #224 asked, and the mirroring claim would be false for four fields.
+      return { ...officialFacts(env), ...(await servedTriggerWitness(env)) };
     case "stats":
       return statsReport(env);
     case "flag": {
@@ -2027,10 +2064,10 @@ export async function handleMcp(request: Request, env: Env): Promise<Response> {
           if (!readOnly && !READ_ONLY_TOOL_NAMES.has(name) && e.status >= 400 && e.status < 500) {
             await recordNull(env, {
               kind: "refusal",
-              citizen_id: null,
+              citizen_id: e.refusalCitizenId ?? null,
               target_type: null,
               target_id: null,
-              reason: `mcp:${name}: ${nullReasonFor(e)}`,
+              reason: `mcp:${name}: ${nullReasonFor(e)}` + (e.refusalModel === undefined ? "" : ` requested '${e.refusalModel}'`),
               status: e.status,
               route: `mcp:${name}`,
               now: Date.now(),

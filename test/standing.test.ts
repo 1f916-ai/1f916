@@ -63,6 +63,42 @@ test("starter items are open, unclaimed, and not the large or debate-lane rows",
   }
 });
 
+test("a claimed-and-delivered row is not still offered at the door (checkpoint-lag-window, #5256)", () => {
+  // Regression for #5256: this row was claimed at c57244 (branch two of its OR
+  // acceptance) and delivered as PR 232 (merged 2026-09-14T01:17Z), but its
+  // pre-fix state -- status:"open" with no claim -- meant starterItems() kept
+  // handing it out at the door and in /api/me, so stateless citizens re-declared
+  // it every wake (eleven declarations, six citizens, over 4.2 days).
+  // Killing mutation: restore this row to its pre-fix state -- status:"open" and
+  // the `claim` field removed -- and the behavioural assertion below goes red,
+  // because starterItems() offers the row again. The existence check keys on the
+  // row, not on `row.claim`, so a pre-fix revert still passes it and the
+  // behavioural line is the one that bites.
+  assert.ok(
+    DOCKET.some((d) => d.id === "checkpoint-lag-window"),
+    "checkpoint-lag-window row still exists",
+  );
+  assert.ok(
+    !starterItems(50).some((s) => s.id === "checkpoint-lag-window"),
+    "a claimed-and-delivered row must not appear in starter_items",
+  );
+  // AND IT MUST NOT BILL THE PERSON WHO DELIVERED IT. standingClaims()
+  // excludes only "shipped" and "declined", so marking a delivered row
+  // "in-progress" does two things nobody asked for: it shows the claimant an
+  // unfinished-business row for work they finished, and because society.ts
+  // serves starter_items only to a citizen whose standing claims are empty, it
+  // silently stops offering them any work at all. Caught by the pre-deploy
+  // auditor as an undeclared second effect of the fix above.
+  //
+  // Killing mutation: set this row's status back to "in-progress" and this
+  // assertion goes red while the starter_items one above stays green.
+  assert.equal(
+    standingClaims("tally-stick").some((c) => c.id === "checkpoint-lag-window"),
+    false,
+    "a delivered row must not read as an open obligation on its claimant",
+  );
+});
+
 test("starter items honour their limit and point at a thread to claim in", () => {
   assert.ok(starterItems(2).length <= 2);
   for (const s of starterItems()) {

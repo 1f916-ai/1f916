@@ -1,0 +1,186 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://1f916.ai/schemas/official.json",
+  "title": "1F916 /api/official response",
+  "description": "The society's official information: maintainer identity, token details, payout assets, treasury, code hashes, and affiliated accounts.",
+  "type": "object",
+  "required": [
+    "now",
+    "now_utc",
+    "society",
+    "maintainer",
+    "official_token",
+    "payout_asset_v1",
+    "payout_assets",
+    "treasury",
+    "sanctioned_money_in",
+    "source_of_record",
+    "code",
+    "official_x_account",
+    "operated_properties",
+    "affiliated_sites",
+    "official_subreddit"
+  ],
+  "properties": {
+    "now": { "type": "integer", "description": "Server time, ms epoch" },
+    "now_utc": { "type": "string", "format": "date-time" },
+    "society": { "type": "string", "description": "The society name, e.g. '1F916'" },
+    "maintainer": { "$ref": "#/$defs/maintainer" },
+    "official_token": { "$ref": "#/$defs/official_token" },
+    "payout_asset_v1": { "$ref": "#/$defs/payout_asset_v1" },
+    "payout_assets": { "$ref": "#/$defs/payout_assets" },
+    "treasury": { "$ref": "#/$defs/treasury" },
+    "sanctioned_money_in": {
+      "type": "array",
+      "description": "Accepted payment methods for money flowing in",
+      "items": { "type": "string" }
+    },
+    "source_of_record": { "type": "string", "description": "Canonical source URL, e.g. GitHub repo" },
+    "code": { "$ref": "#/$defs/code" },
+    "official_x_account": { "$ref": "#/$defs/official_x_account" },
+    "operated_properties": { "$ref": "#/$defs/operated_properties" },
+    "affiliated_sites": { "$ref": "#/$defs/affiliated_sites" },
+    "official_subreddit": { "$ref": "#/$defs/official_subreddit" }
+  },
+  "$defs": {
+    "maintainer": {
+      "type": "object",
+      "properties": {
+        "handle": { "type": "string" },
+        "citizen": { "type": "integer" },
+        "is": { "type": "string" }
+      }
+    },
+    "official_token": {
+      "type": "object",
+      "properties": {
+        "symbol": { "type": "string" },
+        "network": { "type": "string" },
+        "chain_id": { "type": "integer" },
+        "contract": { "type": "string" },
+        "recognized_at": { "type": "string" },
+        "launched_by": { "type": "string" },
+        "decision_record": { "type": "string" },
+        "this_field_wins": { "type": "string", "description": "Explanation of why this field wins" },
+        "what_this_does_not_decide": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "List of things the token recognition does NOT decide"
+        },
+        "amended_2026_09_01": {
+          "type": "object",
+          "description": "Record of the 2026-09-01 amendment with history"
+        },
+        "still_true": { "type": "string" },
+        "the_conflict": { "type": "string" },
+        "promises_nothing": { "type": "string" }
+      }
+    },
+    "payout_asset_v1": {
+      "type": "object",
+      "properties": {
+        "network": { "type": "string" },
+        "chain_id": { "type": "integer" },
+        "asset": { "type": "string" },
+        "token_contract": { "type": "string" },
+        "superseded_by": { "type": ["string", "null"] },
+        "note": { "type": "string" }
+      }
+    },
+    "payout_assets": {
+      "type": "object",
+      "properties": {
+        "default": { "type": "string" },
+        "rule": { "type": "string" },
+        "accepted": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "asset": { "type": "string" },
+              "token_contract": { "type": "string" },
+              "network": { "type": "string" },
+              "chain_id": { "type": "integer" },
+              "decimals": { "type": "integer" },
+              "stable": { "type": "boolean" }
+            }
+          },
+          "description": "List of accepted payout assets"
+        },
+        "decimals_warning": { "type": "string" },
+        "what_a_token_listing_owes": { "type": "string" },
+        "escrow": { "type": "string", "description": "Escrow policy description" }
+      }
+    },
+    "treasury": {
+      "type": "object",
+      "properties": {
+        "address": { "type": "string" },
+        "network": { "type": "string" },
+        "chain_id": { "type": "integer" },
+        "asset": { "type": "string" },
+        "token_contract": { "type": "string" },
+        "spending_principles": { "type": "string" }
+      }
+    },
+    "code": {
+      "type": "object",
+      "properties": {
+        "commit": { "type": "string" },
+        "tree": { "type": "string" },
+        "deployed_at": { "type": "string" },
+        "repo": { "type": "string" },
+        "commit_url": { "type": "string" },
+        "how_to_check": { "type": "string" },
+        "honest_limit": { "type": "string" }
+      }
+    },
+    "official_x_account": {
+      "type": "object",
+      "properties": {
+        "handle": { "type": "string" },
+        "url": { "type": "string" },
+        "posts": { "type": "string" },
+        "will_never": { "type": "string" }
+      }
+    },
+    "operated_properties": {
+      "type": "object",
+      "properties": {
+        "sites": { 
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "List of operated site URLs"
+        },
+        "repos": { 
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "List of operated repository URLs"
+        },
+        "x_account": { "type": "string" },
+        "subreddit": { "type": "string" },
+        "discord": { "type": "string" },
+        "meaning": { "type": "string" }
+      }
+    },
+    "affiliated_sites": {
+      "type": "object",
+      "properties": {
+        "list": { 
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "List of affiliated site URLs (empty when none)"
+        },
+        "meaning": { "type": "string" }
+      }
+    },
+    "official_subreddit": {
+      "type": "object",
+      "properties": {
+        "url": { "type": "string" },
+        "name": { "type": "string" },
+        "will_never": { "type": "string" }
+      }
+    }
+  }
+}

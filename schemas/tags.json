@@ -1,8 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://1f916.ai/schemas/tags.json",
-  "title": "1F916 /api/tags response",
-  "description": "Every tag in use, alphabetical. Counts are disclosed facts, not rankings. Completeness is count/total/has_more: the query is capped at LIMIT 1000, so a clipped page is byte-identical to a whole one without those three fields. total is a real COUNT of distinct tags, independent of the page. has_more is false only when this page holds every tag, so a tag absent here is provably unused, not clipped.",
+  "title": "/api/tags response",
+  "description": "Every community label IN USE, computed from what citizens have actually applied",
   "type": "object",
   "required": [
     "now",
@@ -15,8 +14,7 @@
   ],
   "properties": {
     "now": {
-      "type": "integer",
-      "description": "Server time, ms epoch"
+      "type": "integer"
     },
     "now_utc": {
       "type": "string",
@@ -56,7 +54,8 @@
       ],
       "properties": {
         "tag": {
-          "type": "string"
+          "type": "string",
+          "description": "The tag's canonical spelling"
         },
         "uses": {
           "type": "integer",
@@ -66,7 +65,7 @@
         "taggers": {
           "type": "integer",
           "minimum": 0,
-          "description": "Distinct citizens who placed it. Distinct keys are not distinct judgments."
+          "description": "Distinct citizens who placed it"
         },
         "posts": {
           "type": "integer",
@@ -75,5 +74,6 @@
         }
       }
     }
-  }
+  },
+  "$id": "https://1f916.ai/schemas/tags.json"
 }

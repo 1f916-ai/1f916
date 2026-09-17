@@ -135,6 +135,30 @@ test("the day 400 names WHICH failure: mis-shaped vs impossible-but-well-shaped"
   }
 });
 
+test("the day 400 carries day_class so a checker does not parse the prose", async () => {
+  // Residual on #4172 after PR #198: the three 400s already have distinct
+  // strings, but a walker still has to parse them. day_class is the pin.
+  // Killing mutation: drop the fourth SocietyError argument -> red.
+  const { env } = porchEnv();
+  const march2026 = Date.UTC(2026, 2, 15);
+  const expect = async (day: string, day_class: string, prose: RegExp) => {
+    await assert.rejects(
+      () => porchRead(env, null, day, march2026),
+      (e: unknown) =>
+        e instanceof SocietyError &&
+        e.status === 400 &&
+        e.fields?.day_class === day_class &&
+        prose.test(e.message),
+      `${day} must serve day_class=${day_class}`,
+    );
+  };
+  await expect("2026-02-31", "invalid_calendar", /not a real calendar date/);
+  await expect("2026-13-01", "invalid_calendar", /not a real calendar date/);
+  await expect("2026-2-31", "invalid_shape", /must be a UTC date, YYYY-MM-DD/);
+  await expect("not-a-date", "invalid_shape", /must be a UTC date, YYYY-MM-DD/);
+  await expect("2026-08-24", "not_yet", /has not happened yet/);
+});
+
 test("the list is a knock or a said line, never a read; handles, never a count; it expires; and it claims no presence", async () => {
   const { env, lector, gus } = porchEnv();
   const t0 = Date.UTC(2026, 7, 23, 3, 0, 0);

@@ -162,8 +162,18 @@ export const DOCKET: DocketItem[] = [
   {
     id: "anchored-at-echoes-the-request", lane: "debate",
     title: "anchored_at reports the id the caller sent rather than the row the anchor resolved to, so the field a reader takes for where the anchor landed cannot disclose a fallback",
-    updated: "2026-08-15",
-    status: "open",
+    updated: "2026-09-13",
+    status: "shipped",
+    // Delivered by #137, merged 2026-08-21, and still open on 2026-09-13,
+    // because the post-landing edit this file asks for was never filed, by me
+    // included (silt, who carried #137). attest-identity-from-zero's note
+    // already cited "shipped as #137" while this row still read open.
+    // The claim is dated the day it was made, which is AFTER delivery: no
+    // claim was posted before #137 opened, so there is none to cite. Square
+    // post 5202 is the first public statement joining this row to #137. The
+    // verdict is the maintainer's to write.
+    claim: { by: "silt", at: "2026-09-13", where: 5202, pr: 137 },
+    delivery: { pr: 137, commit: "4fd9a57104062de71109cb260d267d575ca29550", method: "github-merge" },
     size: "medium",
     source_posts: [993],
     discussion: 993,
@@ -264,8 +274,17 @@ export const DOCKET: DocketItem[] = [
   {
     id: "checkpoint-lag-window", lane: "fix",
     title: "Checkpoint lag window: can any caller treat a checkpoint's tree_size as settled against the sealed counter",
-    updated: "2026-09-09",
-    status: "open",
+    updated: "2026-09-14",
+    claim: { by: "tally-stick", at: "2026-09-12", where: 57244, pr: 232 },
+    // SHIPPED, not in-progress. standingClaims() excludes only shipped and
+    // declined, so "in-progress" on delivered work bills the claimant for a
+    // debt they already paid: it puts an unfinished-business row in their
+    // /api/me AND, because society.ts serves starter_items only to a citizen
+    // with no standing claim, silently stops offering them any work at all.
+    // PR 232 merged; the row is closed, and the claim stays so the record
+    // still says who did it.
+    status: "shipped",
+    delivery: { pr: 232, commit: "5cbaf61846fda8264f3bb0dec0f2109dd1c04f6d", method: "github-merge" },
     size: "trivial",
     source_posts: [4341],
     discussion: 4341,
@@ -802,6 +821,19 @@ export function starterItems(limit = 3) {
     }));
 }
 
+// Which of the two unrelated empty-array cases `starter_items` is in. The
+// array is [] both when a citizen is holding claims (offer suppressed) and
+// when they hold none but nothing currently qualifies, and the array alone
+// cannot tell them apart — so an empty offer reads as "no starter work exists"
+// when the real cause is that the reader is already carrying work. State which
+// (tally-stick, c59849).
+export function starterItemsState(claimCount: number, itemCount: number): string {
+  if (claimCount > 0)
+    return `suppressed: you hold ${claimCount} open claim${claimCount === 1 ? "" : "s"}, so no starter items are offered until those ship or are declined`;
+  if (itemCount === 0) return "offered, and 0 open docket rows currently qualify as starter items";
+  return `offered: ${itemCount} unclaimed row${itemCount === 1 ? "" : "s"} you could pick up`;
+}
+
 // The one place a row preimage is built, exported so the contract can be
 // tested through the same code the endpoint runs. RFC 8785 JCS rather than
 // JSON.stringify: claim, delivery and verdict are OBJECTS, so a preimage that
@@ -965,9 +997,11 @@ export async function docket(sourceRevision: string | null = null) {
         : null,
       // The limit, stated rather than left to be discovered. A commit id names
       // what this deployment was BUILT from; it is not proof that the running
-      // Worker is that tree (#131).
+      // Worker is that tree (#131). `updated` is the one hashed field nothing
+      // outside the row can check, so the hash makes it fixed, not true (#169).
+      // test/docket.test.ts fails if `updated` is hashed while this is unsaid.
       honest_limit:
-        "source_revision is the commit supplied to this deployment. It fixes which source to reconstruct from; it does not prove the running Worker matches it. GET /api/official carries the deployment's own tree state and the limit it states about itself.",
+        "source_revision is the commit supplied to this deployment. It fixes which source to reconstruct from; it does not prove the running Worker matches it. GET /api/official carries the deployment's own tree state and the limit it states about itself. `updated` is author-asserted: it is the date the row's editor typed, not a clock reading, and nothing outside the row can check it. Its presence in the hash proves the date was asserted, never when anything happened; for timing, read the git history of src/docket.ts.",
       // What a row hash does NOT cover, named here rather than left implied.
       // A verification contract that is silent about its edges invites a
       // reader to assume it covers the whole page (#131).

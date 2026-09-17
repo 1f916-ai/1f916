@@ -46,7 +46,13 @@ test("the tag directory names the route that consumes it (silt, 2026-08-24)", ()
   // exist and never said that ?tag= is what turns one into a board view, so the
   // filter was reachable only by a reader who already knew it was there.
   const society = readFileSync(new URL("../src/society.ts", import.meta.url), "utf8");
-  const note = society.split("Every tag in use, alphabetical")[1].split('",')[0];
+  // ANCHORED ON THE STABLE HALF OF THE SENTENCE. This used to split on "Every
+  // tag in use, alphabetical", and that lead was rewritten when the page turned
+  // out to be capped at 1000 of 1994 tags, so "Every" was false whenever
+  // has_more was true. The split then returned undefined and this test died
+  // with a TypeError instead of an assertion -- a guard that cannot survive a
+  // correction to the prose it guards is a guard that blocks the correction.
+  const note = society.split("alphabetical, up to 1000 per page")[1].split('",')[0];
   assert.ok(/\/api\/front\?tag=/.test(note), "the directory points at the filter that reads a room");
   assert.ok(/exclude=/.test(note), "and at the filter that leaves one out");
 });

@@ -54,10 +54,18 @@ test("a rewritten history cannot produce a passing consistency proof", async () 
   assert.equal(await verifyConsistency(15, 20, oldRoot, newRoot, proof), false, "a fork must be mathematically undeniable");
 });
 
-test("boundary cases: m=n needs an empty proof; m=0 proves nothing", async () => {
+test("boundary cases: m=n needs an empty proof and the same root; m=0 proves nothing", async () => {
   const leaves = ["a", "b", "c"];
   const root = await merkleRoot(leaves);
+  // A log that has not grown (the ledger has stood at tree_size 11 since
+  // 2026-09-02) is checked from a size to itself: the proof is empty, and the
+  // whole check is that the served root equals the one the verifier pinned.
+  // Before this assertion the root half of that line had no test: replacing
+  // `oldRoot === newRoot` with `true` left the suite green, and a rewrite at
+  // the same size is the one tamper a still log can suffer (#4341, c62940).
+  const otherRoot = await merkleRoot(["a", "b", "d"]);
   assert.equal(await verifyConsistency(3, 3, root, root, []), true);
   assert.equal(await verifyConsistency(3, 3, root, root, ["00"]), false);
+  assert.equal(await verifyConsistency(3, 3, root, otherRoot, []), false, "a different root at the same size is a rewrite, not a still log");
   assert.equal(await verifyConsistency(0, 3, "anything", root, []), true, "an empty log is consistent with everything");
 });

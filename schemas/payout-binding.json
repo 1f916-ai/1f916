@@ -26,6 +26,13 @@
     "docket_at_binding",
     "docket_current",
     "docket_changed_since_binding",
+    "anchor",
+    "anchor_kind",
+    "anchor_role",
+    "anchor_at_binding",
+    "anchor_current",
+    "anchor_changed_since_binding",
+    "asset_agreement",
     "preimage",
     "authorization_hash",
     "payload_hash",
@@ -99,6 +106,43 @@
     "docket_changed_since_binding": {
       "type": "boolean"
     },
+    "anchor": {
+      "type": "string",
+      "description": "The docket or listing row this binding is scoped to. Same value as row; the anchor_* names are the current shape and docket_* the PR #103 aliases."
+    },
+    "anchor_kind": {
+      "enum": [
+        "listing",
+        "docket"
+      ],
+      "description": "listing when the anchor row is a listing-<id> row, docket when it names a /api/docket item."
+    },
+    "anchor_role": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "worker or verifier for a listing anchor, null for a docket anchor (no worker/verifier split on a docket)."
+    },
+    "anchor_at_binding": {
+      "$ref": "#/$defs/anchor",
+      "description": "The anchor exactly as it was when the binding was signed: the frozen docket_snapshot parsed back out. Same value as docket_at_binding."
+    },
+    "anchor_current": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "The anchor re-read live from the database at read time (a full listing row for a listing anchor, a docket item for a docket anchor), or null if the listing has since been removed. Same value as docket_current."
+    },
+    "anchor_changed_since_binding": {
+      "type": "boolean",
+      "description": "true when the live anchor no longer byte-matches the frozen snapshot, i.e. the anchor was edited after this binding was signed. Same value as docket_changed_since_binding."
+    },
+    "asset_agreement": {
+      "$ref": "#/$defs/asset_agreement",
+      "description": "Whether this binding names the same asset its listing prices in. A disagrees row must not be paid; see the note."
+    },
     "preimage": {
       "type": "string"
     },
@@ -114,35 +158,42 @@
       "$ref": "#/$defs/binding_payload"
     },
     "payload_hash_recipe": {
-      "const": {
-        "algorithm": "sha256",
-        "encoding": "UTF-8 JSON array",
-        "fields": [
-          "version",
-          "handle",
-          "row",
-          "amount_atomic",
-          "chain_id",
-          "token",
-          "address",
-          "expiry",
-          "wallet_signature",
-          "citizen_public_key",
-          "citizen_signature",
-          "citizen_key_thumbprint",
-          "citizen_key_custody",
-          "citizen_key_bound_at",
-          "authorization_verification",
-          "authorization_verified_at",
-          "docket_acceptance",
-          "docket_updated",
-          "docket_snapshot",
-          "preimage",
-          "authorization_hash",
-          "commit_nonce",
-          "created_at"
-        ]
-      }
+      "type": "object",
+      "required": ["algorithm", "encoding", "fields", "values_from", "values_from_note"],
+      "properties": {
+        "algorithm": { "const": "sha256" },
+        "encoding": { "type": "string", "pattern": "^UTF-8 JSON array" },
+        "fields": {
+          "const": [
+            "version",
+            "handle",
+            "row",
+            "amount_atomic",
+            "chain_id",
+            "token",
+            "address",
+            "expiry",
+            "wallet_signature",
+            "citizen_public_key",
+            "citizen_signature",
+            "citizen_key_thumbprint",
+            "citizen_key_custody",
+            "citizen_key_bound_at",
+            "authorization_verification",
+            "authorization_verified_at",
+            "docket_acceptance",
+            "docket_updated",
+            "docket_snapshot",
+            "preimage",
+            "authorization_hash",
+            "commit_nonce",
+            "created_at"
+          ]
+        },
+        "values_from": { "const": "payload" },
+        "values_from_note": { "type": "string" }
+      },
+      "description": "How the binding payload's payload_hash is reconstructed: sha256 over the named fields, in order, in the payload's own key order. Field order is part of the bytes, so a reader reproducing the digest must hash exactly these fields in exactly this order."
     },
     "created_at": {
       "type": "integer"
@@ -246,36 +297,43 @@
           "$ref": "#/$defs/receipt_payload"
         },
         "payload_hash_recipe": {
-          "const": {
-            "algorithm": "sha256",
-            "encoding": "UTF-8 JSON array",
-            "fields": [
-              "version",
-              "binding_payload_hash",
-              "submitter_id",
-              "docket_id",
-              "amount_atomic",
-              "chain_id",
-              "token",
-              "address",
-              "tx_hash",
-              "transfer_log_index",
-              "source_address",
-              "transaction_sender",
-              "block_number",
-              "block_hash",
-              "block_timestamp",
-              "finalized_block_number",
-              "confirmations_at_recording",
-              "funding_relationship",
-              "funder_address",
-              "funder_statement",
-              "funder_signature",
-              "funder_attestation_hash",
-              "checked_at",
-              "created_at"
-            ]
-          }
+          "type": "object",
+          "required": ["algorithm", "encoding", "fields", "values_from", "values_from_note"],
+          "properties": {
+            "algorithm": { "const": "sha256" },
+            "encoding": { "type": "string", "pattern": "^UTF-8 JSON array" },
+            "fields": {
+              "const": [
+                "version",
+                "binding_payload_hash",
+                "submitter_id",
+                "docket_id",
+                "amount_atomic",
+                "chain_id",
+                "token",
+                "address",
+                "tx_hash",
+                "transfer_log_index",
+                "source_address",
+                "transaction_sender",
+                "block_number",
+                "block_hash",
+                "block_timestamp",
+                "finalized_block_number",
+                "confirmations_at_recording",
+                "funding_relationship",
+                "funder_address",
+                "funder_statement",
+                "funder_signature",
+                "funder_attestation_hash",
+                "checked_at",
+                "created_at"
+              ]
+            },
+            "values_from": { "const": "payload" },
+            "values_from_note": { "type": "string" }
+          },
+          "description": "How the receipt payload's payload_hash is reconstructed: sha256 over the named receipt fields, in order, in the payload's own key order. The first field is the binding's own payload_hash, chaining the receipt to the authorization it proves."
         },
         "chain_anchor": {
           "$ref": "#/$defs/chain_anchor"
@@ -360,28 +418,55 @@
         }
       }
     },
-    "hash_recipe": {
+    "asset_agreement": {
       "type": "object",
-      "required": [
-        "algorithm",
-        "encoding",
-        "fields"
-      ],
+      "required": ["state", "binding", "listing", "payable", "note"],
       "properties": {
-        "algorithm": {
-          "const": "sha256"
+        "state": {
+          "enum": [
+            "agrees",
+            "disagrees",
+            "no_listing_asset"
+          ]
         },
-        "encoding": {
-          "const": "UTF-8 JSON array"
+        "binding": {
+          "$ref": "#/$defs/asset_face"
         },
-        "fields": {
-          "type": "array",
-          "minItems": 1,
-          "items": {
-            "type": "string"
-          }
+        "listing": {
+          "oneOf": [
+            { "$ref": "#/$defs/asset_face" },
+            { "type": "null" }
+          ]
+        },
+        "payable": {
+          "type": "boolean"
+        },
+        "note": {
+          "type": "string"
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "state": { "const": "disagrees" } } },
+          "then": { "properties": { "payable": { "const": false } } }
+        },
+        {
+          "if": { "properties": { "state": { "const": "no_listing_asset" } } },
+          "then": { "properties": { "listing": { "type": "null" } } }
+        }
+      ],
+      "description": "Whether this binding names the same asset its listing prices in (#188). A disagrees row authorizes an asset the listing does not price in, so amount_atomic is a different quantity under each and the row must not be paid — a receipt against it is refused. no_listing_asset is a docket-scoped binding, which has no listing asset to compare against."
+    },
+    "asset_face": {
+      "type": "object",
+      "required": ["chain_id", "token", "symbol", "decimals"],
+      "properties": {
+        "chain_id": { "type": "integer" },
+        "token": { "type": "string", "pattern": "^0x[0-9a-f]{40}$" },
+        "symbol": { "type": ["string", "null"] },
+        "decimals": { "type": ["number", "null"] }
+      },
+      "description": "A settlement asset as signed: the chain and token, with the human symbol and decimal count when the registry recognizes them, null otherwise. Symbol and decimals are what make two bindings on the same token comparable as quantities."
     },
     "chain_anchor": {
       "type": "object",

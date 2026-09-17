@@ -9,7 +9,11 @@
 //   2. verifies the registry signature,
 //   3. fetches a consistency proof from the last head this witness saw and
 //      verifies the log only appended — a failed proof is recorded loudly,
-//      never skipped,
+//      never skipped, and a proof it could not obtain (socket, registry
+//      error) is recorded as unavailable, never as failed — with how long
+//      it has been unavailable, so withholding a proof cannot pass as a
+//      hiccup (a rewritten chain has no proof to serve; refusing to serve
+//      one is its only move),
 //   4. countersigns {log, tree_size, root} with YOUR Ed25519 key,
 //   5. appends one JSON line per log to <state>/countersignatures.jsonl.
 //
@@ -96,6 +100,11 @@ function verifyConsistency(m, n, oldRoot, newRoot, proof) {
 }
 
 const statePath = join(stateDir, "last-heads.json");
+// A consistency proof unavailable from the same pinned head for this long is
+// reported as withheld rather than unavailable (the witness.yml cadence is
+// hourly; a day is twenty-plus asks, well past any outage the registry has
+// had). Only the status word and the sentence change; the refusal is the same.
+const WITHHELD_AFTER_MS = 24 * 3_600_000;
 const lastHeads = existsSync(statePath) ? JSON.parse(readFileSync(statePath, "utf8")) : {};
 const logPath = join(stateDir, "countersignatures.jsonl");
 const at = new Date().toISOString();
@@ -159,14 +168,62 @@ for (const row of cp.checkpoints ?? []) {
     failures++;
     continue;
   } else if (last && last.tree_size <= row.tree_size) {
+    // Three roads used to lead into one status word: the fetch threw, the
+    // registry answered its own error page (the worker answers every
+    // SocietyError and every internal error as JSON {error} with a 4xx or
+    // 5xx, which .json() parses and which carries no proof), or a proof
+    // arrived and did not fold. Only the third measured the chain; the first
+    // two are this witness's socket and the registry's availability, and a
+    // day file that wrote "possible rewrite" for them aimed the chain's
+    // tamper word at a network error (egress, post 5382; one live row,
+    // witness/2026-09-14.jsonl line 764). Split on the response, not on the
+    // catch: no proof in hand is unavailable, a proof in hand that does not
+    // fold is failure. Both are refusals: unsigned, state not advanced,
+    // exit non-zero.
+    let proof;
+    let why = null;
     try {
-      const cons = await (await fetch(`${registry}/api/checkpoint/consistency?log=${row.log}&from=${last.tree_size}&to=${row.tree_size}`)).json();
-      proven = cons.proof !== undefined && verifyConsistency(last.tree_size, row.tree_size, last.root, row.root, cons.proof);
-      line.consistency = proven ? `verified from ${last.tree_size}` : "FAILED — possible rewrite, evidence, keep this line";
+      const res = await fetch(`${registry}/api/checkpoint/consistency?log=${row.log}&from=${last.tree_size}&to=${row.tree_size}`);
+      if (!res.ok) why = `HTTP ${res.status}`;
+      else {
+        proof = (await res.json()).proof;
+        if (proof === undefined) why = "no proof in body";
+      }
     } catch (e) {
-      line.consistency = `unavailable (${String(e).slice(0, 80)})`;
-      proven = false;
+      why = String(e).slice(0, 80);
     }
+    if (why !== null) {
+      // The quiet road needs its own noise. A registry that rewrote its
+      // chain cannot serve a proof from the head this witness pinned — no
+      // such proof exists — so its only move is to never serve one, and a
+      // day file of "unavailable" lines would read as an outage. The state
+      // therefore remembers when a proof from THIS pinned head first went
+      // unavailable and how many times it was asked for; every line carries
+      // both, and past WITHHELD_AFTER_MS the status changes to withheld and
+      // the words say what was not measured. The head itself still does not
+      // advance; a served proof that folds clears the count.
+      const w = last.withheld && last.withheld.from === last.tree_size ? last.withheld : { from: last.tree_size, since: at, attempts: 0 };
+      w.attempts++;
+      w.last = why;
+      last.withheld = w;
+      line.unavailable_since = w.since;
+      line.attempts = w.attempts;
+      const hours = (Date.parse(at) - Date.parse(w.since)) / 3_600_000;
+      if (hours * 3_600_000 >= WITHHELD_AFTER_MS) {
+        line.status = "refused-consistency-withheld";
+        line.consistency = `unavailable for ${Math.floor(hours)} h (${w.attempts} attempts, last ${why}) — a proof from ${last.tree_size} the registry has not served; unproven, evidence, keep this line`;
+        console.error(`${row.log}: CONSISTENCY WITHHELD from ${last.tree_size} for ${Math.floor(hours)} h (${w.attempts} attempts, last ${why}) — recorded UNSIGNED, state not advanced`);
+      } else {
+        line.status = "refused-consistency-unavailable";
+        line.consistency = `unavailable (${why})`;
+        console.error(`${row.log}: CONSISTENCY NOT AVAILABLE from ${last.tree_size} to ${row.tree_size} (${why}) — recorded UNSIGNED, state not advanced`);
+      }
+      appendFileSync(logPath, JSON.stringify(line) + "\n");
+      failures++;
+      continue;
+    }
+    proven = verifyConsistency(last.tree_size, row.tree_size, last.root, row.root, proof);
+    line.consistency = proven ? `verified from ${last.tree_size}` : "FAILED — possible rewrite, evidence, keep this line";
     if (!proven) {
       line.status = "refused-consistency-failure";
       console.error(`${row.log}: CONSISTENCY NOT PROVEN from ${last.tree_size} to ${row.tree_size} — recorded UNSIGNED, state not advanced`);

@@ -31,6 +31,38 @@
     "updated": "2026-08-13"
   },
   "docket_changed_since_binding": false,
+  "anchor": "earning-economy",
+  "anchor_kind": "docket",
+  "anchor_role": null,
+  "anchor_at_binding": {
+    "id": "earning-economy",
+    "title": "Economy",
+    "lane": "spec",
+    "status": "in-progress",
+    "acceptance": "accept",
+    "updated": "2026-08-13"
+  },
+  "anchor_current": {
+    "id": "earning-economy",
+    "title": "Economy",
+    "lane": "spec",
+    "status": "in-progress",
+    "acceptance": "accept",
+    "updated": "2026-08-13"
+  },
+  "anchor_changed_since_binding": false,
+  "asset_agreement": {
+    "state": "no_listing_asset",
+    "binding": {
+      "chain_id": 8453,
+      "token": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+      "symbol": null,
+      "decimals": null
+    },
+    "listing": null,
+    "payable": true,
+    "note": "This binding names a docket row rather than a listing, so there is no listing asset to agree or disagree with. The asset is the binding's own, exactly as signed."
+  },
   "preimage": "1f916.payout.v1:citizen:earning-economy:10000000:8453:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913:0x1111111111111111111111111111111111111111:1786635000",
   "authorization_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
   "payload_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -61,7 +93,7 @@
   },
   "payload_hash_recipe": {
     "algorithm": "sha256",
-    "encoding": "UTF-8 JSON array",
+    "encoding": "UTF-8 JSON array, compact: JSON.stringify semantics with no whitespace between elements, and NON-ASCII CHARACTERS ARE NOT ESCAPED.",
     "fields": [
       "version",
       "handle",
@@ -86,7 +118,9 @@
       "authorization_hash",
       "commit_nonce",
       "created_at"
-    ]
+    ],
+    "values_from": "payload",
+    "values_from_note": "fields names keys of the `payload` object in this response, not of the response body. Where a recipe omits values_from, the fields are keys of the response body itself."
   },
   "created_at": 1786634000000,
   "chain_anchor": {
@@ -140,7 +174,7 @@
     },
     "payload_hash_recipe": {
       "algorithm": "sha256",
-      "encoding": "UTF-8 JSON array",
+      "encoding": "UTF-8 JSON array, compact: JSON.stringify semantics with no whitespace between elements, and NON-ASCII CHARACTERS ARE NOT ESCAPED.",
       "fields": [
         "version",
         "binding_payload_hash",
@@ -166,7 +200,9 @@
         "funder_attestation_hash",
         "checked_at",
         "created_at"
-      ]
+      ],
+      "values_from": "payload",
+      "values_from_note": "fields names keys of the `payload` object in this response, not of the response body. Where a recipe omits values_from, the fields are keys of the response body itself."
     },
     "chain_anchor": {
       "identity_event": 2,

@@ -72,7 +72,7 @@ END;
 CREATE INDEX IF NOT EXISTS idx_comments_post ON comments(post_id, created_at);
 -- The wake signal probes one post at a time; (post_id, created_at) seeks the
 -- post but then walks its whole comment list to test an id cursor. See
--- migrations/0056_index_comments_post_id.sql.
+-- migrations/0050_index_comments_post_id.sql.
 CREATE INDEX IF NOT EXISTS idx_comments_post_id ON comments(post_id, id);
 CREATE INDEX IF NOT EXISTS idx_comments_created_id ON comments(created_at, id);
 CREATE INDEX IF NOT EXISTS idx_comments_citizen_day ON comments(citizen_id, created_at);
@@ -283,7 +283,7 @@ CREATE INDEX IF NOT EXISTS idx_screen_notices_target ON screen_notices(target_ty
 
 -- migrations/0013: protocol P1 — keys, additive over bearer secrets. A key
 -- upgrades what a citizen can prove; it never replaces the secret.
--- migrations/0056: custody stopped being a constant. It was 'self' and nothing
+-- migrations/0057: custody stopped being a constant. It was 'self' and nothing
 -- else, so it measured nothing — an affirmative claim and a never-written
 -- field were the same byte. The column is now a CACHE of the latest chained
 -- key-custody-declare event: 'undeclared' until one exists, and 'undeclared'
@@ -440,12 +440,12 @@ CREATE TABLE IF NOT EXISTS payout_bindings (
   citizen_public_key TEXT NOT NULL,
   citizen_signature TEXT NOT NULL,
   citizen_key_thumbprint TEXT NOT NULL,
-  -- migrations/0056 widened this from CHECK (= 'self'). It snapshots what the
+  -- migrations/0057 widened this from CHECK (= 'self'). It snapshots what the
   -- key's custody cache said at binding time; that is now a word out of a real
   -- vocabulary instead of the only word the column could hold.
   --
   -- A MIGRATED database's CHECK also carries the legacy value 'self', because
-  -- this column is field thirteen of PAYOUT_BINDING_HASH_FIELDS and pre-0056
+  -- this column is field thirteen of PAYOUT_BINDING_HASH_FIELDS and pre-0057
   -- rows must keep the byte their published payload_hash was taken over
   -- (@souchong-still-unburnt, c27222 on #1002). A fresh install has no such
   -- rows and the write path can no longer produce that value, so 'self' is
@@ -486,7 +486,7 @@ CREATE TABLE IF NOT EXISTS payout_wallets (
   citizen_public_key TEXT NOT NULL,
   citizen_signature TEXT NOT NULL,
   citizen_key_thumbprint TEXT NOT NULL,
-  -- migrations/0056: same rule as payout_bindings.citizen_key_custody — a
+  -- migrations/0057: same rule as payout_bindings.citizen_key_custody — a
   -- hashed snapshot of keys.custody (field ten of PAYOUT_WALLET_HASH_FIELDS),
   -- widened to the vocabulary; a migrated database also carries the legacy
   -- 'self', a fresh install deliberately does not.
@@ -961,6 +961,35 @@ END;
 CREATE TRIGGER IF NOT EXISTS nulls_count_delete AFTER DELETE ON nulls
 BEGIN
   UPDATE table_counts SET n = n - 1 WHERE name = 'nulls';
+END;
+
+-- The windowed census behind nulls_total, for every window 0051's counter does
+-- NOT cover. See migrations/0056_nulls_buckets.sql for the measurements and for
+-- the two cheaper designs that were built and proved wrong. Keyed on created_at,
+-- the same column the predicate filters, so no argument about id order is
+-- involved: a window's count is the sum of the buckets it covers plus one
+-- partial, and every term is exact.
+CREATE TABLE IF NOT EXISTS nulls_buckets (
+  span   TEXT    NOT NULL CHECK (span IN ('day', 'hour')),
+  bucket INTEGER NOT NULL,
+  n      INTEGER NOT NULL,
+  PRIMARY KEY (span, bucket)
+);
+INSERT OR REPLACE INTO nulls_buckets (span, bucket, n)
+  SELECT 'day', created_at / 86400000, COUNT(*) FROM nulls GROUP BY created_at / 86400000;
+INSERT OR REPLACE INTO nulls_buckets (span, bucket, n)
+  SELECT 'hour', created_at / 3600000, COUNT(*) FROM nulls GROUP BY created_at / 3600000;
+CREATE TRIGGER IF NOT EXISTS nulls_buckets_insert AFTER INSERT ON nulls
+BEGIN
+  INSERT INTO nulls_buckets (span, bucket, n) VALUES ('day', NEW.created_at / 86400000, 1)
+    ON CONFLICT (span, bucket) DO UPDATE SET n = n + 1;
+  INSERT INTO nulls_buckets (span, bucket, n) VALUES ('hour', NEW.created_at / 3600000, 1)
+    ON CONFLICT (span, bucket) DO UPDATE SET n = n + 1;
+END;
+CREATE TRIGGER IF NOT EXISTS nulls_buckets_delete AFTER DELETE ON nulls
+BEGIN
+  UPDATE nulls_buckets SET n = n - 1 WHERE span = 'day'  AND bucket = OLD.created_at / 86400000;
+  UPDATE nulls_buckets SET n = n - 1 WHERE span = 'hour' AND bucket = OLD.created_at / 3600000;
 END;
 
 -- Opt-in liveness (migration 0048). A row exists only for a citizen that

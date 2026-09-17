@@ -36,9 +36,35 @@ test("the response no longer claims the three buckets sum", () => {
   assert.match(totals, /Do not add these up/, "and the response says so beside the numbers, not only in a source comment");
 });
 
+// The union statement, located by the property that identifies it rather than
+// by its spelling: it is the one template literal that interpolates all three
+// bucket predicates. Anchoring on the SQL text instead pinned a particular
+// phrasing, so a rewrite that preserved every guarantee still failed, while a
+// rewrite that broke dedup would have passed as long as it kept the words.
+// (Changed 2026-09-16, when COUNT(DISTINCT ...) WHERE (A) OR (B) OR (C) became
+// a UNION of the three branches: 131,825 -> 80,595 rows read per call against
+// production, same answer. The guarantees below are unchanged and are now
+// asserted directly.)
+const unionQuery = (() => {
+  const m = source.match(/`([^`]*\$\{repliesWhere\}[^`]*\$\{onMyPostsWhere\}[^`]*\$\{inMyThreadsWhere\}[^`]*)`/);
+  assert.ok(m, "no single prepared statement interpolates all three bucket predicates");
+  return m![1];
+})();
+
 test("the union is served as a number, not left for the reader to compute", () => {
   assert.match(totals, /distinct_comments: distinctComments\?\.n \?\? 0/);
-  assert.match(source, /COUNT\(DISTINCT m\.id\) AS n FROM comments m/, "counted in SQL over the window, not derived from a truncated page");
+  // Counted in SQL over the window, not derived from a truncated page: it is a
+  // COUNT, and it carries no LIMIT that could turn the total into a page size.
+  assert.match(unionQuery, /COUNT\(/, "the union is counted in SQL");
+  assert.doesNotMatch(unionQuery, /\bLIMIT\b/, "a LIMIT here would silently turn the window total into a page count");
+});
+
+test("the union de-duplicates, so the count is a union and not a sum", () => {
+  // THE defect this whole file exists for (#83: naive sum 9 over 7 distinct
+  // rows). Under COUNT(DISTINCT) dedup was inherent; expressed as branches it
+  // is one keyword, and UNION ALL would restore the wrong arithmetic silently.
+  assert.match(unionQuery, /\bUNION\b/, "the branches must be combined with UNION");
+  assert.doesNotMatch(unionQuery, /\bUNION\s+ALL\b/, "UNION ALL double-counts the overlap — exactly the bug this file was filed for");
 });
 
 test("the distinct count runs the buckets' own predicates, not a restatement", () => {
@@ -49,7 +75,12 @@ test("the distinct count runs the buckets' own predicates, not a restatement", (
     const uses = source.split(name).length - 1;
     assert.ok(uses >= 3, `${name} must be declared, passed to its bucket, and reused by the union — found ${uses} occurrences`);
   }
-  assert.match(source, /WHERE \(\$\{repliesWhere\}\) OR \(\$\{onMyPostsWhere\}\) OR \(\$\{inMyThreadsWhere\}\)/);
+  // The union must interpolate the bucket predicates themselves. Asserting the
+  // fused-OR spelling pinned one arrangement of them; asserting that a single
+  // statement carries all three identifiers pins the property that cannot drift.
+  for (const name of ["repliesWhere", "onMyPostsWhere", "inMyThreadsWhere"]) {
+    assert.ok(unionQuery.includes("${" + name + "}"), `the union must interpolate ${name}, not restate it`);
+  }
 });
 
 test("mentions are excluded from the union, and the reason is stated", () => {
@@ -65,9 +96,7 @@ test("mentions are excluded from the union, and the reason is stated", () => {
   // in query-param-coverage.test.ts, where a 700-char slice cut "Supported"
   // mid-word under CRLF, and refusals-roster.test.ts carries the postmortem of
   // a third instance. Anchoring is length-independent and CRLF-safe.
-  const unionStart = source.indexOf("COUNT(DISTINCT m.id)");
-  const unionQuery = source.slice(unionStart, source.indexOf("`", unionStart));
-  assert.ok(unionQuery.length > 100 && unionQuery.length < 400, `the union query anchor must bound the query itself, got ${unionQuery.length} chars`);
+  assert.ok(unionQuery.length > 100, `the union query anchor must bound the query itself, got ${unionQuery.length} chars`);
   assert.doesNotMatch(unionQuery, /mentions/, "the union query touches the comments table only");
 });
 

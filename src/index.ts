@@ -81,6 +81,7 @@ import {
   moderateContent,
   withdrawContent,
   officialFacts,
+  servedTriggerWitness,
   treasury,
   recordLedger,
   changes,
@@ -325,13 +326,54 @@ function text(body: string): Response {
 }
 
 // The OAuth authorize page: never cached, no scripts, forms only to us.
-function authorizeHtml(body: string): Response {
+// FORM-ACTION MUST NAME THE DESTINATION, NOT JUST US.
+//
+// This page's whole purpose is to hand the person back to the client's origin:
+// the form POSTs here, and this route answers 303 to the client's redirect_uri.
+// `form-action 'self'` permits the POST and forbids that redirect in every
+// engine that enforces form-action ACROSS a redirect. The spec left that
+// ambiguous and engines split: CHROME AND WEBKIT BLOCK the redirect, Firefox
+// allows it (MDN records Firefox 57 not blocking where Chrome 63 does). I had
+// this pair backwards in the first version of this comment, and the inversion
+// mattered: #179 is filed from Edge/Chrome and iPhone Safari, which are exactly
+// the engines that DO block, so the wrong version would have told the reporter
+// their own browser was the one unaffected.
+//
+// It fails the way CSP fails: silently. No request, no console error the person
+// sees, just a 303 that never navigates. Which is exactly what #179 reports and
+// what #175 is the damage from: the citizen is
+// already registered by then, so an interrupted flow leaves a real handle whose
+// secret nobody ever received.
+//
+// Naming the destination grants nothing new. connect.ts:290 refuses any
+// redirect_uri the client did not register before this page is ever rendered,
+// so the origin below is always one the client already owns; CSP is being told
+// what the route is already committed to doing.
+//
+// Custom schemes: URL.origin is the string "null" for a non-special scheme, and
+// emitting that would be worse than useless, so those contribute `scheme:`
+// instead. Anything that does not parse, or that carries a character which
+// could break out of the directive, contributes nothing and the policy stays at
+// 'self' -- a malformed source is not worth a loosened header.
+function formActionSource(redirectUri: string | null): string {
+  if (!redirectUri) return "";
+  let u: URL;
+  try {
+    u = new URL(redirectUri);
+  } catch {
+    return "";
+  }
+  const src = u.protocol === "http:" || u.protocol === "https:" ? u.origin : u.protocol;
+  return /^[A-Za-z][A-Za-z0-9+.-]*:(\/\/[A-Za-z0-9.-]+(:[0-9]{1,5})?)?$/.test(src) ? ` ${src}` : "";
+}
+
+function authorizeHtml(body: string, redirectUri: string | null = null): Response {
   return new Response(body, {
     headers: {
       "Content-Type": "text/html; charset=utf-8",
       "Cache-Control": "no-store",
       "Referrer-Policy": "no-referrer",
-      "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'",
+      "Content-Security-Policy": `default-src 'none'; style-src 'unsafe-inline'; form-action 'self'${formActionSource(redirectUri)}`,
     },
   });
 }
@@ -562,13 +604,13 @@ export default {
         // see the name in the 400 rather than a page that ignored it.
         checkQueryParams(url, "/oauth/authorize");
         const p = await authorizeParams(env, url.searchParams);
-        return authorizeHtml(authorizePage(url.origin, p, null));
+        return authorizeHtml(authorizePage(url.origin, p, null), p.redirect_uri);
       }
       if (path === "/oauth/authorize" && method === "POST") {
         assertSameOrigin(request, url.origin);
         const d = await authorizeDecision(env, await formParams(request), request.headers.get("CF-Connecting-IP"));
         if ("redirect" in d) return new Response(null, { status: 303, headers: { Location: d.redirect, "Cache-Control": "no-store" } });
-        return authorizeHtml(authorizePage(url.origin, d.page, d.error));
+        return authorizeHtml(authorizePage(url.origin, d.page, d.error), d.page.redirect_uri);
       }
       if (path === "/oauth/token" && method === "POST") {
         const r = await oauthToken(env, await formParams(request));
@@ -638,10 +680,25 @@ export default {
           }
           return v;
         };
+        // identity_from=0 used to parse as present and then norm() to the same
+        // 0 as an omitted parameter, so GET /api/attest and
+        // GET /api/attest?identity_from=0 were byte-identical (anchor_mode
+        // unanchored, anchored_at null). A client whose anchor mis-parses to 0
+        // then sends a bare expect against the tip and reads a rewrite alarm
+        // while the body denies a filter was sent. Present means well-formed
+        // or refused — the empty-expect precedent (docket attest-identity-from-zero,
+        // unspent c25849 on 2667). 0 is not a row id.
+        const rowId = (k: string) => {
+          const n = num(k);
+          if (n === 0) {
+            throw new SocietyError(400, `${k}=0 is not an anchor — omit the parameter for a bare walk, or give a row id at or above 1`);
+          }
+          return n;
+        };
         return json(
           await attestation(env, q.get("from") === null ? 0 : wholeNumberParam(url, "from", "a row id in the chain being verified"), {
-            identityFrom: num("identity_from"),
-            ledgerFrom: num("ledger_from"),
+            identityFrom: rowId("identity_from"),
+            ledgerFrom: rowId("ledger_from"),
             identityExpect: str("identity_expect"),
             ledgerExpect: str("ledger_expect"),
           }),
@@ -1005,7 +1062,13 @@ export default {
         checkQueryParams(url, "/api/citizens");
         return json(await citizenDirectory(env, wholeNumberParam(url, "since", "a millisecond epoch timestamp")));
       }
-      if (path === "/api/official" && method === "GET") return json(officialFacts(env));
+      // The anti-phishing record plus the migration witness. servedTriggerWitness
+      // is a separate async function (not merged into officialFacts) because
+      // officialFacts is pure and synchronous and is evaluated on write paths,
+      // where an added DB read would touch every write. This GET handler is
+      // already async and has env. Issue #224.
+      if (path === "/api/official" && method === "GET")
+        return json({ ...officialFacts(env), ...(await servedTriggerWitness(env)) });
       if (path === "/api/stats" && method === "GET") return json(await statsReport(env));
       if (path === "/api/events" && method === "GET") {
         checkQueryParams(url, "/api/events");
@@ -1023,7 +1086,17 @@ export default {
           }),
         );
       }
-      if (path === "/api/checkpoint" && method === "GET") return json(await latestCheckpoints(env));
+      if (path === "/api/checkpoint" && method === "GET") {
+        // Refuse unsupported params instead of accepting-and-ignoring them.
+        // ?log= is a real parameter one path-segment over (/api/checkpoint/
+        // consistency), so a reader who writes /api/checkpoint?log=ledger
+        // expecting a filtered head got a 200 whose body still carried the
+        // identity_events row next to ledger, the log value changing nothing
+        // (egress c63428 on #5507). The head takes no parameters; say so, the
+        // way /api/docket and the consistency sibling already do.
+        checkQueryParams(url, "/api/checkpoint");
+        return json(await latestCheckpoints(env));
+      }
       if (path === "/api/checkpoint" && method === "POST") {
         // Manual crank, maintainer only: same computation as the five-minute cron,
         // idempotent per (log, tree_size). Exists so a fresh deploy or an
@@ -1506,10 +1579,10 @@ export default {
         if ((method === "POST" || method === "PUT" || method === "DELETE" || method === "PATCH") && e.status >= 400 && e.status < 500) {
           await recordNull(env, {
             kind: "refusal",
-            citizen_id: null,
+            citizen_id: e.refusalCitizenId ?? null,
             target_type: null,
             target_id: null,
-            reason: nullReasonFor(e),
+            reason: e.refusalModel === undefined ? nullReasonFor(e) : `${nullReasonFor(e)} requested '${e.refusalModel}'`,
             status: e.status,
             route: `${method} ${path}`,
             now: Date.now(),
@@ -1567,7 +1640,10 @@ export default {
         // a provider outage is logged and never reaches the checkpoint.
         try {
           const observed = await observeFunderWallets(env);
-          if (observed.wallet && (observed.rows > 0 || observed.error)) console.log(JSON.stringify({ level: observed.error ? "warn" : "info", what: "observer", ...observed }));
+          // A stride cut short by a refused page writes rows and still needs
+          // saying, even when the pages it did get held nothing.
+          if (observed.wallet && (observed.rows > 0 || observed.error || observed.partial))
+            console.log(JSON.stringify({ level: observed.error || observed.partial ? "warn" : "info", what: "observer", ...observed }));
         } catch (e) {
           console.log(JSON.stringify({ level: "error", what: "observer", message: String(e).slice(0, 200) }));
         }

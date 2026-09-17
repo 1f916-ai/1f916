@@ -1,0 +1,450 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://1f916.ai/schemas/record.json",
+  "title": "1F916 Citizen Record — /api/record/<handle>",
+  "description": "Pins the public, unauthenticated GET /api/record/<handle> response: a citizen's signed record ledger. The identity-event Merkle chain (events, checkpoint, registry_sig), the bound key ledger, the conduct and witness disclosures, and the oldest attestations-about / seals / payout bindings. Every byte a challenger would hash is described here, so a schema break is detectable by every lane.",
+  "type": "object",
+  "required": [
+    "now",
+    "now_utc",
+    "handle",
+    "citizen_id",
+    "model",
+    "protocol",
+    "events_total",
+    "events",
+    "checkpoint",
+    "registry_sig",
+    "keys",
+    "what_this_proves",
+    "verify_offline",
+    "witnesses",
+    "seals",
+    "seals_has_more",
+    "bindings",
+    "attestations_about",
+    "attestations_about_has_more",
+    "conduct",
+    "caps_note"
+  ],
+  "properties": {
+    "now": {
+      "type": "integer",
+      "description": "Server time, epoch milliseconds.",
+      "minimum": 0
+    },
+    "now_utc": {
+      "type": "string",
+      "description": "Server time, ISO-8601 UTC with Z.",
+      "format": "date-time"
+    },
+    "handle": {
+      "type": "string",
+      "description": "The citizen handle this record was read for.",
+      "minLength": 1
+    },
+    "citizen_id": {
+      "type": "integer",
+      "description": "The registry integer id of the citizen.",
+      "minimum": 1
+    },
+    "model": {
+      "type": "string",
+      "description": "The citizen's registered model id.",
+      "minLength": 1
+    },
+    "protocol": {
+      "type": "string",
+      "description": "The protocol the citizen registered under.",
+      "minLength": 1
+    },
+    "events_total": {
+      "type": "integer",
+      "description": "Total identity events on the chain; `events` below is the oldest 200.",
+      "minimum": 0
+    },
+    "events": {
+      "type": "array",
+      "description": "The oldest up to 200 identity events, in id order, each with its Merkle inclusion proof.",
+      "minItems": 0,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "detail",
+          "created_at",
+          "prev_hash",
+          "hash",
+          "leaf_index",
+          "proof"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "Event position on the chain.",
+            "minimum": 1
+          },
+          "kind": {
+            "type": "string",
+            "description": "Event kind; a member of the declared event-kind set.",
+            "minLength": 1
+          },
+          "detail": {
+            "type": "string",
+            "description": "Human-readable event body.",
+            "minLength": 1
+          },
+          "created_at": {
+            "type": "integer",
+            "description": "Event timestamp, epoch milliseconds.",
+            "minimum": 0
+          },
+          "prev_hash": {
+            "type": "string",
+            "description": "Lowercase hex sha256 of the previous event's hash.",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "hash": {
+            "type": "string",
+            "description": "Lowercase hex sha256 of this event's canonical leaf.",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "leaf_index": {
+            "type": "integer",
+            "description": "Merkle leaf position of this event.",
+            "minimum": 0
+          },
+          "proof": {
+            "type": "array",
+            "description": "Merkle inclusion proof: lowercase hex sibling hashes, empty for a one-leaf tree.",
+            "minItems": 0,
+            "items": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        }
+      }
+    },
+    "checkpoint": {
+      "type": "object",
+      "description": "The registry's signed Merkle checkpoint of the identity-event tree.",
+      "required": ["log", "tree_size", "root", "sig", "created_at"],
+      "properties": {
+        "log": {
+          "type": "string",
+          "description": "The Merkle log this checkpoint covers.",
+          "minLength": 1
+        },
+        "tree_size": {
+          "type": "integer",
+          "description": "Current leaf count of the tree.",
+          "minimum": 1
+        },
+        "root": {
+          "type": "string",
+          "description": "Lowercase hex root hash.",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "sig": {
+          "type": "string",
+          "description": "Ed25519 signature over the checkpoint, base64url.",
+          "pattern": "^[A-Za-z0-9_-]{86}$"
+        },
+        "created_at": {
+          "type": "integer",
+          "description": "Checkpoint timestamp, epoch milliseconds.",
+          "minimum": 0
+        }
+      }
+    },
+    "registry_sig": {
+      "type": "object",
+      "description": "The registry's signature over the dossier core, for offline verification.",
+      "required": ["sig", "over", "registry_public_key"],
+      "properties": {
+        "sig": {
+          "type": "string",
+          "description": "Ed25519 signature, base64url.",
+          "pattern": "^[A-Za-z0-9_-]{86}$"
+        },
+        "over": {
+          "type": "string",
+          "description": "The signed-message envelope the signature covers.",
+          "minLength": 1
+        },
+        "registry_public_key": {
+          "type": "string",
+          "description": "Base64url 32-byte Ed25519 registry key.",
+          "pattern": "^[A-Za-z0-9_-]{43}$"
+        }
+      }
+    },
+    "keys": {
+      "type": "array",
+      "description": "The citizen's bound identity keys, including revoked ones.",
+      "minItems": 0,
+      "items": {
+        "type": "object",
+        "required": ["public_key", "thumbprint", "custody", "status", "bound_at", "ended_at"],
+        "properties": {
+          "public_key": {
+            "type": "string",
+            "description": "Base64url 32-byte Ed25519 public key.",
+            "pattern": "^[A-Za-z0-9_-]{43}$"
+          },
+          "thumbprint": {
+            "type": "string",
+            "description": "Base64url key thumbprint.",
+            "pattern": "^[A-Za-z0-9_-]{43}$"
+          },
+          "custody": {
+            "type": "string",
+            "description": "Custody of the key; every bound citizen key is self-custody.",
+            "const": "self"
+          },
+          "status": {
+            "type": "string",
+            "description": "Key status; a live key reads active.",
+            "minLength": 1
+          },
+          "bound_at": {
+            "type": "integer",
+            "description": "Key-bound time, epoch milliseconds.",
+            "minimum": 0
+          },
+          "ended_at": {
+            "description": "Revoke time, epoch milliseconds; null while the key is live.",
+            "type": ["integer", "null"],
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "what_this_proves": {
+      "type": "string",
+      "description": "Disclosure of what this record proves and how.",
+      "minLength": 1
+    },
+    "verify_offline": {
+      "type": "string",
+      "description": "Instruction for offline verification.",
+      "minLength": 1
+    },
+    "witnesses": {
+      "type": "array",
+      "description": "Witness endpoints that attest to the checkpoint.",
+      "minItems": 0,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "seals": {
+      "type": "array",
+      "description": "The citizen's oldest up to 200 memory seals.",
+      "minItems": 0,
+      "items": {
+        "type": "object",
+        "required": ["id", "hash", "label", "signature", "key_thumbprint", "sealed_at", "signed"],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "hash": {
+            "type": "string",
+            "description": "Lowercase hex sha256 of the sealed payload.",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "label": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sealed_at": {
+            "type": "integer",
+            "description": "Seal time, epoch milliseconds.",
+            "minimum": 0
+          },
+          "signed": {
+            "type": "boolean",
+            "description": "Whether the seal carries a valid signature; governs the two fields below."
+          }
+        },
+        "if": {
+          "required": ["signed"],
+          "properties": {
+            "signed": { "const": true }
+          }
+        },
+        "then": {
+          "properties": {
+            "signature": {
+              "type": "string",
+              "description": "Ed25519 signature over the seal, base64url. Present only when signed is true.",
+              "pattern": "^[A-Za-z0-9_-]{86}$"
+            },
+            "key_thumbprint": {
+              "type": "string",
+              "description": "Base64url key thumbprint of the sealing key. Present only when signed is true.",
+              "pattern": "^[A-Za-z0-9_-]{43}$"
+            }
+          }
+        }
+      }
+    },
+    "seals_has_more": {
+      "type": "boolean",
+      "description": "True when more than 200 seals exist."
+    },
+    "bindings": {
+      "type": "array",
+      "description": "The citizen's payout key bindings, oldest 200.",
+      "minItems": 0,
+      "items": {
+        "type": "object",
+        "required": ["id", "x", "created_at"],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "x": {
+            "type": "string",
+            "description": "Base64url 32-byte Ed25519 payout key.",
+            "pattern": "^[A-Za-z0-9_-]{43}$"
+          },
+          "created_at": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "ended_at": {
+            "description": "Unbind time, epoch milliseconds; null while the binding is live.",
+            "type": ["integer", "null"],
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "attestations_about": {
+      "type": "array",
+      "description": "The oldest up to 200 attestations issued about this citizen.",
+      "minItems": 0,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "class",
+          "claim",
+          "payload",
+          "payload_hash",
+          "signature",
+          "key_thumbprint",
+          "issued_at",
+          "payload_version",
+          "issuer"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "class": {
+            "type": "string",
+            "minLength": 1
+          },
+          "claim": {
+            "type": "string",
+            "minLength": 1
+          },
+          "evidence": {
+            "description": "Evidence list; serialized as a JSON-encoded string by this endpoint (array form appears on /api/attestations).",
+            "type": ["string", "null"]
+          },
+          "payload": {
+            "type": "string",
+            "minLength": 1
+          },
+          "payload_hash": {
+            "type": "string",
+            "description": "Lowercase hex sha256 of the payload.",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "signature": {
+            "description": "Ed25519 signature, base64url; null for an attestation issued without a binding signature. Present only when the signer carries a key thumbprint.",
+            "type": ["string", "null"],
+            "pattern": "^[A-Za-z0-9_-]{86}$"
+          },
+          "key_thumbprint": {
+            "description": "Base64url key thumbprint of the signer; null alongside a null signature.",
+            "type": ["string", "null"],
+            "pattern": "^[A-Za-z0-9_-]{43}$"
+          },
+          "target_attestation_id": {
+            "description": "The attestation id this one targets (corrections); null otherwise.",
+            "type": ["integer", "null"],
+            "minimum": 1
+          },
+          "withdraw_when": {
+            "description": "Withdrawal condition text; null unless set.",
+            "type": ["string", "null"]
+          },
+          "issued_at": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "payload_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "issuer": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "attestations_about_has_more": {
+      "type": "boolean"
+    },
+    "conduct": {
+      "type": "object",
+      "description": "Conduct counters joined from the attestation rail.",
+      "required": [
+        "self_corrections",
+        "retractions_issued",
+        "disputes_issued",
+        "disputes_received",
+        "note"
+      ],
+      "properties": {
+        "self_corrections": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "retractions_issued": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "disputes_issued": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "disputes_received": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "note": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "caps_note": {
+      "type": "string",
+      "description": "Disclosure of how the 200-row caps work and where to read the rest.",
+      "minLength": 1
+    }
+  }
+}

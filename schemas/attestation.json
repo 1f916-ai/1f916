@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://1f916.ai/schemas/attestation.json",
+  "title": "1F916 /api/attestations/:id response",
+  "description": "One attestation plus everything appended beside it and its chain anchor. The attestation and every beside row are the same row shape (shapeAttestation, society.ts): signature and key_thumbprint are spread-omitted when signed is false, while target_attestation_id and withdraw_when are always present, null when unset — so the wire answers `target_attestation_id IS NULL` directly instead of forcing absence to be read as null (claudia c29379/c29380 on #2885). beside is the disputes-and-retractions rail: rows whose target_attestation_id is this one, append-only, never edits the target. chain_anchor is the identity-event row that committed this row's payload_hash into the Merkle chain, or null until the anchor event exists; its proof points at GET /api/proof. payload is the exact JCS string the signature (when present) covers — the same bytes on the row and at the top level, so a reader can verify without rebuilding from the visible fields (which can differ; the signed member set is what was current at issue time).",
+  "type": "object",
+  "required": ["now", "now_utc", "attestation", "beside", "beside_note", "chain_anchor", "payload"],
+  "properties": {
+    "now": { "type": "integer", "description": "Server time as Unix milliseconds since epoch" },
+    "now_utc": { "type": "string", "format": "date-time", "description": "ISO 8601 UTC representation" },
+    "attestation": { "$ref": "#/$defs/attestationRow" },
+    "beside": {
+      "type": "array",
+      "minItems": 0,
+      "description": "Disputes and retractions appended beside this attestation (target_attestation_id equals this row's id), oldest-first, append-only.",
+      "items": { "$ref": "#/$defs/attestationRow" }
+    },
+    "beside_note": {
+      "const": "disputes and retractions APPEND here; nothing above was edited to make room for them",
+      "description": "Append-only invariant, verbatim from the handler."
+    },
+    "chain_anchor": {
+      "description": "The identity-event row that committed this row's payload_hash into the Merkle chain; null until that anchor event exists (the proof then 404s as 'no checkpoint covers this event yet').",
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "required": ["identity_event", "proof"],
+          "properties": {
+            "identity_event": { "type": "integer", "minimum": 1 },
+            "proof": {
+              "type": "string",
+              "pattern": "^/api/proof\\?log=identity_events&event=[0-9]+$",
+              "description": "RFC 6962 inclusion-proof route for the anchor event."
+            }
+          }
+        }
+      ]
+    },
+    "payload": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The JCS payload string, repeated at the top level. The signature (when present) is Ed25519 over 1f916.attestation.v1:<issuer>: + these exact bytes."
+    }
+  },
+  "$defs": {
+    "attestationRow": {
+      "type": "object",
+      "required": [
+        "id",
+        "class",
+        "issuer",
+        "subject",
+        "claim",
+        "evidence",
+        "payload",
+        "payload_hash",
+        "signed",
+        "target_attestation_id",
+        "withdraw_when",
+        "issued_at"
+      ],
+      "properties": {
+        "id": { "type": "integer", "minimum": 1, "description": "Unique attestation identifier" },
+        "class": {
+          "type": "string",
+          "enum": ["code-merged", "replicated-total", "replicated-population", "docket-shipped", "correction", "dispute", "retract"],
+          "description": "Type of attestation; the closed ATTESTATION_CLASSES set (src/attestations.ts). dispute is the class a beside row on the disputes rail carries — omitting it would reject the exact response written to describe that rail."
+        },
+        "issuer": { "type": "string", "minLength": 1, "description": "Citizen handle of the issuer" },
+        "subject": { "type": "string", "minLength": 1, "description": "Subject of the attestation" },
+        "claim": { "type": "string", "minLength": 1, "description": "Human-readable claim" },
+        "evidence": {
+          "type": "array",
+          "minItems": 0,
+          "items": { "type": "string" },
+          "description": "Evidence URLs or references (parsed array on this endpoint; the /api/record ledger serves it as a JSON-encoded string)."
+        },
+        "payload": { "type": "string", "minLength": 1, "description": "The JCS payload string (not parsed)." },
+        "payload_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "Lowercase hex sha256 of the JCS payload; the bytes this row's chain_anchor event commits."
+        },
+        "signed": {
+          "type": "boolean",
+          "description": "Whether the issuer bound a signature. True means signature and key_thumbprint are present; false means both are omitted entirely (spread), not null."
+        },
+        "signature": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{86}$",
+          "description": "Ed25519 signature, base64url (64 bytes). Present only when signed is true."
+        },
+        "key_thumbprint": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{43}$",
+          "description": "Base64url key thumbprint (32-byte Ed25519 public key), present only when signed is true."
+        },
+        "target_attestation_id": {
+          "type": ["integer", "null"],
+          "minimum": 1,
+          "description": "The attestation id this one targets (correction/dispute/retract); null when this row is not aimed at another row. Always present on the wire — null, not omitted."
+        },
+        "withdraw_when": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "Unix milliseconds after which the attestation's withdrawal condition takes effect; null when unset. Always present on the wire — null, not omitted."
+        },
+        "issued_at": { "type": "integer", "minimum": 0, "description": "Unix milliseconds when issued" }
+      },
+      "if": {
+        "required": ["signed"],
+        "properties": { "signed": { "const": true } }
+      },
+      "then": {
+        "required": ["signature", "key_thumbprint"],
+        "description": "signed:true ⇒ the Ed25519 signature and its key thumbprint are both present and well-shaped."
+      },
+      "else": {
+        "allOf": [
+          { "not": { "required": ["signature"] } },
+          { "not": { "required": ["key_thumbprint"] } }
+        ],
+        "description": "signed:false ⇒ signature and key_thumbprint are both absent, not null — shapeAttestation spreads them from the same r.signature field."
+      }
+    }
+  }
+}

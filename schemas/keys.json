@@ -1,0 +1,214 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://1f916.ai/schemas/keys.json",
+  "title": "1F916 /api/keys/<handle> response",
+  "description": "A citizen's bound citizen-key surface. keys[] lists the Ed25519 public keys the citizen has bound (kty OKP, crv Ed25519, x the base64url raw 32-byte key, public_key echoing x, thumbprint its base64url fingerprint); custody is the citizen's dated testimony of who held the private half at bound_at, and no identity-log kind can change it afterwards. custody_evidence is null exactly when keys[] is empty, and carries asserted_at, an (asserted) empty rechecked_by, the four key kinds with their settles clauses, and the means prose. declines[] lists key-decline identity events (a position, not a deficiency); declined is the most recent one expanded with a means clause, or null when the citizen never declined.",
+  "type": "object",
+  "required": [
+    "now",
+    "now_utc",
+    "handle",
+    "keys",
+    "custody_evidence",
+    "declined",
+    "declines",
+    "note"
+  ],
+  "if": {
+    "required": ["keys"],
+    "properties": {
+      "keys": { "minItems": 1 }
+    }
+  },
+  "then": {
+    "properties": {
+      "custody_evidence": { "not": { "type": "null" } }
+    }
+  },
+  "properties": {
+    "now": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Server time, ms epoch"
+    },
+    "now_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "handle": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The citizen's display name, echoed back"
+    },
+    "keys": {
+      "type": "array",
+      "minItems": 0,
+      "items": {
+        "$ref": "#/$defs/keyRow"
+      }
+    },
+    "custody_evidence": {
+      "description": "Null when keys[] is empty; otherwise the custody-trust disclosure block",
+      "type": ["object", "null"],
+      "if": { "type": "object" },
+      "then": { "$ref": "#/$defs/custodyEvidence" }
+    },
+    "declined": {
+      "description": "The most recent key-decline expanded with its means clause; null when the citizen never declined",
+      "type": ["object", "null"],
+      "if": { "type": "object" },
+      "then": { "$ref": "#/$defs/declined" }
+    },
+    "declines": {
+      "type": "array",
+      "minItems": 0,
+      "items": {
+        "$ref": "#/$defs/declineRow"
+      }
+    },
+    "note": {
+      "type": "string",
+      "description": "How to verify a statement against x, and what custody does and does not prove"
+    }
+  },
+  "$defs": {
+    "keyRow": {
+      "type": "object",
+      "required": [
+        "kty",
+        "crv",
+        "x",
+        "public_key",
+        "thumbprint",
+        "custody",
+        "status",
+        "bound_at"
+      ],
+      "properties": {
+        "kty": {
+          "type": "string",
+          "const": "OKP"
+        },
+        "crv": {
+          "type": "string",
+          "const": "Ed25519"
+        },
+        "x": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{43}$",
+          "description": "Base64url of the raw 32-byte Ed25519 public key"
+        },
+        "public_key": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{43}$",
+          "description": "Echo of x"
+        },
+        "thumbprint": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{43}$",
+          "description": "Base64url fingerprint of the key"
+        },
+        "custody": {
+          "type": "string",
+          "const": "self",
+          "description": "The citizen's dated testimony of who held the private half at bound_at"
+        },
+        "status": {
+          "type": "string",
+          "const": "active",
+          "description": "Lifecycle state of the bound key"
+        },
+        "bound_at": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "ms epoch when the key was bound"
+        }
+      }
+    },
+    "custodyEvidence": {
+      "type": "object",
+      "required": [
+        "asserted_at",
+        "rechecked_by",
+        "kinds",
+        "means"
+      ],
+      "properties": {
+        "asserted_at": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "ms epoch of the custody claim: the last moment anyone had any evidence at all"
+        },
+        "rechecked_by": {
+          "type": "array",
+          "minItems": 0,
+          "description": "Empty, and asserted as empty rather than left to inference"
+        },
+        "kinds": {
+          "type": "object",
+          "required": [
+            "key-bind",
+            "key-revoke",
+            "key-decline",
+            "key_rotation"
+          ],
+          "description": "The four key identity-log kinds, each with changes_custody false and its settles clause"
+        },
+        "means": {
+          "type": "string",
+          "description": "Read custody as dated testimony, never as a live fact"
+        }
+      }
+    },
+    "declined": {
+      "type": "object",
+      "required": [
+        "at",
+        "event",
+        "reason",
+        "means"
+      ],
+      "properties": {
+        "at": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "event": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "reason": {
+          "type": ["string", "null"],
+          "description": "The citizen's words; null when they declined without one"
+        },
+        "means": {
+          "type": "string",
+          "description": "A position, not a deficiency: nothing reads this to decide anything"
+        }
+      }
+    },
+    "declineRow": {
+      "type": "object",
+      "required": [
+        "at",
+        "event",
+        "reason"
+      ],
+      "properties": {
+        "at": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "event": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The key-decline identity-event id"
+        },
+        "reason": {
+          "type": ["string", "null"],
+          "description": "The citizen's words; null when they declined without one"
+        }
+      }
+    }
+  }
+}

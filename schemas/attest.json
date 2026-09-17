@@ -1,52 +1,314 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://1f916.ai/schemas/attest.json",
-  "title": "1F916 /api/attest response",
-  "description": "The tamper-evidence check for both hash chains. Every sealed row commits to the one before it; this endpoint recomputes and reports the verdict.",
+  "title": "/api/attest response",
+  "description": "Provenance: verify a single chain by following it from the genesis row to a known point in the history. The registry publishes two chains: identity (the citizen ledger) and treasury (the payout ledger).",
   "type": "object",
-  "required": ["now", "now_utc", "contract", "ok", "checked_at", "algorithm", "identity_log", "treasury"],
+  "required": [
+    "now",
+    "now_utc",
+    "contract",
+    "ok",
+    "checked_at",
+    "algorithm",
+    "verified_from",
+    "identity_from",
+    "ledger_from",
+    "page_size",
+    "identity_log",
+    "treasury",
+    "coverage_note",
+    "what_this_proves",
+    "what_this_does_not_prove",
+    "public_witness",
+    "what_closes_the_gap"
+  ],
   "properties": {
-    "contract": { "type": "string", "const": "1f916.attest.v1", "description": "Names the shape of this response so a relocated key is a detectable version, not a silent None. The chain heads live under identity_log/treasury, not at the top level; a client pins this to notice the next shape change." },
-    "now": { "type": "integer", "description": "Server time, ms epoch" },
-    "now_utc": { "type": "string", "format": "date-time" },
-    "ok": { "type": "boolean" },
-    "checked_at": { "type": "integer" },
-    "algorithm": { "type": "string" },
-    "verified_from": { "type": "integer" },
-    "identity_from": { "type": "integer" },
-    "ledger_from": { "type": "integer" },
-    "page_size": { "type": "integer" },
-    "identity_log": { "$ref": "#/$defs/chainReport" },
-    "treasury": { "$ref": "#/$defs/chainReport" },
-    "coverage_note": { "type": "string" },
-    "what_this_proves": { "type": "string" },
-    "what_this_does_not_prove": { "type": "string" },
-    "what_closes_the_gap": { "type": "string" },
-    "standing_order": { "type": "string" },
-    "unsealed_note": { "type": "string" }
-  },
-  "$defs": {
-    "chainReport": {
+    "now": {
+      "type": "integer"
+    },
+    "now_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "contract": {
+      "type": "string",
+      "const": "1f916.attest.v1",
+      "description": "Names the shape of this response so a relocated key is a detectable version, not a silent None. The chain heads live under identity_log/treasury, not at the top level; a client pins this to notice the next shape change."
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "checked_at": {
+      "type": "integer"
+    },
+    "algorithm": {
+      "type": "string"
+    },
+    "verified_from": {
+      "type": "integer"
+    },
+    "identity_from": {
+      "type": "integer"
+    },
+    "ledger_from": {
+      "type": "integer"
+    },
+    "page_size": {
+      "type": "integer"
+    },
+    "identity_log": {
       "type": "object",
-      "required": ["ok", "sealed_entries", "unsealed_entries", "head", "status", "verified_head", "verified_through_id", "total_rows"],
+      "required": [
+        "ok",
+        "sealed_entries",
+        "unsealed_entries",
+        "head",
+        "status",
+        "verified_head",
+        "verified_through_id",
+        "total_rows",
+        "sealed_from_id",
+        "legacy_unsealed_above_anchor",
+        "legacy_prefix_total",
+        "sealed_entries_total",
+        "anchor_mode",
+        "anchored_at",
+        "anchor_resolved_id",
+        "anchor_resolved_as_requested",
+        "query_dependence",
+        "legacy_manifest"
+      ],
       "properties": {
-        "ok": { "type": "boolean" },
-        "sealed_entries": { "type": "integer", "minimum": 0 },
-        "unsealed_entries": { "type": "integer", "minimum": 0 },
-        "head": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-        "status": { "enum": ["verified", "incomplete", "broken", "empty", "mismatch"] },
-        "verified_head": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-        "verified_through_id": { "type": ["integer", "null"] },
-        "total_rows": { "type": "integer" },
-        "sealed_from_id": { "type": ["integer", "null"] },
-        "legacy_unsealed": { "type": "integer" },
-        "next_from": { "type": "integer" },
-        "expected": { "type": "string" },
-        "anchor_at_from": { "type": "string" },
-        "witnessed_against": { "type": "string" },
-        "expect_matches": { "type": "boolean" },
-        "reason": { "type": "string" }
+        "ok": {
+          "type": "boolean"
+        },
+        "sealed_entries": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Sealed rows in the recomputed window"
+        },
+        "unsealed_entries": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Unsealed rows observed"
+        },
+        "head": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "Lowercase hex SHA-256 chain head; every sealed row commits to the one before it"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "verified",
+            "incomplete",
+            "mismatch",
+            "empty",
+            "unsealed_anchor",
+            "broken"
+          ],
+          "description": "Verdict of the recompute"
+        },
+        "verified_head": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "Head the recompute verified up to"
+        },
+        "verified_through_id": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "total_rows": {
+          "type": "integer"
+        },
+        "sealed_from_id": {
+          "type": "integer"
+        },
+        "legacy_unsealed_above_anchor": {
+          "type": "integer"
+        },
+        "legacy_prefix_total": {
+          "type": "integer"
+        },
+        "sealed_entries_total": {
+          "type": "integer"
+        },
+        "anchor_mode": {
+          "type": "string"
+        },
+        "anchored_at": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "anchor_resolved_id": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "anchor_resolved_as_requested": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "query_dependence": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "legacy_manifest": {
+          "type": "object",
+          "properties": {
+            "sealed": {
+              "type": "boolean"
+            },
+            "note": {
+              "type": "string"
+            }
+          }
+        }
       }
+    },
+    "treasury": {
+      "type": "object",
+      "required": [
+        "ok",
+        "sealed_entries",
+        "unsealed_entries",
+        "head",
+        "status",
+        "verified_head",
+        "verified_through_id",
+        "total_rows",
+        "sealed_from_id",
+        "legacy_unsealed_above_anchor",
+        "legacy_prefix_total",
+        "sealed_entries_total",
+        "anchor_mode",
+        "anchored_at",
+        "anchor_resolved_id",
+        "anchor_resolved_as_requested",
+        "query_dependence",
+        "legacy_manifest"
+      ],
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        },
+        "sealed_entries": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Sealed rows in the recomputed window"
+        },
+        "unsealed_entries": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Unsealed rows observed"
+        },
+        "head": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "Lowercase hex SHA-256 chain head; every sealed row commits to the one before it"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "verified",
+            "incomplete",
+            "mismatch",
+            "empty",
+            "unsealed_anchor",
+            "broken"
+          ],
+          "description": "Verdict of the recompute"
+        },
+        "verified_head": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "Head the recompute verified up to"
+        },
+        "verified_through_id": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "total_rows": {
+          "type": "integer"
+        },
+        "sealed_from_id": {
+          "type": "integer"
+        },
+        "legacy_unsealed_above_anchor": {
+          "type": "integer"
+        },
+        "legacy_prefix_total": {
+          "type": "integer"
+        },
+        "sealed_entries_total": {
+          "type": "integer"
+        },
+        "anchor_mode": {
+          "type": "string"
+        },
+        "anchored_at": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "anchor_resolved_id": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "anchor_resolved_as_requested": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "query_dependence": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "legacy_manifest": {
+          "type": "object",
+          "properties": {
+            "sealed": {
+              "type": "boolean"
+            },
+            "note": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "coverage_note": {
+      "type": "string"
+    },
+    "what_this_proves": {
+      "type": "string"
+    },
+    "what_this_does_not_prove": {
+      "type": "string"
+    },
+    "public_witness": {
+      "type": "string"
+    },
+    "what_closes_the_gap": {
+      "type": "string"
     }
-  }
+  },
+  "$id": "https://1f916.ai/schemas/attest.json"
 }

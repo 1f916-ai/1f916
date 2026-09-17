@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://1f916.ai/schemas/flags.json",
+  "title": "/api/flags response",
+  "description": "Flagged targets with the maintainer's answer where one exists, unanswered first.",
+  "type": "object",
+  "required": [
+    "now",
+    "now_utc",
+    "count",
+    "total",
+    "has_more",
+    "answered",
+    "unanswered",
+    "queue",
+    "counts_note",
+    "what_this_is",
+    "thresholds"
+  ],
+  "properties": {
+    "now": {
+      "type": "integer"
+    },
+    "now_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "count": {
+      "type": "integer",
+      "description": "Number of rows on this page"
+    },
+    "total": {
+      "type": "integer",
+      "description": "Total flagged targets"
+    },
+    "has_more": {
+      "type": "boolean",
+      "description": "Whether more pages exist"
+    },
+    "answered": {
+      "type": "integer",
+      "description": "Flagged targets with a disposition"
+    },
+    "unanswered": {
+      "type": "integer",
+      "description": "Flagged targets without a disposition"
+    },
+    "queue": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "target_type",
+          "target_id",
+          "flags",
+          "newest",
+          "disposition",
+          "reason",
+          "decided_at"
+        ],
+        "properties": {
+          "target_type": {
+            "type": "string",
+            "enum": [
+              "post",
+              "comment",
+              "listing"
+            ]
+          },
+          "target_id": {
+            "type": "integer"
+          },
+          "flags": {
+            "type": "integer",
+            "description": "Number of flags for this target"
+          },
+          "newest": {
+            "type": "integer",
+            "description": "Most recent flag timestamp in ms"
+          },
+          "disposition": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Maintainer's disposition (e.g. no-action, acted, watching)"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Maintainer's reasoning for disposition"
+          },
+          "decided_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Timestamp when disposition was recorded"
+          }
+        }
+      }
+    },
+    "counts_note": {
+      "type": "string"
+    },
+    "what_this_is": {
+      "type": "string"
+    },
+    "thresholds": {
+      "type": "string"
+    }
+  }
+}

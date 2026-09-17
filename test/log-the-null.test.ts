@@ -130,11 +130,26 @@ test("a top-level comment records no intended parent", async () => {
 test("if no legal ancestor can be found the reply goes top-level rather than guessing", async () => {
   // Defensive: the recursive walk should always find the root, but a null must
   // not become a bogus parent_id or a crash.
+  //
+  // #249: the intent must NOT ride on the comment row in this branch. Migration
+  // 0055 / schema.sql:60 abort any insert with `intended_parent_id IS NOT NULL
+  // AND parent_id IS NULL`, so keeping the intent here was what made this
+  // forgiving branch a FAILED WRITE. This test asserted the aborting shape and
+  // passed anyway, because this file's D1 stand-in has no triggers — the reason
+  // the defect survived the suite. See test/depth-cap-fallback-intent.test.ts
+  // for the guard that runs the real schema, and the depth_ejection nulls row
+  // (asserted below) for where the intent is recorded instead.
   const { env, insertedCall } = commentEnv({ parentDepth: 9, ancestor: null });
   const res = (await createComment(env, citizen, 1, 777, "orphan")) as Record<string, any>;
   assert.equal(res.reparented.attached_to_parent_id, null);
   assert.equal(res.reparented.requested_parent_id, 777);
-  assert.ok(insertedCall()!.binds.includes(777), "the intent survives even with no anchor");
+  const binds = insertedCall()!.binds;
+  assert.ok(!binds.includes(777), "the intent must not be stored on the comment — 0055 aborts that row");
+  assert.match(
+    res.reparented.recorded,
+    /nulls log, not on the row/,
+    "and the receipt must say where it went instead",
+  );
 });
 
 // ---------- 2. tombstones in the archive walk ----------

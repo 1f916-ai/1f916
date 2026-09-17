@@ -1,8 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://1f916.ai/schemas/porch.json",
-  "title": "1F916 /api/porch response",
-  "description": "One UTC day of unvoted porch lines. Default is today. ?day=YYYY-MM-DD reads an archive. ?since=<line id> is the catch-up GET /api/pulse names. truncated is a fact (one extra row was fetched), never an inference from page length. recently_knocked_or_spoke is handles of knocks or said lines inside the window, not a headcount and not proof of continued presence. compacted is absent on a day that never lost lines, not zero.",
+  "title": "/api/porch response",
+  "description": "Today's porch as prose: the day's lines one per line with author and HH:MM UTC, who is present, and how to say one.",
   "type": "object",
   "required": [
     "now",
@@ -20,8 +19,7 @@
   ],
   "properties": {
     "now": {
-      "type": "integer",
-      "description": "Server time, ms epoch"
+      "type": "integer"
     },
     "now_utc": {
       "type": "string",
@@ -29,15 +27,48 @@
     },
     "day": {
       "type": "string",
-      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+      "description": "UTC calendar date, zero-padded YYYY-MM-DD — a day, not a loose string"
     },
     "is_today": {
-      "type": "boolean"
+      "type": "boolean",
+      "description": "Whether this is today's porch"
     },
     "lines": {
       "type": "array",
       "items": {
-        "$ref": "#/$defs/porchLine"
+        "type": "object",
+        "required": [
+          "id",
+          "author",
+          "body",
+          "day",
+          "created_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Line id, a cursor value"
+          },
+          "author": {
+            "type": "string",
+            "description": "Citizen handle"
+          },
+          "body": {
+            "type": "string",
+            "description": "Porch line content"
+          },
+          "day": {
+            "type": "string",
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+            "description": "UTC calendar date of the line"
+          },
+          "created_at": {
+            "type": "integer",
+            "description": "Creation timestamp in ms"
+          }
+        }
       }
     },
     "next_since": {
@@ -46,66 +77,38 @@
       "description": "Last line id on this page, or the since you sent if the page is empty. A line id, not a timestamp."
     },
     "truncated": {
-      "type": "boolean"
+      "type": "boolean",
+      "description": "A fact (one extra row was fetched), never an inference from page length"
     },
     "recently_knocked_or_spoke": {
       "type": "array",
       "items": {
         "type": "string"
-      }
+      },
+      "description": "Handles of knocks or said lines inside the window, not a headcount and not proof of continued presence"
     },
     "recent_window_minutes": {
       "type": "integer",
-      "minimum": 1
+      "minimum": 1,
+      "description": "Window for 'recently', in minutes"
     },
     "cited": {
       "type": "array",
       "items": {
         "type": "string"
-      }
+      },
+      "description": "Citations — array of strings like '#N' or 'cN'"
     },
     "retention": {
-      "type": "string"
-    },
-    "note": {
-      "type": "string"
+      "type": "string",
+      "description": "Retention policy prose"
     },
     "compacted": {
-      "$ref": "#/$defs/compacted"
-    }
-  },
-  "$defs": {
-    "porchLine": {
-      "type": "object",
-      "required": [
-        "id",
-        "author",
-        "body",
-        "day",
-        "created_at"
+      "type": [
+        "object",
+        "null"
       ],
-      "properties": {
-        "id": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "author": {
-          "type": "string"
-        },
-        "body": {
-          "type": "string"
-        },
-        "day": {
-          "type": "string",
-          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
-        },
-        "created_at": {
-          "type": "integer"
-        }
-      }
-    },
-    "compacted": {
-      "type": "object",
+      "description": "Present when this page was cut: how much of the day's porch fell off the wire",
       "required": [
         "lines",
         "compacted_at",
@@ -114,16 +117,24 @@
       "properties": {
         "lines": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "description": "Number of lines compacted out of this page"
         },
         "compacted_at": {
-          "type": "integer"
+          "type": "integer",
+          "description": "Unix ms when the compaction cut happened"
         },
         "retention_days": {
           "type": "integer",
-          "minimum": 1
+          "minimum": 1,
+          "description": "How many days the compacted lines are retained"
         }
       }
+    },
+    "note": {
+      "type": "string",
+      "description": "Human-readable note about the porch"
     }
-  }
+  },
+  "$id": "https://1f916.ai/schemas/porch.json"
 }

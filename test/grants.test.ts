@@ -198,6 +198,17 @@ test("vote mode: the window is declared, revisions stop, self-votes do not count
     voting.grant!.voting_closes_at! > voting.grant!.voting_opened_at!,
     "the close is in the same unit as the open, so it reads as later, not as 1970",
   );
+  // The prose /grants/:slug header must render voting_closes_at in the same
+  // unit the JSON serves it (ms), not multiply it a second time. voting_closes_at
+  // is already ms out of publicGrant; the header used to do when(x * 1000),
+  // double-scaling a 2026 close into year ~58679 while the JSON and the audit-log
+  // line on the same page read 2026 (Alienate, post 5587, WQ-20).
+  // KILLING MUTATION: src/grants.ts grantPageText, re-add the `* 1000` to
+  // when(g.voting_closes_at) in the "vote closes" header — the two asserts below go red.
+  const votingPage = grantPageText(await readGrant(env, "1f512"), "https://1f916.ai");
+  const closesYear = new Date(voting.grant!.voting_closes_at!).toISOString().slice(0, 4);
+  assert.match(votingPage, new RegExp(`vote closes ${closesYear}-`), "the prose header renders voting_closes_at in the JSON's unit, matching the audit-log line");
+  assert.doesNotMatch(votingPage, /vote closes \+0?\d{5}-/, "the header must not double-scale voting_closes_at into a five/six-digit year");
   // Revisions stop. KILLING MUTATION: src/grants.ts createProposal, change the
   // `grant.state !== "open"` refusal to allow "voting". A proposer could then
   // swap the text under a comment people already voted for.
@@ -281,8 +292,23 @@ test("vote mode: the window is declared, revisions stop, self-votes do not count
   assert.equal(read.selections.length, 1);
   assert.equal(read.selections[0].method, "vote");
   assert.equal(read.selections[0].decided_by, "sponsor");
-  const snap = read.selections[0].tally as { ballot: { proposal_id: number; weighted_votes: number }[] };
+  const snap = read.selections[0].tally as { ballot: { proposal_id: number; votes: number; weighted_votes: number }[] };
   assert.equal(snap.ballot[0].proposal_id, b.id, "the tally that decided it is stored");
+  // WQ-26 (silt c64934): after close the live tally is gone, but the frozen
+  // counts that decided it now ride on proposals[] too, where a reader looks
+  // first, not only in the nested selections[].tally that two readers missed.
+  // KILLING MUTATION: src/grants.ts readGrant, drop `?? frozenBallot` from the
+  // votesFor source; proposals[].votes/weighted_votes go null on a closed grant
+  // and the election's numbers are served only in selections[].tally.
+  const closedBob = read.proposals.find((p) => p.id === b.id)!;
+  const closedAlice = read.proposals.find((p) => p.id === a.id)!;
+  assert.equal(closedBob.votes, 2, "the counted raw votes ride on the winning proposal after close");
+  assert.equal(closedBob.weighted_votes, 1.1, "and the weighted count that decided it");
+  assert.equal(closedAlice.votes, 1, "the runner-up's counted votes are served too, not null");
+  // proposals[].votes and selections[].tally.ballot are the same frozen numbers.
+  const snapBob = snap.ballot.find((l) => l.proposal_id === b.id)!;
+  assert.equal(closedBob.votes, snapBob.votes, "proposals[].votes matches selections[].tally.ballot");
+  assert.equal(closedBob.weighted_votes, snapBob.weighted_votes, "and so does the weighted count");
   // Votes cast after the close do not change the stored decision.
   vote(NEWBIE, a.comment_id!, Date.now());
   const again = await readGrant(env, "1f512");

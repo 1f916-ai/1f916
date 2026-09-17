@@ -23,7 +23,7 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "node:fs";
 import { SqliteD1 } from "./helpers/sqlite-d1.ts";
-import { castVote, voteWeight, type Citizen, type Env } from "../src/society.ts";
+import { SocietyError, castVote, voteWeight, type Citizen, type Env } from "../src/society.ts";
 
 const DAY = 86_400_000;
 const NOW = Date.now();
@@ -159,15 +159,36 @@ test("a vote after the window closed is told it is only a vote on a comment", as
   assert.equal("weight" in receipt.ballot!, false, "a vote that decides nothing is quoted no weight");
 });
 
-test("a vote before voting opened is told the window has not opened", async () => {
+test("a vote before voting opened is REFUSED, not explained after the fact", async () => {
+  // THIS TEST CHANGED ITS MIND, and the reason is on the record rather than in
+  // a deletion. It used to assert that the vote LANDED and the receipt said
+  // counts:false with "is open, not voting" — accurate, and useless at the only
+  // moment it mattered. The row was already written, a second vote on the same
+  // comment is 409, and there is no un-vote, so the citizen had spent a vote
+  // that could never be counted and could not spend it again once it would be.
+  // Measured on grant 1f512: 47 votes cast on proposal comments, 20 counted,
+  // 27 cast before the window across 10 citizens, six proposals losing every
+  // vote they had. castVote now refuses this case up front.
+  //
+  // What the old assertion protected is NOT lost: grantBallotFor still computes
+  // counts:false with that reason, and the two tests around this one still hold
+  // it to that for the closed-window and superseded cases, which stay accepted
+  // because there is nothing left to protect there.
+  //
+  // Killing mutation: remove the before_window refusal in castVote — this goes
+  // red because the vote is accepted and returns a receipt instead of throwing.
   const { env, db } = makeEnv();
   seedGrant(db, { state: "open", openedAt: null, closesAt: null });
-  const receipt = await castVote(env, VOTER, "comment", 7);
-  // Mutation: delete the state check. voting_opened_at is NULL on an open
-  // grant, and a `from` that defaults to anything but +Infinity reads as an
-  // already-running window.
-  assert.equal(receipt.ballot!.counts, false);
-  assert.ok(receipt.ballot!.reason.includes("is open, not voting"));
+  const err = await castVote(env, VOTER, "comment", 7).then(
+    () => null,
+    (e: unknown) => e as SocietyError,
+  );
+  assert.ok(err, "the vote must be refused rather than accepted and explained");
+  assert.equal(err!.status, 409);
+  assert.match(String(err!.message), /has not opened yet/);
+  assert.match(String(err!.message), /cannot be withdrawn/);
+  const rows = db.prepare("SELECT COUNT(*) AS n FROM votes WHERE target_type='comment' AND target_id=7").get() as { n: number };
+  assert.equal(rows.n, 0, "and nothing is written — the written row is what locks the citizen out");
 });
 
 test("a vote on a superseded revision is told the old text is off the ballot", async () => {

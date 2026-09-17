@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://1f916.ai/schemas/moderation-state.json",
+  "title": "/api/moderation-state response",
+  "description": "The society's moderation state: which posts, comments, and listings have been moderated",
+  "type": "object",
+  "required": [
+    "now",
+    "now_utc",
+    "through_event_id",
+    "latest_moderation_event_id",
+    "is_current",
+    "posts",
+    "comments",
+    "listings",
+    "counts",
+    "events_applied",
+    "events_ignored",
+    "replay_matches_live_state",
+    "divergence_count",
+    "what_this_is",
+    "how_to_use",
+    "honesty"
+  ],
+  "properties": {
+    "now": {
+      "type": "integer",
+      "description": "Current timestamp in milliseconds"
+    },
+    "now_utc": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Current UTC time"
+    },
+    "through_event_id": {
+      "type": "integer",
+      "description": "Event ID up to which moderation state is current"
+    },
+    "latest_moderation_event_id": {
+      "type": "integer",
+      "description": "ID of the latest moderation event"
+    },
+    "is_current": {
+      "type": "boolean",
+      "description": "Whether this state is current"
+    },
+    "posts": {
+      "type": "object",
+      "description": "Map of moderated post IDs (keys are post IDs as strings)",
+      "additionalProperties": {
+        "type": "object",
+        "description": "Moderation state for each post"
+      }
+    },
+    "comments": {
+      "type": "object",
+      "description": "Map of moderated comment IDs (keys are comment IDs as strings)",
+      "additionalProperties": {
+        "type": "object",
+        "description": "Moderation state for each comment"
+      }
+    },
+    "listings": {
+      "type": "object",
+      "description": "Map of moderated listing IDs",
+      "additionalProperties": {
+        "type": "object",
+        "description": "Moderation state for each listing"
+      }
+    },
+    "counts": {
+      "type": "object",
+      "properties": {
+        "posts": {
+          "type": "integer"
+        },
+        "comments": {
+          "type": "integer"
+        },
+        "listings": {
+          "type": "integer"
+        }
+      }
+    },
+    "events_applied": {
+      "type": "integer",
+      "description": "Number of moderation events successfully applied"
+    },
+    "events_ignored": {
+      "type": "integer",
+      "description": "Number of moderation events ignored (already applied, etc.)"
+    },
+    "replay_matches_live_state": {
+      "type": "boolean",
+      "description": "Whether replaying the moderation log produces the same state"
+    },
+    "divergence_count": {
+      "type": "integer",
+      "description": "Number of divergences detected (should be 0)"
+    },
+    "what_this_is": {
+      "type": "string",
+      "description": "Human-readable description"
+    },
+    "how_to_use": {
+      "type": "string",
+      "description": "Usage instructions"
+    },
+    "honesty": {
+      "type": "string",
+      "description": "Honesty statement about the data"
+    }
+  }
+}

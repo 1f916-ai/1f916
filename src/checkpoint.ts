@@ -163,9 +163,79 @@ export function witnessDispatchView(row: WitnessDispatchRow | null, now: number)
     last_error: row.last_error,
     last_ok_at: row.last_ok_at,
     last_ok_age_seconds: row.last_ok_at === null ? null : Math.max(0, Math.round((now - row.last_ok_at) / 1000)),
-    note: ok
-      ? "the latest dispatch attempt was accepted; acceptance queues a workflow run, it does not prove a witness line landed — the day file's own `at` timestamps are the record"
-      : "the latest dispatch attempt FAILED (status/error above); GitHub's hourly schedule is the backstop, so the witness degrades to hourly rather than stopping — the day file's own `at` timestamps are the record",
+    note: ok ? DISPATCH_OK_NOTE : DISPATCH_FAILED_NOTE,
+  };
+}
+
+// The served notes about liveness, kept together so they are edited together:
+// each one says what its number proves and points at the number that proves
+// the next thing.
+const DISPATCH_OK_NOTE =
+  "the latest dispatch attempt was accepted; acceptance queues a workflow run, it does not prove a witness line landed — the day file's own `at` timestamps are the record. Nor does it prove the checkpoint step ran: the dispatch leg runs after makeCheckpoints in the same scheduled handler and survives its failure, so checkpoint_sequence is that step's own record";
+
+const DISPATCH_FAILED_NOTE =
+  "the latest dispatch attempt FAILED (status/error above); GitHub's hourly schedule is the backstop, so the witness degrades to hourly rather than stopping — the day file's own `at` timestamps are the record";
+
+const SEQUENCE_UNREAD_NOTE =
+  "sqlite_sequence has no readable entry for the checkpoints table on this deployment (the read was refused, or nothing has ever been written); fall back to comparing checkpoints[].id across two reads, remembering that on a quiet log it does not move until the next written row";
+
+const SEQUENCE_NOTE =
+  "head is the checkpoints table's AUTOINCREMENT sequence. Every execution of the checkpoint step consumes attempts_per_pass values (one INSERT OR IGNORE per log), written or ignored, so head advances on a quiet log where checkpoints[].id and created_at do not. Δhead / attempts_per_pass is the number of executions between two reads, whoever ran them: the cron (attempted_pass_cron) or a manual crank (POST /api/checkpoint, maintainer only), which consumes the same values and is recorded nowhere a reader can see. So over one cron interval a Δhead of attempts_per_pass proves the step ran once, not that the cron ran it, and a crank inside the interval can stand in for a slot that never fired: measured against Δt / the cron interval, an excess is cranks, a shortfall is missed or failed passes, and only the shortfall is provable from here. witness_dispatch.last_attempt_at is written by a later leg of the same handler and survives this step throwing, so it proves the handler ran; read the two together to sort a frozen head. Dispatch not advancing: the handler did not run. Dispatch advancing with Δhead 0: the handler ran and this step consumed nothing, so its first leg threw before its insert or it was never entered (REGISTRY_SEED unset). Δhead of attempts_per_pass − 1: the first leg wrote or ignored and the next threw before its insert (there is no per-leg try, so the execution ends there).";
+
+// wrangler.jsonc triggers.crons, the ATTEMPTED cadence of the checkpoint
+// step; test/checkpoint-sequence-head.test.ts refuses a drift between the two.
+// The achieved cadence is the sequence head, never this string.
+export const CHECKPOINT_CRON = "*/5 * * * *";
+
+interface SequenceRow {
+  seq: number;
+}
+
+interface IdRow {
+  id: number;
+}
+
+const SEQUENCE_SQL = "SELECT seq FROM sqlite_sequence WHERE name = 'checkpoints'";
+
+// The checkpoints table's AUTOINCREMENT sequence head. makeCheckpoints tries
+// one INSERT OR IGNORE per log every pass, and SQLite charges the sequence for
+// an ignored insert exactly as for a written one (the test file beside this
+// change shows it), so this number moves by LOGS.length per checkpointer pass
+// whether or not any tree grew, while the served checkpoints[].id and
+// created_at freeze on a quiet log (ORDER BY id DESC LIMIT 1 returns the last
+// WRITTEN row). It is the checkpointer's own liveness signal:
+// witness_dispatch.last_attempt_at is written by a later leg of the same cron
+// handler and survives a makeCheckpoints failure (index.ts scheduled(): the
+// try/catch around it logs and continues), so it proves the handler ran, not
+// that this step did. D1 may refuse a read of sqlite_sequence; degrade to null
+// rather than 500 the endpoint, as readWitnessDispatch does.
+export async function readCheckpointSequenceHead(env: Env): Promise<number | null> {
+  try {
+    const row = await env.DB.prepare(SEQUENCE_SQL).first<SequenceRow>();
+    return row && Number.isInteger(row.seq) ? row.seq : null;
+  } catch {
+    return null;
+  }
+}
+
+// Pure view over the sequence head and the served rows, so every reader gets
+// the same arithmetic: head minus the newest written id is the count of
+// ignored inserts since the last written row, and a pass is LOGS.length
+// inserts. Ages are not computed here on purpose: the sequence has no clock,
+// which is the point — compare two reads of head, not head against now.
+export function checkpointSequenceView(head: number | null, rows: IdRow[]) {
+  if (head === null) return { recorded: false, attempted_pass_cron: CHECKPOINT_CRON, note: SEQUENCE_UNREAD_NOTE };
+  const newestWritten = rows.reduce((m, r) => Math.max(m, r.id), 0);
+  const ignored = Math.max(0, head - newestWritten);
+  return {
+    recorded: true,
+    head,
+    attempts_per_pass: LOGS.length,
+    attempted_pass_cron: CHECKPOINT_CRON,
+    newest_written_id: newestWritten,
+    ignored_since_newest_written: ignored,
+    passes_since_newest_written: Math.floor(ignored / LOGS.length),
+    note: SEQUENCE_NOTE,
   };
 }
 
@@ -187,6 +257,7 @@ export async function latestCheckpoints(env: Env) {
       .first<CheckpointRow>();
     if (row) rows.push(row);
   }
+  const sequenceHead = await readCheckpointSequenceHead(env);
   const dispatchRow = await readWitnessDispatch(env);
   return {
     contract: CHECKPOINT_PAYLOAD_PREFIX,
@@ -196,6 +267,7 @@ export async function latestCheckpoints(env: Env) {
     countersignature_payload_format: WITNESS_COUNTERSIGNATURE_PAYLOAD_FORMAT,
     countersignature_note: WITNESS_COUNTERSIGNATURE_NOTE,
     checkpoints: rows,
+    checkpoint_sequence: checkpointSequenceView(sequenceHead, rows),
     leaves_are: "the sealed rows' `hash` column values (lowercase hex, as UTF-8 bytes), in id order — the same hashes the linear chain and GET /api/attest already publish",
     tree: "RFC 6962: leaf = SHA-256(0x00 || leaf), node = SHA-256(0x01 || l || r)",
     how_to_verify:

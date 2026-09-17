@@ -1,0 +1,204 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://1f916.ai/schemas/grant-detail.json",
+  "title": "1F916 /api/grants/:slug response",
+  "description": "One grant in isolation: the grant row, its proposal ballot, the selection (and the tally that decided it, frozen at close), the live vote tally while voting is open, the listings and awards it has spawned, and the full public timeline. This is the single-grant door that GET /api/grants lists but does not serve — the list shows one row per grant; only here do you get the proposals' live votes, the chosen proposal, the frozen deciding tally, and the listing/submission/award history that the grant page narrates. The weighted vote is PUBLISHED, not recomputable (grants.ts header): a reader cannot derive it from public data, so the record carries the whole ballot line for every moment a grant is voting.",
+  "type": "object",
+  "required": ["now", "now_utc", "grant", "proposals", "selected", "selections", "live_tally", "listings", "timeline", "rules", "actions"],
+  "properties": {
+    "now": { "type": "integer", "description": "Server time as Unix milliseconds since epoch (added by the JSON wrapper to every object response)" },
+    "now_utc": { "type": "string", "format": "date-time", "description": "ISO 8601 UTC representation of now" },
+    "grant": { "$ref": "#/$defs/grant" },
+    "proposals": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/proposal" },
+      "description": "Every proposal filed under the grant, including superseded revisions, oldest first."
+    },
+    "selected": {
+      "description": "The winning proposal in a compact form, or null until a selection is made.",
+      "oneOf": [
+        { "type": "null" },
+        { "type": "object", "required": ["id", "author", "title", "summary"], "properties": { "id": { "type": "integer" }, "author": { "type": "string" }, "title": { "type": "string" }, "summary": { "type": "string" } } }
+      ]
+    },
+    "selections": {
+      "type": "array",
+      "description": "Every selection decision recorded for the grant (normally one: the closing selection).",
+      "items": { "$ref": "#/$defs/selection" }
+    },
+    "live_tally": {
+      "description": "The published weighted vote tally. Present (an object) while the grant is in voting state; null otherwise, including before voting opens and after it closes.",
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/tally" }
+      ]
+    },
+    "listings": {
+      "type": "array",
+      "description": "The listings posted under this grant, with award-state counts, oldest first.",
+      "items": { "$ref": "#/$defs/listing" }
+    },
+    "timeline": {
+      "type": "array",
+      "description": "The public timeline: grant/proposal identity events interleaved with listing, submission, and award rows, sorted by time then by chain order.",
+      "items": { "type": "object", "required": ["at", "kind", "who", "text"], "properties": { "at": { "type": "integer" }, "kind": { "type": "string" }, "who": { "type": "string" }, "text": { "type": "string" }, "ref": { "type": ["string", "null"] } } }
+    },
+    "rules": {
+      "type": "object",
+      "required": ["what", "selection", "proposals", "money", "shipped", "who_transitions"],
+      "properties": {
+        "what": { "type": "string" },
+        "selection": { "type": "object", "required": ["sponsor", "vote"], "properties": { "sponsor": { "type": "string" }, "vote": { "type": "string" } } },
+        "proposals": { "type": "string" },
+        "money": { "type": "string" },
+        "shipped": { "type": "string" },
+        "who_transitions": { "type": "string" }
+      },
+      "description": "The static grant rules (GRANT_RULES): what a grant is, the two selection methods, the proposal cadence, the money rule, what shipping means, and who may transition states."
+    },
+    "actions": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "The actions a citizen can take against this grant right now, derived from its state (may be empty when nothing is open)."
+    }
+  },
+  "$defs": {
+    "grant": {
+      "type": "object",
+      "required": ["id", "slug", "title", "sponsor", "resource", "brief", "constraints", "selection", "selection_rule", "state", "thread", "post_id", "proposals_close_at", "voting_closes_at", "voting_opened_at", "selected_proposal_id", "shipped_evidence", "cancel_reason", "created_at", "opened_at", "updated_at", "record", "page"],
+      "properties": {
+        "id": { "type": "integer", "minimum": 1, "description": "The grant id." },
+        "slug": { "type": "string", "minLength": 1, "description": "The grant's short identifier; the one /api/grants/:slug is addressed by." },
+        "title": { "type": "string", "minLength": 1, "description": "The grant's title." },
+        "sponsor": { "type": "string", "minLength": 1, "description": "The citizen handle sponsoring the grant." },
+        "resource": { "type": "object", "required": ["kind", "what", "status"], "properties": { "kind": { "type": "string" }, "what": { "type": "string" }, "status": { "type": "string" } }, "description": "The resource the sponsor contributed (a domain, a fund, compute, a repository) and its confirmed status." },
+        "brief": { "type": "string", "minLength": 1, "description": "What the sponsor wants built with the grant." },
+        "constraints": { "type": ["string", "null"], "description": "Constraints on the work, or null when the sponsor set none." },
+        "selection": { "enum": ["sponsor", "vote"], "description": "How the winning proposal is chosen: the sponsor picks, or a weighted vote is held." },
+        "selection_rule": { "type": "string", "description": "The rule text for this grant's selection method (from GRANT_RULES.selection)." },
+        "state": { "enum": ["draft", "open", "voting", "selected", "building", "shipped", "cancelled"], "description": "The grant's current state." },
+        "thread": { "type": ["string", "null"], "description": "The /api/post/:id link to the grant's thread, or null when the grant has no post." },
+        "post_id": { "type": ["integer", "null"], "description": "The post the grant's thread lives on, or null." },
+        "proposals_close_at": { "type": ["integer", "null"], "description": "When proposal filing closed, in Unix milliseconds (seconds column lifted to ms), or null when the grant is still taking proposals / has no deadline." },
+        "voting_closes_at": { "type": ["integer", "null"], "description": "When the voting window closes, in Unix milliseconds, or null when there is no close." },
+        "voting_opened_at": { "type": ["integer", "null"], "description": "When the voting window opened, in Unix milliseconds, or null when it has not opened." },
+        "selected_proposal_id": { "type": ["integer", "null"], "description": "The id of the winning proposal, or null until one is selected." },
+        "shipped_evidence": { "type": ["string", "null"], "description": "The URL a stranger can open as evidence of shipping, or null until shipped." },
+        "cancel_reason": { "type": ["string", "null"], "description": "Why the grant was cancelled, or null when it was not." },
+        "created_at": { "type": "integer", "minimum": 0, "description": "Unix milliseconds when the grant was created." },
+        "opened_at": { "type": ["integer", "null"], "description": "Unix milliseconds when the grant opened for proposals, or null when it has not." },
+        "updated_at": { "type": "integer", "minimum": 0, "description": "Unix milliseconds when the grant was last changed." },
+        "record": { "type": "string", "description": "The API path to this grant: /api/grants/<slug>." },
+        "page": { "type": "string", "description": "The human page path to this grant: /grants/<slug>." }
+      }
+    },
+    "proposal": {
+      "type": "object",
+      "required": ["id", "author", "revision", "supersedes", "superseded_by", "on_ballot", "title", "summary", "body", "wants_to_build", "comment_id", "comment", "votes", "weighted_votes", "payload_hash", "record", "created_at"],
+      "properties": {
+        "id": { "type": "integer", "minimum": 1, "description": "The proposal id." },
+        "author": { "type": "string", "minLength": 1, "description": "The citizen handle that filed the proposal." },
+        "revision": { "type": "integer", "minimum": 1, "description": "The revision number of this proposal row (1 for the original)." },
+        "supersedes": { "type": ["integer", "null"], "description": "The id of the earlier proposal this revision replaces, or null for the original." },
+        "superseded_by": { "type": ["integer", "null"], "description": "The id of the later revision that replaces this one, or null when this is the live revision." },
+        "on_ballot": { "type": "boolean", "description": "True when this is a live (non-superseded) proposal published on the grant thread, i.e. eligible to be voted on." },
+        "title": { "type": "string", "minLength": 1, "description": "The proposal's title." },
+        "summary": { "type": "string", "minLength": 1, "description": "The proposal's one-sentence summary." },
+        "body": { "type": "string", "minLength": 1, "description": "The proposal's body." },
+        "wants_to_build": { "type": "boolean", "description": "Whether the proposer intends to build the work themselves." },
+        "comment_id": { "type": ["integer", "null"], "description": "The comment id where the proposal is published on the grant thread, or null when unpublished." },
+        "comment": { "type": ["string", "null"], "pattern": "^c[0-9]+$", "description": "The c<comment_id> reference to the proposal's thread comment, or null when unpublished." },
+        "votes": { "type": ["integer", "null"], "description": "Raw votes for the proposal while voting is open, or null when not counted." },
+        "weighted_votes": { "type": ["number", "null"], "description": "Tenure-weighted votes for the proposal while voting is open, or null when not counted." },
+        "payload_hash": { "type": "string", "minLength": 1, "description": "The sha256 over the proposal fields (see the hash recipe in the proposal record)." },
+        "record": { "type": "string", "description": "The API path to the full proposal: /api/grants/<slug>/proposals/<id>." },
+        "created_at": { "type": "integer", "minimum": 0, "description": "Unix milliseconds when the proposal was filed." }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "comment_id": { "type": "null" } } },
+          "then": { "properties": { "comment": { "type": "null" } } },
+          "description": "An unpublished proposal has no thread comment."
+        },
+        {
+          "if": { "properties": { "comment_id": { "type": "integer" } } },
+          "then": { "properties": { "comment": { "not": { "type": "null" } } } },
+          "description": "A published proposal always carries its c<comment_id> reference."
+        },
+        {
+          "oneOf": [
+            { "allOf": [ { "required": ["votes", "weighted_votes"], "properties": { "votes": { "type": "integer" }, "weighted_votes": { "type": "number" } } } ] },
+            { "allOf": [ { "required": ["votes", "weighted_votes"], "properties": { "votes": { "type": "null" }, "weighted_votes": { "type": "null" } } } ] }
+          ],
+          "description": "A proposal's vote counts are either both present (counted while voting) or both null (not on the live tally): a raw count never ships without its weighted twin."
+        }
+      ]
+    },
+    "tally": {
+      "type": "object",
+      "required": ["counted_at", "window", "total_votes", "rule", "ballot"],
+      "properties": {
+        "counted_at": { "type": "integer", "description": "Unix milliseconds when this tally was computed." },
+        "window": { "type": "object", "required": ["opened_at", "closes_at"], "properties": { "opened_at": { "type": "integer" }, "closes_at": { "type": ["integer", "null"] } }, "description": "The ballot window (opened_at in ms; closes_at in ms or null when there is no close)." },
+        "total_votes": { "type": "integer", "minimum": 0, "description": "The total number of raw votes counted across the ballot." },
+        "rule": { "type": "string", "description": "The vote-selection rule text (GRANT_RULES.selection.vote)." },
+        "ballot": {
+          "type": "array",
+          "description": "One line per on-ballot proposal, best weighted first.",
+          "items": {
+            "type": "object",
+            "required": ["proposal_id", "comment_id", "handle", "title", "votes", "weighted_votes"],
+            "properties": {
+              "proposal_id": { "type": "integer" },
+              "comment_id": { "type": "integer" },
+              "handle": { "type": "string" },
+              "title": { "type": "string" },
+              "votes": { "type": "integer", "minimum": 0 },
+              "weighted_votes": { "type": "number", "minimum": 0 }
+            }
+          }
+        }
+      }
+    },
+    "selection": {
+      "type": "object",
+      "required": ["id", "proposal_id", "method", "decided_by", "tally", "decided_at"],
+      "properties": {
+        "id": { "type": "integer", "minimum": 1, "description": "The selection row id." },
+        "proposal_id": { "type": "integer", "minimum": 1, "description": "The id of the proposal that was selected." },
+        "method": { "enum": ["sponsor", "vote"], "description": "How the selection was made." },
+        "decided_by": { "type": "string", "minLength": 1, "description": "The citizen handle that made the selection." },
+        "tally": { "type": ["object", "null"], "description": "The frozen tally that decided a vote selection, or null for a sponsor selection." },
+        "decided_at": { "type": "integer", "minimum": 0, "description": "Unix milliseconds when the selection was made." }
+      },
+      "allOf": [
+        { "if": { "properties": { "method": { "const": "sponsor" } } }, "then": { "properties": { "tally": { "type": "null" } } }, "description": "A sponsor selection carries no tally." },
+        { "if": { "properties": { "method": { "const": "vote" } } }, "then": { "properties": { "tally": { "type": "object" } } }, "description": "A vote selection always carries the frozen deciding tally." }
+      ]
+    },
+    "listing": {
+      "type": "object",
+      "required": ["id", "row", "record", "title", "funder", "amount_atomic", "asset", "amount_human", "max_awards", "funding_mode", "settlement_mode", "settlement_version", "open", "expiry", "withdrawn_at", "submissions", "award_states", "created_at"],
+      "properties": {
+        "id": { "type": "integer", "minimum": 1, "description": "The listing id." },
+        "row": { "type": "string", "pattern": "^listing-[0-9]+$", "description": "The payout-binding row name for the listing: listing-<id>." },
+        "record": { "type": "string", "description": "The API path to the listing: /api/listings/<id>." },
+        "title": { "type": "string", "minLength": 1, "description": "The listing's title." },
+        "funder": { "type": "string", "minLength": 1, "description": "The citizen handle funding the listing." },
+        "amount_atomic": { "type": "string", "description": "The total award amount in the token's atomic units (as a string, to preserve exactness)." },
+        "asset": { "type": "string", "minLength": 1, "description": "The token symbol of the funds." },
+        "amount_human": { "type": ["string", "null"], "description": "The amount in human units, or null when the token has no known decimals." },
+        "max_awards": { "type": "integer", "minimum": 0, "description": "The maximum number of awards the listing can pay out." },
+        "funding_mode": { "type": "string", "description": "The listing's funding mode." },
+        "settlement_mode": { "type": "string", "description": "The listing's settlement mode." },
+        "settlement_version": { "type": "integer", "description": "The settlement version." },
+        "open": { "type": "boolean", "description": "True while the listing is open (not withdrawn, not moderated, not expired)." },
+        "expiry": { "type": "integer", "minimum": 0, "description": "Unix seconds when the listing expires." },
+        "withdrawn_at": { "type": ["integer", "null"], "description": "Unix seconds when the listing was withdrawn, or null while it stands." },
+        "submissions": { "type": "integer", "minimum": 0, "description": "The number of submissions on the listing." },
+        "award_states": { "type": "object", "description": "Award-state counts for this listing, e.g. { paid: 1 } (keys vary by state)." },
+        "created_at": { "type": "integer", "minimum": 0, "description": "Unix seconds when the listing was created." }
+      }
+    }
+  }
+}

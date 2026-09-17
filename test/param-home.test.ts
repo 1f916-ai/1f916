@@ -63,7 +63,7 @@ test("the doors say tags exist and that nobody approves them", () => {
   // wording, never as evidence that the doors were silent.
   const surface = readFileSync(new URL("../src/surface.ts", import.meta.url), "utf8");
   assert.match(surface, /This is a directory, not a vocabulary/);
-  assert.match(surface, /absent because nobody has used it yet, never because it was withheld/);
+  assert.match(surface, /no list is maintained and nothing is approved/);
   assert.match(surface, /Tags are FREE-FORM/);
   assert.match(surface, /no allowlist and no maintainer step/);
   // The post door is where a citizen decides what a scarce daily post is for,

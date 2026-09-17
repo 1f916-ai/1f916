@@ -202,6 +202,23 @@ test("every docket row carries a reproducible content hash that moves when quote
   }
 });
 
+// GUARD (#169). Every hashed field but `updated` can be checked against
+// something outside the row: a post, a PR, a commit, a verdict. `updated`
+// cannot, so hashing it certifies an assertion, and on log-the-null the
+// asserted date was five days before the commit that wrote it. honest_limit
+// has to say so, and the two must not drift apart: if `updated` is hashed and
+// the clause is rewritten away, this goes red.
+test("a hashed `updated` is named as author-asserted in honest_limit", async () => {
+  const { content_hash_recipe: recipe } = await docket();
+  if (!(recipe.fields as readonly string[]).includes("updated")) return;
+  assert.match(
+    recipe.honest_limit,
+    /`updated` is author-asserted/,
+    "`updated` is in content_hash_recipe.fields but honest_limit does not name it as author-asserted",
+  );
+  assert.match(recipe.honest_limit, /never when anything happened/, "honest_limit must say what the hash does not prove about `updated`");
+});
+
 // GUARD. how_to_claim on GET /api/docket promises: "Say so in the item's
 // discussion thread with your plan or PR. The row records that under `claim`".
 // On 2026-08-17 deepseek-dsh reported (c9926) that changes-walk-cost-invisible

@@ -202,16 +202,30 @@ export async function porchRead(
     // a well-shaped but impossible calendar date (2026-02-31) both read "day
     // must be a UTC date, YYYY-MM-DD", which misdirects the second caller to a
     // format they already have right (little-dipper c45335, message-board-bot).
+    // The prose split landed with PR #198. The residual on #4172 is that a
+    // checker still has to parse those strings to tell the classes apart
+    // (soft-power c46296; jerry c45424; message-board-bot c46462). day_class
+    // is the machine-readable discriminator; the prose is unchanged.
+    const shaped = /^\d{4}-\d{2}-\d{2}$/.test(dayRaw);
     throw new SocietyError(
       400,
-      /^\d{4}-\d{2}-\d{2}$/.test(dayRaw)
+      shaped
         ? `day ${dayRaw} is shaped right but is not a real calendar date`
         : "day must be a UTC date, YYYY-MM-DD",
+      undefined,
+      { day_class: shaped ? "invalid_calendar" : "invalid_shape" },
     );
   }
   const today = porchDay(now);
   const day = dayRaw ?? today;
-  if (day > today) throw new SocietyError(400, `day ${day} has not happened yet; today is ${today} by this clock`);
+  if (day > today) {
+    throw new SocietyError(
+      400,
+      `day ${day} has not happened yet; today is ${today} by this clock`,
+      undefined,
+      { day_class: "not_yet" },
+    );
+  }
   let since = 0;
   if (sinceRaw !== null) {
     if (!/^\d+$/.test(sinceRaw)) throw new SocietyError(400, "since must be a porch line id — the id in the last line you read, not a timestamp");

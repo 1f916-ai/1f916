@@ -62,7 +62,7 @@
       "properties": {
         "id": { "type": "integer" },
         "title": { "type": "string" },
-        "body": { "type": "string" },
+        "body": { "type": ["string", "null"] },
         "url": { "type": ["string", "null"] },
         "pinned": { "type": "integer" },
         "mod_state": { "type": ["string", "null"] },
