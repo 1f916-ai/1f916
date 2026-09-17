@@ -2,13 +2,23 @@
 //
 // The disclosure says two things a reader acts on: that `custody` was asserted
 // once at `asserted_at`, and that NOTHING in the identity log can change it.
-// The second half is the dangerous one. It is true today and it is exactly the
-// kind of sentence that goes on being served after it stops being true —
-// somebody declares a custody-change kind, the log starts carrying the event,
-// and this endpoint goes on telling every offline verifier that the label
-// cannot move. So the disclosure is DERIVED from a total record of the key
-// kinds, and this file fails until a new key kind answers the custody question
-// for itself.
+// The second half is the dangerous one. It was true when this file was written
+// and it is exactly the kind of sentence that goes on being served after it
+// stops being true — somebody declares a custody-change kind, the log starts
+// carrying the event, and this endpoint goes on telling every offline verifier
+// that the label cannot move. So the disclosure is DERIVED from a total record
+// of the key kinds, and this file fails until a new key kind answers the
+// custody question for itself.
+//
+// IT STOPPED BEING TRUE ON 2026-09-09, and the guard is what said so. Merging
+// `key-custody-declare` (docket row `custody-label-has-one-value`) into main
+// left this file red on its first test, naming the kind that had not answered;
+// the kind now answers, `changes_custody` is true for it, and the served
+// sentence moved by itself. The prediction in the paragraph above was written
+// before the case existed and is the case that arrived. Nothing here was
+// loosened to let the merge through — the mapping gained an entry and the
+// second test's two arms swapped places, which is what a derived disclosure is
+// supposed to do when the world moves.
 //
 // The demonstration behind it is on the record rather than hypothetical: #1762
 // bound a key whose private half was not in its execution context, later held
@@ -41,24 +51,32 @@ test("every declared key kind states what it settles about custody, and nothing 
 
 // KILLING MUTATION: hard-code rechecked_by to [] instead of deriving it -> this
 // goes red, because flipping a mapping entry no longer moves the served answer.
-test("the empty case is derived from the mapping, not written down", () => {
+// ARMS SWAPPED 2026-09-09: until `key-custody-declare` merged, the empty case
+// was the live one and the populated case was reached by flipping an entry by
+// hand. Now it is the other way round. Both arms are kept and neither was
+// weakened, because the property under test was never which case is true today
+// — it is that the served sentence is computed from the mapping and cannot
+// survive the mapping moving.
+test("both sentences are derived from the mapping, not written down", () => {
   const now = 1787803825532;
-  const empty = custodyEvidence([{ custody: "self", bound_at: now }]);
-  assert.deepEqual(empty.rechecked_by, [], "no declared key kind changes custody today, and the wire must say so as an empty list");
-  assert.match(empty.means, /dated testimony/, "the empty case must state what the label IS, not merely that a list is empty");
+  const live = custodyEvidence([{ custody: "self", bound_at: now }]);
+  assert.deepEqual(live.rechecked_by, ["key-custody-declare"], "a declared key kind that changes custody must reach the wire as one");
+  assert.match(live.means, /can move on this surface, through: key-custody-declare/);
+  assert.doesNotMatch(live.means, /dated testimony/, "the empty-case sentence must not survive the case stopping being empty");
 
-  // The same function, with one entry flipped, must produce the OTHER sentence.
+  // The same function, with the one custody-changing entry flipped off, must
+  // produce the OTHER sentence — the one this registry served until today.
   // This is the whole reason the disclosure is derived: it has to be incapable
-  // of going on saying "nothing can change it" once something can.
-  const saved = KEY_LIFECYCLE_KINDS["key-revoke"].changes_custody;
+  // of going on saying "nothing can change it" once something can, and equally
+  // incapable of going on saying something can once nothing does.
+  const saved = KEY_LIFECYCLE_KINDS["key-custody-declare"].changes_custody;
   try {
-    KEY_LIFECYCLE_KINDS["key-revoke"].changes_custody = true;
-    const moved = custodyEvidence([{ custody: "self", bound_at: now }]);
-    assert.deepEqual(moved.rechecked_by, ["key-revoke"]);
-    assert.match(moved.means, /can move on this surface, through: key-revoke/);
-    assert.doesNotMatch(moved.means, /dated testimony/, "the empty-case sentence must not survive the case stopping being empty");
+    KEY_LIFECYCLE_KINDS["key-custody-declare"].changes_custody = false;
+    const empty = custodyEvidence([{ custody: "self", bound_at: now }]);
+    assert.deepEqual(empty.rechecked_by, [], "with no kind changing custody the wire must say so as an empty list");
+    assert.match(empty.means, /dated testimony/, "the empty case must state what the label IS, not merely that a list is empty");
   } finally {
-    KEY_LIFECYCLE_KINDS["key-revoke"].changes_custody = saved;
+    KEY_LIFECYCLE_KINDS["key-custody-declare"].changes_custody = saved;
   }
 });
 

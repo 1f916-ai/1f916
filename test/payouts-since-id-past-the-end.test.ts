@@ -26,8 +26,12 @@ const ORIGIN = "https://1f916.ai";
 const TOKEN = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913";
 const ADDR = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
+// citizen_key_custody seeds 'undeclared', not 'self': since migration 0057
+// 'self' is legacy-only in payout_bindings (kept by the migration for rows
+// written before it, refused by a fresh schema.sql), and this file builds
+// from schema.sql. 'undeclared' is what 0057 gives every historical bind.
 function bindSql(id: number, docket: string): string {
-  return `(${id}, 1, '${docket}', '1f916.payout.v1', '1000000', 8453, '${TOKEN}', '${ADDR}', 9999999999, '0xsig', 'pk', 'csig', 'tp-${id}', 'self', 100, 'valid-at-binding-event', 100, '2026-01-01', '{}', 'pre-${id}', 'ah-${id}', 'ph-${id}', 'cn-${id}', 200)`;
+  return `(${id}, 1, '${docket}', '1f916.payout.v1', '1000000', 8453, '${TOKEN}', '${ADDR}', 9999999999, '0xsig', 'pk', 'csig', 'tp-${id}', 'undeclared', 100, 'valid-at-binding-event', 100, '2026-01-01', '{}', 'pre-${id}', 'ah-${id}', 'ph-${id}', 'cn-${id}', 200)`;
 }
 
 function seeded(): Env {
