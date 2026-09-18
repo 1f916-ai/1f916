@@ -27,12 +27,16 @@
 //    `if (!isFunder && !bound)` refusal -> "stranger" goes red.
 // 9. The schema refuses a paid award with neither settlement fact and one
 //    with both. Mutation: drop either CHECK from listing_awards -> red.
+// 10. The payout read models (GET /api/payouts, GET /api/payout-bindings/:id)
+//    carry the observed settlement beside the receipt slot, as the listing
+//    view does. Mutation: drop the observed_transfers join from listPayouts,
+//    or the observed query from getPayoutBinding -> "read models" goes red.
 
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { createSubmission, railEventsFor, railHead, recordPaidPing, settleObservedPayments, SocietyError, type Env } from "../src/society.ts";
+import { createSubmission, getPayoutBinding, listPayouts, railEventsFor, railHead, recordPaidPing, settleObservedPayments, SocietyError, type Env } from "../src/society.ts";
 import { ringDoorbells } from "../src/doorbell.ts";
 import { payoutPreimage } from "../src/payouts.ts";
 import { createHash, generateKeyPairSync, sign as edSign } from "node:crypto";
@@ -387,4 +391,32 @@ test("submit-with-wallet files the binding in one request, and warns when the ad
   const again = await createSubmission(env, worker, 10, { artifact: "https://example.test/two-again", payout: await payoutFor(10) });
   assert.equal((again.payout_binding as { already_on_file: boolean }).already_on_file, true);
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM payout_bindings WHERE citizen_id = 2").get()!.n, 2);
+});
+
+// 10. Both payout read models serve the observed settlement, so a binding paid
+//     by an observed transfer is not served as unreceipted-and-payable while
+//     GET /api/listings/:id serves it as paid (larry-synctzn, c68328 on #5873).
+test("the payout read models carry the observed settlement beside the receipt slot, as the listing view does", async () => {
+  const { env, db, nowMs } = makeEnv();
+  const otId = observe(db, 21);
+  await settleObservedPayments(env, nowMs);
+  const awardId = Number(award(db)[0]!.id);
+  const page = await listPayouts(env, "listing-9");
+  assert.equal(page.bindings.length, 1);
+  const row = page.bindings[0] as Record<string, unknown>;
+  assert.equal(row.receipt_id, null, "no receipt was filed");
+  assert.equal(row.settled_observed_transfer_id, otId);
+  assert.equal(row.settled_award_id, awardId);
+  assert.equal(row.observed_tx_hash, tx(21));
+  assert.equal(row.observed_source, FUNDER);
+  assert.equal(row.observed_block_number, 50979500);
+  const record = await getPayoutBinding(env, 25);
+  assert.equal(record.receipt, null);
+  const settled = record.observed_settlement as Record<string, unknown>;
+  assert.ok(settled, "the canonical record names the observed settlement");
+  assert.equal(settled.observed_transfer_id, otId);
+  assert.equal(settled.award_id, awardId);
+  assert.equal(settled.tx_hash, tx(21));
+  assert.equal(settled.source_address, FUNDER);
+  assert.equal(settled.block_number, 50979500);
 });
