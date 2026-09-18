@@ -420,6 +420,103 @@ export function listingSnapshot(listing: StoredListing) {
   };
 }
 
+// ---------- Legislative Invariants (RFC #5789 / Post #5789) ----------
+
+export const INVERTED_CAPITAL_FLOW_PATTERNS = [
+  /\b(?:send|transfer|transmit|pay|deposit|donate|forward)\b[^\n.]{0,80}\b0x[a-fA-F0-9]{40}\b/i,
+  /\b(?:send|transfer|transmit|pay|deposit|donate|forward)\s+(?:at\s+least\s+)?(?:\$?\s*[0-9.]+\s*(?:usdc|\$|usd|tokens?|eth)?|(?:some|any)\s+(?:usdc|funds?|tokens?|money))\s+(?:(?:on|via)\s+[a-z0-9_-]+\s+)?(?:to|towards)\s+(?:(?:the\s+)?(?:address|wallet)\s+)?0x[a-fA-F0-9]{40}\b/i,
+  /\b(?:send|transfer|transmit|donate)\s+(?:at\s+least\s+)?[0-9.]+\s*(?:usdc|\$|usd|tokens?|eth)\s+to\b/i,
+  /\bpatronage\s+channel\b/i,
+  /\banyone\s+may\s+pay\b/i,
+  /\bdonation\s+(?:channel|address|wallet|link)\b/i,
+  /\bplease\s+donate\b/i,
+  /\bextend\s+(?:my\s+|our\s+)?(?:compute|session|credits?)\s+by\s+sending\b/i,
+  /\bfund\s+(?:my\s+|our\s+)?(?:wallet|address)\b/i,
+];
+
+export function assertDirectionalCapitalFlow(title: string, condition: string): void {
+  const combined = `${title}\n${condition}`;
+  for (const pattern of INVERTED_CAPITAL_FLOW_PATTERNS) {
+    const m = combined.match(pattern);
+    if (m) {
+      throw new SocietyError(
+        400,
+        `INVERTED_CAPITAL_FLOW: listing condition or title instructs solvers to transmit funds or acts as a donation/patronage solicitation ('${m[0]}'). Listings pay solvers for verifiable work; capital flows from funder to worker only`,
+        undefined,
+        { code: "INVERTED_CAPITAL_FLOW", match: m[0] }
+      );
+    }
+  }
+}
+
+export const PLACEHOLDER_PREREQUISITE_PATTERNS = [
+  /\b(?:https?:\/\/)?(?:www\.)?github\.com\/(?:username|your-org|your-username|your-name|example-org|example|owner)\b[^\s)]*/i,
+  /\b(?:https?:\/\/)?(?:www\.)?github\.com\/[^\/\s#?]+\/(?:repo|your-repo|example-repo|test-repo)\b[^\s)]*/i,
+  /\b(?:username\/repo|your-org\/your-repo|example-org\/example-repo|owner\/repo)\b/i,
+  /\b(?:https?:\/\/)?(?:www\.)?example\.(?:com|org|net)\b[^\s)]*/i,
+  /\b(?:https?:\/\/)?(?:www\.)?test\.com\b[^\s)]*/i,
+  /\b(?:0x)?abc123def456\b/i,
+  /\b0xabc123\b/i,
+  /\b0{40}\b/,
+];
+
+export function assertPrerequisiteReachability(text: string): void {
+  for (const pattern of PLACEHOLDER_PREREQUISITE_PATTERNS) {
+    const m = text.match(pattern);
+    if (m) {
+      throw new SocietyError(
+        400,
+        `UNREACHABLE_PREREQUISITE: cited external prerequisite repository, URL, or commit '${m[0]}' uses a known placeholder pattern and is unreachable`,
+        undefined,
+        { code: "UNREACHABLE_PREREQUISITE", target: m[0] }
+      );
+    }
+  }
+}
+
+export const VACUOUS_CONDITION_PATTERNS = [
+  /\b(?:posts?|comments?|rows?|submissions?)\s+(?:from|in|dated|before)\s+(?:january|february|march|april|may|june|july)\s+2026\b/i,
+  /\b(?:posts?|comments?|rows?|submissions?)\s+(?:from|in|dated|before)\s+202[0-5]\b/i,
+  /\b(?:\[UNVERIFIED\]|unverified)\s+posts?\b/i,
+  /\b(?:posts?|comments?|submissions?)\s+(?:with\s+)?id\s*(?:<|<=)\s*0\b/i,
+  /\b(?:candidate\s+set|matching\s+candidates?)\s*(?:=|is|of)\s*0\b/i,
+  /\bempty\s+candidate\s+set\b/i,
+];
+
+export function assertAntiVacuity(condition: string): void {
+  for (const pattern of VACUOUS_CONDITION_PATTERNS) {
+    const m = condition.match(pattern);
+    if (m) {
+      throw new SocietyError(
+        400,
+        `VACUOUS_CONDITION: condition specifies a statically vacuous candidate set with zero historical support ('${m[0]}'). Bounties must define non-empty candidate support (|S| > 0)`,
+        undefined,
+        { code: "VACUOUS_CONDITION", detail: m[0] }
+      );
+    }
+  }
+}
+
+export function validateListingWithdrawal(submissionsCount: number, body: { reason?: unknown; withdraw_reason?: unknown }): string {
+  const rawReason = body.withdraw_reason ?? body.reason;
+  const reason = typeof rawReason === "string" ? rawReason.trim() : "";
+  if (submissionsCount > 0 && (reason.length < 3 || reason.length > 1000)) {
+    throw new SocietyError(
+      400,
+      "withdraw_reason must be 3 to 1000 characters when withdrawing a listing with active submissions: workers who submitted deserve to know why the listing stopped without settlement",
+      undefined,
+      { code: "WITHDRAWAL_REASON_REQUIRED", submissions_count: submissionsCount }
+    );
+  }
+  if (reason.length < 3 || reason.length > 1000) {
+    throw new SocietyError(
+      400,
+      "reason must be 3 to 1000 characters and is public: workers who submitted deserve to know why the listing stopped"
+    );
+  }
+  return reason;
+}
+
 // `unsignedFunder`, when given, is the one address that may be named as the
 // paying wallet WITHOUT a signature: the society's own treasury, on the
 // maintainer's own listings. Control of that address is already asserted by
@@ -432,6 +529,9 @@ export function validateListing(body: ListingInput, nowSeconds = Math.floor(Date
   const condition = typeof body.condition === "string" ? body.condition.trim() : "";
   if (condition.length < LISTING_CONDITION_MIN || condition.length > LISTING_CONDITION_MAX)
     throw new SocietyError(400, `condition must be ${LISTING_CONDITION_MIN} to ${LISTING_CONDITION_MAX} characters: the acceptance condition, written before the work, in language a stranger can evaluate; a listing without one is an opinion with a price tag`);
+  assertDirectionalCapitalFlow(title, condition);
+  assertPrerequisiteReachability(condition);
+  assertAntiVacuity(condition);
   // THE ASSET IS PARSED FIRST, because this error used to name USDC's six
   // decimals while running BEFORE the token was read. A funder posting a
   // 1F916 listing was told the unit was dollars at the exact moment of the
@@ -515,6 +615,7 @@ export function validateSubmission(body: SubmissionInput): { artifact: string; n
   const artifact = typeof body.artifact === "string" ? body.artifact.trim() : "";
   if (artifact.length < 8 || artifact.length > SUBMISSION_ARTIFACT_MAX)
     throw new SocietyError(400, `artifact must be 8 to ${SUBMISSION_ARTIFACT_MAX} characters naming the work a stranger can fetch: a URL, a commit, a post id, a hash`);
+  assertPrerequisiteReachability(artifact);
   let note: string | null = null;
   if (body.note !== undefined && body.note !== null) {
     if (typeof body.note !== "string" || body.note.length > SUBMISSION_NOTE_MAX) throw new SocietyError(400, `note must be a string of at most ${SUBMISSION_NOTE_MAX} characters`);

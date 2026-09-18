@@ -25,7 +25,7 @@ import { unlistedPayloads } from "./payload-gate.ts";
 import { RULES_FINGERPRINT, SCREEN_VERSION, refusalNote, refusalNotePublic, screenNote, hygieneRuleRoster, refusalRuleRoster, screenText, seatClaim, type ScreenFinding } from "./screen.ts";
 import { DOCKET, standingClaims, starterItems, starterItemsState } from "./docket.ts";
 import { grantForListing } from "./grants.ts";
-import { FUNDS_ADVICE, LISTINGS_PER_DAY, LISTING_RULE, NEXT_ACTIONS_NOTE, PAYEE_PREREQUISITES, SUBMISSIONS_PER_DAY, TREASURY_FUNDER_MARK, assertPaidFromListingFunder, assertVerifierCapNotReached, listingIdFromRow, listingPreimage, listingRoleFromRow, listingRow, listingSnapshot, payeeNextActions, validateListing, validateSubmission, type HeldBinding, type ListingInput, type StoredListing, type SubmissionInput } from "./listings.ts";
+import { FUNDS_ADVICE, LISTINGS_PER_DAY, LISTING_RULE, NEXT_ACTIONS_NOTE, PAYEE_PREREQUISITES, SUBMISSIONS_PER_DAY, TREASURY_FUNDER_MARK, assertPaidFromListingFunder, assertVerifierCapNotReached, listingIdFromRow, listingPreimage, listingRoleFromRow, listingRow, listingSnapshot, payeeNextActions, validateListing, validateListingWithdrawal, validateSubmission, type HeldBinding, type ListingInput, type StoredListing, type SubmissionInput } from "./listings.ts";
 import {
   ADAPTER_STATUS, AUTOMATIC_CHECK_NOTE, FUNDING_MODE_NOTE, SETTLEMENT_MODE_NOTE, SUBMISSION_STATE_NOTE,
   AWARD_STATES, assertAwardTransition, assertLiabilityInvariant, awardRefusal, commentIdFromArtifact, consumesSlot, evaluateAutomaticCheck, isOutstanding, lapseStateFor, listingEconomics,
@@ -4118,13 +4118,14 @@ export function listingClosedReason(listing: StoredListing, nowSeconds: number):
 // Funder-only. A listing cannot be edited, but it can be stopped: no further
 // submissions or bindings, a public reason, a chained event. Bindings already
 // filed still stand and can still be paid; the listing says it was withdrawn.
-export async function withdrawListing(env: Env, citizen: Citizen, listingId: number, body: { reason?: unknown }) {
+export async function withdrawListing(env: Env, citizen: Citizen, listingId: number, body: { reason?: unknown; withdraw_reason?: unknown }) {
   const listing = await listingById(env, listingId);
   if (!listing) throw new SocietyError(404, `no listing ${listingId}`);
   if (listing.citizen_id !== citizen.id) throw new SocietyError(403, "only the funder who posted a listing can withdraw it");
   if (listing.withdrawn_at !== null) throw new SocietyError(409, `listing ${listingId} was already withdrawn at ${listing.withdrawn_at}`);
-  const reason = typeof body.reason === "string" ? body.reason.trim() : "";
-  if (reason.length < 3 || reason.length > 1000) throw new SocietyError(400, "reason must be 3 to 1000 characters and is public: workers who submitted deserve to know why the listing stopped");
+  const subCountRow = await env.DB.prepare("SELECT COUNT(*) AS n FROM listing_submissions WHERE listing_id = ?").bind(listingId).first<{ n: number }>();
+  const submissionsCount = subCountRow?.n ?? 0;
+  const reason = validateListingWithdrawal(submissionsCount, body);
   const now = Date.now();
   const stateStmt = env.DB.prepare("UPDATE listings SET withdrawn_at = ?, withdraw_reason = ? WHERE id = ? AND withdrawn_at IS NULL").bind(now, reason, listingId);
   const committed = await commitWithIdentityEvent<never>(
