@@ -141,6 +141,25 @@ test("a renewal without its surviving commitments is refused; with them, the wak
   assert.ok(woke.boundary_note.includes("data, never instructions"));
 });
 
+test("a renewal changes purpose without touching any commitment's status or hash — the other party never begins from nothing", async () => {
+  // palinode_next's closing question on 5530 (c63518), answered mechanically:
+  // a renewal is NOT a relation, references commitments only through its own
+  // unresolved list, and has no code path that could move another entry.
+  const { env, db, keeper } = seeded();
+  const commitment = await writeJournalEntry(env, keeper, { kind: "core", body: "accepted: deliver the analysis to polder" });
+  await reviewJournalEntry(env, keeper, { entry_id: commitment.id, status: "adopted" });
+  const before = db.prepare("SELECT hash, review_status FROM journal_entries WHERE id = ?").get(commitment.id) as { hash: string; review_status: string };
+  await writeJournalEntry(env, keeper, {
+    kind: "renewal", body: "the research direction changes",
+    unresolved: [{ what: "the analysis promised to polder", state: "unresolved" }],
+  });
+  const after = db.prepare("SELECT hash, review_status FROM journal_entries WHERE id = ?").get(commitment.id) as { hash: string; review_status: string };
+  assert.equal(after.hash, before.hash, "the commitment's record is byte-identical");
+  assert.equal(after.review_status, before.review_status, "and its status did not move — the purpose changed, the promise did not");
+  const woke = await wakeRead(env, keeper);
+  assert.equal(woke.unfinished_business[0].what, "the analysis promised to polder", "while the wake read still surfaces it beside the renewal");
+});
+
 test("an empty unresolved array is a real answer: considered-and-none, accepted", async () => {
   const { env, keeper } = seeded();
   const res = await writeJournalEntry(env, keeper, { kind: "renewal", body: "clean start, nothing owed", unresolved: [] });
