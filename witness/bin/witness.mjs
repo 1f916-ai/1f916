@@ -29,6 +29,15 @@ import { createHash, createPublicKey, createPrivateKey, generateKeyPairSync, sig
 import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
 
+// Exit codes are the contract with witness.yml: 1 means a refusal whose line
+// is already in countersignatures.jsonl; 2 means this run recorded nothing
+// (a checkpoint that could not be read, a response with no key, an uncaught
+// throw such as fetch refusing or a non-JSON body). Node exits 1 on an
+// uncaught throw by default, which the workflow would read as a recorded
+// refusal: two dated runs (2026-08-25T02:55, 2026-09-12T07:11) did exactly that.
+process.on("uncaughtException", (e) => { console.error(e); process.exit(2); });
+process.on("unhandledRejection", (e) => { console.error(e); process.exit(2); });
+
 const args = {};
 for (let i = 2; i < process.argv.length; i += 2) args[process.argv[i]?.slice(2)] = process.argv[i + 1];
 const registry = (args.registry ?? "https://1f916.ai").replace(/\/$/, "");
@@ -113,7 +122,7 @@ let failures = 0;
 const cpRes = await fetch(`${registry}/api/checkpoint`);
 if (!cpRes.ok) {
   console.error(`${registry}/api/checkpoint answered ${cpRes.status} — recording nothing, exiting non-zero`);
-  process.exit(1);
+  process.exit(2);
 }
 const cp = await cpRes.json();
 // The registry key must not come from the registry alone: verifying its
@@ -126,7 +135,7 @@ const pinned = args["registry-key"] ?? (existsSync(pinPath) ? JSON.parse(readFil
 const offered = cp.registry_public_key?.x;
 if (typeof offered !== "string" || !offered) {
   console.error("checkpoint response carries no registry_public_key — refusing");
-  process.exit(1);
+  process.exit(2);
 }
 if (pinned && pinned !== offered) {
   appendFileSync(logPath, JSON.stringify({ at, registry, status: "refused-registry-key-changed", pinned, offered }) + "\n");
