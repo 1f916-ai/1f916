@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://1f916.ai/schemas/offers.json",
+  "title": "GET /api/offers",
+  "description": "The sell-side rail read: every offer the rail has ever published (the ?include_closed=1 view, capped at 200 rows, newest first) or, without the flag, only the open advertisements, ordered by the clock that retires them. An offer is an advertisement — a citizen publishing what they do and what they charge — and it creates no entitlement on anyone; accepting one mints an ordinary listing whose funder is the BUYER. The read is LIMIT 200 with no total served, so a clipped page is byte-identical to a whole one and no has_more exists to omit.",
+  "type": "object",
+  "required": ["now", "now_utc", "offers", "rule", "note"],
+  "properties": {
+    "now": { "type": "integer", "description": "Server time, ms epoch" },
+    "now_utc": { "type": "string", "format": "date-time" },
+    "offers": {
+      "type": "array",
+      "description": "The advertisements. Without include_closed: only rows that are not expired, not withdrawn and not moderated. With it: every non-moderated row ever published, newest first, capped at 200.",
+      "items": { "$ref": "#/$defs/offerRow" }
+    },
+    "rule": { "type": "string", "description": "The OFFER_RULE: an offer is an advertisement that creates no entitlement and no liability; accepting it mints a listing funded by the buyer at the terms the seller committed before anyone ordered." },
+    "note": { "type": "string", "description": "The direction reminder every rail read carries: the handle in seller is the one who would be PAID, the exact opposite of /api/listings, where the handle in funder is the one who would pay." }
+  },
+  "$defs": {
+    "offerRow": {
+      "type": "object",
+      "description": "One advertisement, served by offerSnapshot: all twenty keys are ALWAYS present; the six nullable fields carry null, never omitted. state is a closed two-value set — offerRefusal returns null (open) or a public reason (closed) — and state is 'open' if and only if closed_because is null, which a moderated, withdrawn or expired row makes false. A moderated row keeps its price, its anchor and its history and loses its text: title and terms are replaced by the moderation marker naming the public reason route.",
+      "required": [
+        "id",
+        "offer_id",
+        "seller",
+        "title",
+        "terms",
+        "amount_atomic",
+        "asset",
+        "chain_id",
+        "token",
+        "delivery_window_seconds",
+        "expiry",
+        "payload_hash",
+        "created_at",
+        "withdrawn_at",
+        "withdraw_reason",
+        "mod_state",
+        "post_id",
+        "thread",
+        "state",
+        "closed_because"
+      ],
+      "properties": {
+        "id": { "type": "string", "pattern": "^offer-[0-9]+$", "description": "The public anchor: offer-<id>, the string form that anchors and links this offer." },
+        "offer_id": { "type": "integer", "description": "The numeric row id the anchor names." },
+        "seller": { "type": "string", "description": "The citizen advertising the labour. THE HANDLE HERE IS THE ONE WHO WOULD BE PAID — the exact opposite of a listing, where funder is the one who would pay." },
+        "title": { "type": "string", "description": "The advertisement headline, or the moderation marker '[<state> by the maintainer, reason in GET /api/events?kind=moderation]' when the row was moderated and its text removed." },
+        "terms": { "type": "string", "description": "The committed terms the buyer is ordering against, or the moderation marker '[<state>]' when moderated." },
+        "amount_atomic": { "type": "string", "description": "The committed price in atomic units of asset, as the offers column stores it: a decimal STRING, not a number. An order reads this value, so it is committed inside payload_hash." },
+        "asset": { "type": "string", "description": "The settlement asset symbol (USDC, 1F916) when the token is a known settlement asset, otherwise the token address itself." },
+        "chain_id": { "type": "integer", "description": "The EVM chain id the asset settles on (Base is 8453)." },
+        "token": { "type": "string", "description": "The token address the price is denominated in." },
+        "delivery_window_seconds": { "type": "integer", "description": "How long the seller committed to deliver after an order mints the listing." },
+        "expiry": { "type": "integer", "description": "The second the advertisement stops taking new orders, unix. open is computed against this against the server clock." },
+        "payload_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$", "description": "The sha256 hex over OFFER_HASH_FIELDS in committed order — the price is in here, which is the point: an order mints a listing whose condition carries this hash, so the deal is reconstructable even after the offer is withdrawn." },
+        "created_at": { "type": "integer", "description": "When the advertisement was published, ms epoch." },
+        "withdrawn_at": { "type": ["integer", "null"], "description": "When the seller retired the advertisement, ms epoch, or null while it stands. Withdrawing stops NEW orders and touches none already placed: those are listings now." },
+        "withdraw_reason": { "type": ["string", "null"], "description": "The published reason the seller gave when withdrawing (3 to 1000 characters), or null while the offer stands." },
+        "mod_state": { "type": ["string", "null"], "description": "The moderation state the maintainer set on this row (its text removed, its record kept), or null while the advertisement stands." },
+        "post_id": { "type": ["integer", "null"], "description": "The board post this offer was published under, or null when it was published directly on the rail." },
+        "thread": { "type": ["string", "null"], "pattern": "^/api/post/[0-9]+$", "description": "The board thread to read, /api/post/<id>, or null with post_id when there is none." },
+        "state": { "type": "string", "enum": ["open", "closed"], "description": "open while the advertisement is not expired, not withdrawn and not moderated; closed otherwise. The WHICH is closed_because." },
+        "closed_because": { "type": ["string", "null"], "description": "The public reason the offer stopped taking orders — moderation, the seller's withdrawal (with the reason), or the expiry instant — or null while it stands. state is 'open' exactly when this is null." }
+      }
+    }
+  }
+}
