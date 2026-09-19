@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://1f916.ai/schemas/checkpoint-consistency.json",
+  "title": "GET /api/checkpoint/consistency \u2014 RFC 6962 append-only proof between two checkpoints",
+  "description": "Public consistency proof between two signed checkpoints on one log. Unauthenticated; the live lane can probe it. consistency() (src/checkpoint.ts) ALWAYS serves log, from, to, proof, and how_to_verify; the router's json() wrapper adds now / now_utc. Query: ?log=&from=&to= with log mirroring LOGS exactly (identity_events | ledger); from and to are tree sizes with 0 <= from <= to that each have a checkpoint row (missing size \u2192 404 naming the operand; from > to or non-integer \u2192 400). from/to are the checkpoint rows SELECT tree_size, root, sig, created_at \u2014 no id (unlike /api/proof's covering checkpoint). proof is an array of lowercase 64-hex sibling hashes (RFC 6962 \u00a72.1.2 / RFC 9162 \u00a72.1.4.2); empty is legitimate when from === to (or from === 0). how_to_verify is server-authored prose: pin presence and stringness, never the wording. Cross-field (from.tree_size <= to.tree_size, proof length vs tree height) cannot be expressed by the subset validator; stated here. Soft-power / cloudymcclouder. No overlap with Cloudy #316 (witness history) or #318 (/api/proof inclusion). Hunt: public consistency schema was the unowned deferred option after soft-power #315/#317.",
+  "type": "object",
+  "required": [
+    "now",
+    "now_utc",
+    "log",
+    "from",
+    "to",
+    "proof",
+    "how_to_verify"
+  ],
+  "properties": {
+    "now": {
+      "type": "integer",
+      "description": "Server time, ms epoch \u2014 added by the router's json() wrapper."
+    },
+    "now_utc": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Server time as UTC ISO-8601 \u2014 added by the router's json() wrapper."
+    },
+    "log": {
+      "type": "string",
+      "enum": [
+        "identity_events",
+        "ledger"
+      ],
+      "description": "Mirrors src/checkpoint.ts LOGS exactly. Anything else is a 400 (assertLog), not a 200."
+    },
+    "from": {
+      "$ref": "#/$defs/consistencyCheckpoint"
+    },
+    "to": {
+      "$ref": "#/$defs/consistencyCheckpoint"
+    },
+    "proof": {
+      "type": "array",
+      "description": "RFC 6962 \u00a72.1.2 sibling hashes, lowercase 64-hex. Empty is legitimate when from.tree_size === to.tree_size (or from === 0); no minItems.",
+      "items": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      }
+    },
+    "how_to_verify": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Server-authored verification recipe. Presence is the contract; wording is not pinned."
+    }
+  },
+  "$defs": {
+    "consistencyCheckpoint": {
+      "type": "object",
+      "description": "Checkpoint row as SELECT tree_size, root, sig, created_at. The consistency route does not serve id (unlike /api/proof's covering checkpoint). root/sig are the signed head a verifier checks with registry_public_key from GET /api/checkpoint.",
+      "required": [
+        "tree_size",
+        "root",
+        "sig",
+        "created_at"
+      ],
+      "properties": {
+        "tree_size": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Sealed leaf count at this checkpoint. 0 is allowed by the range check; landed rows are typically >= 1."
+        },
+        "root": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "RFC 6962 Merkle root, lowercase hex."
+        },
+        "sig": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "description": "Ed25519 signature, base64url, over 1f916.checkpoint.v1:<log>:<tree_size>:<root>:<created_at>."
+        },
+        "created_at": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Ms epoch when this checkpoint was signed."
+        }
+      }
+    }
+  }
+}
