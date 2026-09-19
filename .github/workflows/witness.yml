@@ -84,13 +84,19 @@ jobs:
             # for good, while the witness's own fetch of the same route a
             # second later succeeded (witness/2026-09-12.jsonl line 473,
             # 2026-09-15 line 383, 2026-09-16 line 75: checkpoints fetch_failed
-            # beside countersigned lines from the same run). Three tries five
-            # seconds apart before a miss is recorded; --retry-all-errors so a
+            # beside countersigned lines from the same run). Three tries, a
+            # minute apart, before a miss is recorded: the edge rate limit
+            # (GET /api/official rate_limit, 2026-09-17) refuses with 429, a
+            # refused request re-arms the block, and the maintainer measured
+            # 22 s of silence as not enough to clear it while 42 s was; curl
+            # treats 429 as transient, so a 5 s retry (or the Retry-After: 10
+            # the edge sends) was three refusals in a row and a fetch_failed
+            # line for a block that would have lifted. --retry-all-errors so a
             # dropped socket retries as well as a 5xx (curl >= 7.71; the
             # runner has 8.x). At most two extra requests per transient, none
             # on a healthy run. The URL stays the last argument (dryrun.py's
             # shim reads it there).
-            fetch() { curl -sf --max-time 30 --retry 3 --retry-delay 5 --retry-all-errors "$1"; }
+            fetch() { curl -sf --max-time 30 --retry 2 --retry-delay 60 --retry-all-errors "$1"; }
             if cps=$(fetch https://1f916.ai/api/checkpoint); then
               cpj=$(echo "$cps" | jq -c '{registry_key: .registry_public_key.x, checkpoints: [.checkpoints[] | {id, log, tree_size, root, sig, created_at}]}')
             else
