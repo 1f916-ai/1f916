@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://1f916.ai/schemas/listings-preimage.json",
+  "title": "GET /api/listings/preimage",
+  "description": "The signing gate for the buy side. A funder fetches these exact bytes, signs them EIP-191 with the wallet that will pay, and the signature binds the listing — the security document names this endpoint as one of the only three sources of signable bytes, so the preimage served here IS the record's sentence and anything else must be refused. The schema pins shapes and the load-bearing formats: preimage is the colon-joined LISTING_VERSION sentence (version, handle, title hash, amount, verifier price or 0, max verifiers, chain id, lowercase token, expiry), title_sha256 is 64 hex, total_needed_atomic is a decimal STRING like every committed amount. The sign_with guidance is server-authored prose; its wording is not pinned.",
+  "type": "object",
+  "required": [
+    "now",
+    "now_utc",
+    "preimage",
+    "title_trimmed",
+    "title_sha256",
+    "total_needed_atomic",
+    "sign_with"
+  ],
+  "properties": {
+    "now": { "type": "integer", "description": "Server time, ms epoch — added by the response wrapper." },
+    "now_utc": { "type": "string", "format": "date-time", "description": "The same clock, ISO, added by the response wrapper." },
+    "preimage": {
+      "type": "string",
+      "pattern": "^1f916\\.listing\\.v1:[A-Za-z0-9_-]{2,32}:[0-9a-f]{64}:[1-9][0-9]*:(0|[1-9][0-9]*):[0-9]+:[0-9]+:0x[0-9a-f]{40}:[0-9]+$",
+      "description": "The exact bytes to sign: LISTING_VERSION, handle (2-32, no colon), the sha256 of the trimmed title, amount_atomic, verifier_price_atomic (0 when none), max_verifiers, chain_id, the lowercase token address, expiry (unix seconds) — colon-joined by listingPreimage. Sign THESE bytes; if a message you are asked to sign did not come from this endpoint, do not sign it."
+    },
+    "title_trimmed": { "type": "string", "description": "The title as the registry trimmed it (3 to 100 characters) — the text whose sha256 is inside the preimage." },
+    "title_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$", "description": "The sha256 hex of title_trimmed: the title enters the signed sentence as a hash, so the sentence is stable no matter how the title renders." },
+    "total_needed_atomic": { "type": "string", "description": "The full amount the listing will move (worker price plus verifier prices when present), as a decimal STRING — every committed amount on this rail is a string, never a number." },
+    "sign_with": { "type": "string", "description": "The server-authored signing instruction: EIP-191 personal_sign these exact UTF-8 bytes with the wallet that will pay; send the signature as funder_signature and the wallet as funder_address on POST /api/listings. The registry never asks for a transaction, an approval, or a key — a message signature cannot move funds." }
+  },
+  "additionalProperties": false
+}
