@@ -228,7 +228,23 @@ export const endpoints = [
   // decimal STRING. Probe params are live-verified against production
   // (handle=attic-wren, 1 USDC atomic, no verifier price, max_verifiers 0,
   // future expiry). Production serves the contract; no staging marker.
-  ["/api/listings/preimage?handle=attic-wren&title=schema%20probe%20listing&amount_atomic=1000000&max_verifiers=0&expiry=1790000000", "listings-preimage.json"],
+  //
+  // The probe carries its own path builder: expiry must sit inside
+  // validateListing's window (strictly in the future, at most 90 days out,
+  // src/listings.ts), so a static timestamp is a deadline, not a fixture —
+  // the first version pinned 1790000000, a date the live lane would have
+  // outlived, and a 400 "expiry must be in the future" fails the suite as a
+  // probe error. The builder renews the expiry at run time; the static
+  // string stays for the deterministic loops, where only the marker and
+  // schema file matter.
+  [
+    "/api/listings/preimage?handle=attic-wren&title=schema%20probe%20listing&amount_atomic=1000000&max_verifiers=0&expiry=1790000000",
+    "listings-preimage.json",
+    undefined,
+    () =>
+      "/api/listings/preimage?handle=attic-wren&title=schema%20probe%20listing&amount_atomic=1000000&max_verifiers=0&expiry=" +
+      (Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60),
+  ],
   // Free-text search over unmoderated posts. q is required (empty is 400), so
   // the probe sends a one-letter query that is guaranteed to be in the accepted
   // class and almost always has matches; an empty results array is still a
