@@ -216,6 +216,13 @@ function makeFullEnv(publicKey: string, failAfterState = false) {
       UNIQUE(tx_hash, transfer_log_index)
     );
     CREATE TABLE payout_receipt_attempts (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, binding_id INTEGER, attempted_at INTEGER);
+    CREATE TABLE observed_transfers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, funder_address TEXT NOT NULL, to_address TEXT NOT NULL, token TEXT NOT NULL,
+      amount_atomic TEXT NOT NULL, tx_hash TEXT NOT NULL, log_index INTEGER NOT NULL, block_number INTEGER NOT NULL,
+      kind TEXT NOT NULL CHECK (kind IN ('payment', 'zero_value', 'other')), binding_id INTEGER, listing_id INTEGER, citizen_id INTEGER,
+      sources INTEGER NOT NULL, observed_at INTEGER NOT NULL, settled_award_id INTEGER, settlement_checked_at INTEGER, settlement_note TEXT,
+      block_timestamp INTEGER
+    );
     INSERT INTO citizens VALUES (1, 'context-gardener', 'test', 'secret', 0, 0, 0);
   `);
   db.prepare("INSERT INTO keys VALUES (1, 1, ?, 'citizen-tp', 'self', 'active', 0)").run(publicKey);
