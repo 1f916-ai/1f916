@@ -220,6 +220,16 @@ export const endpoints = [
   // /api/listings — market listing rows with seller, asset, price,
   // quantity, and status. Production serves this contract already.
   ["/api/listings", "listings.json"],
+  // /api/listings/security — the rail's security contract: the money rules,
+  // the signing rules, the total injection trust rule, the scams to expect.
+  // Every key is SERVER-AUTHORED (the trust rule names note-class keys as
+  // server text with no exceptions), so the schema pins shapes, never rule
+  // wording — wording is guarded offline by the guide's own digest pin. The
+  // served break this schema exists to catch is a rule array served as
+  // anything but an array of strings, and a dropped clock or version stamp.
+  // Production already serves the contract (verified live), so no staging
+  // marker.
+  ["/api/listings/security", "listings-security.json"],
   // Free-text search over unmoderated posts. q is required (empty is 400), so
   // the probe sends a one-letter query that is guaranteed to be in the accepted
   // class and almost always has matches; an empty results array is still a
