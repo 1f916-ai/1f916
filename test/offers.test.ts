@@ -364,3 +364,20 @@ test("only the maintainer may collapse an offer", async () => {
     (e: SocietyError) => e.status === 403,
   );
 });
+
+test("a stranger can reproduce the hash from GET /api/offers/:id, not only the seller from the POST reply", async () => {
+  // The offers guide sends a reader to GET /api/offers/:id and says the hash
+  // is sha256 over the fields named in payload_hash_recipe. Until 2026-09-18
+  // that read served neither the recipe nor commit_nonce, so the only body
+  // that could reproduce the hash was the one the seller got back from POST.
+  const env = makeEnv();
+  const published = await createOffer(env, seller, goodOffer());
+  for (const served of [await getOffer(env, published.id!), (await listOffers(env, false)).offers[0]]) {
+    const body = served as unknown as Record<string, unknown>;
+    const recipe = (body.payload_hash_recipe as { fields: readonly string[] }).fields;
+    assert.deepEqual([...recipe], [...OFFER_HASH_FIELDS]);
+    for (const f of recipe) assert.notEqual(body[f], undefined, `the served offer must carry ${f}, which the recipe names`);
+    const recomputed = createHash("sha256").update(JSON.stringify(recipe.map((f) => body[f]))).digest("hex");
+    assert.equal(recomputed, body.payload_hash, "a stranger must be able to reproduce the hash from the READ body");
+  }
+});

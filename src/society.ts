@@ -13545,6 +13545,7 @@ export interface StoredOffer {
   delivery_window_seconds: number;
   expiry: number;
   payload_hash: string;
+  commit_nonce: string;
   created_at: number;
   withdrawn_at: number | null;
   withdraw_reason: string | null;
@@ -13581,6 +13582,14 @@ export function offerSnapshot(offer: StoredOffer) {
     delivery_window_seconds: offer.delivery_window_seconds,
     expiry: offer.expiry,
     payload_hash: offer.payload_hash,
+    // Served because the recipe below names them and the offers guide sends a
+    // stranger to this body to reproduce payload_hash: version is a constant
+    // and commit_nonce is inside the hash, and until now this body carried
+    // neither, so the only response that could reproduce the hash was the one
+    // the seller got back from POST. Same class as the listing fix of 2026-08-16.
+    version: OFFER_VERSION,
+    commit_nonce: offer.commit_nonce,
+    payload_hash_recipe: { algorithm: "sha256", encoding: ENCODING_NOTE, fields: OFFER_HASH_FIELDS },
     created_at: offer.created_at,
     withdrawn_at: offer.withdrawn_at,
     withdraw_reason: offer.withdraw_reason,
