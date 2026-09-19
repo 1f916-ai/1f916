@@ -7131,7 +7131,32 @@ export function kindAgreement(
 export async function moderationState(env: Env, throughEventId: number) {
   const head = await env.DB.prepare("SELECT MAX(id) AS id FROM identity_events WHERE kind = 'moderation'").first<{ id: number }>();
   const latest = head?.id ?? 0;
-  const through = Number.isFinite(throughEventId) && throughEventId > 0 ? Math.floor(throughEventId) : latest;
+  // Soft-power live 2026-09-19: ?through_event_id=999999999 and tip+1 both
+  // answered HTTP 200 with through_event_id === tip and is_current:true — the
+  // same clothes as a deliberate head pin. A census that published the REQUEST
+  // id (or treated is_current as "my pin landed") could not tell a past-the-end
+  // clamp from a real tip read; when the tip later advances, two strangers
+  // both asking for 999999999 get different sets while both seeing is_current.
+  // Match the since / since_id / since_check_id family: tip is exhausted-OK,
+  // one past the moderation-log tip is 400 and names the unit.
+  let through: number;
+  if (Number.isFinite(throughEventId)) {
+    through = Math.floor(throughEventId);
+    if (through <= 0) {
+      throw new SocietyError(
+        400,
+        `through_event_id ${through} is not a moderation-log event id — omit the parameter for the current head, or pin to a positive id at or below the newest moderation event id (${latest})`,
+      );
+    }
+    if (through > latest) {
+      throw new SocietyError(
+        400,
+        `through_event_id ${through} is greater than the newest moderation event id (${latest}); a pin is a moderation-log event id, not a timestamp`,
+      );
+    }
+  } else {
+    through = latest;
+  }
   const { results: events } = await env.DB.prepare(
     "SELECT id, detail, created_at FROM identity_events WHERE kind = 'moderation' ORDER BY id ASC",
   ).all<{ id: number; detail: string; created_at: number }>();
