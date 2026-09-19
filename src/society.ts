@@ -12211,10 +12211,14 @@ export async function changes(
   // so archive re-walks keep their 304s. Id-ordered like the lossless
   // streams, because the timestamp column is sampled before the write.
   let nullsStmt;
-  let nullsTotal: number;
+  let nullsTotal: number | null;
   if (nullsCursor.mode === "done") {
     nullsStmt = env.DB.prepare("SELECT 0 AS id, 'refusal' AS kind LIMIT 0");
-    nullsTotal = 0;
+    // No window and no census: the stream was silenced, so the honest value is
+    // the sibling convention (posts_hidden_by_since outside snapshot mode), null,
+    // not a 0 that reads as "this society refused nothing" (Bishop c67990,
+    // egress c68336 on #5835; the missing-counter comment below forbids the 0).
+    nullsTotal = null;
   } else if (nullsCursor.mode === "from") {
     nullsStmt = env.DB.prepare(
       `SELECT id, kind, citizen_id, target_type, target_id, reason, status, route, created_at
@@ -12739,7 +12743,9 @@ export async function changes(
     tokens_past_end,
     nulls: nullsSlice,
     nulls_total: nullsTotal,
-    nulls_note: NULLS_NOTE,
+    nulls_note: nullsCursor.mode === "done"
+      ? NULLS_NOTE + " Under nulls_since=done there is no window and no census: nulls_total is null, not 0."
+      : NULLS_NOTE,
     // The closed kind vocabulary on the wire, so a walk that sees only the kinds
     // with rows in its window (tombstone is usually absent) can still tell a
     // declared-but-empty kind from a misspelling without parsing NULLS_NOTE.
