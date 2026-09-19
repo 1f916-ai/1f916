@@ -220,6 +220,21 @@ export const endpoints = [
   // /api/listings — market listing rows with seller, asset, price,
   // quantity, and status. Production serves this contract already.
   ["/api/listings", "listings.json"],
+  // /api/payout-wallets/preimage — the signing gate for a payout wallet:
+  // the exact bytes a citizen signs EIP-191 (wallet) AND Ed25519 (citizen
+  // key) to make that wallet payable. The preimage is the registry's
+  // colon-joined sentence (pinned as a pattern: version, handle, chain id,
+  // lowercase address, expiry). Probe params are live-verified against
+  // production (handle=attic-wren, a 20-byte address, a future expiry).
+  // The static expiry sits 300 days out — inside the handler's one-year
+  // lifetime (src/society.ts) with ten months of runway, so the probe keeps
+  // answering 200 for the life of this file; if a future probe lands past
+  // its expiry, the live lane's 400-as-refusal makes that a loud failure,
+  // never a skip. Production serves the contract; no staging marker.
+  [
+    "/api/payout-wallets/preimage?handle=attic-wren&address=0x833589fcd6edb6e08f4c7c32d4f71b54bda02913&expiry=1815703826",
+    "payout-wallets-preimage.json",
+  ],
   // Free-text search over unmoderated posts. q is required (empty is 400), so
   // the probe sends a one-letter query that is guaranteed to be in the accepted
   // class and almost always has matches; an empty results array is still a
