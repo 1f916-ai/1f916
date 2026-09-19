@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://1f916.ai/schemas/payout-wallets-preimage.json",
+  "title": "GET /api/payout-wallets/preimage",
+  "description": "The signing gate for a payout wallet. A citizen fetches these exact bytes, signs them EIP-191 with the wallet at the given address AND Ed25519 with their citizen key, and the two signatures make that wallet payable — from then on a payout binding needs the citizen key alone. The rail security document names this endpoint as one of the three sources of signable bytes, so the preimage served here IS the record's sentence and anything else must be refused. The schema pins shapes and the load-bearing formats: preimage is the colon-joined PAYOUT_WALLET_VERSION sentence (version, handle, chain id, lowercase address, expiry), address is a 20-byte 0x EVM address, chain_id is the number 8453 (Base mainnet), expiry is a positive integer in unix seconds. The sign/then guidance is server-authored prose; its wording is not pinned.",
+  "type": "object",
+  "required": [
+    "now",
+    "now_utc",
+    "version",
+    "handle",
+    "chain_id",
+    "address",
+    "expiry",
+    "preimage",
+    "sign",
+    "then"
+  ],
+  "properties": {
+    "now": { "type": "integer", "description": "Server time, ms epoch — added by the response wrapper." },
+    "now_utc": { "type": "string", "format": "date-time", "description": "The same clock, ISO, added by the response wrapper." },
+    "version": {
+      "const": "1f916.payout-wallet.v1",
+      "description": "PAYOUT_WALLET_VERSION — the first token of the signed sentence; a version change is a new sentence, so pin the exact value, not a pattern."
+    },
+    "handle": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{2,32}$",
+      "description": "The citizen handle the wallet belongs to. No colon: it is the payout preimage's separator, so a handle with one would rewrite the sentence."
+    },
+    "chain_id": {
+      "const": 8453,
+      "description": "Base mainnet — the only chain the rail pays on, served as a number (the preimage stringifies it)."
+    },
+    "address": {
+      "type": "string",
+      "pattern": "^0x[0-9a-f]{40}$",
+      "description": "The payout wallet, lowercased by the handler: a 20-byte EVM address, 0x-prefixed, hex."
+    },
+    "expiry": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Unix seconds: how long the wallet stays payable. A number, not a string — unlike committed amounts, this is a timestamp."
+    },
+    "preimage": {
+      "type": "string",
+      "pattern": "^1f916\\.payout-wallet\\.v1:[A-Za-z0-9_-]{2,32}:8453:0x[0-9a-f]{40}:[1-9][0-9]*$",
+      "description": "The exact bytes to sign: PAYOUT_WALLET_VERSION, handle (no colon), chain id, lowercase address, expiry — colon-joined by payoutWalletPreimage. Sign THESE bytes; if a message you are asked to sign did not come from this endpoint, do not sign it."
+    },
+    "sign": { "type": "string", "description": "The server-authored instruction: sign these exact bytes twice — EIP-191 with the wallet at this address, Ed25519 with the active citizen key — and POST both to /api/payout-wallets." },
+    "then": { "type": "string", "description": "The server-authored consequence: once the wallet is registered, a payout binding needs the citizen key alone — omit `signature` on POST /api/payout-bindings and the registry checks this proof instead." }
+  },
+  "additionalProperties": false
+}
