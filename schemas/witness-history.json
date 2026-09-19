@@ -1,0 +1,165 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://1f916.ai/schemas/witness-history.json",
+  "title": "1F916 /api/witnesses/:id/history response",
+  "description": "The per-witness event history: the identity-log rows that ARE the witness's registration and rotation record, filtered by the writer's own verb placement (the register/rotate detail STARTS with this witness's URL, so a stranger cannot inject rows into another witness's history). Two arms: a witness registered after 2026-08-12 has a populated events array and no predates_chaining key; a pre-chaining witness serves events: [] plus predates_chaining, whose text says NOT RECORDED rather than nothing happened. The one-way coupling is structural: a response with a non-empty events array must NOT carry predates_chaining. Both prose fields are server-authored text: pin the presence and the stringness, never the wording. Each event row carries the chain columns (prev_hash, hash), so the history is verifiable with GET /api/proof?log=identity_events&event=<id> exactly as the chained note says.",
+  "type": "object",
+  "required": [
+    "now",
+    "now_utc",
+    "witness",
+    "events",
+    "chained"
+  ],
+  "properties": {
+    "now": {
+      "type": "integer",
+      "description": "Server time, ms epoch"
+    },
+    "now_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "witness": {
+      "$ref": "#/$defs/witnessBlock"
+    },
+    "events": {
+      "type": "array",
+      "description": "This witness's register and rotate rows, id ascending, capped at 200. Empty does not mean nothing happened: with predates_chaining present it means NOT RECORDED (registered before the chain existed).",
+      "items": {
+        "$ref": "#/$defs/historyEventRow"
+      }
+    },
+    "chained": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Server-authored prose naming the verification path (GET /api/proof?log=identity_events&event=<id>). Always served."
+    },
+    "predates_chaining": {
+      "type": "string",
+      "description": "Present ONLY when events is empty (the witness predates chaining): the absence disclaimer, NOT RECORDED rather than nothing happened. A witness with history rows must not carry it. Server-authored prose; presence is the contract, wording is not pinned."
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "events": {
+            "minItems": 1
+          }
+        }
+      },
+      "then": {
+        "not": {
+          "required": [
+            "predates_chaining"
+          ]
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "witnessBlock": {
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "url",
+        "public_key",
+        "alg",
+        "epoch",
+        "key_set_at",
+        "added_at",
+        "operator"
+      ],
+      "properties": {
+        "id": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Stable discovery key"
+        },
+        "name": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string",
+          "description": "Registered pointer; the history matcher anchors on it at detail position 1"
+        },
+        "public_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "alg": {
+          "const": "ed25519"
+        },
+        "epoch": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "key_set_at": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "added_at": {
+          "type": "integer"
+        },
+        "operator": {
+          "type": "string"
+        }
+      }
+    },
+    "historyEventRow": {
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "detail",
+        "created_at",
+        "prev_hash",
+        "hash"
+      ],
+      "properties": {
+        "id": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "identity_events row id; GET /api/proof?log=identity_events&event=<id> verifies it"
+        },
+        "kind": {
+          "enum": [
+            "witness-register",
+            "witness-rotate"
+          ],
+          "description": "The history read filters to exactly these two kinds; anything else in a witness history is a contract break"
+        },
+        "detail": {
+          "type": "string",
+          "description": "Free text; the writer anchors the witness URL at its start, which is what makes the match injection-proof"
+        },
+        "created_at": {
+          "type": "integer",
+          "description": "ms epoch"
+        },
+        "prev_hash": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "Previous identity-log row hash, lowercase 64-hex, or null for a row the chain has not yet covered"
+        },
+        "hash": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "This row's chain hash, lowercase 64-hex, or null while the row awaits its first checkpoint"
+        }
+      }
+    }
+  }
+}
