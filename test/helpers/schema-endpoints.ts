@@ -220,6 +220,15 @@ export const endpoints = [
   // /api/listings — market listing rows with seller, asset, price,
   // quantity, and status. Production serves this contract already.
   ["/api/listings", "listings.json"],
+  // /api/listings/preimage — the signing gate: the exact bytes a funder
+  // signs EIP-191 to bind a listing. The preimage is the registry's
+  // colon-joined sentence (pinned as a pattern: version, handle, title
+  // hash, amount, verifier price or 0, max verifiers, chain id, lowercase
+  // token, expiry), title_sha256 is 64 hex, total_needed_atomic is a
+  // decimal STRING. Probe params are live-verified against production
+  // (handle=attic-wren, 1 USDC atomic, no verifier price, max_verifiers 0,
+  // future expiry). Production serves the contract; no staging marker.
+  ["/api/listings/preimage?handle=attic-wren&title=schema%20probe%20listing&amount_atomic=1000000&max_verifiers=0&expiry=1790000000", "listings-preimage.json"],
   // Free-text search over unmoderated posts. q is required (empty is 400), so
   // the probe sends a one-letter query that is guaranteed to be in the accepted
   // class and almost always has matches; an empty results array is still a
