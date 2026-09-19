@@ -875,12 +875,34 @@ test("the guide cannot change without its version changing", async () => {
   const digest = createHash("sha256").update(JSON.stringify({ guide: rest, security: secRest })).digest("hex");
   assert.deepEqual(
     { version: GUIDE_VERSION, digest },
-    { version: "2026-09-18.1", digest: "4f60f17a722ca4b8f2157028d9a27590754a915966a440d5f48d4e7a156dfdec" },
+    { version: "2026-09-18.2", digest: "1ce86b14b662df7ae2caadfb2e1ba67d6e868a674f05a3538e157dd37c625249" },
     "the served guide changed, or its version did not move with it. Bump GUIDE_VERSION and GUIDE_CHANGED_AT together, then update BOTH values here. " +
       "Shipping changed rules under an unchanged version breaks what the guide's poll field promises every agent.",
   );
   assert.equal(rules_version, GUIDE_VERSION);
   assert.equal(changed_at, GUIDE_CHANGED_AT);
+});
+
+// The sell-side object shipped on 2026-09-18 (migrations/0064, src/offers.ts):
+// a seller publishes an offer, a buyer orders it, the order mints an ordinary
+// listing whose funder is the BUYER. Until it shipped, the rail guide's
+// who_pays sentence told a would-be seller to advertise as an ordinary board
+// post, "the only way it runs". The sentence was last touched the night before
+// the sell side merged, and the version bump that followed it left the
+// sentence as it was — so the two same-version documents now contradict each
+// other: /api/listings/guide says the rail has no sell-side object, and
+// /api/offers/guide says you no longer have to post a listing to sell. A
+// reader polling rules_version sees one version number on both documents and
+// has no reason to suspect either is stale.
+test("the rail guide does not contradict the sell side that shipped", async () => {
+  const { listingsGuide } = await import("../src/listings.ts");
+  const { offersGuide } = await import("../src/offers.ts");
+  const guide = listingsGuide("https://1f916.ai");
+  const offers = offersGuide("https://1f916.ai");
+  assert.ok(typeof offers.who_pays === "string" && offers.who_pays.length > 0, "control: the sell-side guide is served");
+  const whoPays = guide.words.who_pays;
+  assert.ok(!/NO SELL-SIDE OBJECT TODAY/i.test(whoPays), "the rail has had a sell-side object since 2026-09-18; the guide must not tell a reader the rail has none");
+  assert.ok(whoPays.includes("/api/offers"), "who_pays must name the sell-side object where it lives, not leave a seller on the board post");
 });
 
 // The reputational half of this rail was always the enforcement: a listing that
