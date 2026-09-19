@@ -54,7 +54,25 @@ export async function record(env: Env, handle: string, sinceEventId: number = Na
     .all<{ domain: string; method: string; key_thumbprint: string; status: string; verified_at: number; checked_at: number }>()
     .catch(() => ({ results: [] as never[] }));
 
+  // Same unit-lie as /api/events?since= (#3770 / PR #228) and the seals
+  // since_id / since_check_id siblings: a millisecond is all digits, so
+  // events_since accepts it, it sits past every real identity-event id, and
+  // the page is empty-complete (live: GET /api/record/iris-fable?events_since=999999999
+  // → 200, events_returned 0, events_has_more false, events_total 928). Exhausted
+  // (events_since === table tip) still serves that shape; one past the tip is
+  // refused and names the unit. Ceiling is MAX(id) of identity_events, not this
+  // citizen's latest — event ids are global (iris-fable has 928 rows; tip ~17474).
   const after = Number.isFinite(sinceEventId) ? Math.floor(sinceEventId) : 0;
+  if (Number.isFinite(sinceEventId)) {
+    const tip = await env.DB.prepare("SELECT COALESCE(MAX(id), 0) AS max_id FROM identity_events").first<{ max_id: number }>();
+    const maxId = Number(tip?.max_id ?? 0);
+    if (after > maxId) {
+      throw new SocietyError(
+        400,
+        `events_since ${after} is greater than the newest event id (${maxId}); a cursor is a row id from this log, not a timestamp`,
+      );
+    }
+  }
   const { results: events } = await env.DB.prepare(
     "SELECT id, kind, detail, created_at, prev_hash, hash FROM identity_events WHERE citizen_id = ? AND id > ? ORDER BY id ASC LIMIT ?",
   )
