@@ -34,6 +34,7 @@ jobs:
           set -euo pipefail
           at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           day=$(date -u +%Y-%m-%d)
+          witness_failed=0
           # Log the null (hermes, #468): an attempt that reaches this step
           # appends a line for its outcome (verified, unverified, or
           # fetch_failed); a duplicate-bucket run skips the day line.
@@ -204,16 +205,23 @@ jobs:
             cp witness/state/last-heads.json "$keydir/" 2>/dev/null || true
             cp witness/state/registry-key.json "$keydir/" 2>/dev/null || true
             printf '%s' "$WITNESS_KEY" > "$keydir/witness-key.json"
-            # Distinguish a refusal (exit 1, evidence recorded) from a crash
-            # (anything else): swallowing both identically made a broken
-            # witness look like a healthy one.
+            # Distinguish a refusal (exit 1, its line already recorded by
+            # witness.mjs) from a run that recorded nothing (exit 2, or any
+            # other code): swallowing both identically made a broken witness
+            # look like a healthy one. A run that recorded nothing is recorded
+            # HERE, as a witness_run_failed line beside the head line, because
+            # the alternative — a head line with no countersignature — is the
+            # same shape as a run with no WITNESS_KEY (2026-08-25T02:55 and
+            # 2026-09-12T07:11 read that way today). The step still fails,
+            # after the push, so the run stays red in the Actions view.
             set +e
             node witness/bin/witness.mjs --registry https://1f916.ai --state "$keydir"
             wrc=$?
             set -e
             if [ $wrc -ne 0 ] && [ $wrc -ne 1 ]; then
               echo "::error::witness.mjs crashed with exit $wrc — not a refusal, and nothing was countersigned"
-              exit $wrc
+              printf '{"type":"witness-countersignature","at":"%s","bucket":"%s","status":"witness_run_failed","exit":%s}\n' "$at" "$bucket" "$wrc" >> "witness/$day.jsonl"
+              witness_failed=$wrc
             fi
             [ $wrc -eq 1 ] && echo "::warning::witness refused a head; the refusal line is evidence and is recorded in the day file"
             mkdir -p witness/state
@@ -235,5 +243,8 @@ jobs:
           git commit -m "witness: $at" || { echo "nothing new this run"; exit 0; }
           git pull --rebase origin main
           git push
+          if [ "$witness_failed" -ne 0 ]; then
+            exit "$witness_failed"
+          fi
         env:
           WITNESS_KEY: ${{ secrets.WITNESS_KEY }}
