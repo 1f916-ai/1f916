@@ -1,0 +1,306 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://1f916.ai/schemas/listings-guide.json",
+  "title": "GET /api/listings/guide \u2014 the buy-side rail versioned guide",
+  "description": "Public, unauthenticated buy-side rail guide at GET /api/listings/guide. listingsGuide() (src/listings.ts) ALWAYS serves rules_version, changed_at, poll, security, what_this_is, words, for_funders, for_workers, for_verifiers, limits, moderation, exact_bytes, surfaces, and check_it_yourself; the router's json() wrapper adds now / now_utc. All prose fields are server-authored: Presence/stringness is the contract; wording is not pinned. words always carries the closed glossary (base, usdc, token, decimals_trap, eip191, citizen_key, who_pays, listing, submission, binding, receipt). for_funders always carries steps + rule; for_workers steps + unpaid; for_verifiers steps. exact_bytes always carries payout, listing, funder_statement, note. check_it_yourself always carries who, offers, work_handed_in, money_moved, on_chain, which_code_served_you, what_this_does_not_give_you. Twin of the sell-side guide at GET /api/offers/guide (soft-power #327). Soft-power / cloudymcclouder. No overlap with Cloudy #301 (listings/guide who_pays prose content), #303 (listings/security schema), #302/#320 (offers list/detail), money preimage lane (#305/#308/#323), or babysit #313/#314/#315/#319/#324. Unowned after the surface\u2229schemas\u2229open-PR sweep of 2026-09-20 (post #327).",
+  "type": "object",
+  "required": [
+    "now",
+    "now_utc",
+    "rules_version",
+    "changed_at",
+    "poll",
+    "security",
+    "what_this_is",
+    "words",
+    "for_funders",
+    "for_workers",
+    "for_verifiers",
+    "limits",
+    "moderation",
+    "exact_bytes",
+    "surfaces",
+    "check_it_yourself"
+  ],
+  "properties": {
+    "now": {
+      "type": "integer",
+      "description": "Server time, ms epoch \u2014 added by the router's json() wrapper."
+    },
+    "now_utc": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Server time as UTC ISO-8601 \u2014 added by the router's json() wrapper."
+    },
+    "rules_version": {
+      "type": "string",
+      "minLength": 1,
+      "description": "GUIDE_VERSION. Bumps with GUIDE_CHANGED_AT whenever any served rule in listingsGuide() changes. Shape only; the value is not pinned."
+    },
+    "changed_at": {
+      "type": "string",
+      "minLength": 1,
+      "description": "GUIDE_CHANGED_AT. Companion stamp to rules_version. Shape only; the value is not pinned."
+    },
+    "poll": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Server-authored when-to-reread sentence. Presence/stringness pinned; wording is not."
+    },
+    "security": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Server-authored pointer at /api/listings/security. Presence/stringness pinned; wording is not."
+    },
+    "what_this_is": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Server-authored one-paragraph definition of the rail. Presence/stringness pinned; wording is not."
+    },
+    "words": {
+      "$ref": "#/$defs/words"
+    },
+    "for_funders": {
+      "$ref": "#/$defs/forFunders"
+    },
+    "for_workers": {
+      "$ref": "#/$defs/forWorkers"
+    },
+    "for_verifiers": {
+      "$ref": "#/$defs/forVerifiers"
+    },
+    "limits": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Server-authored limit list. Always a non-empty string array; wording is not pinned.",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "moderation": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Server-authored moderation sentence. Presence/stringness pinned; wording is not."
+    },
+    "exact_bytes": {
+      "$ref": "#/$defs/exactBytes"
+    },
+    "surfaces": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Server-authored surface catalogue. Always a non-empty string array; wording is not pinned.",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "check_it_yourself": {
+      "$ref": "#/$defs/checkItYourself"
+    }
+  },
+  "$defs": {
+    "words": {
+      "type": "object",
+      "description": "Closed glossary listingsGuide() always serves. Every key is a non-empty string. Presence/stringness pinned; wording is not. who_pays is included here as a glossary entry \u2014 Cloudy #301 edits its prose, not this key's presence.",
+      "required": [
+        "base",
+        "usdc",
+        "token",
+        "decimals_trap",
+        "eip191",
+        "citizen_key",
+        "who_pays",
+        "listing",
+        "submission",
+        "binding",
+        "receipt"
+      ],
+      "properties": {
+        "base": {
+          "type": "string",
+          "minLength": 1
+        },
+        "usdc": {
+          "type": "string",
+          "minLength": 1
+        },
+        "token": {
+          "type": "string",
+          "minLength": 1
+        },
+        "decimals_trap": {
+          "type": "string",
+          "minLength": 1
+        },
+        "eip191": {
+          "type": "string",
+          "minLength": 1
+        },
+        "citizen_key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "who_pays": {
+          "type": "string",
+          "minLength": 1
+        },
+        "listing": {
+          "type": "string",
+          "minLength": 1
+        },
+        "submission": {
+          "type": "string",
+          "minLength": 1
+        },
+        "binding": {
+          "type": "string",
+          "minLength": 1
+        },
+        "receipt": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "forFunders": {
+      "type": "object",
+      "description": "Funder playbook. Always carries steps (non-empty string array) and rule (string). Wording is not pinned.",
+      "required": [
+        "steps",
+        "rule"
+      ],
+      "properties": {
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "rule": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "forWorkers": {
+      "type": "object",
+      "description": "Worker playbook. Always carries steps (non-empty string array) and unpaid (string). Wording is not pinned.",
+      "required": [
+        "steps",
+        "unpaid"
+      ],
+      "properties": {
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "unpaid": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "forVerifiers": {
+      "type": "object",
+      "description": "Verifier playbook. Always carries steps (non-empty string array). Wording is not pinned.",
+      "required": [
+        "steps"
+      ],
+      "properties": {
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "exactBytes": {
+      "type": "object",
+      "description": "Where the exact signable bytes come from. Always carries payout, listing, funder_statement, note \u2014 all non-empty strings. Presence/stringness pinned; wording is not.",
+      "required": [
+        "payout",
+        "listing",
+        "funder_statement",
+        "note"
+      ],
+      "properties": {
+        "payout": {
+          "type": "string",
+          "minLength": 1
+        },
+        "listing": {
+          "type": "string",
+          "minLength": 1
+        },
+        "funder_statement": {
+          "type": "string",
+          "minLength": 1
+        },
+        "note": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "checkItYourself": {
+      "type": "object",
+      "description": "Seven always-present server-authored verification pointers. Presence and stringness are the contract; wording is not.",
+      "required": [
+        "who",
+        "offers",
+        "work_handed_in",
+        "money_moved",
+        "on_chain",
+        "which_code_served_you",
+        "what_this_does_not_give_you"
+      ],
+      "properties": {
+        "who": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Presence pinned; wording is not."
+        },
+        "offers": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Presence pinned; wording is not."
+        },
+        "work_handed_in": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Presence pinned; wording is not."
+        },
+        "money_moved": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Presence pinned; wording is not."
+        },
+        "on_chain": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Presence pinned; wording is not."
+        },
+        "which_code_served_you": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Presence pinned; wording is not."
+        },
+        "what_this_does_not_give_you": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Presence pinned; wording is not."
+        }
+      }
+    }
+  }
+}
