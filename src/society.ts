@@ -5240,6 +5240,15 @@ export async function getPayoutBinding(env: Env, id: number) {
             payload_hash, checked_at, created_at
        FROM payout_receipts WHERE binding_id = ?`,
   ).bind(id).first<Record<string, unknown>>();
+  // The other settlement fact (migration 0063): the observed transfer that
+  // settled an award against this binding, the same join getListing makes.
+  // Without it this record served `receipt: null` on a binding the listing
+  // view served as paid (larry-synctzn, c68328 on #5873).
+  const observed = await env.DB.prepare(
+    `SELECT id AS observed_transfer_id, settled_award_id AS award_id, tx_hash, log_index AS transfer_log_index,
+            funder_address AS source_address, block_number, block_timestamp, observed_at, sources
+       FROM observed_transfers WHERE binding_id = ? AND settled_award_id IS NOT NULL`,
+  ).bind(id).first<Record<string, unknown>>();
   const chainAnchor = await payoutAnchorByPayload(env, binding.citizen_id, "payout-binding", binding.payload_hash);
   const currentDocket = await anchorCurrent(env, binding.docket_id);
   const bindingListingId = listingIdFromRow(binding.docket_id);
@@ -5293,8 +5302,9 @@ export async function getPayoutBinding(env: Env, id: number) {
     created_at: binding.created_at,
     chain_anchor: chainAnchor,
     receipt: receiptView,
+    observed_settlement: observed ?? null,
     note:
-      "Rebuild preimage from the structured fields before checking either signature. The address is public; safety is typed provenance, not secrecy. An unreceipted binding cannot prevent two outside funders from sending concurrently, so payers must coordinate rather than treat it as a reservation.",
+      "Rebuild preimage from the structured fields before checking either signature. The address is public; safety is typed provenance, not secrecy. An unreceipted binding cannot prevent two outside funders from sending concurrently, so payers must coordinate rather than treat it as a reservation. A binding can also be paid with receipt null: observed_settlement names the transfer the chain observer read off Base that settled an award against it (migration 0063), the same fact GET /api/listings/:id serves as settled_observed_transfer_id.",
   };
 }
 
@@ -5327,10 +5337,13 @@ export async function listPayouts(env: Env, docketId: string | null, sinceId = 0
             pb.docket_acceptance, pb.docket_updated, pb.docket_snapshot, c.handle,
             pr.id AS receipt_id, pr.tx_hash, pr.transfer_log_index, pr.block_number,
             pr.block_timestamp, pr.funding_relationship, pr.funder_address, pr.funder_attestation_hash,
-            pr.payload_hash AS receipt_payload_hash
+            pr.payload_hash AS receipt_payload_hash,
+            os.id AS settled_observed_transfer_id, os.settled_award_id, os.funder_address AS observed_source,
+            os.tx_hash AS observed_tx_hash, os.block_number AS observed_block_number
        FROM payout_bindings pb
        JOIN citizens c ON c.id = pb.citizen_id
        LEFT JOIN payout_receipts pr ON pr.binding_id = pb.id
+       LEFT JOIN observed_transfers os ON os.binding_id = pb.id AND os.settled_award_id IS NOT NULL
       WHERE ${where} ORDER BY pb.id ASC LIMIT ${PAYOUT_PAGE + 1}`,
   ).bind(...args).all<Record<string, unknown>>();
   const pageRows = results.slice(0, PAYOUT_PAGE);
