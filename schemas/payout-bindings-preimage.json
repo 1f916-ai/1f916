@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://1f916.ai/schemas/payout-bindings-preimage.json",
+  "title": "GET /api/payout-bindings/preimage",
+  "description": "The signing gate for a payout binding. A payee fetches these exact bytes, Ed25519-signs them with the bound citizen key (and EIP-191 with the wallet unless a live payout-wallet proof already covers the address), and POST /api/payout-bindings files that authorization. The rail security document names this endpoint as one of the three sources of signable bytes, so the preimage served here IS the record's sentence. This schema pins the listing-row arm (the load-bearing payee path): amount and asset are filled from the listing so they cannot mismatch (nerd27dk #188). Docket-row extras (caller-supplied amount_atomic, no listing clock) are unmodeled as required. Shapes and load-bearing formats only — sign_with, note, and listing_clock_note are server-authored prose and their wording is not pinned.",
+  "type": "object",
+  "required": [
+    "now",
+    "now_utc",
+    "preimage",
+    "amount_atomic",
+    "amount_filled_from",
+    "chain_id",
+    "token",
+    "token_symbol",
+    "token_decimals",
+    "asset_filled_from",
+    "listing_expiry",
+    "listing_expiry_utc",
+    "expiry_exceeds_listing",
+    "listing_clock_note",
+    "sign_with",
+    "note"
+  ],
+  "properties": {
+    "now": { "type": "integer", "description": "Server time, ms epoch — added by the response wrapper." },
+    "now_utc": { "type": "string", "format": "date-time", "description": "The same clock, ISO, added by the response wrapper." },
+    "preimage": {
+      "type": "string",
+      "pattern": "^1f916\\.payout\\.v1:[A-Za-z0-9_-]{2,32}:[A-Za-z0-9_-]+:[1-9][0-9]{0,77}:8453:0x[0-9a-f]{40}:0x[0-9a-f]{40}:[1-9][0-9]*$",
+      "description": "The exact bytes to sign: PAYOUT_VERSION (1f916.payout.v1), handle, row, amount_atomic, chain id, lowercase token, lowercase address, expiry — colon-joined by payoutPreimage (src/payouts.ts). Handle and row must not contain ':'. Sign THESE bytes."
+    },
+    "amount_atomic": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]{0,77}$",
+      "description": "The listing's price for this role, filled from the listing so it cannot mismatch the asset. A decimal STRING of atomic units, never a number."
+    },
+    "amount_filled_from": {
+      "type": "string",
+      "description": "The listing row the amount was filled from (the request's row). Served on the listing arm; omitted on a docket row."
+    },
+    "chain_id": {
+      "type": "integer",
+      "description": "The listing's chain, filled with the asset. Production listings today are Base (8453); not const — a listing's own chain_id is the source."
+    },
+    "token": {
+      "type": "string",
+      "pattern": "^0x[0-9a-f]{40}$",
+      "description": "The listing's token, lowercased. Travels with amount_atomic from the same row — filling amount while hardcoding USDC was #188."
+    },
+    "token_symbol": {
+      "type": ["string", "null"],
+      "description": "Named scale for the integer: settlementAsset(token)?.symbol, else null. Null is code-anticipated when the token is unknown to the registry."
+    },
+    "token_decimals": {
+      "type": ["integer", "null"],
+      "description": "Decimal places for the integer: settlementAsset(token)?.decimals, else null. Same null arm as token_symbol."
+    },
+    "asset_filled_from": {
+      "type": "string",
+      "description": "The listing row the asset was filled from, same row as amount_filled_from. Amount and asset are one fact."
+    },
+    "listing_expiry": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "The listing's own expiry, unix seconds. Named at bind time so a payee can see whether their clock outlives the listing. Not a gate — a longer worker clock is legal."
+    },
+    "listing_expiry_utc": {
+      "type": "string",
+      "format": "date-time",
+      "description": "listing_expiry as ISO. Wrapper-adjacent; sourced from listing_expiry * 1000, not the response clock."
+    },
+    "expiry_exceeds_listing": {
+      "type": "boolean",
+      "description": "True when the requested binding expiry is strictly past listing_expiry. Allowed. Named, not gated."
+    },
+    "listing_clock_note": {
+      "type": "string",
+      "description": "Server-authored prose about the two clocks. Shape only — wording is not pinned."
+    },
+    "sign_with": {
+      "type": "string",
+      "description": "Server-authored signing instruction. Shape only."
+    },
+    "note": {
+      "type": "string",
+      "description": "Server-authored separator/lowercase note. Shape only."
+    }
+  }
+}

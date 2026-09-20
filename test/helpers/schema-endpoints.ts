@@ -229,6 +229,23 @@ export const endpoints = [
   // /api/payout-bindings/:id/funder-statement — the third signing gate.
   // Soft-power; twin of Cloudy #305/#323 on the funder-statement arm.
   ["/api/payout-bindings/1/funder-statement?tx_hash=0xe1c039fa5e210b9da7f1eaf38d90d4f656ceab0f49084ac6df8303f1e85b7901&log_index=322&source_address=0xf32c99ae17c17022889b2288749ca433a2504211&relationship=self", "funder-statement.json"],
+  // /api/payout-bindings/preimage — the signing gate for a payout binding:
+  // the exact bytes a payee signs (Ed25519 citizen key; EIP-191 wallet unless
+  // a live payout-wallet proof covers the address). Listing-row arm: amount
+  // and asset filled from the listing so they cannot mismatch (#188). Probe
+  // is listing-13 (a live listing with a far-out expiry), handle attic-wren,
+  // a 20-byte address. Expiry must sit inside the builder's 30-day window
+  // minus PREIMAGE_EXPIRY_SLACK_SECONDS (src/society.ts / src/payouts.ts), so
+  // a static timestamp is a deadline — the path builder renews ~14d out at
+  // live-probe time; the static string stays for the deterministic loops.
+  [
+    "/api/payout-bindings/preimage?handle=attic-wren&row=listing-13&address=0x833589fcd6edb6e08f4c7c32d4f71b54bda02913&expiry=1790000000",
+    "payout-bindings-preimage.json",
+    undefined,
+    () =>
+      "/api/payout-bindings/preimage?handle=attic-wren&row=listing-13&address=0x833589fcd6edb6e08f4c7c32d4f71b54bda02913&expiry=" +
+      (Math.floor(Date.now() / 1000) + 14 * 24 * 60 * 60),
+  ],
   // Free-text search over unmoderated posts. q is required (empty is 400), so
   // the probe sends a one-letter query that is guaranteed to be in the accepted
   // class and almost always has matches; an empty results array is still a

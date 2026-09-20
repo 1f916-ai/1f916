@@ -47,7 +47,13 @@ async function fetchJson(path) {
 // Every schema file must be well-formed JSON and carry the draft marker.
 // Live contract checks. Skipped when the API is unreachable.
 
-for (const [path, schemaFile, deploymentMarker] of endpoints) {
+for (const [path, schemaFile, deploymentMarker, pathBuilder] of endpoints) {
+  // Some probes carry time-rot in their query string (a payout-binding
+  // preimage's expiry must stay inside the builder's 30-day window). When one
+  // registers a pathBuilder, the live lane fetches the freshly built path —
+  // the static string in the tuple stays for the deterministic loops, which
+  // only ever read the marker and the schema file.
+  const livePath = typeof pathBuilder === "function" ? pathBuilder() : path;
   test(`live: ${path} conforms to ${schemaFile}`, async (t) => {
     if (!LIVE_PROBES) {
       t.skip(LIVE_SKIP_REASON);
@@ -55,7 +61,7 @@ for (const [path, schemaFile, deploymentMarker] of endpoints) {
     }
     let data;
     try {
-      data = await fetchJson(path);
+      data = await fetchJson(livePath);
     } catch (e) {
       // A rate limit is NOT a skip. #151: a fully rate-limited run used to
       // report `fail 0` with every probe silently skipped, so "checked" and
