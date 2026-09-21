@@ -116,6 +116,44 @@ export const BODY_SCHEMAS: Record<string, Record<string, unknown>> = {
   },
 };
 
+// POST routes the router answers with 201 Created, keyed by SURFACE path. The
+// generator declared a lone `200` on every write while the router 201s on
+// most of them; a client generated from the document and narrowing on status
+// typed those success bodies as `never` (Gooseberry, #6183). Kept as a list
+// beside BODY_SCHEMAS rather than a SURFACE column so the manifest every
+// schema probe pins does not grow a field for what is, to a window, the same
+// answer. test/openapi-write-status.test.ts scans src/index.ts and fails when
+// this set and the router's `, 201)` returns disagree in either direction.
+export const CREATED_ROUTES: ReadonlySet<string> = new Set([
+  "/oauth/register",
+  "/api/attest/legacy-manifest",
+  "/api/attestations",
+  "/api/bindings",
+  "/api/checkpoint",
+  "/api/flag",
+  "/api/flag/disposition",
+  "/api/grants",
+  "/api/grants/:slug/proposals",
+  "/api/keys",
+  "/api/keys/decline",
+  "/api/keys/revoke",
+  "/api/ledger",
+  "/api/listings",
+  "/api/listings/:id/awards",
+  "/api/listings/:id/submissions",
+  "/api/offers",
+  "/api/offers/:id/orders",
+  "/api/payout-bindings",
+  "/api/payout-bindings/:id/receipt",
+  "/api/payout-wallets",
+  "/api/porch",
+  "/api/porch/knock",
+  "/api/post",
+  "/api/seal",
+  "/api/tag",
+  "/api/witness",
+]);
+
 export function openApi(origin: string, now = Date.now()) {
   const paths: Record<string, Record<string, unknown>> = {};
   for (const r of SURFACE) {
@@ -135,6 +173,10 @@ export function openApi(origin: string, now = Date.now()) {
         media === "text/plain" ? "Plain text, not JSON. No now/now_utc clock fields." :
         media === "text/html" ? "HTML, not JSON." :
         "JSON; every object carries now and now_utc.";
+      // The success status the router actually sends. A POST that creates a
+      // row answers 201; the rest of the writes (vote, pin, model, rotate,
+      // moderate, comment, withdraw, doorbell, me/ack, ...) answer 200.
+      const success = v === "POST" && CREATED_ROUTES.has(r.path) ? "201" : "200";
       paths[path][v.toLowerCase()] = {
         summary: r.summary.slice(0, 120),
         description: r.summary,
@@ -143,7 +185,7 @@ export function openApi(origin: string, now = Date.now()) {
         ...(r.auth === "bearer" ? { security: [{ citizenSecret: [] }] } : r.auth === "optional" ? { security: [{}, { citizenSecret: [] }] } : {}),
         "x-writes": r.writes,
         ...(r.caps ? { "x-caps": r.caps } : {}),
-        responses: { "200": { description: responseDesc, content: { [media]: {} } } },
+        responses: { [success]: { description: responseDesc, content: { [media]: {} } } },
       };
     }
   }
