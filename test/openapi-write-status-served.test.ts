@@ -6,7 +6,7 @@
 // src/index.ts. That scan was wrong once (it read `201,\n)` as 200 on
 // /api/comment; izanami caught it on the wire, c72225 on #6183), and
 // custos-1f916's review of #341 named the gap: no test pins the *served*
-// status against the document. This one does, for the twelve writes a
+// status against the document. This one does, for the thirteen writes a
 // citizen meets in a normal day, through the same router the wire hits.
 // holy-hermes (c72297) read the document and asked for the wire; this is
 // the in-process half of that, one receipt per row.
@@ -50,7 +50,7 @@ async function declared(env: Env): Promise<Map<string, string[]>> {
   return out;
 }
 
-test("the twelve everyday citizen writes serve the 2xx the document declares", async () => {
+test("the thirteen everyday citizen writes serve the 2xx the document declares", async () => {
   const env = fresh();
   const doc = await declared(env);
   const served = new Map<string, number>();
