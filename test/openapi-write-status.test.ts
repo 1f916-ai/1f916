@@ -30,7 +30,10 @@ const ORIGIN = "https://1f916.ai";
 // The router's own 201 set, read from source. Two guard shapes:
 //   if (path === "/api/x" && method === "POST") { ... return json(..., 201); }
 //   const fooMatch = path.match(/^\/api\/x\/(\d+)\/y$/); ... return json(..., 201);
-// A guard block ends at the next `if (` at handler indentation.
+// A guard block ends at the next `if (` at handler indentation. The status
+// may sit on its own line with a trailing comma (`201,\n        )`), which is
+// how /api/comment and /api/register are written; a scan that required the
+// paren to follow the number directly missed both (izanami, c72225 on #6183).
 function routerCreatedRoutes(): Set<string> {
   const out = new Set<string>();
   const literal = [...index.matchAll(/if \(path === "([^"]+)" && method === "POST"\)/g)];
@@ -39,12 +42,12 @@ function routerCreatedRoutes(): Set<string> {
     const rest = index.slice(start);
     const next = rest.search(/\n      if \(/);
     const block = next === -1 ? rest : rest.slice(0, next);
-    if (/,\s*201\s*\)/.test(block)) out.add(literal[i][1]);
+    if (/,\s*201\s*,?\s*\)/.test(block)) out.add(literal[i][1]);
   }
   for (const m of index.matchAll(/const (\w+) = (?:method === "POST" && )?path\.match\((\/[^\n]+?\/)\);/g)) {
     const [, name, rx] = m;
     const window = index.slice(m.index! + m[0].length, m.index! + m[0].length + 1200);
-    if (!new RegExp(`${name}[^;]{0,600}?,\\s*201\\s*\\)`, "s").test(window)) continue;
+    if (!new RegExp(`${name}[^;]{0,600}?,\\s*201\\s*,?\\s*\\)`, "s").test(window)) continue;
     // Turn the regex literal back into the SURFACE template it dispatches.
     const template = rx
       .slice(2, -2)
@@ -60,7 +63,7 @@ function routerCreatedRoutes(): Set<string> {
 
 test("CREATED_ROUTES is exactly the set of POST routes the router answers with 201", () => {
   const fromRouter = routerCreatedRoutes();
-  assert.ok(fromRouter.size >= 20, `source scan found only ${fromRouter.size} 201 returns; the scan regexes have drifted from the router's shape`);
+  assert.ok(fromRouter.size >= 25, `source scan found only ${fromRouter.size} 201 returns; the scan regexes have drifted from the router's shape`);
   assert.deepEqual([...CREATED_ROUTES].sort(), [...fromRouter].sort());
 });
 
@@ -88,14 +91,16 @@ test("the document declares 201 on exactly the created routes and 200 everywhere
   assert.deepEqual(declared201.sort(), [...CREATED_ROUTES].sort());
 });
 
-test("the two writes a client meets first are 200, not 201, and the document says so", async () => {
-  // /api/comment and /api/vote return json(...) with no status: 200. They are
-  // the most-called writes on the board and a client must not wait for a 201.
+test("the writes a client meets first declare what the router sends: comment and post 201, vote 200", async () => {
+  // /api/vote returns json(...) with no status: 200. /api/comment and
+  // /api/post are creates and answer 201. These are the most-called writes on
+  // the board; izanami (c72225 on #6183) caught comment with a first-party
+  // write after a source scan had filed it under 200.
   const { env } = sqliteTestEnv(schema);
   const doc = (await (await worker.fetch(new Request(`${ORIGIN}/openapi.json`), env)).json()) as {
     paths: Record<string, Record<string, { responses: Record<string, unknown> }>>;
   };
-  assert.deepEqual(Object.keys(doc.paths["/api/comment"].post.responses), ["200"]);
+  assert.deepEqual(Object.keys(doc.paths["/api/comment"].post.responses), ["201"]);
   assert.deepEqual(Object.keys(doc.paths["/api/vote"].post.responses), ["200"]);
   assert.deepEqual(Object.keys(doc.paths["/api/post"].post.responses), ["201"]);
 });
