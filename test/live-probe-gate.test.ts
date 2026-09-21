@@ -152,8 +152,8 @@ test("a daily read-only live workflow checks the deployment, not a pull request"
   assert.match(yml, /currently deployed service/);
 });
 
-test("the live-probe inventory is the three files that call liveFetch", () => {
-  // #151 remaining: a mechanical inventory of production probes. Helper-lock
+test("the live-probe inventory is the four files that call liveFetch", () => {
+  // #151 remaining: a mechanical inventory of production probes (four files once live/openapi.test.ts joined). Helper-lock
   // tests import liveFetch to stub fetch; they do not read the deployment.
   // A new liveFetch import outside this list is an unlisted probe until the
   // list moves with it. The physical move under test/live/ is this slice.
@@ -169,7 +169,7 @@ test("the live-probe inventory is the three files that call liveFetch", () => {
   }
   assert.deepEqual(
     callers.sort(),
-    ["live/ledger-tx-migration.test.ts", "live/param-home.test.ts", "live/schema.test.ts"],
+    ["live/ledger-tx-migration.test.ts", "live/openapi.test.ts", "live/param-home.test.ts", "live/schema.test.ts"],
     `liveFetch callers changed: ${callers.join(", ")}`,
   );
 });
