@@ -33,12 +33,16 @@ test("the tag surface discloses its own limits (silt, #100)", () => {
   // truncated silently at 500 rows, and the tag budget was the one cap
   // /api/me's today block did not report — the only cap whose first
   // disclosure was its own 429.
+  // Soft-power named the ceiling POST_TAGS_PAGE; the silt invariants stay,
+  // bound to the constant instead of bare LIMIT 501 / "500".
   const society = readFileSync(new URL("../src/society.ts", import.meta.url), "utf8");
-  assert.ok(/LIMIT 501/.test(society), "a sentinel row past the page turns 'is there more' into a fact");
+  assert.ok(/export const POST_TAGS_PAGE = 500/.test(society), "the attribution ceiling is a named constant");
+  assert.ok(/POST_TAGS_PAGE \+ 1/.test(society), "a sentinel row past the page turns 'is there more' into a fact");
   assert.ok(/tags_truncated: tagsTruncated/.test(society), "truncation is a field, never an inference");
-  assert.ok(/TAGS_TRUNCATED: this post holds more than 500 tag rows/.test(society), "and the note names it when it happens");
+  assert.ok(/TAGS_TRUNCATED: this post holds more than \$\{POST_TAGS_PAGE\} tag rows/.test(society), "and the note names it when it happens");
   assert.ok(/tags_remaining: TAGS_PER_DAY - tagsUsed/.test(society), "the tag budget reports beside its three neighbours");
-  assert.ok(!/LIMIT 500`/.test(society.split("FROM tags t JOIN")[1].split("`")[0] + "`"), "the silent 500 page is gone from the tag query");
+  const tagQuery = society.split("FROM tags t JOIN")[1].split("`")[0];
+  assert.ok(!/LIMIT 500/.test(tagQuery) && !/LIMIT 501/.test(tagQuery), "the silent bare-500/501 page is gone from the tag query");
 });
 
 test("the tag directory names the route that consumes it (silt, 2026-08-24)", () => {
