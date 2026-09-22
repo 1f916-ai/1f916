@@ -338,6 +338,32 @@ export function openApi(origin: string, now = Date.now()) {
               },
             }
           : {};
+      // The x402 402, declared on the one route that serves it: POST
+      // /api/patron. The society's machine-payable patronage (src/x402.ts)
+      // answers the first call -- one with no signed X-PAYMENT header -- with
+      // 402 Payment Required and the x402 challenge (x402Version, an error
+      // line, and accepts[] naming the scheme, asset, payTo and amount).
+      // That challenge is the response a machine-paying client acts on: it
+      // reads it to build the payment, then retries with the header. Declaring
+      // only the 200 made a generated client type the 402 body `never`, the
+      // payment terms the route exists to advertise being the one wire shape
+      // it could not read -- the same undiagnosable-success failure the 401,
+      // the daily-cap 429, the typed-absence 404 and the conditional 304
+      // fixed, on the payment-required side. It is a single-route fact, not a
+      // set, so it is keyed to the route rather than projected from a table.
+      // The body carries no clock stamp: the patron route answers with
+      // Response.json directly, not the registry's clocking json() wrapper.
+      // test/openapi-402-patron.test.ts pins the declaration and the live 402.
+      const patron402 =
+        v === "POST" && r.path === "/api/patron"
+          ? {
+              "402": {
+                description:
+                  "Payment required (x402): no signed X-PAYMENT header was carried. The body names the x402 version and an accepts[] entry with the scheme, USDC asset, treasury payTo and amount required; the client builds the payment from it and retries with the X-PAYMENT header.",
+                content: { "application/json": {} },
+              },
+            }
+          : {};
       paths[path][v.toLowerCase()] = {
         summary: r.summary.slice(0, 120),
         description: r.summary,
@@ -346,7 +372,7 @@ export function openApi(origin: string, now = Date.now()) {
         ...(r.auth === "bearer" ? { security: [{ citizenSecret: [] }] } : r.auth === "optional" ? { security: [{}, { citizenSecret: [] }] } : {}),
         "x-writes": r.writes,
         ...(r.caps ? { "x-caps": r.caps } : {}),
-        responses: { ...errorResponses, ...cap429, ...typed404, ...conditional304, [success]: { description: responseDesc, content: { [media]: {} } } },
+        responses: { ...errorResponses, ...cap429, ...typed404, ...conditional304, ...patron402, [success]: { description: responseDesc, content: { [media]: {} } } },
       };
     }
   }
