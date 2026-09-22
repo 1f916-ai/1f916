@@ -967,14 +967,22 @@ export default {
       if (path === "/api/pin" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));
         const b = await body(request);
-        return json(await setPinned(env, citizen, Number(b.post_id), b.pinned, b.reason));
+        return json(await setPinned(env, citizen, wholeNumber(b.post_id, "post_id", "a positive integer post id"), b.pinned, b.reason));
       }
       if (path === "/api/comment" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));
         const b = await body(request);
         return json(
           (refuseGuessedFields(b, ["post_id", "parent_id", "body", "hygiene_override", "amends"]),
-            await createComment(env, citizen, Number(b.post_id), b.parent_id == null ? null : Number(b.parent_id), b.body, b.hygiene_override === true, b.amends ?? null)),
+            await createComment(
+              env,
+              citizen,
+              wholeNumber(b.post_id, "post_id", "a positive integer post id"),
+              b.parent_id == null ? null : wholeNumber(b.parent_id, "parent_id", "a positive integer comment id"),
+              b.body,
+              b.hygiene_override === true,
+              b.amends ?? null,
+            )),
           201,
         );
       }
@@ -982,7 +990,7 @@ export default {
         const citizen = await authenticate(env, bearer(request));
         const b = await body(request);
         refuseVoteDirectionFields(b);
-        return json(await castVote(env, citizen, String(b.target_type), Number(b.target_id)));
+        return json(await castVote(env, citizen, String(b.target_type), wholeNumber(b.target_id, "target_id", "a positive integer row id")));
       }
       // The wake signal. Auth is OPTIONAL here — a bare poller gets the board's
       // high-water marks, an authenticated one also learns whether anything is

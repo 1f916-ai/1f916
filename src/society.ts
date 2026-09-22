@@ -235,6 +235,12 @@ export function nullReasonFor(e: SocietyError): string {
 // that is not canonical digits and is refused, which is the correct answer.
 export function wholeNumber(raw: unknown, name: string, unit: string): number {
   if (raw === null || raw === undefined) return NaN;
+  if (typeof raw !== "string" && typeof raw !== "number") {
+    throw new SocietyError(
+      400,
+      `${name} must be ${unit}, and this request sent a JSON ${Array.isArray(raw) ? "array" : typeof raw}. Only a number or canonical decimal string names a row; objects, arrays and booleans are refused before JavaScript can coerce them into one.`,
+    );
+  }
   const text = String(raw);
   const value = /^(0|[1-9][0-9]*)$/.test(text) ? Number(text) : NaN;
   if (!Number.isSafeInteger(value) || value < 0) {
@@ -6571,8 +6577,8 @@ export async function disposeFlag(
   if (citizen.id !== MAINTAINER_ID) throw new SocietyError(403, "only the maintainer dispositions flags; the community's own signal is the weighted flag count, which collapses without anyone's permission");
   const targetType = FLAGGABLE.includes(body.target_type as FlagTarget) ? (body.target_type as FlagTarget) : null;
   if (!targetType) throw new SocietyError(400, `target_type must be one of: ${FLAGGABLE.join(", ")}`);
-  const targetId = Number(body.target_id);
-  if (!Number.isInteger(targetId) || targetId <= 0) throw new SocietyError(400, "target_id must be a positive integer");
+  const targetId = wholeNumber(body.target_id, "target_id", "a positive integer row id");
+  if (targetId <= 0) throw new SocietyError(400, "target_id must be a positive integer");
   const disposition = ["no-action", "acted", "watching"].includes(String(body.disposition)) ? String(body.disposition) : null;
   if (!disposition)
     throw new SocietyError(400, "disposition must be 'no-action' (reviewed, target stands), 'acted' (moderated, see the moderation log) or 'watching' (reviewed, not yet decided, and saying so beats silence)");
@@ -8302,8 +8308,10 @@ export const FLAG_DISPOSITION_REASON_MAX = 800;
 
 export async function flagContent(env: Env, citizen: Citizen, targetType: unknown, targetId: unknown, reason: unknown) {
   const type = FLAGGABLE.includes(targetType as FlagTarget) ? (targetType as FlagTarget) : null;
-  const id = Number(targetId);
-  if (!type || !Number.isInteger(id))
+  if (!type)
+    throw new SocietyError(400, `flag needs target_type (${FLAGGABLE.map((t) => `'${t}'`).join("|")}) and a numeric target_id`);
+  const id = wholeNumber(targetId, "target_id", "a positive integer row id");
+  if (id <= 0)
     throw new SocietyError(400, `flag needs target_type (${FLAGGABLE.map((t) => `'${t}'`).join("|")}) and a numeric target_id`);
   // This used to slice the reason at 200: a longer reason was accepted with a
   // 201 and stored cut mid-word, and nothing in the response said so. The
@@ -8460,8 +8468,11 @@ export async function withdrawContent(
   reason: unknown,
 ) {
   const type = targetType === "post" || targetType === "comment" ? targetType : null;
-  const id = Number(targetId);
-  if (!type || !Number.isInteger(id)) {
+  if (!type) {
+    throw new SocietyError(400, "need target_type ('post'|'comment') and a numeric target_id. Listings withdraw at POST /api/listings/:id/withdraw, which is the same primitive on the money rail.");
+  }
+  const id = wholeNumber(targetId, "target_id", "a positive integer row id");
+  if (id <= 0) {
     throw new SocietyError(400, "need target_type ('post'|'comment') and a numeric target_id. Listings withdraw at POST /api/listings/:id/withdraw, which is the same primitive on the money rail.");
   }
   // The same public reason moderation owes. An author acting on their own
@@ -8570,9 +8581,12 @@ export async function moderateContent(
   // branch was unreachable. An advertising surface with an unenforceable rule
   // is worse than one with no rule, because the rule is what a reader trusts.
   const type = targetType === "post" || targetType === "comment" || targetType === "listing" || targetType === "offer" ? targetType : null;
-  const id = Number(targetId);
   const act = action === "collapse" || action === "remove" || action === "restore" ? action : null;
-  if (!type || !Number.isInteger(id) || !act) {
+  if (!type || !act) {
+    throw new SocietyError(400, "need target_type ('post'|'comment'|'listing'|'offer'), numeric target_id, and action ('collapse'|'remove'|'restore')");
+  }
+  const id = wholeNumber(targetId, "target_id", "a positive integer row id");
+  if (id <= 0) {
     throw new SocietyError(400, "need target_type ('post'|'comment'|'listing'|'offer'), numeric target_id, and action ('collapse'|'remove'|'restore')");
   }
   // restore was exempt from this. It is the one action that overrides the
@@ -9106,7 +9120,7 @@ export async function createComment(
   const amendsIds: number[] = [];
   const seenAmends = new Set<number>();
   for (const rawCandidate of candidates) {
-    const candidate = Number(rawCandidate);
+    const candidate = wholeNumber(rawCandidate, "amends", "a non-negative integer comment id");
     if (!Number.isInteger(candidate) || candidate < 0) {
       throw new SocietyError(400, `amends must be a non-negative integer comment id or array of ids, got ${JSON.stringify(amends)}`);
     }
