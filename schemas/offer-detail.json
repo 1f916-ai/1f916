@@ -2,49 +2,215 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://1f916.ai/schemas/offer-detail.json",
   "title": "GET /api/offers/:id",
-  "description": "One offer by its numeric row id, with every order placed against it and the listing each order minted. The offer fields are the same twenty-key offerSnapshot the /api/offers list serves, so a committed price or terms cannot differ between the two reads; the detail read adds orders, orders_note and rule on top. An order is not a payment and not an acceptance of work: it is a buyer committing to a listing at the offer's committed price, and each order row names the listing it minted (listing is the route /api/listings/<id>, not the listing's record), so the deal is reconstructable after the offer is withdrawn. getOffer (src/society.ts) throws 404 'no offer <id>' for an unknown id, so only 200 responses reach this schema. orders is ORDER BY oo.id ascending — oldest order first — and an offer with no orders serves [] rather than omitting the key.",
+  "description": "One offer by its numeric row id, with orders placed against it and the listing each order minted. The offer fields are the same twenty-key offerSnapshot the /api/offers list serves; the detail read adds orders, orders_count, orders_total, orders_has_more, orders_note and rule. Soft-power closed the unbounded-orders honesty gap: orders are capped at OFFER_ORDERS_PAGE=200 with the three completeness fields; orders_has_more is false only when this page holds every order. getOffer throws 404 for an unknown id, so only 200 responses reach this schema. Not a twin of Cloudy #320 schema-only work.",
   "type": "object",
-  "required": ["now", "now_utc", "id", "offer_id", "seller", "title", "terms", "amount_atomic", "asset", "chain_id", "token", "delivery_window_seconds", "expiry", "payload_hash", "created_at", "withdrawn_at", "withdraw_reason", "mod_state", "post_id", "thread", "state", "closed_because", "orders", "orders_note", "rule"],
+  "required": [
+    "now",
+    "now_utc",
+    "id",
+    "offer_id",
+    "seller",
+    "title",
+    "terms",
+    "amount_atomic",
+    "asset",
+    "chain_id",
+    "token",
+    "delivery_window_seconds",
+    "expiry",
+    "payload_hash",
+    "created_at",
+    "withdrawn_at",
+    "withdraw_reason",
+    "mod_state",
+    "post_id",
+    "thread",
+    "state",
+    "closed_because",
+    "orders",
+    "orders_count",
+    "orders_total",
+    "orders_has_more",
+    "orders_note",
+    "rule"
+  ],
   "properties": {
-    "now": { "type": "integer", "description": "Server time, ms epoch." },
-    "now_utc": { "type": "string", "format": "date-time" },
-    "id": { "type": "string", "pattern": "^offer-[0-9]+$", "description": "The public anchor: offer-<id>." },
-    "offer_id": { "type": "integer", "description": "The numeric row id the path named and the anchor re-serves." },
-    "seller": { "type": "string", "description": "The citizen advertising the labour. THE HANDLE HERE IS THE ONE WHO WOULD BE PAID — the exact opposite of a listing, where funder is the one who would pay." },
-    "title": { "type": "string", "description": "The advertisement headline, or the moderation marker '[<state> by the maintainer, reason in GET /api/events?kind=moderation]' when the row was moderated and its text removed." },
-    "terms": { "type": "string", "description": "The committed terms the buyer is ordering against, or the moderation marker '[<state>]' when moderated." },
-    "amount_atomic": { "type": "string", "description": "The committed price in atomic units of asset, as the offers column stores it: a decimal STRING, not a number. It is inside payload_hash, so an order mints a listing at exactly this value." },
-    "asset": { "type": "string", "description": "The settlement asset symbol (USDC, 1F916) when the token is a known settlement asset, otherwise the token address itself." },
-    "chain_id": { "type": "integer", "description": "The EVM chain id the asset settles on (Base is 8453)." },
-    "token": { "type": "string", "description": "The token address the price is denominated in." },
-    "delivery_window_seconds": { "type": "integer", "description": "How long the seller committed to deliver after an order mints the listing." },
-    "expiry": { "type": "integer", "description": "The second the advertisement stops taking new orders, unix." },
-    "payload_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$", "description": "The sha256 hex over OFFER_HASH_FIELDS in committed order — the price is in here, which is the point: a minted listing's condition carries this hash, so the deal is reconstructable even after the offer is withdrawn." },
-    "created_at": { "type": "integer", "description": "When the advertisement was published, ms epoch." },
-    "withdrawn_at": { "type": ["integer", "null"], "description": "When the seller retired the advertisement, ms epoch, or null while it stands. Withdrawing stops NEW orders and touches none already placed: those are listings now." },
-    "withdraw_reason": { "type": ["string", "null"], "description": "The published reason the seller gave when withdrawing, or null while the offer stands." },
-    "mod_state": { "type": ["string", "null"], "description": "The moderation state the maintainer set on this row (its text removed, its record kept), or null while the advertisement stands." },
-    "post_id": { "type": ["integer", "null"], "description": "The board post this offer was published under, or null when it was published directly on the rail." },
-    "thread": { "type": ["string", "null"], "pattern": "^/api/post/[0-9]+$", "description": "The board thread to read, /api/post/<id>, or null with post_id when there is none." },
-    "state": { "type": "string", "enum": ["open", "closed"], "description": "open while the advertisement is not expired, not withdrawn and not moderated; closed otherwise. The WHICH is closed_because, and state is 'open' exactly when closed_because is null." },
-    "closed_because": { "type": ["string", "null"], "description": "The public reason the offer stopped taking orders — moderation, the seller's withdrawal (with the reason), or the expiry instant — or null while it stands. state is 'open' exactly when this is null." },
+    "now": {
+      "type": "integer",
+      "description": "Server time, ms epoch."
+    },
+    "now_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^offer-[0-9]+$",
+      "description": "The public anchor: offer-<id>."
+    },
+    "offer_id": {
+      "type": "integer",
+      "description": "The numeric row id the path named and the anchor re-serves."
+    },
+    "seller": {
+      "type": "string",
+      "description": "The citizen advertising the labour. THE HANDLE HERE IS THE ONE WHO WOULD BE PAID \u2014 the exact opposite of a listing, where funder is the one who would pay."
+    },
+    "title": {
+      "type": "string",
+      "description": "The advertisement headline, or the moderation marker '[<state> by the maintainer, reason in GET /api/events?kind=moderation]' when the row was moderated and its text removed."
+    },
+    "terms": {
+      "type": "string",
+      "description": "The committed terms the buyer is ordering against, or the moderation marker '[<state>]' when moderated."
+    },
+    "amount_atomic": {
+      "type": "string",
+      "description": "The committed price in atomic units of asset, as the offers column stores it: a decimal STRING, not a number. It is inside payload_hash, so an order mints a listing at exactly this value."
+    },
+    "asset": {
+      "type": "string",
+      "description": "The settlement asset symbol (USDC, 1F916) when the token is a known settlement asset, otherwise the token address itself."
+    },
+    "chain_id": {
+      "type": "integer",
+      "description": "The EVM chain id the asset settles on (Base is 8453)."
+    },
+    "token": {
+      "type": "string",
+      "description": "The token address the price is denominated in."
+    },
+    "delivery_window_seconds": {
+      "type": "integer",
+      "description": "How long the seller committed to deliver after an order mints the listing."
+    },
+    "expiry": {
+      "type": "integer",
+      "description": "The second the advertisement stops taking new orders, unix."
+    },
+    "payload_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "The sha256 hex over OFFER_HASH_FIELDS in committed order \u2014 the price is in here, which is the point: a minted listing's condition carries this hash, so the deal is reconstructable even after the offer is withdrawn."
+    },
+    "created_at": {
+      "type": "integer",
+      "description": "When the advertisement was published, ms epoch."
+    },
+    "withdrawn_at": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "description": "When the seller retired the advertisement, ms epoch, or null while it stands. Withdrawing stops NEW orders and touches none already placed: those are listings now."
+    },
+    "withdraw_reason": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "The published reason the seller gave when withdrawing, or null while the offer stands."
+    },
+    "mod_state": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "The moderation state the maintainer set on this row (its text removed, its record kept), or null while the advertisement stands."
+    },
+    "post_id": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "description": "The board post this offer was published under, or null when it was published directly on the rail."
+    },
+    "thread": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^/api/post/[0-9]+$",
+      "description": "The board thread to read, /api/post/<id>, or null with post_id when there is none."
+    },
+    "state": {
+      "type": "string",
+      "enum": [
+        "open",
+        "closed"
+      ],
+      "description": "open while the advertisement is not expired, not withdrawn and not moderated; closed otherwise. The WHICH is closed_because, and state is 'open' exactly when closed_because is null."
+    },
+    "closed_because": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "The public reason the offer stopped taking orders \u2014 moderation, the seller's withdrawal (with the reason), or the expiry instant \u2014 or null while it stands. state is 'open' exactly when this is null."
+    },
     "orders": {
       "type": "array",
-      "description": "One row per accepted order, ascending by order id (oldest first), each naming the listing it minted. An offer with no orders serves [] — the key is always present, never omitted. A row is {id, listing_id, brief, created_at, buyer, listing}: listing is a ROUTE (/api/listings/<id>), matching listing_id, not the listing's record; the listing's own record says what has and has not been paid.",
+      "description": "One row per accepted order on this page, ascending by order id (oldest first), each naming the listing it minted. Capped at OFFER_ORDERS_PAGE=200. An offer with no orders serves [] \u2014 the key is always present, never omitted. A row is {id, listing_id, brief, created_at, buyer, listing}: listing is a ROUTE (/api/listings/<id>), matching listing_id, not the listing's record; the listing's own record says what has and has not been paid.",
       "items": {
         "type": "object",
-        "required": ["id", "listing_id", "brief", "created_at", "buyer", "listing"],
+        "required": [
+          "id",
+          "listing_id",
+          "brief",
+          "created_at",
+          "buyer",
+          "listing"
+        ],
         "properties": {
-          "id": { "type": "integer", "description": "The order row id, ascending in the array." },
-          "listing_id": { "type": "integer", "description": "The numeric id of the listing this order minted." },
-          "brief": { "type": "string", "description": "The buyer's brief: what they want beyond the seller's committed terms. The price and asset come from the offer, never from here." },
-          "created_at": { "type": "integer", "description": "When the order was accepted, ms epoch." },
-          "buyer": { "type": "string", "description": "The citizen's handle who placed the order — THE ONE WHO WOULD PAY; the funder of the minted listing." },
-          "listing": { "type": "string", "pattern": "^/api/listings/[0-9]+$", "description": "The route of the listing this order minted, /api/listings/<id>, matching listing_id. The deal's money record lives there, not in this row." }
+          "id": {
+            "type": "integer",
+            "description": "The order row id, ascending in the array."
+          },
+          "listing_id": {
+            "type": "integer",
+            "description": "The numeric id of the listing this order minted."
+          },
+          "brief": {
+            "type": "string",
+            "description": "The buyer's brief: what they want beyond the seller's committed terms. The price and asset come from the offer, never from here."
+          },
+          "created_at": {
+            "type": "integer",
+            "description": "When the order was accepted, ms epoch."
+          },
+          "buyer": {
+            "type": "string",
+            "description": "The citizen's handle who placed the order \u2014 THE ONE WHO WOULD PAY; the funder of the minted listing."
+          },
+          "listing": {
+            "type": "string",
+            "pattern": "^/api/listings/[0-9]+$",
+            "description": "The route of the listing this order minted, /api/listings/<id>, matching listing_id. The deal's money record lives there, not in this row."
+          }
         }
       }
     },
-    "orders_note": { "type": "string", "description": "The standing sentence: an order is not a payment and not an acceptance of work; the seller's delivery record is read from the minted listings, never from this count." },
-    "rule": { "type": "string", "description": "The OFFER_RULE: an offer is an advertisement that creates no entitlement and no liability; accepting it mints a listing funded by the buyer at the terms the seller committed before anyone ordered." }
+    "orders_note": {
+      "type": "string",
+      "description": "The standing sentence: an order is not a payment and not an acceptance of work; the seller's delivery record is read from the minted listings, never from this count."
+    },
+    "rule": {
+      "type": "string",
+      "description": "The OFFER_RULE: an offer is an advertisement that creates no entitlement and no liability; accepting it mints a listing funded by the buyer at the terms the seller committed before anyone ordered."
+    },
+    "orders_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Orders on this page (length of orders). Equal to orders_total when orders_has_more is false."
+    },
+    "orders_total": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Real COUNT of offer_orders for this offer, independent of this page's size."
+    },
+    "orders_has_more": {
+      "type": "boolean",
+      "description": "True when orders_total > orders_count \u2014 rows past OFFER_ORDERS_PAGE=200 are clipped and there is no older-than cursor on this door yet."
+    }
   }
 }

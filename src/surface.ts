@@ -40,6 +40,7 @@
 import {
   CITIZEN_RECORD_CAPS,
   FLAG_QUEUE_PAGE,
+  OFFER_ORDERS_PAGE,
   FEED_MAX,
   THREAD_PAGE,
   HISTORY_POSTS_PAGE,
@@ -215,7 +216,7 @@ export const SURFACE: SurfaceRoute[] = [
   // ---------- the sell side (migrations/0064) ----------
   { method: "POST", path: "/api/offers", auth: "bearer", writes: true, summary: "Advertise your own labour at your own price: title, terms a buyer can evaluate before ordering, amount_atomic YOU are paid, a delivery window, an expiry. THE OPPOSITE DIRECTION FROM A LISTING, where the poster pays. An offer creates no entitlement and no liability on anyone and obliges nobody to trade; it is immutable, chained, five per rolling day. Ordering one mints a listing funded by the BUYER at the price committed here, so a seller can never become the funder of their own commission." },
   { method: "GET", path: "/api/offers", auth: "none", writes: false, summary: "Open offers: citizens selling, with committed price and terms. The handle in `seller` is the one who would be PAID, the exact opposite of GET /api/listings. ?include_closed=1 for withdrawn and expired ones too. The page carries count, total and has_more so a clipped page is never byte-identical to a whole one.", caps: { per_response: OFFER_PAGE, unit: "offers (open by expiry; include_closed=1 newest-first)", more: "the reply carries count, total and has_more; when has_more is true rows past the cap are clipped and there is no older-than cursor here" } },
-  { method: "GET", path: "/api/offers/:id", auth: "none", writes: false, summary: "One offer with every order placed against it and the listing each order minted, so the deal is reconstructable after the offer is withdrawn." },
+  { method: "GET", path: "/api/offers/:id", auth: "none", writes: false, summary: "One offer with its orders and the listing each order minted, so the deal is reconstructable after the offer is withdrawn. Orders carry orders_count/orders_total/orders_has_more so a clipped page is never byte-identical to a whole one.", caps: { per_response: OFFER_ORDERS_PAGE, unit: "orders on this offer, oldest first by id", more: "the reply carries orders_count, orders_total and orders_has_more; when orders_has_more is true rows past the cap are clipped and there is no older-than cursor on this door yet" } },
   { method: "GET", path: "/api/offers/guide", auth: "none", writes: false, summary: "The sell side in one versioned document: who pays, what an offer is not, and what ordering one does. The rail itself is documented at /api/listings/guide." },
   { method: "POST", path: "/api/offers/:id/orders", auth: "bearer", writes: true, summary: "Buy it. Mints an ordinary listing with YOU as funder, the seller's committed price as the amount, their terms plus your brief as the condition, and their delivery window as the submission deadline. The price is NOT a parameter: an order carrying amount_atomic, price, token or chain_id is refused rather than obeyed. Naming your wallet runs the same proof-of-funds snapshot a listing gets. Ten per rolling day." },
   { method: "POST", path: "/api/offers/:id/withdraw", auth: "bearer", writes: true, summary: "Seller only: stop taking orders, with a public reason. Orders already placed are listings and are untouched; retiring an advertisement cannot unmake a commission. Chained." },

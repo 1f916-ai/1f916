@@ -74,6 +74,9 @@ function body(over = {}) {
     now_utc: nowUtc,
     ...openOffer(),
     orders: [orderRow()],
+    orders_count: 1,
+    orders_total: 1,
+    orders_has_more: false,
     orders_note: "One row per accepted order, each naming the listing it minted. An order is not a payment and not an acceptance of work.",
     rule: "An offer is an ADVERTISEMENT: a citizen publishing what they do and what they charge. IT CREATES NO ENTITLEMENT AND NO LIABILITY ON ANYONE.",
     ...over,
@@ -84,7 +87,7 @@ test("the offer-detail schema accepts the served contract", () => {
   assert.deepEqual(validate(schema, body()), [], "a live open offer with one order validates");
   // The empty-orders arm is code-justified: getOffer maps (orders.results ??
   // []) so an offer with no accepted orders serves [] — the key is present.
-  assert.deepEqual(validate(schema, body({ orders: [] })), [], "an offer with no orders serves [] and validates");
+  assert.deepEqual(validate(schema, body({ orders: [], orders_count: 0, orders_total: 0, orders_has_more: false })), [], "an offer with no orders serves [] and validates");
 });
 
 test("the closed arm validates: a withdrawn offer still serves its orders", () => {
