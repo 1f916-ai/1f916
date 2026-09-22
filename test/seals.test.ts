@@ -10,7 +10,7 @@ import { DatabaseSync } from "node:sqlite";
 import { generateKeyPairSync, sign as edSign } from "node:crypto";
 import { sealMessage, validateSeal } from "../src/seals.ts";
 import { b64urlEncode } from "../src/keys.ts";
-import { SocietyError, type Env } from "../src/society.ts";
+import { listSeals, SEAL_PAGE, SocietyError, type Env } from "../src/society.ts";
 
 class D1Statement {
   private args: unknown[] = [];
@@ -106,4 +106,55 @@ test("revoked keys do not verify seals", async () => {
   );
   const sig = b64urlEncode(edSign(null, Buffer.from(sealMessage("sealer", "", HASH), "utf8"), privateKey));
   await assert.rejects(() => validateSeal(env, SEALER, { hash: HASH, signature: sig }), SocietyError);
+});
+
+// The checks_of branch of listSeals pages the per-seal check rows on their own
+// id. It must say has_more only when rows actually REMAIN, not merely because
+// the page came back full — the same predicate the seal branch below it uses.
+// A full page of exactly SEAL_PAGE with no more rows must answer has_more false
+// and carry no next_since_check_id; today it answers true and hands a cursor
+// that pages an empty result while the body's total says N of N.
+function makeSealsEnv() {
+  const db = new DatabaseSync(":memory:");
+  db.exec(`
+    CREATE TABLE citizens (id INTEGER PRIMARY KEY, handle TEXT UNIQUE);
+    CREATE TABLE seals (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER NOT NULL, hash TEXT NOT NULL, label TEXT NOT NULL DEFAULT '', signature TEXT, key_thumbprint TEXT, sealed_at INTEGER NOT NULL);
+    CREATE TABLE seal_checks (id INTEGER PRIMARY KEY AUTOINCREMENT, seal_id INTEGER NOT NULL, citizen_id INTEGER NOT NULL, signature TEXT, key_thumbprint TEXT, checked_at INTEGER NOT NULL);
+    INSERT INTO citizens (id, handle) VALUES (1, 'sealer');
+  `);
+  return { env: { DB: { prepare: (sql: string) => new D1Statement(db, sql) } } as unknown as Env, db };
+}
+
+async function seedSealWithChecks(db: DatabaseSync, nChecks: number) {
+  db.prepare("INSERT INTO seals (citizen_id, hash, label, sealed_at) VALUES (1, ?, 'diary', 0)").run(HASH);
+  for (let i = 0; i < nChecks; i++) {
+    db.prepare("INSERT INTO seal_checks (seal_id, citizen_id, signature, key_thumbprint, checked_at) VALUES (1, 1, NULL, NULL, ?)").run(1000 + i);
+  }
+}
+
+test("seals checks_of: a full page with no rows left says has_more false, no cursor (the boundary)", async () => {
+  // Exactly SEAL_PAGE checks: the page is full but there is nothing after it.
+  const { env, db } = makeSealsEnv();
+  await seedSealWithChecks(db, SEAL_PAGE);
+  const p = await listSeals(env, "sealer", null, NaN, 1, NaN);
+  assert.equal(p.count, SEAL_PAGE);
+  assert.equal(p.total, SEAL_PAGE);
+  assert.equal(p.has_more, false, "a full page over the whole set is not 'more'");
+  assert.ok(!("next_since_check_id" in p), "no cursor to follow when nothing remains");
+});
+
+test("seals checks_of: one check past the page says has_more true with a working cursor", async () => {
+  // SEAL_PAGE + 1 checks: a page is full AND a row remains, so it must page.
+  const { env, db } = makeSealsEnv();
+  await seedSealWithChecks(db, SEAL_PAGE + 1);
+  const p = await listSeals(env, "sealer", null, NaN, 1, NaN);
+  assert.equal(p.count, SEAL_PAGE);
+  assert.equal(p.total, SEAL_PAGE + 1);
+  assert.equal(p.has_more, true);
+  assert.equal(p.next_since_check_id, SEAL_PAGE);
+  // Following the cursor returns exactly the one row it pointed at.
+  const next = await listSeals(env, "sealer", null, NaN, 1, SEAL_PAGE);
+  assert.equal(next.count, 1);
+  assert.equal(next.total, SEAL_PAGE + 1);
+  assert.equal(next.has_more, false);
 });

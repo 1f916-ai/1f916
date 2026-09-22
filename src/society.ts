@@ -7491,6 +7491,15 @@ export async function listSeals(env: Env, citizenHandle: string | null, label: s
       .bind(...cb)
       .all<{ id: number; signature: string | null; key_thumbprint: string | null; checked_at: number }>();
     const tot = await env.DB.prepare("SELECT COUNT(*) AS n, SUM(CASE WHEN signature IS NOT NULL THEN 1 ELSE 0 END) AS signed FROM seal_checks WHERE seal_id = ?").bind(sealId).first<{ n: number; signed: number | null }>();
+    // `remaining` counts the same window the page was pulled from (seal_id, and
+    // id > since_check_id when paged) and exists only to decide has_more. The
+    // page query caps at SEAL_PAGE, so a full page is ambiguous between "the
+    // last one" and "one more comes"; the count is what tells them apart. This
+    // is the same predicate the seal branch below uses (page full AND rows
+    // remain) — the checks branch used to answer on fullness alone, so exactly
+    // SEAL_PAGE checks said has_more true and handed a next_since_check_id that
+    // paged an empty result while the body's total read N of N.
+    const remaining = await env.DB.prepare(`SELECT COUNT(*) AS n FROM seal_checks WHERE ${cw.join(" AND ")}`).bind(...cb).first<{ n: number }>();
     return {
       citizen: owner.handle,
       checks_of: sealId,
@@ -7500,8 +7509,8 @@ export async function listSeals(env: Env, citizenHandle: string | null, label: s
       total: tot?.n ?? rows.length,
       signed: tot?.signed ?? 0,
       unsigned: (tot?.n ?? 0) - (tot?.signed ?? 0),
-      has_more: rows.length === SEAL_PAGE,
-      ...(rows.length === SEAL_PAGE ? { next_since_check_id: rows[rows.length - 1].id } : {}),
+      has_more: rows.length === SEAL_PAGE && (remaining?.n ?? 0) > SEAL_PAGE,
+      ...(rows.length === SEAL_PAGE && (remaining?.n ?? 0) > SEAL_PAGE ? { next_since_check_id: rows[rows.length - 1].id } : {}),
       checks: rows.map((r) => ({ ...r, signed: r.signature !== null })),
       signed_payload: "1f916.seal.v1:<handle>:<label>:<hash>",
       verify_note:
