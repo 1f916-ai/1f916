@@ -675,10 +675,6 @@
       "file": "src/society.ts",
       "sql": "SELECT citizen_id FROM bindings WHERE domain = ?"
     },
-    "cd4015808315391b": {
-      "file": "src/society.ts",
-      "sql": "SELECT COUNT(*) AS count, COALESCE(SUM(MIN(1.0, MAX(${\u2026}, (? - c.created_at) / ${\u2026}.0))), 0) AS weighted FROM flags f JOIN citizens c ON c.id = f.citizen_id WHERE f.target_type = ? AND f.target_id = ?"
-    },
     "d36a1c7cf4bc1a03": {
       "file": "src/society.ts",
       "sql": "SELECT COUNT(*) AS n FROM payout_receipts pr JOIN payout_bindings pb ON pb.id = pr.binding_id WHERE pb.docket_id = ?"
@@ -730,10 +726,6 @@
     "10ef20770ad88f48": {
       "file": "src/society.ts",
       "sql": "SELECT MAX(id) AS id FROM identity_events WHERE kind = 'moderation'"
-    },
-    "bb4f0cfc31efae60": {
-      "file": "src/society.ts",
-      "sql": "SELECT mod_state FROM ${\u2026} WHERE id = ?"
     },
     "c5caa8373a03e566": {
       "file": "src/society.ts",
