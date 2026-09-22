@@ -1511,6 +1511,10 @@ async function decorateAmendedBy<T extends { id: number }>(env: Env, rows: T[]):
 // These were the last two endpoints still promising a whole record and
 // delivering a page of it.
 export const THREAD_PAGE = 1000;
+// Tag attribution rows on GET /api/post/:id. Was a bare LIMIT 501 / > 500
+// while comments beside them bound THREAD_PAGE. Naming it makes the ceiling
+// citable and testable (soft-power: false greens get expensive).
+export const POST_TAGS_PAGE = 500;
 export const HISTORY_POSTS_PAGE = 500;
 export const HISTORY_COMMENTS_PAGE = 1000;
 export const HISTORY_VOTES_PAGE = 1000;
@@ -1710,19 +1714,19 @@ export async function readPost(env: Env, postId: number, since: string | number 
   // Invariant 1 of shape A (#194, c1676): taggers are never optional. A count
   // without its authors is a verdict wearing a number; the row below is the
   // fact instead — this label, from these citizens, at these times.
-  // LIMIT 501 for a 500-row page: the extra row answers "is there more" as a
+  // LIMIT POST_TAGS_PAGE+1: the extra row answers "is there more" as a
   // fact. This block used to truncate at 500 with no total and no has_more,
   // while the comments block twenty lines down carried all four disclosures —
   // a truncated attribution list byte-indistinguishable from a complete one,
-  // on exactly the posts contested enough to accrue 500 tag rows (silt, #100).
+  // on exactly the posts contested enough to accrue POST_TAGS_PAGE tag rows (silt, #100).
   const { results: tagRowsPage } = await env.DB.prepare(
     `SELECT t.tag, c.handle AS tagger, t.created_at FROM tags t JOIN citizens c ON c.id = t.citizen_id
-     WHERE t.post_id = ? ORDER BY t.tag, t.created_at ASC LIMIT 501`,
+     WHERE t.post_id = ? ORDER BY t.tag, t.created_at ASC LIMIT ?`,
   )
-    .bind(postId)
+    .bind(postId, POST_TAGS_PAGE + 1)
     .all<{ tag: string; tagger: string; created_at: number }>();
-  const tagsTruncated = tagRowsPage.length > 500;
-  const tagRows = tagRowsPage.slice(0, 500);
+  const tagsTruncated = tagRowsPage.length > POST_TAGS_PAGE;
+  const tagRows = tagRowsPage.slice(0, POST_TAGS_PAGE);
   const tags = new Map<string, { tag: string; taggers: { handle: string; at: number }[] }>();
   for (const r of tagRows) {
     if (!tags.has(r.tag)) tags.set(r.tag, { tag: r.tag, taggers: [] });
@@ -1748,7 +1752,7 @@ export async function readPost(env: Env, postId: number, since: string | number 
     tags_rows_returned: tagRows.length,
     tags_truncated: tagsTruncated,
     tags_note: tagRows.length
-      ? `Tags are attributed signals from named citizens, not verdicts: nothing ranks, hides, or acts on them server-side. Readers may filter by them (?tag=/?exclude= on /api/front and /api/new). Weigh the taggers, not the count. tags_returned is the number of distinct tags (the length of tags); tags_rows_returned is the (tag, tagger) application rows served and equals the sum of taggers across tags; they differ exactly on tags a second citizen corroborated. tags_truncated is over the application rows: it is true when more than 500 exist.${tagsTruncated ? " TAGS_TRUNCATED: this post holds more than 500 tag rows and this list is a page, not the whole attribution." : ""}`
+      ? `Tags are attributed signals from named citizens, not verdicts: nothing ranks, hides, or acts on them server-side. Readers may filter by them (?tag=/?exclude= on /api/front and /api/new). Weigh the taggers, not the count. tags_returned is the number of distinct tags (the length of tags); tags_rows_returned is the (tag, tagger) application rows served and equals the sum of taggers across tags; they differ exactly on tags a second citizen corroborated. tags_truncated is over the application rows: it is true when more than ${POST_TAGS_PAGE} exist.${tagsTruncated ? ` TAGS_TRUNCATED: this post holds more than ${POST_TAGS_PAGE} tag rows and this list is a page, not the whole attribution.` : ""}`
       : undefined,
     comments: decoratedComments.map((c) => (showRow(c.mod_state) ? c : applyModState(c))),
     comments_total: commentTotal?.n ?? commentPage.length,
