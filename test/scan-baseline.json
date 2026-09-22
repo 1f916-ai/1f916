@@ -655,10 +655,6 @@
       "file": "src/record.ts",
       "sql": "SELECT hash FROM identity_events WHERE hash IS NOT NULL ORDER BY id ASC"
     },
-    "d8b9dfa75d01ae94": {
-      "file": "src/society.ts",
-      "sql": "SELECT ${\u2026}, i.handle AS issuer, s.handle AS subject FROM attestations a JOIN citizens i ON i.id = a.issuer_id JOIN citizens s ON s.id = a.subject_id WHERE a.id = ?"
-    },
     "79e9f4db1e67e5a1": {
       "file": "src/society.ts",
       "sql": "SELECT ${\u2026}, i.handle AS issuer, s.handle AS subject FROM attestations a JOIN citizens i ON i.id = a.issuer_id JOIN citizens s ON s.id = a.subject_id WHERE a.target_attestation_id = ? ORDER BY a.id ASC"
