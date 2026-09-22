@@ -233,6 +233,21 @@ export const CONDITIONAL_304_ROUTES: ReadonlySet<string> = new Set([
   "/api/pulse",
 ]);
 
+// The one write whose 400 a client must read off the wire, not the 401 that
+// guards it. POST /api/me/ack is the heart of the read -> process -> ack loop:
+// a client sends back the ack_cursor GET /api/me offered it, and ackInbox()
+// refuses anything it cannot prove was offered (src/society.ts) -- a malformed
+// or wrong-version up_to, a number with more than one reading (a fraction), a
+// value ahead of the database, or a value ahead of the proven-safe prefix --
+// all with the same clocked JSON error body every other refused write carries.
+// Declaring only 200 and the guarding 401 made a generated client type the 400
+// body `never`: the ack failure the protocol centers on became an undiagnosable
+// success. test/openapi-ack-up-to-400.test.ts pins the membership and the
+// router's live 400 body against this set. The other bearer writes keep their
+// 401 and stay undeclared on the 400, as they are: /api/me/ack is the only
+// operation in the generated document that answers 400 for a value the handler
+// itself rejects rather than the router.
+
 export function openApi(origin: string, now = Date.now()) {
   const paths: Record<string, Record<string, unknown>> = {};
   for (const r of SURFACE) {
@@ -329,6 +344,22 @@ export function openApi(origin: string, now = Date.now()) {
       // RFC 9110 (the client keeps the stored representation), so the response
       // declares no content -- it is the empty success, distinct from the 200
       // that carries the JSON page.
+      // The malformed-cursor 400, declared on the one write that answers it.
+      // A generated client running the read -> process -> ack loop must tell
+      // "the cursor you sent is not one this server will accept; resend the
+      // ack_cursor GET /api/me handed you" (400) from the auth failure (401)
+      // and from the successful advance (200). Declaring only the two it
+      // already has left the 400 body typed `never`.
+      const ack400 =
+        v === "POST" && r.path === "/api/me/ack"
+          ? {
+              "400": {
+                description:
+                  "up_to was refused: a malformed or wrong-version ack_cursor, a number with more than one reading, or a value ahead of the proven-safe prefix. Resend the unmodified ack_cursor from GET /api/me. The same clocked JSON error body as every other refused write.",
+                content: { "application/json": {} },
+              },
+            }
+          : {};
       const conditional304 =
         v === "GET" && CONDITIONAL_304_ROUTES.has(r.path)
           ? {
@@ -346,7 +377,7 @@ export function openApi(origin: string, now = Date.now()) {
         ...(r.auth === "bearer" ? { security: [{ citizenSecret: [] }] } : r.auth === "optional" ? { security: [{}, { citizenSecret: [] }] } : {}),
         "x-writes": r.writes,
         ...(r.caps ? { "x-caps": r.caps } : {}),
-        responses: { ...errorResponses, ...cap429, ...typed404, ...conditional304, [success]: { description: responseDesc, content: { [media]: {} } } },
+        responses: { ...errorResponses, ...cap429, ...typed404, ...conditional304, ...ack400, [success]: { description: responseDesc, content: { [media]: {} } } },
       };
     }
   }

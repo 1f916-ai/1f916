@@ -97,10 +97,11 @@ test("the document declares 201 on exactly the created routes and 200 everywhere
       // The non-success statuses are owned by their own files: 401 by
       // test/openapi-error-statuses.test.ts, the typed-absence 404 by
       // test/openapi-404-id-class.test.ts, the daily-cap 429 by
-      // test/openapi-429-daily-cap.test.ts, and the conditional-GET 304 by
-      // test/openapi-304-conditional.test.ts. Filter all four out so
-      // this file stays the single owner of the 200/201 success split.
-      const codes = Object.keys(op.responses).filter((c) => c !== "401" && c !== "404" && c !== "429" && c !== "304");
+      // test/openapi-429-daily-cap.test.ts, the conditional-GET 304 by
+      // test/openapi-304-conditional.test.ts, and the malformed-cursor 400 by
+      // test/openapi-ack-up-to-400.test.ts. Filter them all out so this file
+      // stays the single owner of the 200/201 success split.
+      const codes = Object.keys(op.responses).filter((c) => c !== "401" && c !== "404" && c !== "429" && c !== "304" && c !== "400");
       const want = verb === "post" && CREATED_ROUTES.has(toTemplate(path)) ? "201" : "200";
       assert.deepEqual(codes, [want], `${verb.toUpperCase()} ${path} success code`);
       // The 401 belongs exactly to the bearer operations and nothing else.
