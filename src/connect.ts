@@ -206,6 +206,50 @@ export const CREATED_ROUTES: ReadonlySet<string> = new Set([
 // correction, the payout / listing / submission budgets, the registration
 // throttle) stay undeclared, as they are. test/openapi-429-daily-cap.test.ts
 // pins the membership and the router's live 429 body against this set.
+// The guarded writes a citizen's own secret can still answer 403 with, keyed
+// by SURFACE path. Each of these routes has a rule inside it that names who
+// may act -- the maintainer on the bulletin / pin / flag-disposition /
+// moderation / ledger doors, the funder or a pre-filed verifier on the
+// listing settlements, the payee on the payout receipt and the wallet's own
+// prover on the wallet revoke, the grant's sponsor or the maintainer on the
+// grant writes, the seller on the offer withdraw, and the actor themselves on
+// the self-vote and the content withdrawal -- and the refusal is the same
+// clocked JSON error body as every other refused write: now, now_utc, error
+// (src/society.ts throws SocietyError(403, ...) and the router's error path
+// stamps it). Declaring it is what lets a generated client read a forbidden
+// act as the permission class ("a different actor must do this") rather than
+// the permanent 400 of a malformed body or the 401 of a missing secret:
+// openapi-fetch types the 403 body `never` until it is declared, the same
+// undiagnosable-success failure the 401 (test/openapi-error-statuses.test.ts),
+// the daily-cap 429 (test/openapi-429-daily-cap.test.ts) and the plain 404
+// (test/openapi-404-id-class.test.ts) already fixed, on the permission side.
+// test/openapi-403-forbidden.test.ts keeps the membership and the router's
+// live 403 honest against this set.
+export const FORBIDDEN_403_ROUTES: ReadonlySet<string> = new Set([
+  "/api/attest/legacy-manifest",
+  "/api/checkpoint",
+  "/api/flag/disposition",
+  "/api/grants",
+  "/api/grants/:slug/proposals",
+  "/api/grants/:slug/transition",
+  "/api/ledger",
+  "/api/listings",
+  "/api/listings/:id/awards",
+  "/api/listings/:id/paid",
+  "/api/listings/:id/withdraw",
+  "/api/awards/:id/settle",
+  "/api/moderate",
+  "/api/offers/:id/withdraw",
+  "/api/payout-bindings",
+  "/api/payout-bindings/:id/receipt",
+  "/api/payout-wallets",
+  "/api/payout-wallets/:id/revoke",
+  "/api/pin",
+  "/api/post",
+  "/api/withdraw",
+  "/api/vote",
+]);
+
 export const DAILY_CAP_ROUTES: ReadonlySet<string> = new Set([
   "/api/comment",
   "/api/post",
@@ -292,6 +336,23 @@ export function openApi(origin: string, now = Date.now()) {
       // error string and stays undeclared, as it is. test/openapi-404-id-
       // class.test.ts pins the declaration against the router in-process,
       // and test/typed-404-id-class-served.test.ts pins the wire shape.
+      // The permission 403, declared per route. The routes in
+      // FORBIDDEN_403_ROUTES each carry an inside-the-handler rule that names
+      // who may act; when the caller is not that actor the router answers 403
+      // with the same clocked JSON error body the 401 and the 429 carry. The
+      // 401 (missing secret) and the 403 (right secret, wrong actor) are the
+      // two auth-side refusals a client must tell apart, and only the 401 was
+      // declared.
+      const forbidden403 =
+        v === "POST" && FORBIDDEN_403_ROUTES.has(r.path)
+          ? {
+              "403": {
+                description:
+                  "The caller is not the actor this route's rule names: maintainer-only doors, the funder or a pre-filed verifier on a listing settlement, the payee on a payout receipt, the wallet's own prover, the grant's sponsor, the offer's seller, or the content's own author. The same clocked JSON error body as every other refused write.",
+                content: { "application/json": {} },
+              },
+            }
+          : {};
       const cap429 =
         v === "POST" && DAILY_CAP_ROUTES.has(r.path)
           ? {
@@ -346,7 +407,7 @@ export function openApi(origin: string, now = Date.now()) {
         ...(r.auth === "bearer" ? { security: [{ citizenSecret: [] }] } : r.auth === "optional" ? { security: [{}, { citizenSecret: [] }] } : {}),
         "x-writes": r.writes,
         ...(r.caps ? { "x-caps": r.caps } : {}),
-        responses: { ...errorResponses, ...cap429, ...typed404, ...conditional304, [success]: { description: responseDesc, content: { [media]: {} } } },
+        responses: { ...errorResponses, ...forbidden403, ...cap429, ...typed404, ...conditional304, [success]: { description: responseDesc, content: { [media]: {} } } },
       };
     }
   }
