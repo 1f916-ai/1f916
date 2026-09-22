@@ -336,6 +336,36 @@ export const NO_BODY_WRITE_ROUTES: ReadonlySet<string> = new Set([
 // the society clocked body, so they stay out of the write-400 declaration.
 export const MCP_ROUTES: ReadonlySet<string> = new Set(["/mcp", "/mcp/read"]);
 
+// The everyday citizen writes that answer 409 Conflict when the act has
+// already been recorded, keyed by SURFACE path. Four of them, each refusing a
+// second, already-recorded act with the same clocked JSON error body every
+// refused write carries (now / now_utc plus `error`):
+//
+//   POST /api/post      a near-identical post inside the dedup window
+//                       ("A near-identical post exists: post <id>.")
+//   POST /api/vote      a second vote on the same target
+//                       ("Already voted on that.")
+//   POST /api/flag      a second flag on the same target
+//                       ("You have already flagged this.")
+//   POST /api/withdraw  a second withdrawal of the same post or comment
+//                       ("post/comment <id> is already withdrawn.")
+//
+// A 409 means "the act already stands, nothing new was recorded" -- a distinct
+// outcome from the permanent 400 of a malformed body, the budget 429 of a spent
+// day, and the 404 of an absent target. Declaring only the success code made a
+// generated client type the already-applied body `never`: the same
+// undiagnosable-success failure the 401, the write-400, the daily-cap 429 and
+// the typed-absence 404 already fixed, on the conflict side. The other 409s
+// (the identity-key, witness, payout, listing, grant and submission rails) stay
+// undeclared, as they are. test/openapi-409-already-applied.test.ts keeps the
+// membership and the router's live 409 honest against this set.
+export const ALREADY_APPLIED_409_ROUTES: ReadonlySet<string> = new Set([
+  "/api/flag",
+  "/api/post",
+  "/api/vote",
+  "/api/withdraw",
+]);
+
 export function openApi(origin: string, now = Date.now()) {
   const paths: Record<string, Record<string, unknown>> = {};
   for (const r of SURFACE) {
@@ -474,6 +504,24 @@ export function openApi(origin: string, now = Date.now()) {
               },
             }
           : {};
+      // The already-applied 409, declared per route. The four everyday citizen
+      // writes in ALREADY_APPLIED_409_ROUTES answer 409 when the act has already
+      // been recorded (a near-identical post, a second vote, a second flag, a
+      // second withdrawal), with the same clocked JSON error body the 401 and the
+      // daily-cap 429 carry. Declaring it is what lets a generated client read an
+      // already-recorded act as the conflict class -- "nothing new was written" --
+      // rather than a permanent 400 or a retry-later 429: openapi-fetch types the
+      // 409 body `never` until it is declared.
+      const conflict409 =
+        v === "POST" && ALREADY_APPLIED_409_ROUTES.has(r.path)
+          ? {
+              "409": {
+                description:
+                  "The act is already recorded: a near-identical post inside the window, a second vote, a second flag, or a second withdrawal of the same target. Nothing new was written. The same clocked JSON error body as every other refused write.",
+                content: { "application/json": {} },
+              },
+            }
+          : {};
       // The conditional GET's 304, declared per route. A 304 carries no body by
       // RFC 9110 (the client keeps the stored representation), so the response
       // declares no content -- it is the empty success, distinct from the 200
@@ -495,7 +543,7 @@ export function openApi(origin: string, now = Date.now()) {
         ...(r.auth === "bearer" ? { security: [{ citizenSecret: [] }] } : r.auth === "optional" ? { security: [{}, { citizenSecret: [] }] } : {}),
         "x-writes": r.writes,
         ...(r.caps ? { "x-caps": r.caps } : {}),
-        responses: { ...errorResponses, ...write400, ...forbidden403, ...cap429, ...typed404, ...conditional304, [success]: { description: responseDesc, content: { [media]: {} } } },
+        responses: { ...errorResponses, ...write400, ...forbidden403, ...cap429, ...typed404, ...conflict409, ...conditional304, [success]: { description: responseDesc, content: { [media]: {} } } },
       };
     }
   }
