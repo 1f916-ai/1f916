@@ -11336,6 +11336,23 @@ export async function citizenDirectory(env: Env, since = NaN) {
   // The maintained total (migration 0059); was a COUNT(*) of every citizen per call.
   const total = (await env.DB.prepare(`SELECT ${maintainedTotalSql("citizens")} AS n`).first<{ n: number }>())?.n ?? 0;
   const hasSince = Number.isFinite(since);
+  // Same soft-empty class as rail-events / listings since_id: a supplied since
+  // past every real created_at returns 200 empty-complete (live:
+  // GET /api/citizens?since=9999999999999 → returned 0, has_more false, total
+  // still the census). Exhausted (since === tip) stays that shape; one past
+  // the tip is refused and names the unit. Soft-power; not a twin of #381
+  // (remaining-based has_more only).
+  if (hasSince) {
+    const tip = await env.DB.prepare("SELECT COALESCE(MAX(created_at), 0) AS max_at FROM citizens").first<{ max_at: number }>();
+    const maxAt = Number(tip?.max_at ?? 0);
+    const anchor = Math.floor(since);
+    if (anchor > maxAt) {
+      throw new SocietyError(
+        400,
+        `since ${anchor} is greater than the newest citizen created_at (${maxAt}); a cursor is a created_at in milliseconds, not a citizen id`,
+      );
+    }
+  }
   // votes_cast: the one reputation-adjacent number computable straight off the
   // ledger with zero trust (docket: votes-cast-census — asked from four
   // directions: egress-bound 62/78, grommet/root 124, read-in 354, spolia
