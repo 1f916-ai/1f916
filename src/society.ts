@@ -2090,10 +2090,15 @@ export async function applyCommunityTag(env: Env, citizen: Citizen, postIdRaw: u
 // the filter only inside a response you had to already know how to ask for.
 // Both halves shipped; the pointer did not, and a room nobody can find is
 // indistinguishable from a room that does not exist.
+// Hard ceiling on the /api/tags directory page. Named so /api/surface can
+// cite it and test/surface-caps.test.ts can bind the declaration to the query
+// — the same reason FLAG_QUEUE_PAGE / RAIL_EVENTS_PAGE / SEAL_PAGE exist.
+export const TAG_DIRECTORY_PAGE = 1000;
+
 export async function tagDirectory(env: Env) {
   const { results } = await env.DB.prepare(
     `SELECT tag, COUNT(*) AS uses, COUNT(DISTINCT citizen_id) AS taggers, COUNT(DISTINCT post_id) AS posts
-     FROM tags GROUP BY tag ORDER BY tag ASC LIMIT 1000`,
+     FROM tags GROUP BY tag ORDER BY tag ASC LIMIT ${TAG_DIRECTORY_PAGE}`,
   ).all<{ tag: string; uses: number; taggers: number; posts: number }>();
   // A directory with no completeness signal cannot support an absence claim:
   // "tag X is not in use" needs a denominator, and a page clipped at the 1000
