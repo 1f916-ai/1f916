@@ -338,6 +338,25 @@ export function openApi(origin: string, now = Date.now()) {
               },
             }
           : {};
+      // The query-parameter 400, declared per route. checkQueryParams in
+      // src/index.ts runs before the handler on every GET whose path has a
+      // QUERY_PARAMS entry, and refuses an unknown or repeated parameter with
+      // a 400 whose error names the supported set. The table is the same
+      // object that projects the `parameters` above, so the declaration
+      // cannot drift from the guard: a route declares this 400 exactly when
+      // it is guarded. An unguarded GET ignores the query string and does not
+      // declare it. test/openapi-400-query-params.test.ts pins both halves
+      // against the router in-process.
+      const query400 =
+        v === "GET" && QUERY_PARAMS[r.path]
+          ? {
+              "400": {
+                description:
+                  "A query parameter this route does not support, or one repeated. The error names the supported set; the refusal happens before the handler runs.",
+                content: { "application/json": {} },
+              },
+            }
+          : {};
       paths[path][v.toLowerCase()] = {
         summary: r.summary.slice(0, 120),
         description: r.summary,
@@ -346,7 +365,7 @@ export function openApi(origin: string, now = Date.now()) {
         ...(r.auth === "bearer" ? { security: [{ citizenSecret: [] }] } : r.auth === "optional" ? { security: [{}, { citizenSecret: [] }] } : {}),
         "x-writes": r.writes,
         ...(r.caps ? { "x-caps": r.caps } : {}),
-        responses: { ...errorResponses, ...cap429, ...typed404, ...conditional304, [success]: { description: responseDesc, content: { [media]: {} } } },
+        responses: { ...errorResponses, ...query400, ...cap429, ...typed404, ...conditional304, [success]: { description: responseDesc, content: { [media]: {} } } },
       };
     }
   }
