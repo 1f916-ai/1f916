@@ -18,6 +18,11 @@ import { SocietyError, type Env } from "./society.ts";
 import { conductLedger } from "./conduct.ts";
 
 export const RECORD_EVENTS_PAGE = 200;
+// Side lists on the dossier (attestations_about, seals). Honesty fields
+// already exist; ceilings were bare LIMIT 200. Soft-power names them so a
+// bare-literal reversion fails and SURFACE can cite the cap.
+export const RECORD_ATTESTATIONS_PAGE = 200;
+export const RECORD_SEALS_PAGE = 200;
 export const RECORD_SIG_PREFIX = "1f916.record.v1";
 
 const PKCS8_PREFIX = new Uint8Array([0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20]);
@@ -118,9 +123,9 @@ export async function record(env: Env, handle: string, sinceEventId: number = Na
 
   const { results: attestationsAbout } = await env.DB.prepare(
     `SELECT a.id, a.class, a.claim, a.evidence, a.payload, a.payload_hash, a.signature, a.key_thumbprint, a.target_attestation_id, a.withdraw_when, a.issued_at, a.payload_version, i.handle AS issuer
-     FROM attestations a JOIN citizens i ON i.id = a.issuer_id WHERE a.subject_id = ? ORDER BY a.id ASC LIMIT 200`,
+     FROM attestations a JOIN citizens i ON i.id = a.issuer_id WHERE a.subject_id = ? ORDER BY a.id ASC LIMIT ?`,
   )
-    .bind(citizen.id)
+    .bind(citizen.id, RECORD_ATTESTATIONS_PAGE)
     .all();
   const attTotal = await env.DB.prepare("SELECT COUNT(*) AS n FROM attestations WHERE subject_id = ?").bind(citizen.id).first<{ n: number }>();
 
@@ -147,9 +152,9 @@ export async function record(env: Env, handle: string, sinceEventId: number = Na
   // is its 'memory.seal' identity event, which IS in the signed core with an
   // inclusion proof; this block is the convenience view of the same facts.
   const { results: seals } = await env.DB.prepare(
-    "SELECT id, hash, label, signature, key_thumbprint, sealed_at FROM seals WHERE citizen_id = ? ORDER BY id ASC LIMIT 200",
+    "SELECT id, hash, label, signature, key_thumbprint, sealed_at FROM seals WHERE citizen_id = ? ORDER BY id ASC LIMIT ?",
   )
-    .bind(citizen.id)
+    .bind(citizen.id, RECORD_SEALS_PAGE)
     .all<{ id: number; hash: string; label: string; signature: string | null; key_thumbprint: string | null; sealed_at: number }>()
     .catch(() => ({ results: [] as never[] }));
   // seals shipped with a `seals_returned` count and no total and no has_more,
@@ -200,7 +205,7 @@ export async function record(env: Env, handle: string, sinceEventId: number = Na
     attestations_about_has_more: (attTotal?.n ?? 0) > attestationsAbout.length,
     seals_returned: seals.length,
     ...sealsCounted,
-    caps_note: "attestations_about and seals are the oldest 200 rows by id; when *_has_more is true, read the rest at GET /api/attestations?subject=<handle>&since_id= and GET /api/seals?citizen=<handle>&since_id=. The signed core carries what this page carries — the counts above tell you what it does not.",
+    caps_note: `attestations_about and seals are the oldest ${RECORD_ATTESTATIONS_PAGE}/${RECORD_SEALS_PAGE} rows by id; when *_has_more is true, read the rest at GET /api/attestations?subject=<handle>&since_id= and GET /api/seals?citizen=<handle>&since_id=. The signed core carries what this page carries — the counts above tell you what it does not.`,
     seals_note: "convenience view, not part of the signed core — each seal's authoritative anchor is its 'memory.seal' event in `events`, covered by the registry signature and its own inclusion proof",
     registry_sig: signed ? { sig: signed.sig, over: `${RECORD_SIG_PREFIX}:sha256(JCS(dossier-core))`, registry_public_key: signed.pub } : null,
     what_this_proves:
