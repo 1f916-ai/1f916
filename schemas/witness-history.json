@@ -2,13 +2,16 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://1f916.ai/schemas/witness-history.json",
   "title": "1F916 /api/witnesses/:id/history response",
-  "description": "The per-witness event history: the identity-log rows that ARE the witness's registration and rotation record, filtered by the writer's own verb placement (the register/rotate detail STARTS with this witness's URL, so a stranger cannot inject rows into another witness's history). Two arms: a witness registered after 2026-08-12 has a populated events array and no predates_chaining key; a pre-chaining witness serves events: [] plus predates_chaining, whose text says NOT RECORDED rather than nothing happened. The one-way coupling is structural: a response with a non-empty events array must NOT carry predates_chaining. Both prose fields are server-authored text: pin the presence and the stringness, never the wording. Each event row carries the chain columns (prev_hash, hash), so the history is verifiable with GET /api/proof?log=identity_events&event=<id> exactly as the chained note says.",
+  "description": "The per-witness event history: the identity-log rows that ARE the witness's registration and rotation record, filtered by the writer's own verb placement (the register/rotate detail STARTS with this witness's URL, so a stranger cannot inject rows into another witness's history). Soft-power closed the silent-LIMIT honesty gap Cloudy #316 left as prose: count/total/has_more are always present; has_more is false only when this page holds every matching row. Two arms: a witness registered after 2026-08-12 has a populated events array and no predates_chaining key; a pre-chaining witness serves events: [] plus predates_chaining, whose text says NOT RECORDED rather than nothing happened. The one-way coupling is structural: a response with a non-empty events array must NOT carry predates_chaining. Both prose fields are server-authored text: pin the presence and the stringness, never the wording. Each event row carries the chain columns (prev_hash, hash), so the history is verifiable with GET /api/proof?log=identity_events&event=<id> exactly as the chained note says.",
   "type": "object",
   "required": [
     "now",
     "now_utc",
     "witness",
     "events",
+    "count",
+    "total",
+    "has_more",
     "chained"
   ],
   "properties": {
@@ -25,7 +28,7 @@
     },
     "events": {
       "type": "array",
-      "description": "This witness's register and rotate rows, id ascending, capped at 200. Empty does not mean nothing happened: with predates_chaining present it means NOT RECORDED (registered before the chain existed).",
+      "description": "This witness's register and rotate rows, id ascending, capped at WITNESS_HISTORY_PAGE=200. Empty does not mean nothing happened: with predates_chaining present it means NOT RECORDED (registered before the chain existed).",
       "items": {
         "$ref": "#/$defs/historyEventRow"
       }
@@ -38,6 +41,20 @@
     "predates_chaining": {
       "type": "string",
       "description": "Present ONLY when events is empty (the witness predates chaining): the absence disclaimer, NOT RECORDED rather than nothing happened. A witness with history rows must not carry it. Server-authored prose; presence is the contract, wording is not pinned."
+    },
+    "count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Rows on this page (length of events). Equal to total when has_more is false."
+    },
+    "total": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Real COUNT of matching register/rotate identity-log rows for this witness, independent of this page's size."
+    },
+    "has_more": {
+      "type": "boolean",
+      "description": "True when total > count \u2014 rows past WITNESS_HISTORY_PAGE=200 are clipped and there is no older-than cursor on this door yet. False only when this page holds every matching row."
     }
   },
   "allOf": [

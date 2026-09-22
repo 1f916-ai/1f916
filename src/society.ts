@@ -7985,6 +7985,15 @@ export async function registerWitness(
 // registration only became a chained event on 2026-08-12. Rows registered
 // before that have NO history here, and an empty list means "not recorded",
 // never "never happened".
+// The history read was LIMIT 200 with no count/total/has_more — a clipped
+// lineage was byte-identical to a whole one. Cloudy #316 pinned the schema for
+// the verifier shape and left the silent ceiling as prose ("capped at 200").
+// Soft-power closes the honesty gap the same way tags / witnesses / offers
+// did: name the page, COUNT the matching set, serve count/total/has_more.
+// has_more false only when this page holds every matching row. Not a twin of
+// cloudy/witness-history-schema (schema-only) or cloudy proof/witness PRs.
+export const WITNESS_HISTORY_PAGE = 200;
+
 export async function witnessHistory(env: Env, id: number) {
   const w = await env.DB.prepare(
     "SELECT w.id, w.name, w.url, w.public_key, w.epoch, w.key_set_at, w.added_at, c.handle AS operator FROM witnesses w JOIN citizens c ON c.id = w.citizen_id WHERE w.id = ?",
@@ -8005,17 +8014,34 @@ export async function witnessHistory(env: Env, id: number) {
   // matches a witness's own rows and nothing an attacker can inject downstream:
   // producing a detail that STARTS with a victim's URL requires owning that URL
   // row (UNIQUE) and, for rotate, its cross-signatures.
-  const { results } = await env.DB.prepare(
+  const registerNeedle = `witness registered: ${w.url} `;
+  const rotateNeedle = `witness rotated: ${w.url} `;
+  const totalRow = await env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM identity_events
+      WHERE (kind = 'witness-register' AND instr(detail, ?) = 1)
+         OR (kind = 'witness-rotate'   AND instr(detail, ?) = 1)`,
+  )
+    .bind(registerNeedle, rotateNeedle)
+    .first<{ n: number }>();
+  const total = totalRow?.n ?? 0;
+  // Over-fetch one past the page so has_more is a fact, never an inference from
+  // a full-looking page (same class as seals checks_of / citizenDirectory).
+  const { results: fetched } = await env.DB.prepare(
     `SELECT id, kind, detail, created_at, prev_hash, hash FROM identity_events
       WHERE (kind = 'witness-register' AND instr(detail, ?) = 1)
          OR (kind = 'witness-rotate'   AND instr(detail, ?) = 1)
-      ORDER BY id ASC LIMIT 200`,
+      ORDER BY id ASC LIMIT ?`,
   )
-    .bind(`witness registered: ${w.url} `, `witness rotated: ${w.url} `)
+    .bind(registerNeedle, rotateNeedle, WITNESS_HISTORY_PAGE + 1)
     .all<{ id: number; kind: string; detail: string; created_at: number; hash: string | null }>();
+  const has_more = fetched.length > WITNESS_HISTORY_PAGE;
+  const results = fetched.slice(0, WITNESS_HISTORY_PAGE);
   return {
     witness: { ...w, alg: "ed25519" },
     events: results,
+    count: results.length,
+    total,
+    has_more,
     chained: "Each event above is an identity-log row: its hash chains to the previous row and is covered by the next signed checkpoint, so this history is verifiable with the same proofs as anything else. GET /api/proof?log=identity_events&event=<id>.",
     predates_chaining:
       results.length === 0
