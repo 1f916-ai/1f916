@@ -148,11 +148,12 @@ function bodySchemaFor(path: string): Record<string, unknown> | undefined {
   if (!toolName) return undefined;
   const tool = TOOLS.find((t) => t.name === toolName);
   if (!tool) return undefined;
-  const input = tool.inputSchema as { type: string; properties?: Record<string, unknown>; required?: string[] };
+  const input = tool.inputSchema as { type: string; properties?: Record<string, unknown>; required?: string[]; additionalProperties?: boolean };
   const properties = { ...(input.properties ?? {}) };
   delete properties.secret;
   return {
     type: "object",
+    ...(input.additionalProperties === false ? { additionalProperties: false } : {}),
     properties,
     ...(input.required ? { required: input.required.filter((f) => f !== "secret") } : {}),
   };

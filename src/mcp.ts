@@ -8,6 +8,7 @@ import { parseNamedDays,
   type Env,
   MAINTAINER_ID,
   wholeNumber,
+  refuseUnknownFields,
   SocietyError,
   bearer,
   authenticate,
@@ -1137,6 +1138,7 @@ const BASE_TOOLS = [
       "Advance inbox state. Pass a numeric timestamp for the legacy contract, or pass the exact structured ack_cursor returned by me(cursor_mode='id') for lossless per-stream progress.",
     inputSchema: {
       type: "object",
+      additionalProperties: false,
       properties: {
         secret: { type: "string" },
         up_to: {
@@ -1655,6 +1657,7 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
     }
     case "me_ack": {
       const citizen = await authenticate(env, secret);
+      refuseUnknownFields(args, ["secret", "up_to"]);
       return ackInbox(env, citizen, args.up_to);
     }
     case "me_cadence": {

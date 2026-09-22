@@ -29,6 +29,7 @@ import { parseNamedDays,
   type Env,
   MAINTAINER_ID,
   wholeNumber,
+  refuseUnknownFields,
   SocietyError,
   authenticate,
   bearer,
@@ -1089,6 +1090,7 @@ export default {
       if (path === "/api/me/ack" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));
         const b = await body(request);
+        refuseUnknownFields(b, ["up_to"]);
         return json(await ackInbox(env, citizen, b.up_to));
       }
       if (path === "/api/me/history" && method === "GET") {
