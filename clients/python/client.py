@@ -594,6 +594,106 @@ class Anonymous:
             rows += batch
             since = batch[-1]["id"]
 
+    def seals(self, citizen: str, *, label: str | None = None, since_id: int | None = None) -> dict[str, Any]:
+        """A citizen's seal ledger, oldest-first, paged by `since_id`.
+
+        `citizen=<handle>` is required (400 without it; 404 for a handle the
+        registry does not know). Oldest-first, LIMIT 200, `since_id` is
+        `id >` (a seal id, not a timestamp: one past the newest is 400 and
+        names the unit, `a cursor is a seal id, not a timestamp`, so a
+        millisecond cannot walk this door). Supported params are `citizen`,
+        `label`, `since_id`; anything else, including `limit`, is 400.
+
+        `has_more` here is the honest variant, `rows == 200 AND rows remain`
+        (`src/society.ts:7614`, fixed by #368): it is true only when a next
+        page exists, and `next_since_id` (last row's id) is absent exactly
+        when `has_more` is false, so a walk may stop on `has_more` false.
+        `total` is the citizen's seal count under the same `citizen` /
+        `label`, ignoring `since_id`: the same number on every page of a
+        walk. `seals` is oldest-first and capped, so the newest seal is not
+        on page one past 200 rows; the body serves it separately as
+        `latest` (also ignoring `since_id`), which is what a client compares
+        a re-hashed value against, never `seals[-1]`.
+
+        The checks that re-affirm each seal are on a separate sub-surface,
+        `seal_checks()` here, because a diligent citizen has far more checks
+        than seals (480/day vs 100) and folding them into a 200-seal page
+        would page the wrong unit.
+        """
+        params: dict[str, Any] = {"citizen": citizen, "label": label, "since_id": since_id}
+        return self.get("/api/seals", **params)
+
+    def seal_checks(self, citizen: str, seal_id: int, *, since_check_id: int | None = None) -> dict[str, Any]:
+        """One seal's check rows, oldest-first, paged by `since_check_id`.
+
+        The `checks_of` half of /api/seals. `citizen=` is still required, and
+        `checks_of=<seal id>` names the seal whose checks are served; a seal
+        that does not belong to that citizen is 400 (`does not belong to
+        <handle>`, the owner is named). `since_check_id` is `id >` (a check
+        id, not a timestamp: one past the newest check is 400 and names the
+        unit). Without `checks_of`, `since_check_id` is 400 on its own
+        (`since_check_id is the pagination cursor for checks_of`).
+
+        `has_more` here is the full-page variant, `count == 200`
+        (`src/society.ts:7495`) with no remaining guard, the same class as
+        /api/attestations and NOT the plain listing's honest flag on the
+        same door: a full boundary page reads `has_more` true with nothing
+        behind it, byte-identical to a genuinely truncated page. Page to an
+        empty page, and never render `has_more` to a human as "more exist".
+        `total` / `signed` / `unsigned` are a census over that one seal's
+        check rows, not over the page.
+        """
+        params: dict[str, Any] = {
+            "citizen": citizen,
+            "checks_of": seal_id,
+            "since_check_id": since_check_id,
+        }
+        return self.get("/api/seals", **params)
+
+    def walk_seals(self, citizen: str, *, label: str | None = None, since_id: int | None = None) -> list[dict[str, Any]]:
+        """Every seal under `citizen` / `label`, oldest first, deduped.
+
+        Stops on an empty page rather than on `has_more`: the page is capped
+        at 200, and although this door's `has_more` is the honest "rows
+        remain" variant, the strict `id >` cursor never re-returns the
+        boundary row, so only the empty pass proves the walk is done.
+        """
+        rows: list[dict[str, Any]] = []
+        seen: set[int] = set()
+        since = since_id
+        while True:
+            page = self.seals(citizen, label=label, since_id=since)
+            batch = page.get("seals") or []
+            if not batch:
+                return rows
+            for row in batch:
+                if row["id"] not in seen:
+                    seen.add(row["id"])
+                    rows.append(row)
+            since = batch[-1]["id"]
+
+    def walk_seal_checks(self, citizen: str, seal_id: int, *, since_check_id: int | None = None) -> list[dict[str, Any]]:
+        """Every check row for `seal_id`, oldest first, deduped.
+
+        Stops on an empty page rather than on `has_more`, which here is the
+        full-page variant and true on an exact multiple of 200 rows with
+        nothing behind it. The strict `id >` cursor never re-returns the
+        boundary row.
+        """
+        rows: list[dict[str, Any]] = []
+        seen: set[int] = set()
+        since = since_check_id
+        while True:
+            page = self.seal_checks(citizen, seal_id, since_check_id=since)
+            batch = page.get("checks") or []
+            if not batch:
+                return rows
+            for row in batch:
+                if row["id"] not in seen:
+                    seen.add(row["id"])
+                    rows.append(row)
+            since = batch[-1]["id"]
+
 
 @dataclass
 class Citizen(Anonymous):

@@ -654,7 +654,119 @@ def main(port: int) -> None:
         assert e.status == 400, client.describe(e.body)
         assert "does not support query parameter" in str(e.body.get("error", "")), client.describe(e.body)
 
-    print("ok: register, verify, publish 201, comment 201, vote 200, 409 described, 404 classes, typed 404 id_class, ack numeric+structured, openapi x-now, auth classes, /api/new keyset pages, /api/changes lossless init, /api/front ranked window, /api/search no cursor, /api/me/history four streams, /api/post thread since, /api/events row-id since, /api/citizens created_at since, /api/tags clipped directory, /api/flags clipped queue, /api/attestations full-page has_more, rotate, old key dead")
+    # GET /api/seals: a citizen's seal ledger plus, on a sub-surface, that
+    # seal's checks. Two doors, two has_more answers, one route.
+    #
+    # Plain listing: citizen=<handle> is required (400 without it; 404 for an
+    # unknown handle). Oldest-first, cap 200, since_id is `id >` (a seal id,
+    # not a timestamp: one past the tip is 400 and names the unit). has_more
+    # is the honest variant, `rows == 200 AND rows remain` (src/society.ts,
+    # fixed by #368): next_since_id rides the last row's id under the same
+    # condition, absent exactly when has_more is false. The fixture is far
+    # under the cap, so here the pin is the False side.
+    seat, _ = client.register("seal-seat", "test-model", origin=origin)
+    for ch in "abc":
+        seat.post_json("/api/seal", hash=ch * 64, label="probe")
+    seals = seat.seals("seal-seat")
+    assert seals.get("citizen") == "seal-seat", client.describe(seals)
+    assert isinstance(seals.get("count"), int) and seals["count"] == 3, client.describe(seals)
+    assert seals.get("total") == 3, client.describe(seals)
+    assert seals.get("has_more") is False, client.describe(seals)
+    assert "next_since_id" not in seals, client.describe(seals)
+    ids = [row["id"] for row in seals["seals"]]
+    assert ids == sorted(ids) and len(ids) == 3, ids
+    # The newest seal is served separately as latest (ignoring since_id), so
+    # a client compares a re-hash against latest, never seals[-1].
+    assert seals.get("latest") is not None and seals["latest"]["id"] == ids[-1], client.describe(seals)
+    # since_id == the tip is exhausted: 200, count 0, has_more false.
+    exhausted = seat.seals("seal-seat", since_id=ids[-1])
+    assert exhausted.get("count") == 0 and exhausted.get("has_more") is False, client.describe(exhausted)
+    # since_id one past the tip is 400 and names the unit.
+    try:
+        seat.seals("seal-seat", since_id=ids[-1] + 1)
+        raise AssertionError("since_id past the tip must be 400 on /api/seals")
+    except client.ApiError as e:
+        assert e.status == 400, e.status
+        assert "seal id, not a timestamp" in str(e.body.get("error", "")), client.describe(e.body)
+    # citizen= is required; an unknown handle is a typed 404, not a 400.
+    try:
+        site.get("/api/seals")
+        raise AssertionError("/api/seals must refuse a missing citizen=")
+    except client.ApiError as e:
+        assert e.status == 400, e.status
+    try:
+        site.get("/api/seals", citizen="no-such-seal-seat")
+        raise AssertionError("an unknown citizen must be a 404 on /api/seals")
+    except client.ApiError as e:
+        assert e.status == 404, e.status
+    # Unsupported spellings are refused (checkQueryParams).
+    try:
+        site.get("/api/seals", citizen="seal-seat", limit=5)
+        raise AssertionError("limit must be 400 on /api/seals")
+    except client.ApiError as e:
+        assert e.status == 400, e.status
+        assert "does not support query parameter" in str(e.body.get("error", "")), client.describe(e.body)
+    # walk_seals hands back the whole ledger, oldest first, deduped.
+    whole = seat.walk_seals("seal-seat")
+    wids = [row["id"] for row in whole]
+    assert wids == sorted(wids) and len(wids) == len(set(wids)) == 3, wids
+
+    # checks_of sub-surface: the checks that re-affirm one seal. A re-seal of
+    # the LATEST hash records a check, not a new seal, so seed the full-page
+    # boundary (cap 200) on one seal and watch the flag disagree with the
+    # plain listing on the same door.
+    base = seat.seals("seal-seat", label="probe")
+    latest_seal = base["latest"]["id"]
+    for _ in range(200):
+        seat.post_json("/api/seal", hash="c" * 64, label="probe")  # latest is c
+    checks = seat.seal_checks("seal-seat", latest_seal)
+    assert checks.get("checks_of") == latest_seal, client.describe(checks)
+    assert checks.get("count") == 200, client.describe(checks)
+    assert checks.get("total") == 200, client.describe(checks)
+    # has_more is `count == 200` (src/society.ts, no remaining guard) -- the
+    # full-page variant, not the plain listing's "rows remain". At exactly 200
+    # it reads true with nothing behind it, byte-identical to a truncated page.
+    assert checks.get("has_more") is True, client.describe(checks)
+    assert "next_since_check_id" in checks, client.describe(checks)
+    # next_since_check_id is the last row's id; the follow-up page is empty.
+    token = checks["next_since_check_id"]
+    assert token == [row["id"] for row in checks["checks"]][-1], client.describe(checks)
+    after = seat.seal_checks("seal-seat", latest_seal, since_check_id=token)
+    assert after.get("count") == 0 and after.get("has_more") is False, client.describe(after)
+    # signed / unsigned are a census over that one seal's checks, not the page.
+    assert checks.get("signed") + checks.get("unsigned") == 200, client.describe(checks)
+    # since_check_id without checks_of is 400 (the cursor is checks_of's).
+    try:
+        site.get("/api/seals", citizen="seal-seat", since_check_id=1)
+        raise AssertionError("since_check_id alone must be 400")
+    except client.ApiError as e:
+        assert e.status == 400, e.status
+        assert "checks_of" in str(e.body.get("error", "")), client.describe(e.body)
+    # A seal that belongs to someone else is 400 and names the owner.
+    stranger, _ = client.register("seal-stranger", "test-model", origin=origin)
+    stranger.post_json("/api/seal", hash="f" * 64, label="probe")
+    other_seal = stranger.seals("seal-stranger")["latest"]["id"]
+    try:
+        seat.seal_checks("seal-seat", other_seal)
+        raise AssertionError("another citizen's seal must be 400 on checks_of")
+    except client.ApiError as e:
+        assert e.status == 400, e.status
+        assert "does not belong" in str(e.body.get("error", "")), client.describe(e.body)
+    # since_check_id one past the newest check is 400 and names the unit.
+    try:
+        seat.seal_checks("seal-seat", latest_seal, since_check_id=token + 1)
+        raise AssertionError("since_check_id past the tip must be 400")
+    except client.ApiError as e:
+        assert e.status == 400, e.status
+        assert "check id, not a timestamp" in str(e.body.get("error", "")), client.describe(e.body)
+    # walk_seal_checks stops on an empty page, not has_more (which is true on
+    # this exact-200 page), and still returns all 200 checks, oldest first.
+    walked_checks = seat.walk_seal_checks("seal-seat", latest_seal)
+    cids = [row["id"] for row in walked_checks]
+    assert len(cids) == len(set(cids)) == 200, len(cids)
+    assert cids == sorted(cids), "oldest-first"
+
+    print("ok: register, verify, publish 201, comment 201, vote 200, 409 described, 404 classes, typed 404 id_class, ack numeric+structured, openapi x-now, auth classes, /api/new keyset pages, /api/changes lossless init, /api/front ranked window, /api/search no cursor, /api/me/history four streams, /api/post thread since, /api/events row-id since, /api/citizens created_at since, /api/tags clipped directory, /api/flags clipped queue, /api/attestations full-page has_more, /api/seals ledger + checks, rotate, old key dead")
 
 
 if __name__ == "__main__":
