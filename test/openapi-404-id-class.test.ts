@@ -19,9 +19,11 @@
 // side; Gooseberry, #6177 thread).
 //
 // This file keeps the declaration honest against the router in-process: the
-// typed-404 operations declare a 404 and only they do, the declared body
-// carries the id_class discriminator, and the live router actually serves the
-// two shapes the declaration names.
+// typed-404 operations are the ONLY ones whose 404 body carries the id_class
+// discriminator (the eleven keyless lookups that answer the plain clocked
+// error 404 are declared separately, without it), the declared body carries
+// the discriminator, and the live router actually serves the two shapes the
+// declaration names.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -54,38 +56,49 @@ async function docPaths<T>(): Promise<Record<string, Record<string, T>>> {
   return doc.paths;
 }
 
-test("the typed-404 operations declare 404 and only they do", async () => {
-  const doc = await docPaths<OpDoc>();
+test("the typed-404 operations declare the id_class 404, and only they do", async () => {
+  const doc = await docPaths<SchemaOpDoc>();
   const typed = typed404Ops();
   let checked = 0;
-  let any404 = false;
+  let anyTyped = false;
   for (const [path, ops] of Object.entries(doc)) {
     for (const [verb, op] of Object.entries(ops)) {
-      const has404 = Object.keys(op.responses).includes("404");
-      if (has404) any404 = true;
+      // A 404 is "typed" only when its declared body names the id_class
+      // discriminator. The eleven keyless lookups that answer the plain
+      // clocked error 404 are declared separately (test/openapi-404-plain-miss.test.ts)
+      // and must not read as typed here.
+      const body = op.responses["404"];
+      const props = (body?.content?.["application/json"]?.schema?.properties ?? {}) as Record<string, { enum?: string[] }>;
+      const isTyped = Boolean(props?.id_class?.enum);
+      if (isTyped) anyTyped = true;
       const shouldBe = typed.has(`${path} ${verb}`);
       assert.equal(
-        has404,
+        isTyped,
         shouldBe,
-        `${verb.toUpperCase()} ${path} is ${shouldBe ? "typed-404 and" : "not typed-404 and"} ${has404 ? "declares" : "does not declare"} 404`,
+        `${verb.toUpperCase()} ${path} is ${shouldBe ? "a typed-404 read and" : "not a typed-404 read and"} ${isTyped ? "declares" : "does not declare"} the id_class 404`,
       );
       checked++;
     }
   }
   assert.ok(checked >= 100, `only ${checked} operations in the document; the path scan has drifted`);
-  assert.ok(any404, "no operation declared a 404; the declaration is missing entirely");
+  assert.ok(anyTyped, "no operation declared the id_class 404; the typed declaration is missing entirely");
 });
 
-test("the declared 404 body carries the id_class discriminator the router serves", async () => {
+test("the declared typed-404 body carries the id_class discriminator the router serves", async () => {
   const doc = await docPaths<SchemaOpDoc>();
+  const typed = typed404Ops();
+  let checked = 0;
   for (const [path, ops] of Object.entries(doc)) {
-    for (const op of Object.values(ops)) {
+    for (const [verb, op] of Object.entries(ops)) {
       const body = op.responses["404"];
       if (!body) continue;
+      const props = (body.content?.["application/json"]?.schema?.properties ?? {}) as Record<string, { enum?: string[] }>;
+      if (!props?.id_class?.enum) continue; // the plain-404 routes: owned by test/openapi-404-plain-miss.test.ts
+      assert.ok(typed.has(`${path} ${verb}`), `${verb.toUpperCase()} ${path} declares an id_class 404 but is not a known typed read`);
+      checked++;
       assert.deepEqual(Object.keys(body.content ?? {}), ["application/json"], `${path} 404 content`);
       const s = body.content?.["application/json"]?.schema;
       assert.ok(s && s.type === "object", `${path} 404 schema is an object`);
-      const props = s?.properties as Record<string, { enum?: string[] }> | undefined;
       assert.ok(props?.id_class?.enum, `${path} 404 schema names id_class`);
       assert.deepEqual(props?.id_class?.enum, ["absent", "other_type"], `${path} 404 id_class enum`);
       assert.ok(Array.isArray(props?.other_kind?.enum), `${path} 404 schema names other_kind`);
@@ -93,6 +106,7 @@ test("the declared 404 body carries the id_class discriminator the router serves
       assert.match(body.description ?? "", /id_class/, `${path} 404 description names the discriminator`);
     }
   }
+  assert.equal(checked, 2, `expected exactly the two typed reads to carry the id_class 404, got ${checked}`);
 });
 
 test("the live router serves both shapes the declaration names, on both doors", async () => {
