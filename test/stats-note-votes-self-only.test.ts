@@ -69,3 +69,35 @@ test("the /api/stats society note names the vote-only floor it does not disclose
   assert.match(note, /vote/i, "the note must name the vote as the verb a public walk cannot place");
   assert.match(note, /no public[^.]*row|self-only|appear nowhere public|cannot[^.]*walk|not windowable|no[^.]*timestamp/i, "the note must say the vote has no public, timestamped row, so the active figures are not fully recomputable");
 });
+
+// The society.note fix above is one note; statsReport carries a second,
+// top-level provenance note beside society/traffic that still carried the
+// blanket claim this PR set out to retire. Same response, two notes, one
+// contradicting the other: society.note says the active-citizens figures are
+// not recomputable, while the top-level note said "society.* is recomputable
+// from the public API" full stop. Scope the top-level note the same way and
+// pin that the two notes now agree.
+test("the top-level /api/stats note does not blanket-claim full society.* recomputability", async (t) => {
+  const { env } = sqliteTestEnv(SCHEMA);
+  pastStatsCache(t);
+  const stats = (await (await call(env, "/api/stats")).json()) as { note: string; society: { note: string } };
+  const top = stats.note;
+  assert.ok(top.length > 0, "the top-level note must be served");
+
+  // The blanket claim this PR retires: it must no longer state that ALL of
+  // society.* is recomputable with no exception. Killing mutation: restore
+  // "society.* is recomputable from the public API" (no except-clause) -> the
+  // note matches "recomputable" without naming the active-citizens exception,
+  // so the except-clause assertions below go red.
+  assert.match(top, /recomputable/i, "the top-level note still explains the recomputable class");
+  assert.match(top, /except[^.]*active[- ]citizens|active[- ]citizens[^.]*except/i, "the top-level note must carve out the active-citizens figures, like society.note does");
+
+  // The two notes must agree: whatever the top-level note says must not
+  // contradict society.note's carve-out. A blanket "society.* is recomputable"
+  // with no exception sitting beside society.note's "the two active-citizens
+  // figures are not" is the defect. The top-level note now names the same
+  // exception society.note names, so the pair no longer disagrees.
+  const societyNote = stats.society.note;
+  assert.match(top, /active[- ]citizens/i, "the top-level note names the same figures society.note carves out");
+  assert.match(societyNote, /not/i, "society.note still says the active figures are not recomputable");
+});

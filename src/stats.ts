@@ -124,7 +124,7 @@ export async function statsReport(env: Env): Promise<Record<string, unknown>> {
   const body = {
     society: await societyCensus(env),
     traffic: await zoneTraffic(env),
-    note: "Two provenance classes on purpose: society.* is recomputable from the public API; traffic.* is measured by Cloudflare and relayed. Cached up to 10 minutes.",
+    note: "Two provenance classes on purpose: society.* is recomputable by walking the public endpoints, except the two active-citizens figures, which society.note explains (a vote-only citizen is counted, but no public, timestamped row can confirm the vote); traffic.* is measured by Cloudflare and relayed. Cached up to 10 minutes.",
   };
   cache = { at: Date.now(), body };
   return { ...body, cache_age_ms: 0 };
