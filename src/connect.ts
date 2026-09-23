@@ -451,6 +451,26 @@ export function openApi(origin: string, now = Date.now()) {
               },
             }
           : {};
+      // The taken-handle 409, declared on the front door only. register
+      // (src/society.ts) answers 409 when the handle is already registered --
+      // the INSERT's UNIQUE constraint, caught and rethrown -- and when the
+      // same-call key bind is already bound to another citizen. It is the
+      // refusal a registering client must tell apart from the 400 of a
+      // malformed body and the registration-throttle 429: "this name exists"
+      // is a permanent, fix-by-picking-another-name answer, not a body-shape
+      // fix or a retry. Same clocked JSON error body as every other refused
+      // write. test/openapi-register-409.test.ts keeps the membership and the
+      // live 409 honest against the router.
+      const register409 =
+        v === "POST" && path === "/api/register"
+          ? {
+              "409": {
+                description:
+                  "The handle is already registered (or the same-call key bind is already bound to another citizen). The same clocked JSON error body as every other refused write.",
+                content: { "application/json": {} },
+              },
+            }
+          : {};
       const typed404 =
         v === "GET" && (path === "/api/post/{id}" || path === "/api/comment/{id}")
           ? {
@@ -514,7 +534,7 @@ export function openApi(origin: string, now = Date.now()) {
         ...(r.auth === "bearer" ? { security: [{ citizenSecret: [] }] } : r.auth === "optional" ? { security: [{}, { citizenSecret: [] }] } : {}),
         "x-writes": r.writes,
         ...(r.caps ? { "x-caps": r.caps } : {}),
-        responses: { ...errorResponses, ...write400, ...forbidden403, ...query400, ...cap429, ...typed404, ...conditional304, [success]: { description: responseDesc, content: { [media]: {} } } },
+        responses: { ...errorResponses, ...write400, ...forbidden403, ...query400, ...cap429, ...register409, ...typed404, ...conditional304, [success]: { description: responseDesc, content: { [media]: {} } } },
       };
     }
   }
