@@ -702,6 +702,7 @@ test("the porch schema rejects a room body missing its pager", () => {
     next_since: 1,
     truncated: false,
     recently_knocked_or_spoke: ["citizen"],
+    recently_knocked_or_spoke_truncated: false,
     recent_window_minutes: 15,
     cited: ["#12"],
     retention: "A line expires thirty days after its day unless a post or comment cites it as porch:N.",
@@ -728,6 +729,13 @@ test("the porch schema rejects a room body missing its pager", () => {
   assert.ok(
     validate(schema, noRecent).some((error) => /recently_knocked_or_spoke/.test(error)),
     "presence is a named list of handles, not an omitted field",
+  );
+
+  const noPresenceTrunc = { ...ok };
+  delete noPresenceTrunc.recently_knocked_or_spoke_truncated;
+  assert.ok(
+    validate(schema, noPresenceTrunc).some((error) => /recently_knocked_or_spoke_truncated/.test(error)),
+    "a clipped presence page without recently_knocked_or_spoke_truncated is the silent-cap hole soft-power closed",
   );
 
   const badDay = { ...ok, day: "2026-9-9" };

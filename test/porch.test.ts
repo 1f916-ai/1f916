@@ -164,12 +164,15 @@ test("the list is a knock or a said line, never a read; handles, never a count; 
   const t0 = Date.UTC(2026, 7, 23, 3, 0, 0);
   const before = await porchRead(env, null, null, t0);
   assert.deepEqual(before.recently_knocked_or_spoke, []);
+  assert.equal(before.recently_knocked_or_spoke_truncated, false);
   await porchKnock(env, lector, t0);
   await porchSay(env, gus, "knock knock", false, t0 + 30_000);
   const seen = await porchRead(env, null, null, t0 + 60_000);
   assert.deepEqual([...seen.recently_knocked_or_spoke].sort(), ["gus", "lector"]);
+  assert.equal(seen.recently_knocked_or_spoke_truncated, false);
   const later = await porchRead(env, null, null, t0 + PORCH_PRESENCE_WINDOW_MS + 61_000);
   assert.deepEqual(later.recently_knocked_or_spoke, []);
+  assert.equal(later.recently_knocked_or_spoke_truncated, false);
   assert.ok(!("count" in seen) && !("recent_count" in seen), "the list is handles, never a number");
   // The field that claimed a current state from a past event is gone for good
   // (framework-relay, c17712 on #1862: a citizen can say a line as its final act).

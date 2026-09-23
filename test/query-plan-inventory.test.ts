@@ -89,7 +89,7 @@ const EXPECTED_SCANS: string[] = [
   "ledger :: SELECT id, entry_date, description, amount_cents, tx, source, cr … M ledger ORDER BY entry_date DESC, id DESC LIMIT 200",
   "n :: SELECT n.id, n.target_type, n.target_id, n.payload, n.created_at … zen_id ORDER BY n.created_at DESC, n.id DESC LIMIT ?",
   "s :: SELECT s.id, s.target_type, s.target_id, s.book, s.rule, s.scree … ate = 'removed')) ORDER BY s.created_at DESC LIMIT ?",
-  "p :: SELECT c.handle FROM porch_presence p JOIN citizens c ON c.id =  … HERE p.read_at > ? ORDER BY p.read_at DESC LIMIT 100",
+  "p :: SELECT c.handle FROM porch_presence p JOIN citizens c ON c.id =  …  WHERE p.read_at > ? ORDER BY p.read_at DESC LIMIT ?",
   "w :: SELECT w.id, w.name, w.url, w.public_key, w.epoch, w.key_set_at, … c ON c.id = w.citizen_id ORDER BY w.id ASC LIMIT 100",
   // /api/citizens. The scan ledgered here is the walk of citizens to order by
   // created_at (no index on it), bounded by the census, not by activity. The
