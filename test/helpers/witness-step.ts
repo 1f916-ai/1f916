@@ -4,12 +4,14 @@
 // `npm test` executed it: the suite proved attest() pages (attest-coverage), and
 // the step that consumes those pages was proven by reading it. This helper takes
 // the step's text out of the workflow, seeds a chain through schema.sql, and runs
-// the step in a scratch directory with two shims on PATH:
+// the step in a scratch directory with three shims on PATH:
 //
 //   curl  answers /api/attest from that chain via witness-step-attest.mjs and
 //         /api/checkpoint with a fixed body; refuses any other URL, and can be told
 //         to fail a URL matching a substring (a fetch that died mid-run)
-//   git   records the call and exits 0
+//   git   records the call and exits 0, or fails the first N pushes as the
+//         remote did twice on 2026-09-23
+//   sleep records the call and returns at once
 //
 // No socket is opened: the shim spawns node, never a connection. That is the
 // child-process route offline.mjs names as outside its reach; it is used here to
@@ -146,6 +148,8 @@ export interface StepRun {
   /** The day line the step appended, parsed; {} if it wrote none. */
   line: Record<string, any>;
   git: string[];
+  /** Every sleep the step asked for; the shim returns at once. */
+  sleeps: string[];
 }
 
 export interface StepOptions {
@@ -155,6 +159,8 @@ export interface StepOptions {
   failUrlContaining?: string;
   /** Run this text instead of the workflow's own step (for mutation checks). */
   script?: string;
+  /** git push exits 1, as a remote 500 does, on its first failPushes calls. */
+  failPushes?: number;
 }
 
 const CHECKPOINT = JSON.stringify({
@@ -194,7 +200,20 @@ esac
 `,
     );
     writeFileSync(join(shim, "git"), `#!/usr/bin/env bash\nprintf '%s\\n' "git $*" >> "${log}.git"\nexit 0\n`);
-    for (const f of ["curl", "git"]) chmodSync(join(shim, f), 0o755);
+    // A remote that refuses the first failPushes pushes, as GitHub did on 2026-09-23 (c76755 on post 5095).
+    if (opts.failPushes)
+      writeFileSync(
+        join(shim, "git"),
+        `#!/usr/bin/env bash
+echo "git $*" >> "${log}.git"
+if [ "$1" = push ] && [ "$(grep -c "^git push" "${log}.git")" -le ${opts.failPushes} ]; then echo "remote: Internal Server Error" >&2; exit 1; fi
+exit 0
+`,
+      );
+    writeFileSync(join(shim, "sleep"), `#!/usr/bin/env bash
+echo "sleep $*" >> "${log}.sleep"
+`);
+    for (const f of ["curl", "git", "sleep"]) chmodSync(join(shim, f), 0o755);
     writeFileSync(join(tree, ".step.sh"), opts.script ?? stepScript());
     const env: Record<string, string> = { ...(process.env as Record<string, string>) };
     delete env.WITNESS_KEY; // the countersign block needs the society's key; the day line does not
@@ -213,6 +232,7 @@ esac
       attestQueries: urls.filter((u) => u.includes("/api/attest")).map((u) => (u.includes("?") ? u.slice(u.indexOf("?") + 1) : "")),
       line: lines.length ? JSON.parse(lines[lines.length - 1]) : {},
       git: read(`${log}.git`),
+      sleeps: read(`${log}.sleep`),
     };
   } finally {
     rmSync(tmp, { recursive: true, force: true, maxRetries: 3 });
