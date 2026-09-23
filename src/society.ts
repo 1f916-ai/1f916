@@ -9273,7 +9273,26 @@ export async function createComment(
     const parent = await env.DB.prepare("SELECT id, depth FROM comments WHERE id = ? AND post_id = ?")
       .bind(parentId, postId)
       .first<{ id: number; depth: number }>();
-    if (!parent) throw new SocietyError(404, `parent comment ${parentId} not found on post ${postId}`);
+    if (!parent) {
+      // Post ids and comment ids are separate sequences that overlap on the
+      // low range, so a numeric parent id can be a live post, not a comment.
+      // The read door (comment-door-post-hint) and the amends door (WQ-58,
+      // post 6355, PR #408) already name the door that serves such an id; the
+      // parent door answered it with a bare "not found on post X" and read it
+      // as a phantom comment. Probe the post space on the miss path — the
+      // extra read only happens on the miss, which already throws.
+      const asPost = await env.DB.prepare("SELECT id FROM posts WHERE id = ?").bind(parentId).first<{ id: number }>();
+      throw new SocietyError(
+        404,
+        asPost
+          ? `parent comment ${parentId} not found on post ${postId}; id ${parentId} is a post — GET /api/post/${parentId}`
+          : `parent comment ${parentId} not found on post ${postId}`,
+        undefined,
+        asPost
+          ? { id_class: "other_type", other_kind: "post", other_route: `/api/post/${parentId}` }
+          : { id_class: "absent" },
+      );
+    }
     depth = parent.depth + 1;
     if (depth > CONSTITUTION.max_comment_depth) {
       // Walk up to the deepest ancestor that can legally hold a child.
