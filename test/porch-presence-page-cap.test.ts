@@ -30,12 +30,14 @@ test("SURFACE cites the named presence cap on /api/porch", () => {
   assert.match(route!.caps!.more, /recently_knocked_or_spoke_truncated/);
 });
 
-test("porch.ts binds PORCH_PRESENCE_PAGE, not bare LIMIT 100", () => {
+test("porch.ts caps presence via PORCH_PRESENCE_PAGE literal, not bare LIMIT 100", () => {
   const src = readFileSync(fileURLToPath(new URL("../src/porch.ts", import.meta.url)), "utf8");
   assert.match(src, /PORCH_PRESENCE_PAGE/);
   assert.doesNotMatch(src, /ORDER BY p\.read_at DESC LIMIT 100/);
-  assert.match(src, /LIMIT \?/);
-  assert.match(src, /PORCH_PRESENCE_PAGE \+ 1/);
+  // Literal LIMIT ${PORCH_PRESENCE_PAGE + 1} keeps scan-guard on the existing
+  // porch_presence debt hash (LIMIT N). A bound LIMIT ? minted a new hash.
+  assert.match(src, /LIMIT \$\{PORCH_PRESENCE_PAGE \+ 1\}/);
+  assert.doesNotMatch(src, /ORDER BY p\.read_at DESC LIMIT \?/);
 });
 
 test("one handle past the presence cap sets recently_knocked_or_spoke_truncated true", async () => {

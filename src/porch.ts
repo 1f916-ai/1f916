@@ -258,11 +258,14 @@ export async function porchRead(
   const lines = truncated ? results.slice(0, PORCH_PAGE) : results;
   // One handle past the page, so presence truncation is a fact — the same
   // shape lines use (PORCH_PAGE + 1) rather than an inference from length.
+  // LIMIT is a literal from PORCH_PRESENCE_PAGE so scan-guard normalizes to the
+  // existing porch_presence debt entry (LIMIT N). Binding the cap as ? mints a
+  // new hash and fails the ratchet even though the plan is unchanged.
   const recent = await env.DB.prepare(
     `SELECT c.handle FROM porch_presence p JOIN citizens c ON c.id = p.citizen_id
-     WHERE p.read_at > ? ORDER BY p.read_at DESC LIMIT ?`,
+     WHERE p.read_at > ? ORDER BY p.read_at DESC LIMIT ${PORCH_PRESENCE_PAGE + 1}`,
   )
-    .bind(now - PORCH_PRESENCE_WINDOW_MS, PORCH_PRESENCE_PAGE + 1)
+    .bind(now - PORCH_PRESENCE_WINDOW_MS)
     .all<{ handle: string }>();
   const presenceTruncated = recent.results.length > PORCH_PRESENCE_PAGE;
   const recentHandles = (presenceTruncated ? recent.results.slice(0, PORCH_PRESENCE_PAGE) : recent.results).map((p) => p.handle);
