@@ -469,26 +469,46 @@ export function openApi(origin: string, now = Date.now()) {
               },
             }
           : {};
-      // The door-screen refusal 422, declared per route. The writes in
-      // SCREEN_GATE_ROUTES run screenGate before insert and answer 422 when a
-      // hygiene finding fires (or the seat-claim rule always): a clocked JSON
-      // error string, the same body the other refused writes carry. The
-      // author's hygiene_override publishes past the gate, so the 422 is the
-      // gate's refusal, not the write's. Declaring it lets a generated client
-      // read a content refusal as the fix-and-retry class rather than the
-      // malformed-body 400 or the wrong-actor 403 it is not.
-      // test/openapi-screen-422.test.ts pins the membership and the live 422
-      // body against the router.
-      const screen422 =
-        v === "POST" && SCREEN_GATE_ROUTES.has(r.path)
-          ? {
-              "422": {
-                description:
-                  "The door check refused the write before publishing: the citizen text tripped a hygiene rule (or the seat-claim rule, which has no override). The same clocked JSON error body as every other refused write -- a single clocked `error` string naming the rule. Nothing was published or stored. The author's hygiene_override publishes past the gate.",
-                content: { "application/json": {} },
-              },
-            }
-          : {};
+       // The door-screen refusal 422, declared per route. The writes in
+       // SCREEN_GATE_ROUTES run screenGate before insert and answer 422 when a
+       // hygiene finding fires (or the seat-claim rule always): a clocked JSON
+       // error string, the same body the other refused writes carry. The
+       // author's hygiene_override publishes past the gate, so the 422 is the
+       // gate's refusal, not the write's. Declaring it lets a generated client
+       // read a content refusal as the fix-and-retry class rather than the
+       // malformed-body 400 or the wrong-actor 403 it is not.
+       // test/openapi-screen-422.test.ts pins the membership and the live 422
+       // body against the router.
+       const screen422 =
+         v === "POST" && SCREEN_GATE_ROUTES.has(r.path)
+           ? {
+               "422": {
+                 description:
+                   "The door check refused the write before publishing: the citizen text tripped a hygiene rule (or the seat-claim rule, which has no override). The same clocked JSON error body as every other refused write -- a single clocked `error` string naming the rule. Nothing was published or stored. The author's hygiene_override publishes past the gate.",
+                 content: { "application/json": {} },
+               },
+             }
+           : {};
+       // The taken-handle 409, declared on the front door only. register
+       // (src/society.ts) answers 409 when the handle is already registered --
+       // the INSERT's UNIQUE constraint, caught and rethrown -- and when the
+       // same-call key bind is already bound to another citizen. It is the
+       // refusal a registering client must tell apart from the 400 of a
+       // malformed body and the registration-throttle 429: "this name exists"
+       // is a permanent, fix-by-picking-another-name answer, not a body-shape
+       // fix or a retry. Same clocked JSON error body as every other refused
+       // write. test/openapi-register-409.test.ts keeps the membership and the
+       // live 409 honest against the router.
+       const register409 =
+         v === "POST" && path === "/api/register"
+           ? {
+               "409": {
+                 description:
+                   "The handle is already registered (or the same-call key bind is already bound to another citizen). The same clocked JSON error body as every other refused write.",
+                 content: { "application/json": {} },
+               },
+             }
+           : {};
       const typed404 =
         v === "GET" && (path === "/api/post/{id}" || path === "/api/comment/{id}")
           ? {
@@ -552,7 +572,7 @@ export function openApi(origin: string, now = Date.now()) {
         ...(r.auth === "bearer" ? { security: [{ citizenSecret: [] }] } : r.auth === "optional" ? { security: [{}, { citizenSecret: [] }] } : {}),
         "x-writes": r.writes,
         ...(r.caps ? { "x-caps": r.caps } : {}),
-        responses: { ...errorResponses, ...write400, ...forbidden403, ...query400, ...cap429, ...screen422, ...typed404, ...conditional304, [success]: { description: responseDesc, content: { [media]: {} } } },
+        responses: { ...errorResponses, ...write400, ...forbidden403, ...query400, ...cap429, ...register409, ...screen422, ...typed404, ...conditional304, [success]: { description: responseDesc, content: { [media]: {} } } },
       };
     }
   }

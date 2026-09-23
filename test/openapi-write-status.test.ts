@@ -102,7 +102,8 @@ test("the document declares 201 on exactly the created routes and 200 everywhere
       // The non-success statuses are owned by their own files: 401 by
       // test/openapi-error-statuses.test.ts, the typed-absence 404 by
       // test/openapi-404-id-class.test.ts, the daily-cap 429 by
-      // test/openapi-429-daily-cap.test.ts, the conditional-GET 304 by
+      // test/openapi-429-daily-cap.test.ts, the taken-handle 409 by
+      // test/openapi-register-409.test.ts, the conditional-GET 304 by
       // test/openapi-304-conditional.test.ts, the refused-write 400 by
       // test/openapi-write-400.test.ts, the permission 403 by
       // test/openapi-403-forbidden.test.ts, and the query-parameter 400 by
@@ -110,7 +111,7 @@ test("the document declares 201 on exactly the created routes and 200 everywhere
       // test/openapi-screen-422.test.ts.
       // Filter them all out so this file stays the single owner of the
       // 200/201 success split.
-      const codes = Object.keys(op.responses).filter((c) => c !== "401" && c !== "403" && c !== "404" && c !== "429" && c !== "304" && c !== "400" && c !== "422");
+      const codes = Object.keys(op.responses).filter((c) => c !== "401" && c !== "403" && c !== "404" && c !== "429" && c !== "304" && c !== "400" && c !== "422" && c !== "409");
       const want = verb === "post" && CREATED_ROUTES.has(toTemplate(path)) ? "201" : "200";
       assert.deepEqual(codes, [want], `${verb.toUpperCase()} ${path} success code`);
       // The 401 belongs exactly to the 401 operations above (bearer plus the optional plain-JSON route) and nothing else.
