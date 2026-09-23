@@ -22,11 +22,12 @@
 //   /mcp, /mcp/read -- the JSON-RPC transport: a 400 there carries a JSON-RPC
 //     error envelope (rpcError, code -32600), not the society clocked body, the
 //     same reason the /mcp 401 was kept out of the society-body 401 declaration.
-//
-// This file keeps the declaration honest against the router in-process: every
-// POST write op declares the 400 iff it is not one of those six, the body is
-// the clocked JSON error object, and the live router actually answers 400 with
-// that body on a refused write while the no-input writes do not.
+//     Those two doors ALSO declare the transport 400/401 beside their success
+//     code (test/openapi-mcp-wire.test.ts owns those declarations): the 400
+//     there is the JSON-RPC envelope, not the clocked body this file asserts,
+//     so "declares 400" on an MCP door is the wrong class to count here. This
+//     file's membership therefore still excludes the MCP doors, for the body
+//     reason: it pins the CLOCKED 400 on every other write.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -75,6 +76,8 @@ test("every POST write op declares 400 exactly when it is not one of the six exc
   const posts = postWriteOps();
   let checked = 0;
   let declares = 0;
+  let mcpChecked = 0;
+  let noBodyChecked = 0;
   for (const [path, ops] of Object.entries(doc.paths)) {
     for (const [verb, op] of Object.entries(ops)) {
       if (!posts.has(`${path} ${verb}`)) continue;
@@ -83,20 +86,36 @@ test("every POST write op declares 400 exactly when it is not one of the six exc
       // load-bearing: the old "(:$1)" produced (:id) and matched nothing.
       const template = path.replace(/\{([A-Za-z_]+)\}/g, ":$1");
       const has400 = Object.keys(op.responses).includes("400");
+      const isMcpDoor = template === "/mcp" || template === "/mcp/read";
       const shouldBe = !NO_BODY_WRITE_ROUTES.has(template) && !MCP_ROUTES.has(template);
+      if (isMcpDoor) {
+        // The MCP door declares a 400, but it is the JSON-RPC transport
+        // envelope (test/openapi-mcp-wire.test.ts owns it), not the clocked
+        // society body this file pins. Pin its presence here only so the
+        // carve-out is real; the membership count below excludes it.
+        assert.equal(has400, true, `POST ${path} declares the JSON-RPC transport 400 (owned by the mcp-wire test)`);
+        checked++;
+        mcpChecked++;
+        continue;
+      }
       assert.equal(
         has400,
         shouldBe,
         `POST ${path} is ${shouldBe ? "not an exception and" : "an exception and"} ${has400 ? "declares" : "does not declare"} 400`,
       );
       if (has400) declares++;
+      if (!shouldBe) noBodyChecked++;
       checked++;
     }
   }
   // Every POST op is checked, and the count that declares is the total minus
-  // the six exceptions -- so the membership is held in both directions.
+  // the no-body writes (which cannot refuse input) minus the two MCP doors
+  // (whose 400 is the transport envelope, not the clocked body) -- so the
+  // membership is held in both directions, and each carve-out is counted.
   assert.ok(checked >= 40, `only ${checked} POST ops found; the POST-op scan has drifted`);
-  assert.equal(declares, checked - NO_BODY_WRITE_ROUTES.size - MCP_ROUTES.size, "the declared set is the POST set minus the six exceptions");
+  assert.equal(mcpChecked, MCP_ROUTES.size, "the two MCP doors were checked and carved out");
+  assert.equal(noBodyChecked, NO_BODY_WRITE_ROUTES.size, "the no-body writes were checked and carved out");
+  assert.equal(declares, checked - noBodyChecked - mcpChecked, "the declared clocked-400 set is the POST set minus the no-body writes minus the two MCP doors");
 });
 
 test("the declared 400 carries the clocked JSON error body, not an empty default", async () => {
