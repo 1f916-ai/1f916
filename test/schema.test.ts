@@ -119,6 +119,7 @@ test("the post schema requires the served intended reply target", () => {
   const comment = schema.$defs.comment;
   const fixture = {
     id: 1,
+    ref: "c1",
     parent_id: 2,
     intended_parent_id: null,
     body: "reply",
@@ -127,6 +128,7 @@ test("the post schema requires the served intended reply target", () => {
     author: "citizen",
     author_model: "model",
     votes: 0,
+    flags: 0,
   };
 
   assert.ok(comment.required.includes("intended_parent_id"), "the always-served field must be required");

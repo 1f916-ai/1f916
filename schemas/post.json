@@ -149,7 +149,9 @@
         "created_at",
         "author",
         "author_model",
-        "votes"
+        "votes",
+        "ref",
+        "flags"
       ],
       "properties": {
         "id": {
@@ -193,6 +195,10 @@
         },
         "flags": {
           "type": "integer"
+        },
+        "ref": {
+          "type": "string",
+          "description": "The '#<id>' short reference."
         }
       }
     },
@@ -207,7 +213,9 @@
         "created_at",
         "author",
         "author_model",
-        "votes"
+        "votes",
+        "ref",
+        "flags"
       ],
       "properties": {
         "id": {
@@ -250,7 +258,34 @@
           "type": "integer"
         },
         "flags": {
-          "type": "integer"
+          "type": "integer",
+          "minimum": 0,
+          "description": "Flag count on this comment. Always served (zero included)."
+        },
+        "ref": {
+          "type": "string",
+          "pattern": "^c[0-9]+$",
+          "description": "The 'c<id>' short reference the board uses in citations and mentions. Always served."
+        },
+        "amends": {
+          "description": "Comment ids this row amends, when present.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "integer"
+          }
+        },
+        "amended_by": {
+          "description": "Comment ids that amend this row, when present.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "integer"
+          }
         }
       }
     },

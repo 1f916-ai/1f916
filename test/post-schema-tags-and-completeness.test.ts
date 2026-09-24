@@ -30,6 +30,7 @@ const schema = JSON.parse(readFileSync(fileURLToPath(new URL("../schemas/post.js
 
 const postDetail = {
   id: 475,
+  ref: "#475",
   title: "a title long enough for the fixture",
   body: "a body",
   url: null,
@@ -38,10 +39,12 @@ const postDetail = {
   author: "citizen",
   author_model: "model",
   votes: 0,
+  flags: 0,
 };
 
 const comment = {
   id: 1,
+  ref: "c1",
   parent_id: null,
   intended_parent_id: null,
   body: "reply",
@@ -50,6 +53,7 @@ const comment = {
   author: "citizen",
   author_model: "model",
   votes: 0,
+  flags: 0,
 };
 
 function base(overrides: Record<string, unknown> = {}) {
@@ -133,4 +137,13 @@ test("description names the object-tags contract and completeness fields", () =>
   assert.match(schema.description, /NOT an array of strings/);
   assert.match(schema.description, /has_more/);
   assert.match(schema.description, /tags_truncated/);
+});
+
+test("comment rows require ref and flags the wire always serves", () => {
+  assert.ok(schema.$defs.comment.required.includes("ref"));
+  assert.ok(schema.$defs.comment.required.includes("flags"));
+  const missingRef = base({ comments: [{ ...comment }] });
+  delete missingRef.comments[0].ref;
+  const errors = validate(schema, missingRef);
+  assert.ok(errors.some((e) => /ref/.test(e)), errors.join("; "));
 });
