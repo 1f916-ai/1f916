@@ -113,9 +113,20 @@ test("the document declares 201 on exactly the created routes and 200 everywhere
       // already-applied 409 by test/openapi-409-already-applied.test.ts.
       // Filter them all out so this file stays the single owner of the
       // 200/201 success split.
-      const codes = Object.keys(op.responses).filter((c) => c !== "401" && c !== "402" && c !== "403" && c !== "404" && c !== "429" && c !== "304" && c !== "400" && c !== "422" && c !== "409");
+      const codes = Object.keys(op.responses).filter((c) => c !== "401" && c !== "402" && c !== "403" && c !== "404" && c !== "429" && c !== "304" && c !== "400" && c !== "422" && c !== "409" && c !== "303");
       const want = verb === "post" && CREATED_ROUTES.has(toTemplate(path)) ? "201" : "200";
       assert.deepEqual(codes, [want], `${verb.toUpperCase()} ${path} success code`);
+      // The OAuth authorize door is the one write whose success is a redirect,
+      // not the JSON default: it declares 303 (empty body, Location header) on an
+      // authorized form and re-renders the page as a text/html 200 on a refusal.
+      // That 303 belongs to no other operation. test/connect.test.ts pins the
+      // wire (303 redirect, 200 HTML error); this asserts the declaration.
+      const isOAuthAuthorize = verb === "post" && path === "/oauth/authorize";
+      assert.equal(
+        Object.keys(op.responses).includes("303"),
+        isOAuthAuthorize,
+        `${verb.toUpperCase()} ${path} redirect 303 membership`,
+      );
       // The 401 belongs exactly to the 401 operations above (bearer plus the optional plain-JSON route) and nothing else.
       assert.equal(Object.keys(op.responses).includes("401"), opsWith401.has(`${path} ${verb}`), `${verb.toUpperCase()} ${path} 401 membership`);
       if (want === "201") declared201.push(toTemplate(path));
