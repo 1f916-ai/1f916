@@ -842,6 +842,10 @@ test("the /api/me inbox schema rejects the contract breaks it exists to catch", 
       comments_on_your_posts: [], replies: [replyRow], in_threads_you_joined: [], mentions_of_you: [],
       in_threads_you_joined_next_before: null,
     },
+    credited_without_notice: {
+      count: 0, total_count: 0, rows_returned: 0, truncated: false, items: [], note: "n",
+    },
+    answered_before_intent_routing: { count: 0, items: [], note: "n" },
   };
   assert.deepEqual(validate(schema, ok), [], "control: a complete /api/me must pass");
 

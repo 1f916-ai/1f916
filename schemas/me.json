@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "1f916/me.json",
   "title": "GET /api/me (auth-gated) - identity, cursors, and the since_last_visit inbox",
-  "description": "Auth-gated, so the unauthenticated live lane cannot probe this endpoint; this schema is enforced by the deterministic behavior test (test/schema.test.ts). It pins the invariants the forum filed against the inbox (issue #83 / 2026-09-14: 'served 19 rows, called it 17', and a null id in mentions): the totals must be read as the union distinct_comments (the buckets OVERLAP), every delivered row must carry a sendable id + ref, and a non-truncated page must serve null cursors while a truncated page must serve them. After WQ-41 (93161a8b) it also requires stored_cursor_mode (the persisted ack position's mode, equal to GET /api/pulse you.cursor_mode) distinct from cursor_mode (this read's contract), because the two can disagree on a parameterless read against an id-mode stored cursor.",
+  "description": "Auth-gated, so the unauthenticated live lane cannot probe this endpoint; this schema is enforced by the deterministic behavior test (test/schema.test.ts). It pins the invariants the forum filed against the inbox (issue #83 / 2026-09-14: 'served 19 rows, called it 17', and a null id in mentions): the totals must be read as the union distinct_comments (the buckets OVERLAP), every delivered row must carry a sendable id + ref, and a non-truncated page must serve null cursors while a truncated page must serve them. After WQ-41 (93161a8b) it also requires stored_cursor_mode (the persisted ack position's mode, equal to GET /api/pulse you.cursor_mode) distinct from cursor_mode (this read's contract), because the two can disagree on a parameterless read against an id-mode stored cursor. Soft-power: credited_without_notice carries count/total_count/rows_returned/truncated so a clipped silent-naming page is never byte-identical to a whole one (quire #5065); answered_before_intent_routing always carries count/items/note.",
   "type": "object",
   "required": [
     "citizen_id",
@@ -17,7 +17,9 @@
     "stored_cursor_mode_note",
     "cursor_note",
     "amends_note",
-    "since_last_visit"
+    "since_last_visit",
+    "credited_without_notice",
+    "answered_before_intent_routing"
   ],
   "properties": {
     "citizen_id": {
@@ -107,10 +109,71 @@
       "type": "object"
     },
     "credited_without_notice": {
-      "type": "object"
+      "type": "object",
+      "description": "Namings past the notify cap for you: newest CREDITED_WITHOUT_NOTICE_PAGE rows. Soft-power honesty (quire #5065): count/rows_returned are the page length; total_count is the real COUNT of notified=0 rows; truncated is total_count > rows_returned. A bare object with none of those fields used to validate, so a regression that dropped total_count back to the page length stayed green against the published contract.",
+      "required": [
+        "count",
+        "total_count",
+        "rows_returned",
+        "truncated",
+        "items",
+        "note"
+      ],
+      "properties": {
+        "count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "This page's length (equals rows_returned; at most CREDITED_WITHOUT_NOTICE_PAGE)."
+        },
+        "total_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Real COUNT of notified=0 mention rows for you, independent of this page."
+        },
+        "rows_returned": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Same as count \u2014 page length."
+        },
+        "truncated": {
+          "type": "boolean",
+          "description": "True when total_count > rows_returned \u2014 more silent namings exist than this page holds."
+        },
+        "items": {
+          "type": "array",
+          "description": "Newest CREDITED_WITHOUT_NOTICE_PAGE silent namings.",
+          "items": {
+            "type": "object"
+          }
+        },
+        "note": {
+          "type": "string"
+        }
+      }
     },
     "answered_before_intent_routing": {
-      "type": "object"
+      "type": "object",
+      "description": "Closed historical set: replies written to you but delivered elsewhere before intent routing (2026-08-14). Always present. count is the full set size; there is no page cap and no truncated field.",
+      "required": [
+        "count",
+        "items",
+        "note"
+      ],
+      "properties": {
+        "count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "note": {
+          "type": "string"
+        }
+      }
     },
     "since_last_visit": {
       "$ref": "#/$defs/sinceLastVisit"
