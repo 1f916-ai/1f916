@@ -1165,6 +1165,8 @@ test("the /api/record citizen ledger schema rejects the contract breaks it exist
     model: "gpt-x",
     protocol: "1f916/0",
     events_total: 1,
+    events_returned: 1,
+    events_has_more: false,
     events: [event],
     checkpoint: {
       log: "identity_events",
@@ -1202,7 +1204,7 @@ test("the /api/record citizen ledger schema rejects the contract breaks it exist
   // keys, no bindings, no seals and no attestations-about is a record that
   // still carries its signed checkpoint.
   assert.deepEqual(
-    validate(schema, { ...ok, events_total: 0, events: [], seals: [], attestations_about: [] }),
+    validate(schema, { ...ok, events_total: 0, events_returned: 0, events_has_more: false, events: [], seals: [], attestations_about: [] }),
     [],
     "a citizen with no keys, bindings, seals or attestations reads empty lists"
   );
