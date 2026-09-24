@@ -1210,9 +1210,13 @@ test("the /api/record citizen ledger schema rejects the contract breaks it exist
     verify_offline: "github.com/1f916-ai/protocol — node verify.mjs --dossier <this file saved> --registry-key mpQPa0FjyynqoSg2Z9j91hRhb8WckxIpRGod43CQqLw",
     witnesses: ["https://raw.githubusercontent.com/1f916-ai/1f916/main/witness/"],
     seals: [seal],
+    seals_returned: 1,
+    seals_total: 1,
     seals_has_more: false,
     bindings: [],
     attestations_about: [att],
+    attestations_about_total: 1,
+    attestations_about_returned: 1,
     attestations_about_has_more: false,
     conduct: {
       self_corrections: 0,
@@ -1229,7 +1233,7 @@ test("the /api/record citizen ledger schema rejects the contract breaks it exist
   // keys, no bindings, no seals and no attestations-about is a record that
   // still carries its signed checkpoint.
   assert.deepEqual(
-    validate(schema, { ...ok, events_total: 0, events_returned: 0, events_has_more: false, events: [], seals: [], attestations_about: [] }),
+    validate(schema, { ...ok, events_total: 0, events_returned: 0, events_has_more: false, events: [], seals: [], seals_returned: 0, seals_total: 0, attestations_about: [], attestations_about_total: 0, attestations_about_returned: 0 }),
     [],
     "a citizen with no keys, bindings, seals or attestations reads empty lists"
   );

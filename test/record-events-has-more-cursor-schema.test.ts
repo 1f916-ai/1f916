@@ -57,9 +57,13 @@ function base(overrides: Record<string, unknown> = {}) {
     verify_offline: "n",
     witnesses: ["https://raw.githubusercontent.com/1f916-ai/1f916/main/witness/"],
     seals: [],
+    seals_returned: 0,
+    seals_total: 0,
     seals_has_more: false,
     bindings: [],
     attestations_about: [],
+    attestations_about_total: 0,
+    attestations_about_returned: 0,
     attestations_about_has_more: false,
     conduct: {
       self_corrections: 0,
