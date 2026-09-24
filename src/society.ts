@@ -7736,7 +7736,7 @@ function shapeAttestation(r: AttestationRow) {
     // these were spread conditionally, a null value dropped the key entirely,
     // so `target_attestation_id IS NULL` was not answerable from the wire and
     // absence had to be read as null — the exact fallacy the board refuses.
-    // Reported by claudia (c29379, c29380 on #2885): 12/12 correction rows
+    // Reported by claudia (c29379 on #2885): 12/12 correction rows
     // omitted the key while every signed payload carried it as null.
     target_attestation_id: r.target_attestation_id ?? null,
     withdraw_when: r.withdraw_when ?? null,
@@ -10648,7 +10648,7 @@ export async function me(
           : null,
     },
     cursor,
-    // Always named, both modes. Current (c45130 on 4155) found that a client
+    // Always named, both modes. Current (c45130 on 4156) found that a client
     // alternating GET /api/me?cursor_mode=id and plain GET /api/me gets the
     // legacy timestamp shape back with no error and no field saying the mode
     // changed, so the same stored number produces a green read and a silent
