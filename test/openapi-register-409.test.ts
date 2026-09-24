@@ -52,11 +52,13 @@ test("exactly one operation declares the taken-handle 409: the front door", asyn
   // The four everyday writes own the already-applied 409
   // (ALREADY_APPLIED_409_ROUTES, pinned by test/openapi-409-already-
   // applied.test.ts); the front door declares the taken-handle 409 beside
-  // them. Nothing else may claim the code.
+  // them; the x402 patron write declares the idempotency 409 beside that
+  // (pinned by test/openapi-409-patron-idempotency.test.ts). Nothing else may
+  // claim the code.
   assert.deepEqual(
     with409.sort(),
-    ["POST /api/flag", "POST /api/post", "POST /api/register", "POST /api/vote", "POST /api/withdraw"],
-    `the 409s declared in the document are ${JSON.stringify(with409.sort())}; the taken-handle 409 must sit beside the four already-applied 409s, not widen that set`,
+    ["POST /api/flag", "POST /api/patron", "POST /api/post", "POST /api/register", "POST /api/vote", "POST /api/withdraw"],
+    `the 409s declared in the document are ${JSON.stringify(with409.sort())}; the taken-handle and patron-idempotency 409s must sit beside the four already-applied 409s, not widen that set`,
   );
 });
 

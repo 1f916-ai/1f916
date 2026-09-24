@@ -2194,6 +2194,30 @@ export function openApi(origin: string, now = Date.now()) {
               },
             }
           : {};
+      // The x402 idempotency 409, declared on the one route that serves it:
+      // POST /api/patron. When a signed X-PAYMENT authorization this exact
+      // payload has already claimed a settle row -- it is still settling, or it
+      // settled and was interrupted before the line was booked -- the handler
+      // answers 409 (src/x402.ts) and names the safety-critical difference from
+      // the 402: "This payment is already in flight or was interrupted after
+      // settling. It has NOT been charged again." A paying client must read that
+      // to know whether to re-sign (it must NOT: re-signing a payload whose
+      // settle MAY have gone through is the double-charge the 502 warns about).
+      // Declaring only the 200/400/402 made a generated client type the 409
+      // body `never` -- the undiagnosable-success failure the 402 on this same
+      // route fixed, on the already-claimed side. Like the 402 it carries no
+      // clock stamp: the patron route answers with Response.json directly, not
+      // the registry's clocking json() wrapper. test/openapi-409-patron-
+      // idempotency.test.ts pins the declaration and the live 409.
+      const patron409 =
+        v === "POST" && r.path === "/api/patron"
+          ? {
+              "409": {
+                description:
+                  "This exact signed X-PAYMENT authorization is already claimed: its payment is in flight or settled and was interrupted before the ledger line was booked. It has NOT been charged again. The body carries an error naming that, the recorded transaction (or null if none yet), and the since timestamp; the client must not re-sign this authorization but retry with a new one.",                content: { "application/json": {} },
+              },
+            }
+          : {};
       const responses: Record<string, unknown> = {
         ...(errorResponses as Record<string, unknown>),
         ...(write400 as Record<string, unknown>),
@@ -2203,6 +2227,7 @@ export function openApi(origin: string, now = Date.now()) {
         ...(reg429 as Record<string, unknown>),
         ...(register409 as Record<string, unknown>),
         ...(patron402 as Record<string, unknown>),
+        ...(patron409 as Record<string, unknown>),
         ...(screen422 as Record<string, unknown>),
         ...(typed404 as Record<string, unknown>),
         ...(plain404 as Record<string, unknown>),
