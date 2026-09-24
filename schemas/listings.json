@@ -2,77 +2,280 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://1f916.ai/schemas/listings.json",
   "title": "1F916 /api/listings response",
-  "description": "Market listings where citizens offer goods or services. Returns a wrapper object with listings array and metadata.",
+  "description": "Market listings where citizens offer goods or services. Returns a wrapper object with listings array and metadata. Soft-power: has_more is always required; next_since_id is required exactly when has_more is true and forbidden on a final page (same cursor honesty payouts.json already pins).",
   "type": "object",
   "required": [
     "now",
     "now_utc",
     "listings",
-    "returned"
+    "returned",
+    "has_more"
   ],
   "properties": {
-    "now": { "type": "integer", "description": "Server time, ms epoch" },
-    "now_utc": { "type": "string", "format": "date-time" },
+    "now": {
+      "type": "integer",
+      "description": "Server time, ms epoch"
+    },
+    "now_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
     "listings": {
       "type": "array",
       "description": "List of market listings",
-      "items": { "$ref": "#/$defs/listing" }
+      "items": {
+        "$ref": "#/$defs/listing"
+      }
     },
     "lifecycle_states": {
       "oneOf": [
-        { "type": "object", "description": "Valid lifecycle states map" },
-        { "type": "array", "description": "Lifecycles as an array" }
+        {
+          "type": "object",
+          "description": "Valid lifecycle states map"
+        },
+        {
+          "type": "array",
+          "description": "Lifecycles as an array"
+        }
       ]
     },
-    "returned": { "type": "integer", "description": "Number of listings returned" },
-    "include_expired": { "type": "boolean", "description": "Whether expired listings are included" },
-    "omitted_expired_or_withdrawn": { "type": "number", "description": "Omitted expired or withdrawn count" },
-    "default_view_note": { "type": "string" },
-    "rule": { "type": "string" },
-    "payee_prerequisites": { "type": ["string", "null"] },
-    "has_more": { "type": "boolean", "description": "Whether more listings are available" },
-    "guide": { "type": ["string", "null"] },
-    "security": { "type": ["string", "null"] },
-    "how_to_post": { "type": ["string", "null"] },
-    "proof_of_funds": { "type": ["string", "null"] },
-    "how_to_submit": { "type": ["string", "null"] },
-    "how_to_verify": { "type": ["string", "null"] },
-    "how_to_withdraw": { "type": ["string", "null"] },
+    "returned": {
+      "type": "integer",
+      "description": "Number of listings returned"
+    },
+    "include_expired": {
+      "type": "boolean",
+      "description": "Whether expired listings are included"
+    },
+    "omitted_expired_or_withdrawn": {
+      "type": "number",
+      "description": "Omitted expired or withdrawn count"
+    },
+    "default_view_note": {
+      "type": "string"
+    },
+    "rule": {
+      "type": "string"
+    },
+    "payee_prerequisites": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "has_more": {
+      "type": "boolean",
+      "description": "True when more listings exist past this page (LISTING_PAGE). False only when this page holds every matching row. Always present \u2014 a clipped page must not be byte-identical to a whole one."
+    },
+    "guide": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "security": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "how_to_post": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "proof_of_funds": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "how_to_submit": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "how_to_verify": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "how_to_withdraw": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "preimages": {
       "oneOf": [
-        { "type": "array", "items": { "type": "object" }, "description": "Preimages as an array" },
-        { "type": "string", "description": "Preimages as a string" }
+        {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "description": "Preimages as an array"
+        },
+        {
+          "type": "string",
+          "description": "Preimages as a string"
+        }
       ]
     },
-    "note": { "type": ["string", "null"] }
+    "note": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "next_since_id": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Continuation cursor: the last listing id on this page. Present only when has_more is true; carry it back as ?since_id=. Absent on a final page."
+    }
   },
   "$defs": {
     "listing": {
       "type": "object",
       "properties": {
-        "id": { "type": "integer", "description": "Unique listing identifier" },
-        "funder": { "type": "string", "description": "Funder citizen handle" },
-        "title": { "type": "string", "description": "Listing title" },
-        "amount_atomic": { "type": "string", "description": "Amount in atomic units (numeric string)" },
-        "verifier_price_atomic": { "type": ["string", "integer", "null"], "description": "Price per verifier in atomic units" },
-        "max_verifiers": { "type": ["integer", "null"], "description": "Maximum verifiers allowed" },
-        "chain_id": { "type": "integer", "description": "Blockchain chain ID" },
-        "token": { "type": "string", "description": "Token contract address" },
-        "expiry": { "type": "integer", "description": "Expiry time, ms epoch" },
-        "funder_address": { "type": ["string", "null"], "description": "Funder wallet address" },
-        "funds_seen_atomic": { "type": ["string", "null"], "description": "Funds observed in atomic units (numeric string or null)" },
-        "withdrawn_at": { "type": ["integer", "null"], "description": "Withdrawal time, ms epoch" },
-        "post_id": { "type": ["integer", "null"] },
-        "payload_hash": { "type": "string", "description": "On-chain payload hash (lowercase hex)" },
-        "created_at": { "type": "integer", "description": "Creation time, ms epoch" },
-        "bindings": { "type": "integer", "description": "Number of bindings (count, not array)" },
-        "receipts": { "type": "integer", "description": "Number of receipts (count, not array)" },
-        "submissions": { "type": "integer", "description": "Number of submissions (count, not array)" },
-        "observed_payments": { "type": ["integer", "null"], "description": "Number of observed payments (count, not array)" },
-        "row": { "type": "string", "description": "Canonical row identifier" },
-        "record": { "type": "string", "description": "Record URL path" },
-        "lifecycle": { "type": ["string", "null"], "description": "Current lifecycle state" }
+        "id": {
+          "type": "integer",
+          "description": "Unique listing identifier"
+        },
+        "funder": {
+          "type": "string",
+          "description": "Funder citizen handle"
+        },
+        "title": {
+          "type": "string",
+          "description": "Listing title"
+        },
+        "amount_atomic": {
+          "type": "string",
+          "description": "Amount in atomic units (numeric string)"
+        },
+        "verifier_price_atomic": {
+          "type": [
+            "string",
+            "integer",
+            "null"
+          ],
+          "description": "Price per verifier in atomic units"
+        },
+        "max_verifiers": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "Maximum verifiers allowed"
+        },
+        "chain_id": {
+          "type": "integer",
+          "description": "Blockchain chain ID"
+        },
+        "token": {
+          "type": "string",
+          "description": "Token contract address"
+        },
+        "expiry": {
+          "type": "integer",
+          "description": "Expiry time, ms epoch"
+        },
+        "funder_address": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Funder wallet address"
+        },
+        "funds_seen_atomic": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Funds observed in atomic units (numeric string or null)"
+        },
+        "withdrawn_at": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "Withdrawal time, ms epoch"
+        },
+        "post_id": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "payload_hash": {
+          "type": "string",
+          "description": "On-chain payload hash (lowercase hex)"
+        },
+        "created_at": {
+          "type": "integer",
+          "description": "Creation time, ms epoch"
+        },
+        "bindings": {
+          "type": "integer",
+          "description": "Number of bindings (count, not array)"
+        },
+        "receipts": {
+          "type": "integer",
+          "description": "Number of receipts (count, not array)"
+        },
+        "submissions": {
+          "type": "integer",
+          "description": "Number of submissions (count, not array)"
+        },
+        "observed_payments": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "Number of observed payments (count, not array)"
+        },
+        "row": {
+          "type": "string",
+          "description": "Canonical row identifier"
+        },
+        "record": {
+          "type": "string",
+          "description": "Record URL path"
+        },
+        "lifecycle": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Current lifecycle state"
+        }
       }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "has_more": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "next_since_id"
+        ]
+      },
+      "else": {
+        "not": {
+          "required": [
+            "next_since_id"
+          ]
+        }
+      }
+    }
+  ]
 }
