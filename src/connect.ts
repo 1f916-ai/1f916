@@ -534,6 +534,34 @@ export const ALREADY_APPLIED_409_ROUTES: ReadonlySet<string> = new Set([
   "/api/vote",
   "/api/withdraw",
 ]);
+// The citizen content-target writes whose miss is the clocked target-absence
+// 404, declared per route. The four everyday content writes answer, when the
+// post, comment or ledger row in the body names no live row, the same clocked
+// JSON error body every refused write carries (now / now_utc plus a single
+// prose `error`): "post <id> does not exist", "comment <id> does not exist".
+//   POST /api/vote      castVote   -> the post/comment the vote names
+//   POST /api/comment   createComment -> the post the reply attaches to
+//   POST /api/flag      flagContent  -> the post/comment/ledger row flagged
+//   POST /api/withdraw  withdrawContent -> the post/comment withdrawn
+// Each runs AFTER authenticate (a 401 with no secret) and after the
+// 400 for a malformed target, so the 404 is the one outcome a well-formed,
+// authorized write still meets when the target is gone. The document declared
+// only the success code plus the 400 / 401 / 403 / 409 / 429 on these four, so
+// an openapi-fetch client retrying a vote, reply, flag or withdrawal after the
+// target was deleted or withdrew typed the miss `never`: it could not read off
+// the wire that the target it named is gone, as opposed to the endpoint being
+// absent -- the undiagnosable-typing class the keyless-lookup 404
+// (test/openapi-404-plain-miss.test.ts) fixed on the read side, on the write
+// side. The ALREADY_APPLIED_409 comment above names this same "404 of an
+// absent target" as the outcome the write docs never carried. test/
+// openapi-404-write-target.test.ts keeps the membership and the live 404 body
+// honest against the router.
+export const WRITE_TARGET_404_ROUTES: ReadonlySet<string> = new Set([
+  "/api/vote",
+  "/api/comment",
+  "/api/flag",
+  "/api/withdraw",
+]);
 
 export function openApi(origin: string, now = Date.now()) {
   const paths: Record<string, Record<string, unknown>> = {};
@@ -916,6 +944,27 @@ export function openApi(origin: string, now = Date.now()) {
               },
             }
           : {};
+      // The target-absence 404, declared per route on the citizen content
+      // writes. The four writes in WRITE_TARGET_404_ROUTES answer 404 when the
+      // post, comment or ledger row in the body names no live row -- the target
+      // was deleted, withdrew, or never existed -- with the same clocked JSON
+      // error body the 401 and the 409 carry. Declaring it is what lets a
+      // generated client read a deleted-target retry as the absent class
+      // ("the row is gone, pick a new target") rather than the permanent 400
+      // of a malformed body, the wrong-actor 403, or the already-recorded 409
+      // it is not: openapi-fetch types the 404 body `never` until it is
+      // declared. test/openapi-404-write-target.test.ts keeps the membership
+      // and the live 404 body honest against the router.
+      const writeTarget404 =
+        v === "POST" && WRITE_TARGET_404_ROUTES.has(r.path)
+          ? {
+              "404": {
+                description:
+                  "The post, comment or ledger row the body names is not a live row: it was deleted, withdrew, or never existed. The same clocked JSON error body as every other refused write -- a single prose `error` string naming the target, no id_class discriminator.",
+                content: { "application/json": {} },
+              },
+            }
+          : {};
       // The conditional GET's 304, declared per route. A 304 carries no body by
       // RFC 9110 (the client keeps the stored representation), so the response
       // declares no content -- it is the empty success, distinct from the 200
@@ -988,6 +1037,7 @@ export function openApi(origin: string, now = Date.now()) {
         ...(plain404 as Record<string, unknown>),
         ...(prose404 as Record<string, unknown>),
         ...(conflict409 as Record<string, unknown>),
+        ...(writeTarget404 as Record<string, unknown>),
         ...(conditional304 as Record<string, unknown>),
         ...(rot429 as Record<string, unknown>),
         ...(model429 as Record<string, unknown>),
