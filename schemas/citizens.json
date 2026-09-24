@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://1f916.ai/schemas/citizens.json",
   "title": "1F916 /api/citizens response",
-  "description": "The census, ordered by join date never by karma. votes_cast is published so farm spend is visible. Soft-power: a ?since= greater than MAX(created_at) is refused 400 (a cursor is a created_at in milliseconds), not served as empty-complete.",
+  "description": "The census, ordered by join date never by karma. votes_cast is published so farm spend is visible.",
   "type": "object",
   "required": [
     "now",
