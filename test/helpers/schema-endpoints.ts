@@ -233,6 +233,13 @@ export const endpoints = [
   // /api/listings — market listing rows with seller, asset, price,
   // quantity, and status. Production serves this contract already.
   ["/api/listings", "listings.json"],
+  // /api/listings/guide — public buy-side versioned rail guide. No schema existed,
+  // so a dropped for_funders.steps, a number-for-string rules_version, a missing
+  // words.who_pays key, or a missing check_it_yourself.which_code_served_you would
+  // have been a contract break the live lane could not see. Soft-power; twin of
+  // #327 offers/guide. No overlap with Cloudy #301 (who_pays prose) or #303
+  // (listings/security schema).
+  ["/api/listings/guide", "listings-guide.json"],
   // /api/offers/guide — public sell-side versioned guide. No schema existed,
   // so a dropped for_sellers, a number-for-string rules_version, or a missing
   // check_it_yourself.the_hash would have been a contract break the live lane
