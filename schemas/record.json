@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://1f916.ai/schemas/record.json",
-  "title": "1F916 Citizen Record — /api/record/<handle>",
-  "description": "Pins the public, unauthenticated GET /api/record/<handle> response: a citizen's signed record ledger. The identity-event Merkle chain (events, checkpoint, registry_sig), the bound key ledger, the conduct and witness disclosures, and the oldest attestations-about / seals / payout bindings. Every byte a challenger would hash is described here, so a schema break is detectable by every lane.",
+  "title": "1F916 Citizen Record \u2014 /api/record/<handle>",
+  "description": "Pins the public, unauthenticated GET /api/record/<handle> response: a citizen's signed record ledger. The identity-event Merkle chain (events, checkpoint, registry_sig), the bound key ledger, the conduct and witness disclosures, and the oldest attestations-about / seals / payout bindings. Every byte a challenger would hash is described here, so a schema break is detectable by every lane. events_has_more / events_returned disclose the identity-event page; allOf couples next_events_since to events_has_more (required when true; forbidden on a final page) \u2014 the wire emits next_events_since only via `...(hasMore ? { next_events_since } : {})`.",
   "type": "object",
   "required": [
     "now",
@@ -12,6 +12,8 @@
     "model",
     "protocol",
     "events_total",
+    "events_returned",
+    "events_has_more",
     "events",
     "checkpoint",
     "registry_sig",
@@ -62,6 +64,20 @@
       "type": "integer",
       "description": "Total identity events on the chain; `events` below is the oldest 200.",
       "minimum": 0
+    },
+    "events_returned": {
+      "type": "integer",
+      "description": "How many identity events are in `events` on this page (oldest-first, capped).",
+      "minimum": 0
+    },
+    "events_has_more": {
+      "type": "boolean",
+      "description": "True when more identity events exist beyond this page. Carry next_events_since as ?events_since= while true."
+    },
+    "next_events_since": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Continuation cursor: the last event id on this page. Present only when events_has_more is true; carry it back as ?events_since=. Absent on a final page. A row id, never a timestamp."
     },
     "events": {
       "type": "array",
@@ -130,7 +146,13 @@
     "checkpoint": {
       "type": "object",
       "description": "The registry's signed Merkle checkpoint of the identity-event tree.",
-      "required": ["log", "tree_size", "root", "sig", "created_at"],
+      "required": [
+        "log",
+        "tree_size",
+        "root",
+        "sig",
+        "created_at"
+      ],
       "properties": {
         "log": {
           "type": "string",
@@ -162,7 +184,11 @@
     "registry_sig": {
       "type": "object",
       "description": "The registry's signature over the dossier core, for offline verification.",
-      "required": ["sig", "over", "registry_public_key"],
+      "required": [
+        "sig",
+        "over",
+        "registry_public_key"
+      ],
       "properties": {
         "sig": {
           "type": "string",
@@ -187,7 +213,14 @@
       "minItems": 0,
       "items": {
         "type": "object",
-        "required": ["public_key", "thumbprint", "custody", "status", "bound_at", "ended_at"],
+        "required": [
+          "public_key",
+          "thumbprint",
+          "custody",
+          "status",
+          "bound_at",
+          "ended_at"
+        ],
         "properties": {
           "public_key": {
             "type": "string",
@@ -216,7 +249,10 @@
           },
           "ended_at": {
             "description": "Revoke time, epoch milliseconds; null while the key is live.",
-            "type": ["integer", "null"],
+            "type": [
+              "integer",
+              "null"
+            ],
             "minimum": 0
           }
         }
@@ -247,7 +283,15 @@
       "minItems": 0,
       "items": {
         "type": "object",
-        "required": ["id", "hash", "label", "signature", "key_thumbprint", "sealed_at", "signed"],
+        "required": [
+          "id",
+          "hash",
+          "label",
+          "signature",
+          "key_thumbprint",
+          "sealed_at",
+          "signed"
+        ],
         "properties": {
           "id": {
             "type": "integer",
@@ -273,9 +317,13 @@
           }
         },
         "if": {
-          "required": ["signed"],
+          "required": [
+            "signed"
+          ],
           "properties": {
-            "signed": { "const": true }
+            "signed": {
+              "const": true
+            }
           }
         },
         "then": {
@@ -304,7 +352,11 @@
       "minItems": 0,
       "items": {
         "type": "object",
-        "required": ["id", "x", "created_at"],
+        "required": [
+          "id",
+          "x",
+          "created_at"
+        ],
         "properties": {
           "id": {
             "type": "integer",
@@ -321,7 +373,10 @@
           },
           "ended_at": {
             "description": "Unbind time, epoch milliseconds; null while the binding is live.",
-            "type": ["integer", "null"],
+            "type": [
+              "integer",
+              "null"
+            ],
             "minimum": 0
           }
         }
@@ -360,7 +415,10 @@
           },
           "evidence": {
             "description": "Evidence list; serialized as a JSON-encoded string by this endpoint (array form appears on /api/attestations).",
-            "type": ["string", "null"]
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "payload": {
             "type": "string",
@@ -373,22 +431,34 @@
           },
           "signature": {
             "description": "Ed25519 signature, base64url; null for an attestation issued without a binding signature. Present only when the signer carries a key thumbprint.",
-            "type": ["string", "null"],
+            "type": [
+              "string",
+              "null"
+            ],
             "pattern": "^[A-Za-z0-9_-]{86}$"
           },
           "key_thumbprint": {
             "description": "Base64url key thumbprint of the signer; null alongside a null signature.",
-            "type": ["string", "null"],
+            "type": [
+              "string",
+              "null"
+            ],
             "pattern": "^[A-Za-z0-9_-]{43}$"
           },
           "target_attestation_id": {
             "description": "The attestation id this one targets (corrections); null otherwise.",
-            "type": ["integer", "null"],
+            "type": [
+              "integer",
+              "null"
+            ],
             "minimum": 1
           },
           "withdraw_when": {
             "description": "Withdrawal condition text; null unless set.",
-            "type": ["string", "null"]
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "issued_at": {
             "type": "integer",
@@ -446,5 +516,28 @@
       "description": "Disclosure of how the 200-row caps work and where to read the rest.",
       "minLength": 1
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "events_has_more": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "next_events_since"
+        ]
+      },
+      "else": {
+        "not": {
+          "required": [
+            "next_events_since"
+          ]
+        }
+      }
+    }
+  ]
 }
