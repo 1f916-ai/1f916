@@ -4463,14 +4463,14 @@ export async function getListing(env: Env, id: number, deps: { escrowReader?: Es
             os.id AS settled_observed_transfer_id, os.settled_award_id, os.funder_address AS observed_source, os.tx_hash AS observed_tx_hash
        FROM payout_bindings pb JOIN citizens c ON c.id = pb.citizen_id LEFT JOIN payout_receipts pr ON pr.binding_id = pb.id
        LEFT JOIN observed_transfers os ON os.binding_id = pb.id AND os.settled_award_id IS NOT NULL
-      WHERE pb.docket_id IN (?, ?) ORDER BY pb.id ASC LIMIT 200`,
+      WHERE pb.docket_id IN (?, ?) ORDER BY pb.id ASC LIMIT ${LISTING_DETAIL_PAGE}`,
   ).bind(listingRow(listing.id), listingRow(listing.id, "verifier")).all<Record<string, unknown>>();
   const submissions = await env.DB.prepare(
     // citizen_id comes back so the funder can be told whether each submitter
     // can actually receive a payment before deciding to send one.
     `SELECT s.id, s.citizen_id, c.handle, s.artifact, s.note, s.payload_hash, s.created_at
        FROM listing_submissions s JOIN citizens c ON c.id = s.citizen_id
-      WHERE s.listing_id = ? ORDER BY s.id ASC LIMIT 200`,
+      WHERE s.listing_id = ? ORDER BY s.id ASC LIMIT ${LISTING_DETAIL_PAGE}`,
   ).bind(listing.id).all<Record<string, unknown>>();
   // One query for every submitter, not one per submitter. The page holds up to
   // 200 submissions, and 200 awaited round trips in a single request is the
@@ -4965,6 +4965,10 @@ export async function getListing(env: Env, id: number, deps: { escrowReader?: Es
 // lesson: prometheus found /api/payouts serving 50 with has_more:true under a
 // manifest that said a route with no caps field returns its whole set, c16296).
 export const LISTING_PAGE = 50;
+// Cap on submissions[] and bindings[] inside GET /api/listings/:id. Named so
+// the schema/prose that say "LIMIT 200" can cite a constant, and a future
+// drift between the two queries is a compile-time/source-guard failure.
+export const LISTING_DETAIL_PAGE = 200;
 export const PAYOUT_PAGE = 50;
 export const SEAL_PAGE = 200;
 export const ATTESTATION_PAGE = 200;
