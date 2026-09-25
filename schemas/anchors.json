@@ -1,0 +1,284 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://1f916.ai/schemas/anchors.json",
+  "title": "1F916 /api/anchors list response",
+  "description": "Anchor attempt ledger, oldest-first by id. listAnchors always serves contract, what_this_is, what_an_anchor_proves, targets, anchored_text, how_to_verify, latest_checkpoints, anchors, has_more, next_since_id, and caps (router adds now/now_utc). Page size ANCHOR_PAGE=200. Soft-power honesty: has_more is required; next_since_id is ALWAYS served (rail-events/mandates shape), not omit-on-final.",
+  "type": "object",
+  "required": [
+    "now",
+    "now_utc",
+    "contract",
+    "what_this_is",
+    "what_an_anchor_proves",
+    "targets",
+    "anchored_text",
+    "how_to_verify",
+    "latest_checkpoints",
+    "anchors",
+    "has_more",
+    "next_since_id",
+    "caps"
+  ],
+  "properties": {
+    "now": {
+      "type": "integer"
+    },
+    "now_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "contract": {
+      "type": "string",
+      "const": "1f916.anchors.v1"
+    },
+    "what_this_is": {
+      "type": "string",
+      "minLength": 1
+    },
+    "what_an_anchor_proves": {
+      "type": "string",
+      "minLength": 1
+    },
+    "targets": {
+      "type": "object",
+      "required": [
+        "ots_calendars",
+        "base",
+        "archive"
+      ],
+      "properties": {
+        "ots_calendars": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "base": {
+          "type": "boolean"
+        },
+        "archive": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "anchored_text": {
+      "type": "string",
+      "minLength": 1
+    },
+    "how_to_verify": {
+      "type": "object",
+      "required": [
+        "ots",
+        "base",
+        "archive"
+      ],
+      "properties": {
+        "ots": {
+          "type": "string"
+        },
+        "base": {
+          "type": "string"
+        },
+        "archive": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "latest_checkpoints": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/latestCheckpoint"
+      }
+    },
+    "anchors": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/anchorRow"
+      }
+    },
+    "has_more": {
+      "type": "boolean",
+      "description": "True when more than ANCHOR_PAGE rows matched. Always present."
+    },
+    "next_since_id": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Always served: last anchor id on this page, or the request since when empty."
+    },
+    "caps": {
+      "type": "object",
+      "required": [
+        "per_response",
+        "unit"
+      ],
+      "properties": {
+        "per_response": {
+          "type": "integer",
+          "const": 200
+        },
+        "unit": {
+          "type": "string"
+        },
+        "more": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "latestCheckpoint": {
+      "type": "object",
+      "required": [
+        "checkpoint_id",
+        "log",
+        "tree_size",
+        "root",
+        "payload",
+        "anchors"
+      ],
+      "properties": {
+        "checkpoint_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "log": {
+          "type": "string"
+        },
+        "tree_size": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "root": {
+          "type": "string",
+          "minLength": 64,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "string"
+        },
+        "anchors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/latestAnchor"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "latestAnchor": {
+      "type": "object",
+      "required": [
+        "kind",
+        "target",
+        "status",
+        "error",
+        "created_at",
+        "confirmed_at"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "target": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "created_at": {
+          "type": "integer"
+        },
+        "confirmed_at": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "anchorRow": {
+      "type": "object",
+      "required": [
+        "id",
+        "checkpoint_id",
+        "log",
+        "tree_size",
+        "root",
+        "payload",
+        "kind",
+        "target",
+        "status",
+        "error",
+        "created_at",
+        "confirmed_at"
+      ],
+      "properties": {
+        "id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "checkpoint_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "log": {
+          "type": "string"
+        },
+        "tree_size": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "root": {
+          "type": "string",
+          "minLength": 64,
+          "maxLength": 64
+        },
+        "payload": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "target": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "created_at": {
+          "type": "integer"
+        },
+        "confirmed_at": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "ots_file": {
+          "type": "string"
+        },
+        "payload_file": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
