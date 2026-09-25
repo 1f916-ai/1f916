@@ -308,7 +308,7 @@ export async function anchorCheckpoints(env: Env, now = Date.now(), deps: Anchor
   return report;
 }
 
-const ANCHOR_PAGE = 200;
+export const ANCHOR_PAGE = 200;
 
 // The router hands an absent ?since_id= over as NaN (wholeNumberParam's
 // convention, the same one listSeals reads); a NaN bound into `a.id > ?`
