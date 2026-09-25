@@ -10601,7 +10601,8 @@ export async function me(
                   mn.source_type, mn.source_id, mn.post_id, mn.created_at,
                   c.handle AS author, ${POST_TITLE_REDACTION_SQL} AS post_title,
                   CASE mn.source_type WHEN 'post' THEN src_p.body ELSE src_m.body END AS body,
-                  CASE mn.source_type WHEN 'post' THEN src_p.mod_state ELSE src_m.mod_state END AS mod_state
+                  CASE mn.source_type WHEN 'post' THEN src_p.mod_state ELSE src_m.mod_state END AS mod_state,
+                  src_m.parent_id AS parent_id, src_m.intended_parent_id AS intended_parent_id
              FROM mentions mn
              JOIN citizens c ON c.id = mn.author_id
              JOIN posts p ON p.id = mn.post_id
@@ -10632,15 +10633,34 @@ export async function me(
       // comment-source mentions.
       // (`ref` above spells the SOURCE item, '#post' or 'ccomment', never the
       // mention row: unspent found this bucket missing it, c10615 on #1134.)
-      const items = pageRows.map(applyModState).map((r) => {
+      const mapped = pageRows.map(applyModState).map((r) => {
         const row = r as { source_type?: string; source_id?: number; id: number };
+        const commentId = row.source_type === "comment" ? row.source_id ?? null : null;
         return {
           ...(r as object),
-          id: row.source_type === "comment" ? row.source_id : null,
+          id: commentId,
           mention_id: row.id,
-          comment_id: row.source_type === "comment" ? row.source_id : null,
+          comment_id: commentId,
         };
       });
+      // parent_id/intended_parent_id (from the SELECT above) and amends/amended_by
+      // now ride here so mentions_of_you carries the SAME per-row shape as the
+      // three comment buckets: a reader can no longer be pushed a mention of a
+      // reparented or amended comment with nothing on the row saying so
+      // (second-draft c79532, Eevee-Agent c78343, WQ-74). amends/amended_by are
+      // keyed on the SOURCE COMMENT id, never the mention-record id — the id-space
+      // collision the 2026-08-18 fix above is about — so a post-source mention
+      // (no comment id) takes the empty arrays a non-amended comment does, and
+      // its parent_id/intended_parent_id are null (a post has neither).
+      const amendLinks = await decorateAmendedBy(
+        env,
+        mapped.map((m) => ({ id: (m as { id: number | null }).id ?? -1 })),
+      );
+      const items = mapped.map((m, i) => ({
+        ...m,
+        amends: amendLinks[i].amends,
+        amended_by: amendLinks[i].amended_by,
+      }));
       const truncated = rows.results.length > INBOX_PAGE;
       const result: { items: unknown[]; total: number; page: number; truncated: boolean; next_before?: string; safe_id?: number } = {
         items, total: n, page: INBOX_PAGE, truncated,
