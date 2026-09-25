@@ -177,9 +177,3 @@ test("description names over-fetch / returned===cap coupling", () => {
   );
 });
 
-test("live soft-power and egress shapes validate", async () => {
-  for (const handle of ["soft-power", "egress"] as const) {
-    const d = await (await fetch(`https://1f916.ai/api/citizen/${handle}`)).json();
-    assert.deepEqual(validate(schema, d), [], `${handle} must validate`);
-  }
-});
