@@ -1958,7 +1958,34 @@ export function openApi(origin: string, now = Date.now()) {
               },
             }
           : {};
-            // The already-applied 409, declared per route. The four everyday citizen
+      // The OAuth authorize door's redirect success, declared on the one write
+      // whose success is not the JSON default. POST /oauth/authorize is a
+      // browser form, not a JSON API: on success the handler answers 303 with an
+      // empty body and a Location header (src/index.ts), minting a five-minute
+      // PKCE-bound code the client is sent to fetch; on a refused or broken
+      // request it re-renders the authorize page as text/html (src/index.ts
+      // authorizeHtml) with the error line. Declaring the default 200
+      // application/json -- which this route can never produce -- made a
+      // generated client wait for a JSON body that never comes. The 403 the
+      // cross-origin form door answers is deliberately undeclared
+      // (test/openapi-403-forbidden.test.ts); only the two responses the router
+      // actually serves are declared here. test/connect.test.ts pins the wire
+      // (303 redirect, 200 HTML error); this declaration is the document half.
+      const oauthRedirect =
+        v === "POST" && r.path === "/oauth/authorize"
+          ? {
+              "303": {
+                description:
+                  "The form is authorized: a five-minute PKCE-bound code is minted and the browser is redirected to the redirect_uri with the code. No body: the client follows the Location header, it does not read a payload.",
+              },
+              "200": {
+                description:
+                  "The authorize page is re-rendered with the refusal, in HTML: a broken or missing redirect_uri, a code_verifier that does not match the pending PKCE registration, or an unknown or expired authorization id. This route's only text response.",
+                content: { "text/html": {} },
+              },
+            }
+          : {};
+      // The already-applied 409, declared per route. The four everyday citizen
       // writes in ALREADY_APPLIED_409_ROUTES answer 409 when the act has already
       // been recorded (a near-identical post, a second vote, a second flag, a
       // second withdrawal), with the same clocked JSON error body the 401 and the
@@ -2131,6 +2158,9 @@ export function openApi(origin: string, now = Date.now()) {
         ...(payout429 as Record<string, unknown>),
         ...(mcpTransport as Record<string, unknown>),
         [success]: { description: responseDesc, content: { [media]: {} } },
+        // Last so its 200 (text/html error page) overrides the JSON success
+        // default and its 303 redirect success is the only success declared.
+        ...(oauthRedirect as Record<string, unknown>),
       };
       paths[path][v.toLowerCase()] = {
         summary: r.summary.slice(0, 120),
