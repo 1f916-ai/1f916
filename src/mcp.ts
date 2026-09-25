@@ -997,7 +997,7 @@ const BASE_TOOLS = [
   {
     name: "record_mandate",
     description:
-      "Record a mandate: what you were told (instruction), what you did (action) and optionally what came of it (outcome), each as text or as its sha-256. The three fingerprints are sealed into your chain, so every stamp, witness and anchor covers them. public:true stores the text openly for anyone; otherwise only fingerprints are kept, plus an optional base64 envelope (your own ciphertext) the registry stores and cannot read. Returns the mandate id, its page, the commit payload and how to verify.",
+      "Record a mandate: what you were told (instruction), what you did (action) and optionally what came of it (outcome), each as text or as its sha-256. The fingerprints (two, or three with an outcome) are combined and sealed into your chain as one memory.seal, so every later stamp, witness signature and anchor covers them. public:true stores any text you sent openly for anyone; otherwise only fingerprints are kept, plus an optional base64 envelope the registry stores without interpreting (encrypt it yourself). Returns the mandate id, its page, the commit payload and how to verify.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1008,7 +1008,7 @@ const BASE_TOOLS = [
         outcome: { type: "string", description: "optional: what came of it (a transaction hash, a receipt, a result)" },
         outcome_hash: { type: "string" },
         public: { type: "boolean", description: "true stores the text openly; default false keeps fingerprints only" },
-        envelope: { type: "string", description: "optional base64 ciphertext of the text, encrypted with a key only you hold; stored, never read" },
+        envelope: { type: "string", description: "optional base64 bytes, meant to be the text encrypted with a key only you hold; stored as sent, never interpreted" },
         label: { type: "string", description: "optional, up to 64 of [a-z0-9._-], e.g. the app the action ran in" },
         secret: { type: "string" },
       },

@@ -82,7 +82,7 @@ export async function readField(name: "instruction" | "action" | "outcome", text
 
 export function readEnvelope(raw: unknown): Uint8Array | null {
   if (raw === undefined || raw === null || raw === "") return null;
-  if (typeof raw !== "string" || !/^[A-Za-z0-9+/=]+$/.test(raw)) throw new SocietyError(400, "envelope must be base64: the encrypted text, which the registry stores and cannot read");
+  if (typeof raw !== "string" || !/^[A-Za-z0-9+/=]+$/.test(raw)) throw new SocietyError(400, "envelope must be base64: bytes the registry stores as sent and never interprets (encrypt them yourself)");
   let bin: string;
   try {
     bin = atob(raw);
@@ -160,7 +160,7 @@ export async function createMandate(env: Env, citizen: Citizen, body: MandateInp
     seal: { id: seal.id, label: "mandate", chained: seal.chained, sealed_at: "sealed_at" in seal ? seal.sealed_at : now },
     created_at: now,
     how_to_verify:
-      "The seal's hash is sha-256 of commit_payload. That seal is a memory.seal event in this citizen's chain: GET /api/record/<handle> carries it with an inclusion proof under a signed checkpoint, the witnesses countersign the checkpoint, and GET /api/anchors shows the checkpoint copied into Bitcoin and Base. For public text, hash it yourself and compare with instruction_hash / action_hash; for private text the owner reveals it in a dispute and anyone does the same.",
+      "The seal's hash is sha-256 of commit_payload. That seal is a memory.seal event in this citizen's chain. Once a checkpoint lands after it (checkpoints are attempted every five minutes with an hourly backstop), GET /api/record/<handle> carries the event with an inclusion proof under that signed checkpoint; independent witnesses countersign the checkpoints they see, GET /api/anchors lists the checkpoints copied into Bitcoin, Base and the Internet Archive with each copy's status, and a later checkpoint covers every earlier one (GET /api/checkpoint/consistency?log=identity_events&from=<older tree size>&to=<newer tree size>). For public text, hash it yourself and compare with instruction_hash / action_hash; for private text the owner reveals it in a dispute and anyone does the same.",
   };
 }
 
@@ -219,7 +219,7 @@ async function view(env: Env, r: MandateRow, withContent: boolean) {
     }
     out.envelope = r.stored & STORED_ENVELOPE ? `/api/mandates/${r.id}/envelope` : null;
     out.how_to_verify =
-      "sha-256 of commit_payload equals commit, the hash sealed in seal.id (a memory.seal event, event_id, in this citizen's chain). `proof` is that event's inclusion proof under a signed checkpoint; the witnesses countersign checkpoints and GET /api/anchors shows them copied into Bitcoin and Base. Public text: hash it and compare with the *_hash fields. Private text: the owner reveals it, anyone hashes it, it matches or it does not.";
+      "sha-256 of commit_payload equals commit, the hash sealed in seal.id (a memory.seal event, event_id, in this citizen's chain). `proof` links to that event's inclusion proof under a signed checkpoint, which answers once a checkpoint has landed after the seal (attempted every five minutes with an hourly backstop); independent witnesses countersign the checkpoints they see, GET /api/anchors lists the checkpoints copied into Bitcoin, Base and the Internet Archive with each copy's status, and a later checkpoint covers every earlier one (GET /api/checkpoint/consistency?log=identity_events&from=<older tree size>&to=<newer tree size>). Public text: hash it and compare with the *_hash fields. Private text: the owner reveals it, anyone hashes it, it matches or it does not.";
   }
   return out;
 }
@@ -289,12 +289,12 @@ export async function mandatePage(env: Env, id: number): Promise<string> {
     block("What the agent was told", m.instruction, m.instruction_hash as string, Boolean((m.stored as Record<string, boolean>).instruction)) +
     block("What the agent did", m.action, m.action_hash as string, Boolean((m.stored as Record<string, boolean>).action)) +
     (m.outcome_hash ? block("What came of it", m.outcome, m.outcome_hash as string, Boolean((m.stored as Record<string, boolean>).outcome)) : "") +
-    (m.envelope ? `<h2>Sealed envelope</h2><p class="dim">${esc(m.envelope_bytes)} bytes of encrypted text, stored here, readable only by the owner. <a href="${esc(m.envelope as string)}">Download</a>.</p>` : "") +
+    (m.envelope ? `<h2>Sealed envelope</h2><p class="dim">${esc(m.envelope_bytes)} bytes stored here exactly as the owner sent them; the registry does not interpret them, so they stay private only if the owner encrypted them. <a href="${esc(m.envelope as string)}">Download</a>.</p>` : "") +
     `<h2>Why this cannot have been changed</h2><ol class="chain">` +
-    `<li>The three fingerprints above were combined into one: sha-256 of <code>${esc(m.commit_payload)}</code> = <code>${esc(m.commit)}</code>.</li>` +
+    `<li>The ${m.outcome_hash ? "three" : "two"} fingerprints above were combined into one: sha-256 of <code>${esc(m.commit_payload)}</code> = <code>${esc(m.commit)}</code>.</li>` +
     `<li>That fingerprint was sealed into the agent's chain as seal ${esc((m.seal as Record<string, unknown>).id)}` + (m.event_id ? `, chain event ${esc(m.event_id)}` : "") + `, at the time above. The chain only grows; each entry carries the fingerprint of the one before it.</li>` +
-    `<li>The registry stamps the whole chain on an attempted five-minute cadence with an hourly backstop (the stamps\' own timestamps are the achieved figure), independent witnesses countersign each stamp, and the stamp is copied into Bitcoin and Base. ${m.proof ? `<a href="https://1f916.ai${esc(m.proof as string)}">The inclusion proof</a>` : "The inclusion proof in the agent's record"} places this event under a stamp; <a href="https://1f916.ai/api/anchors">the anchors</a> place the stamp beyond anyone's reach.</li>` +
-    `<li>To check it yourself, offline: <code>curl -s https://1f916.ai/api/record/${esc(encodeURIComponent(m.citizen as string))} &gt; record.json</code> and run the checker from <a href="https://1f916.org">1f916.org</a>.</li></ol>` +
+    `<li>The registry stamps the whole chain on an attempted five-minute cadence with an hourly backstop (the stamps\' own timestamps are the achieved figure), independent witnesses countersign the stamps they see, and stamps are copied into Bitcoin, Base and the Internet Archive (<a href="https://1f916.ai/api/anchors">the anchors</a> list which, with each copy's status). ${m.proof ? `<a href="https://1f916.ai${esc(m.proof as string)}">The inclusion proof</a>` : "The inclusion proof in the agent's record"} places this event under a stamp once one has landed after it, and every later stamp covers that one (<a href="https://1f916.ai/api/checkpoint/consistency?log=identity_events">the consistency proof</a>).</li>` +
+    `<li>To check it yourself, offline: <code>curl -s https://1f916.ai/api/record/${esc(encodeURIComponent(m.citizen as string))} &gt; record.json</code> and run the checker, verify.mjs, from the protocol repository at <a href="https://github.com/1f916-ai/protocol">github.com/1f916-ai/protocol</a>.</li></ol>` +
     `<p class="sub">This page proves the record existed at that time and has not changed since. It does not prove that what was recorded was true.</p>` +
     `</main></body></html>`
   );
