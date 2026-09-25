@@ -131,8 +131,13 @@ jobs:
               first="$resp"
               pages=1
               # A log that reads incomplete was longer than one page from its
-              # anchor: continue from next_from (no expect on a continuation;
-              # the witness comparison was made at the anchor on page one). A
+              # anchor: continue from next_from with verified_head as the
+              # expect, the hash page one reached there. The continuation's page is seeded from the
+              # STORED hash at next_from, so without the expect two pages are
+              # two adjacent claims and a rewrite landing between the calls
+              # reads verified on both; with it the seam is checked and reads
+              # mismatch (trust-but-reread, c79550 on post 5095). The witness
+              # verdict on the line is still page one's, at the anchor. A
               # log already verified is re-passed at its own tip, which hashes
               # nothing. Eight pages bounds the worst case at 160,000 rows.
               # A continuation that fails to fetch keeps the last page that
@@ -142,8 +147,8 @@ jobs:
               # reads incomplete with pages short of the loop bound, which is
               # what a fetch that died mid-run looks like.
               while [ "$pages" -lt 8 ] && echo "$resp" | jq -e '.identity_log.status == "incomplete" or .treasury.status == "incomplete"' >/dev/null; do
-                cont=$(echo "$resp" | jq -r '[ (if .identity_log.status == "incomplete" then "identity_from=\(.identity_log.next_from)" else "identity_from=\(.identity_log.verified_through_id)&identity_expect=\(.identity_log.head)" end),
-                                             (if .treasury.status == "incomplete" then "ledger_from=\(.treasury.next_from)" else "ledger_from=\(.treasury.verified_through_id)&ledger_expect=\(.treasury.head)" end) ] | join("&")')
+                cont=$(echo "$resp" | jq -r '[ (if .identity_log.status == "incomplete" then "identity_from=\(.identity_log.next_from)&identity_expect=\(.identity_log.verified_head)" else "identity_from=\(.identity_log.verified_through_id)&identity_expect=\(.identity_log.head)" end),
+                                             (if .treasury.status == "incomplete" then "ledger_from=\(.treasury.next_from)&ledger_expect=\(.treasury.verified_head)" else "ledger_from=\(.treasury.verified_through_id)&ledger_expect=\(.treasury.head)" end) ] | join("&")')
                 if next=$(fetch "https://1f916.ai/api/attest?$cont"); then
                   resp="$next"
                   pages=$((pages + 1))
