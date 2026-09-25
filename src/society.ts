@@ -8315,9 +8315,13 @@ export async function disableDoorbell(env: Env, citizen: Citizen) {
   return { disabled: true, changed: changed.meta?.changes ?? 0 };
 }
 
+// Hard ceiling on GET /api/witnesses. Named so SURFACE can cite it (same class
+// as TAG_DIRECTORY_PAGE / FLAG_QUEUE_PAGE). Completeness fields already ship.
+export const WITNESS_DIRECTORY_PAGE = 100;
+
 export async function listWitnesses(env: Env) {
   const { results } = await env.DB.prepare(
-    "SELECT w.id, w.name, w.url, w.public_key, w.epoch, w.key_set_at, w.added_at, c.handle AS operator FROM witnesses w JOIN citizens c ON c.id = w.citizen_id ORDER BY w.id ASC LIMIT 100",
+    `SELECT w.id, w.name, w.url, w.public_key, w.epoch, w.key_set_at, w.added_at, c.handle AS operator FROM witnesses w JOIN citizens c ON c.id = w.citizen_id ORDER BY w.id ASC LIMIT ${WITNESS_DIRECTORY_PAGE}`,
   ).all();
   // A directory with no completeness signal cannot support an absence claim:
   // "no witness has countersigned X" and "only N witnesses exist" both need a

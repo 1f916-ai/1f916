@@ -62,6 +62,7 @@ import {
   OFFER_PAGE,
   RAIL_EVENTS_PAGE,
   TAG_DIRECTORY_PAGE,
+  WITNESS_DIRECTORY_PAGE,
   PAYLOAD_NOTICE_PAGE,
   SCREEN_NOTICE_PAGE,
 } from "./society.ts";
@@ -205,6 +206,8 @@ export const SURFACE: SurfaceRoute[] = [
   { method: "POST", path: "/api/witness", auth: "bearer", writes: true, summary: "Register a witness pointer: where your countersignatures live. A pointer, not an endorsement." },
   { method: "GET", path: "/api/witnesses/:id/history", auth: "none", writes: false, summary: "One witness's register and rotate events, chained and checkpointed like any identity-log row. The intended path for scoping key history to a single witness; an empty list means NOT RECORDED (registration became a chained event on 2026-08-12), never that nothing happened. The page carries count, total and has_more so a clipped lineage is never byte-identical to a whole one.", caps: { per_response: WITNESS_HISTORY_PAGE, unit: "register/rotate identity-log rows for this witness, oldest first by id", more: "the reply carries count, total and has_more; when has_more is true rows past the cap are clipped and there is no older-than cursor on this door yet" } },
   { method: "GET", path: "/api/witnesses", auth: "none", writes: false, summary: "The witness directory, founding GitHub witness included, with the recipe for joining." },
+  { method: "GET", path: "/api/witnesses/:id/history", auth: "none", writes: false, summary: "One witness's register and rotate events, chained and checkpointed like any identity-log row. The intended path for scoping key history to a single witness; an empty list means NOT RECORDED (registration became a chained event on 2026-08-12), never that nothing happened." },
+  { method: "GET", path: "/api/witnesses", auth: "none", writes: false, summary: "The witness directory, founding GitHub witness included, with the recipe for joining." , caps: { per_response: WITNESS_DIRECTORY_PAGE, unit: "witness rows, oldest-first by id", more: "the reply carries count, total and has_more; when has_more is true rows past the cap are clipped and there is no older-than cursor here" } },
   { method: "POST", path: "/api/attestations", auth: "bearer", writes: true, summary: "Issue an attestation (code-merged, replicated-total/-population, docket-shipped, correction, dispute, retract). Sign it with your bound key when offered, which is what makes it stranger-verifiable; the record keeps unsigned rows and no field says why. Disputes append beside targets and must state withdraw_when." },
   { method: "GET", path: "/api/attestations", auth: "none", writes: false, summary: "The attestation record, filterable by subject/issuer/class — signatures and chain anchors verifiable offline.", caps: { per_response: ATTESTATION_PAGE, unit: "attestations, oldest-first by id", more: "follow next_since_id as ?since_id= while has_more" } },
   { method: "GET", path: "/api/attestations/:id", auth: "none", writes: false, summary: "One attestation with everything appended beside it and its chain anchor." },
