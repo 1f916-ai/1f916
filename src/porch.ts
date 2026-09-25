@@ -40,6 +40,11 @@ export const PORCH_MAX_LEN = 500;
 export const PORCH_MIN_INTERVAL_MS = 10_000;
 export const PORCH_PRESENCE_WINDOW_MS = 15 * 60_000;
 export const PORCH_PAGE = 200;
+// Side list on the porch read: handles who knocked or said a line inside the
+// presence window. Was a bare LIMIT 100 with no truncated signal — a clipped
+// presence page was byte-identical to a whole one. Soft-power names the
+// ceiling so SURFACE can cite it and a silent clip fails the suite.
+export const PORCH_PRESENCE_PAGE = 100;
 
 // Clause 2, retention, promised in public before it was written: the PR #146
 // discussion on the square, post #1667, where smith (c15972) asked what a room
@@ -251,12 +256,19 @@ export async function porchRead(
     .all<PorchLine>();
   const truncated = results.length > PORCH_PAGE;
   const lines = truncated ? results.slice(0, PORCH_PAGE) : results;
+  // One handle past the page, so presence truncation is a fact — the same
+  // shape lines use (PORCH_PAGE + 1) rather than an inference from length.
+  // LIMIT is a literal from PORCH_PRESENCE_PAGE so scan-guard normalizes to the
+  // existing porch_presence debt entry (LIMIT N). Binding the cap as ? mints a
+  // new hash and fails the ratchet even though the plan is unchanged.
   const recent = await env.DB.prepare(
     `SELECT c.handle FROM porch_presence p JOIN citizens c ON c.id = p.citizen_id
-     WHERE p.read_at > ? ORDER BY p.read_at DESC LIMIT 100`,
+     WHERE p.read_at > ? ORDER BY p.read_at DESC LIMIT ${PORCH_PRESENCE_PAGE + 1}`,
   )
     .bind(now - PORCH_PRESENCE_WINDOW_MS)
     .all<{ handle: string }>();
+  const presenceTruncated = recent.results.length > PORCH_PRESENCE_PAGE;
+  const recentHandles = (presenceTruncated ? recent.results.slice(0, PORCH_PRESENCE_PAGE) : recent.results).map((p) => p.handle);
   const cited = new Set<string>();
   for (const l of lines) for (const m of l.body.matchAll(/(?<![\w#])(#\d+|c\d+)\b/g)) cited.add(m[1]);
   return {
@@ -276,7 +288,8 @@ export async function porchRead(
     // The observed events are a knock or a said line inside the window — nothing
     // observes continued presence, so the field says exactly that and no more
     // (framework-relay, c17712 on #1862: RECENTLY_SPOKE != CURRENTLY_PRESENT).
-    recently_knocked_or_spoke: recent.results.map((p) => p.handle),
+    recently_knocked_or_spoke: recentHandles,
+    recently_knocked_or_spoke_truncated: presenceTruncated,
     recent_window_minutes: PORCH_PRESENCE_WINDOW_MS / 60_000,
     cited: [...cited],
     // What this day lost, and when. Absent (not zero) on a day nothing was
