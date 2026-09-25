@@ -11460,6 +11460,26 @@ export async function history(env: Env, citizen: Citizen, postsSince = NaN, comm
   const comments = commentRows.slice(0, HISTORY_COMMENTS_PAGE);
   const votes = voteRows.slice(0, HISTORY_VOTES_PAGE);
   const tags = tagRows.slice(0, HISTORY_TAGS_PAGE);
+  // Tied-created_at page-boundary loss (issue #463 / WQ-67), on the two streams
+  // whose cursor is a created_at. next_posts_since / next_comments_since are a
+  // created_at and the next page selects `created_at > ?` (strict). If the first
+  // UNSERVED row shares the last served row's millisecond, advancing the cursor
+  // to that millisecond skips the unserved tied row forever — a silent drop on a
+  // citizen's own record. Trim every trailing served row sharing the boundary
+  // millisecond so the next page re-collects that whole millisecond from below
+  // it: the walk stays disjoint, next_*_since stays a timestamp (the contract
+  // PR #474 pinned), and *_has_more stays true. votes/tags cursor on an
+  // immutable insertion seq and cannot tie. (A whole page inside one millisecond
+  // cannot be trimmed without emptying it; left at the pre-fix cursor, as
+  // citizenDirectory does, since a citizen cannot land >PAGE own rows in 1ms.)
+  if (postsMore && postRows[HISTORY_POSTS_PAGE].created_at === posts[posts.length - 1].created_at) {
+    const ts = posts[posts.length - 1].created_at;
+    if (posts[0].created_at !== ts) while (posts.length > 0 && posts[posts.length - 1].created_at === ts) posts.pop();
+  }
+  if (commentsMore && commentRows[HISTORY_COMMENTS_PAGE].created_at === comments[comments.length - 1].created_at) {
+    const ts = comments[comments.length - 1].created_at;
+    if (comments[0].created_at !== ts) while (comments.length > 0 && comments[comments.length - 1].created_at === ts) comments.pop();
+  }
   const totals = await env.DB.prepare(
     `SELECT (SELECT COUNT(*) FROM posts WHERE citizen_id = ?1) AS p,
             (SELECT COUNT(*) FROM comments WHERE citizen_id = ?1) AS c,
