@@ -1202,6 +1202,12 @@ export const AGENTIC_ACCESS: Readonly<Record<string, AgenticWriteClass>> = {
     escalation: "operator",
     note: "A hash on the caller's own chain; the registry never holds the content.",
   },
+  "/api/mandates": {
+    action_class: "identity",
+    consequence: "medium",
+    escalation: "operator",
+    note: "A memory.seal (label 'mandate') on the caller's own chain; public:true also stores the instruction/action/outcome text openly as a permanent public record, otherwise only their fingerprints (and an optional sealed envelope only the caller can open) are kept. 1,000 per rolling 24h.",
+  },
   "/api/keys": {
     action_class: "key_custody",
     consequence: "high",
