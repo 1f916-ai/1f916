@@ -160,6 +160,20 @@
         "nulls: SEARCH nulls USING COVERING INDEX idx_nulls_created (created_at>?)"
       ]
     },
+    "229c80e2492ef96c": {
+      "status": "debt",
+      "sql": "SELECT COUNT(*) AS n FROM offers o WHERE o.expiry > ? AND o.mod_state IS NULL AND o.withdrawn_at IS NULL",
+      "plan": [
+        "offers: SEARCH o USING INDEX idx_offers_expiry (expiry>?)"
+      ]
+    },
+    "4fba3811ce96bb37": {
+      "status": "debt",
+      "sql": "SELECT COUNT(*) AS n FROM offers o WHERE o.mod_state IS NULL",
+      "plan": [
+        "offers: SCAN o"
+      ]
+    },
     "76aed3e38673d15b": {
       "status": "debt",
       "sql": "SELECT COUNT(*) AS n FROM posts WHERE created_at <= ?N AND id <= ?N AND id > COALESCE((SELECT MIN(id) FROM posts WHERE created_at > ?N AND id <= ?N), ?N)",
@@ -178,6 +192,13 @@
     "7eefc0de84ac0635": {
       "status": "debt",
       "sql": "SELECT COUNT(*) AS n FROM screen_notices s WHERE NOT (s.book = 'reader-safety' OR s.status != 'open' OR (s.target_type = 'post' AND EXISTS (SELECT N FROM posts p WHERE p.id = s.target_id AND p.mod_state = 'removed')) OR (s.target_type = 'comment' AND EXISTS (SELECT N FROM comments m WHERE m.id = s.t",
+      "plan": [
+        "screen_notices: SCAN s"
+      ]
+    },
+    "637fbd3116206229": {
+      "status": "debt",
+      "sql": "SELECT COUNT(*) AS n FROM screen_notices s WHERE s.book = 'reader-safety' OR s.status != 'open' OR (s.target_type = 'post' AND EXISTS (SELECT N FROM posts p WHERE p.id = s.target_id AND p.mod_state = 'removed')) OR (s.target_type = 'comment' AND EXISTS (SELECT N FROM comments m WHERE m.id = s.target",
       "plan": [
         "screen_notices: SCAN s"
       ]
@@ -436,6 +457,14 @@
         "payload_notices: SCAN n USING INDEX idx_payload_notices_created"
       ]
     },
+    "b45eb4ee91e538d0": {
+      "status": "accepted",
+      "sql": "SELECT o.*, c.handle FROM offers o JOIN citizens c ON c.id = o.citizen_id WHERE o.mod_state IS NULL ORDER BY o.id DESC LIMIT N",
+      "plan": [
+        "offers: SCAN o"
+      ],
+      "reason": "GET /api/offers?include_closed=1 (migrations/0064): the archive view, which by definition wants rows the live index range excludes -- withdrawn and expired offers. It is the only read of `offers` that scans, it is capped at 200 rows, and the DEFAULT read beside it (open offers) is index-driven on idx_offers_expiry(expiry, id) precisely so the common path never pays for this. The table is bounded in practice by the five-per-citizen-per-day cap, and if it ever stops being small the fix is a cursor on id, not an index, because this query deliberately has no selective predicate."
+    },
     "69c1b66e913804f5": {
       "status": "debt",
       "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SELECT COALESCE(SUM(MIN(N.N, MAX(N.N, (? - vc.created_",
@@ -548,6 +577,41 @@
         "posts: SEARCH p USING INTEGER PRIMARY KEY (rowid<?)"
       ]
     },
+    "8927ed6c328c4c79": {
+      "status": "debt",
+      "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SELECT COALESCE(SUM(MIN(N.N, MAX(N.N, (? - vc.created_",
+      "plan": [
+        "posts: SCAN p USING INDEX idx_posts_created_id"
+      ]
+    },
+    "4a7fc9731238527c": {
+      "status": "debt",
+      "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SELECT COALESCE(SUM(MIN(N.N, MAX(N.N, (? - vc.created_",
+      "plan": [
+        "posts: SCAN p USING INDEX idx_posts_created_id"
+      ]
+    },
+    "90790d66843c808e": {
+      "status": "debt",
+      "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SELECT COALESCE(SUM(MIN(N.N, MAX(N.N, (? - vc.created_",
+      "plan": [
+        "posts: SCAN p USING INDEX idx_posts_created_id"
+      ]
+    },
+    "9f3dc92d07fdbabd": {
+      "status": "debt",
+      "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SELECT COALESCE(SUM(MIN(N.N, MAX(N.N, (? - vc.created_",
+      "plan": [
+        "posts: SCAN p USING INDEX idx_posts_created_id"
+      ]
+    },
+    "6647614f97a84bf9": {
+      "status": "debt",
+      "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SELECT COALESCE(SUM(MIN(N.N, MAX(N.N, (? - vc.created_",
+      "plan": [
+        "posts: SCAN p USING INDEX idx_posts_created_id"
+      ]
+    },
     "47c8e89daaa6e6d5": {
       "status": "debt",
       "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SELECT COALESCE(SUM(MIN(N.N, MAX(N.N, (? - vc.created_",
@@ -597,6 +661,13 @@
         "screen_notices: SCAN s USING INDEX idx_screen_notices_created"
       ]
     },
+    "12f239d36b175ff3": {
+      "status": "debt",
+      "sql": "SELECT SUM(CASE WHEN tx IS NOT NULL AND tx <> '' THEN N ELSE N END) AS total, SUM(CASE WHEN tx IS NOT NULL AND tx <> '' AND hash IS NOT NULL AND instr(lower(description), lower(tx)) > N THEN N ELSE N END) AS covered FROM ledger",
+      "plan": [
+        "ledger: SCAN ledger"
+      ]
+    },
     "f7ebe5e8bb188654": {
       "status": "debt",
       "sql": "SELECT tag, COUNT(*) AS uses, COUNT(DISTINCT citizen_id) AS taggers, COUNT(DISTINCT post_id) AS posts FROM tags GROUP BY tag ORDER BY tag ASC LIMIT N",
@@ -609,42 +680,6 @@
       "sql": "SELECT w.id, w.name, w.url, w.public_key, w.epoch, w.key_set_at, w.added_at, c.handle AS operator FROM witnesses w JOIN citizens c ON c.id = w.citizen_id ORDER BY w.id ASC LIMIT N",
       "plan": [
         "witnesses: SCAN w"
-      ]
-    },
-    "12f239d36b175ff3": {
-      "status": "debt",
-      "sql": "SELECT SUM(CASE WHEN tx IS NOT NULL AND tx <> '' THEN N ELSE N END) AS total, SUM(CASE WHEN tx IS NOT NULL AND tx <> '' AND hash IS NOT NULL AND instr(lower(description), lower(tx)) > N THEN N ELSE N END) AS covered FROM ledger",
-      "plan": [
-        "ledger: SCAN ledger"
-      ]
-    },
-    "b45eb4ee91e538d0": {
-      "status": "accepted",
-      "sql": "SELECT o.*, c.handle FROM offers o JOIN citizens c ON c.id = o.citizen_id WHERE o.mod_state IS NULL ORDER BY o.id DESC LIMIT N",
-      "plan": [
-        "offers: SCAN o"
-      ],
-      "reason": "GET /api/offers?include_closed=1 (migrations/0064): the archive view, which by definition wants rows the live index range excludes -- withdrawn and expired offers. It is the only read of `offers` that scans, it is capped at 200 rows, and the DEFAULT read beside it (open offers) is index-driven on idx_offers_expiry(expiry, id) precisely so the common path never pays for this. The table is bounded in practice by the five-per-citizen-per-day cap, and if it ever stops being small the fix is a cursor on id, not an index, because this query deliberately has no selective predicate."
-    },
-    "229c80e2492ef96c": {
-      "status": "debt",
-      "sql": "SELECT COUNT(*) AS n FROM offers o WHERE o.expiry > ? AND o.mod_state IS NULL AND o.withdrawn_at IS NULL",
-      "plan": [
-        "offers: SEARCH o USING INDEX idx_offers_expiry (expiry>?)"
-      ]
-    },
-    "4fba3811ce96bb37": {
-      "status": "debt",
-      "sql": "SELECT COUNT(*) AS n FROM offers o WHERE o.mod_state IS NULL",
-      "plan": [
-        "offers: SCAN o"
-      ]
-    },
-    "637fbd3116206229": {
-      "status": "debt",
-      "sql": "SELECT COUNT(*) AS n FROM screen_notices s WHERE s.book = 'reader-safety' OR s.status != 'open' OR (s.target_type = 'post' AND EXISTS (SELECT N FROM posts p WHERE p.id = s.target_id AND p.mod_state = 'removed')) OR (s.target_type = 'comment' AND EXISTS (SELECT N FROM comments m WHERE m.id = s.target",
-      "plan": [
-        "screen_notices: SCAN s"
       ]
     }
   },
@@ -671,7 +706,7 @@
     },
     "79e9f4db1e67e5a1": {
       "file": "src/society.ts",
-      "sql": "SELECT ${\u2026}, i.handle AS issuer, s.handle AS subject FROM attestations a JOIN citizens i ON i.id = a.issuer_id JOIN citizens s ON s.id = a.subject_id WHERE a.target_attestation_id = ? ORDER BY a.id ASC"
+      "sql": "SELECT ${…}, i.handle AS issuer, s.handle AS subject FROM attestations a JOIN citizens i ON i.id = a.issuer_id JOIN citizens s ON s.id = a.subject_id WHERE a.target_attestation_id = ? ORDER BY a.id ASC"
     },
     "64aec8bce46b06b8": {
       "file": "src/society.ts",

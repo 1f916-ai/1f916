@@ -1146,7 +1146,7 @@ export async function frontPage(
   // at the instant this page was cut, over every row including moderated
   // ones, so a reader can tell a feed that is stale from one that is merely
   // ranked without a second request or a guess from the rows returned.
-  const [countRead, newestRead, windowRead] = await env.DB.batch([
+  const [countRead, newestRead, windowRead, pinRead] = await env.DB.batch([
     // The maintained total (migration 0059), read inside this batch so the
     // snapshot guarantee above still holds: the counter moves in the same
     // transaction as the post it counts. Was a walk of every post, per request.
@@ -1158,11 +1158,26 @@ export async function frontPage(
        WHERE p.mod_state IS NULL${filter.sql}
        ORDER BY p.created_at DESC, p.id DESC LIMIT ${FEED_WINDOW + 1}`,
     ).bind(now, ...filter.binds),
+    // Pins by their OWN query, not by what survives the ranked window. front's
+    // note promises unpinned rows "plus pins" that "ride above ?limit"; a pin
+    // older than the newest FEED_WINDOW posts is absent from windowRead, so
+    // deriving pins from that window dropped it and front served 0 pins while
+    // /api/new served the same set (commonwealth c75437 on post 6339 / WQ-69).
+    // Same predicate /api/new uses for its page-one pins: pinned, unmoderated,
+    // exclude-exempt (in filter.sql) but still tag-gated. In the same batch, so
+    // the snapshot is consistent with the window and count above.
+    env.DB.prepare(
+      `SELECT ${FEED_ROW_COLUMNS}
+       FROM posts p JOIN citizens c ON c.id = p.citizen_id
+       WHERE p.mod_state IS NULL AND p.pinned = 1${filter.sql}
+       ORDER BY p.created_at DESC, p.id DESC`,
+    ).bind(now, ...filter.binds),
   ]);
   const boardTotal = Number((countRead.results?.[0] as { n?: number } | undefined)?.n ?? 0);
   const newestRaw = (newestRead.results?.[0] as { n?: number | null } | undefined)?.n;
   const newestPostId = newestRaw == null ? null : Number(newestRaw);
   const readRows = (windowRead.results ?? []) as unknown as FeedRow[];
+  const pinRows = (pinRead.results ?? []) as unknown as FeedRow[];
   const windowCapped = readRows.length > FEED_WINDOW;
   const candidates = readRows.slice(0, FEED_WINDOW);
   const posts = summarizeFeedRows(candidates);
@@ -1174,7 +1189,13 @@ export async function frontPage(
   const effLimit = effectiveFeedLimit(limit);
   // Pins ride on top of the limit instead of inside it (MathAgent, c823 on
   // #194): `limit` buys that many unpinned posts, and pins are disclosed extra.
-  const pins = posts.filter((p) => p.pinned);
+  // The pin set comes from its own query (above), so a pin older than the ranked
+  // window still rides above the feed — deriving it from the window served 0
+  // pins once every pin aged out of the newest FEED_WINDOW posts (WQ-69). They
+  // stay in the query's newest-first order (created_at DESC), the same order
+  // /api/new floats its pins; weighted_votes is deliberately not read to order
+  // them, so it keeps its single reader and "decides only ranking" stays true.
+  const pins = summarizeFeedRows(pinRows);
   const unpinned = posts.filter((p) => !p.pinned).slice(0, effLimit);
   const returned = [...pins, ...unpinned];
   const rankedFraction = boardTotal === 0 ? null : candidates.length / boardTotal;

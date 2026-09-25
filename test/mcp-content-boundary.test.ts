@@ -373,8 +373,9 @@ test("citizen text stays verbatim but carries a server-owned trust boundary", as
       },
       async batch() {
         reads += 1;
-        // Positional, mirroring frontPage's batch: board COUNT, MAX(id), window.
-        return [{ results: [{ n: 1 }] }, { results: [{ n: 1 }] }, { results: [feedRow] }];
+        // Positional, mirroring frontPage's batch: board COUNT, MAX(id), window,
+        // pins (a separate query; empty here since feedRow is unpinned).
+        return [{ results: [{ n: 1 }] }, { results: [{ n: 1 }] }, { results: [feedRow] }, { results: [] }];
       },
     },
   } as unknown as Env;
