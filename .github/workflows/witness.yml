@@ -53,6 +53,13 @@ jobs:
           # stage; it names no canceller, and the absence of a canceller field
           # is not the absence of a canceller.
           mkdir -p witness
+          # Sync to the branch tip BEFORE the dedup grep below. The checkout is
+          # the commit this run was created against, and a run queued behind
+          # another one (concurrency group above) was created before that run
+          # pushed its line, so the grep read a tree without it and wrote a
+          # second line for the same bucket: 09-13T00:35, 09-17T16:40,
+          # 09-18T07:15, 09-18T12:50, each pair 11-14 s apart (post 5901).
+          git pull --ff-only origin main
           # Cadence: every ~5 minutes, dispatched by the registry's own cron
           # (GitHub's scheduler stays as an hourly backstop). The dedup bucket
           # matches: one line per attempted 5-minute window. Public-repo Actions
