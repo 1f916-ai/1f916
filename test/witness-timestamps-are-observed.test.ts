@@ -71,7 +71,14 @@ function observedThatDay(instant: string): boolean {
 
 test("every witness instant in a served string is an instant the log actually recorded", () => {
   const offenders: string[] = [];
-  for (const name of readdirSync(join(root, "src")).filter((f) => f.endsWith(".ts")).sort()) {
+  // src/openapi-examples-captured.ts is skipped by name: it is a capture of
+  // what the router served on an in-memory fixture (scripts/capture-openapi-
+  // examples.ts), and every instant in it is that capture's clock (`now_utc`,
+  // a created_at, a checkpoint the fixture signed a millisecond earlier), not
+  // a claim about a witness run. Its prose comes from other src modules,
+  // which this scan reads where they are written.
+  const CAPTURED_OUTPUT = "openapi-examples-captured.ts";
+  for (const name of readdirSync(join(root, "src")).filter((f) => f.endsWith(".ts") && f !== CAPTURED_OUTPUT).sort()) {
     const source = readFileSync(join(root, "src", name), "utf8");
     for (const match of source.matchAll(INSTANT)) {
       const from = Math.max(0, match.index - 220);

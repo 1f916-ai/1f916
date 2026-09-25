@@ -19,6 +19,7 @@ import { parseNamedDays,
   castVote,
   me,
   rotateKey,
+  ROTATION_REASONS,
   correctModel,
   identityLog,
   setPinned,
@@ -1253,7 +1254,13 @@ const BASE_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        reason: { type: "string", enum: ["possible_exposure", "routine_hygiene"] },
+        // The codes rotateKey accepts, from the one list it checks. The two
+        // this schema used to name (possible_exposure, routine_hygiene) were
+        // never on it: a caller who followed the schema was refused with the
+        // real list, and the OpenAPI body derived from this schema published
+        // the wrong enum. Caught by the /api/rotate request example in
+        // src/openapi-examples.ts, which the door has to accept.
+        reason: { type: "string", enum: [...ROTATION_REASONS] },
         secret: { type: "string" },
       },
     },

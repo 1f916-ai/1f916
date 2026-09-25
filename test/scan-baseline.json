@@ -160,6 +160,20 @@
         "nulls: SEARCH nulls USING COVERING INDEX idx_nulls_created (created_at>?)"
       ]
     },
+    "229c80e2492ef96c": {
+      "status": "debt",
+      "sql": "SELECT COUNT(*) AS n FROM offers o WHERE o.expiry > ? AND o.mod_state IS NULL AND o.withdrawn_at IS NULL",
+      "plan": [
+        "offers: SEARCH o USING INDEX idx_offers_expiry (expiry>?)"
+      ]
+    },
+    "4fba3811ce96bb37": {
+      "status": "debt",
+      "sql": "SELECT COUNT(*) AS n FROM offers o WHERE o.mod_state IS NULL",
+      "plan": [
+        "offers: SCAN o"
+      ]
+    },
     "76aed3e38673d15b": {
       "status": "debt",
       "sql": "SELECT COUNT(*) AS n FROM posts WHERE created_at <= ?N AND id <= ?N AND id > COALESCE((SELECT MIN(id) FROM posts WHERE created_at > ?N AND id <= ?N), ?N)",
@@ -282,6 +296,13 @@
         "grant_proposals: SCAN p"
       ]
     },
+    "50d307a8815feb15": {
+      "status": "debt",
+      "sql": "SELECT hash FROM identity_events WHERE hash IS NOT NULL ORDER BY id ASC",
+      "plan": [
+        "identity_events: SCAN identity_events"
+      ]
+    },
     "4971ffc7d3d40c3d": {
       "status": "debt",
       "sql": "SELECT hash FROM identity_events WHERE hash IS NOT NULL ORDER BY id DESC LIMIT N",
@@ -380,6 +401,27 @@
         "listing_awards: SCAN listing_awards"
       ]
     },
+    "dee523f3ff7f9e0e": {
+      "status": "debt",
+      "sql": "SELECT id, mod_state FROM comments WHERE mod_state IS NOT NULL",
+      "plan": [
+        "comments: SCAN comments USING COVERING INDEX idx_comments_moderated"
+      ]
+    },
+    "10f57ac74236d476": {
+      "status": "debt",
+      "sql": "SELECT id, mod_state FROM listings WHERE mod_state IS NOT NULL",
+      "plan": [
+        "listings: SCAN listings USING COVERING INDEX idx_listings_moderated"
+      ]
+    },
+    "2f8cbf48657ebb60": {
+      "status": "debt",
+      "sql": "SELECT id, mod_state FROM posts WHERE mod_state IS NOT NULL",
+      "plan": [
+        "posts: SCAN posts USING COVERING INDEX idx_posts_moderated"
+      ]
+    },
     "3d457e20fdb902bd": {
       "status": "debt",
       "sql": "SELECT kind, COUNT(*) AS n FROM identity_events GROUP BY kind ORDER BY kind",
@@ -442,6 +484,14 @@
       "plan": [
         "payload_notices: SCAN n USING INDEX idx_payload_notices_created"
       ]
+    },
+    "b45eb4ee91e538d0": {
+      "status": "accepted",
+      "sql": "SELECT o.*, c.handle FROM offers o JOIN citizens c ON c.id = o.citizen_id WHERE o.mod_state IS NULL ORDER BY o.id DESC LIMIT N",
+      "plan": [
+        "offers: SCAN o"
+      ],
+      "reason": "GET /api/offers?include_closed=1 (migrations/0064): the archive view, which by definition wants rows the live index range excludes -- withdrawn and expired offers. It is the only read of `offers` that scans, it is capped at 200 rows, and the DEFAULT read beside it (open offers) is index-driven on idx_offers_expiry(expiry, id) precisely so the common path never pays for this. The table is bounded in practice by the five-per-citizen-per-day cap, and if it ever stops being small the fix is a cursor on id, not an index, because this query deliberately has no selective predicate."
     },
     "69c1b66e913804f5": {
       "status": "debt",
@@ -604,6 +654,13 @@
         "screen_notices: SCAN s USING INDEX idx_screen_notices_created"
       ]
     },
+    "12f239d36b175ff3": {
+      "status": "debt",
+      "sql": "SELECT SUM(CASE WHEN tx IS NOT NULL AND tx <> '' THEN N ELSE N END) AS total, SUM(CASE WHEN tx IS NOT NULL AND tx <> '' AND hash IS NOT NULL AND instr(lower(description), lower(tx)) > N THEN N ELSE N END) AS covered FROM ledger",
+      "plan": [
+        "ledger: SCAN ledger"
+      ]
+    },
     "f7ebe5e8bb188654": {
       "status": "debt",
       "sql": "SELECT tag, COUNT(*) AS uses, COUNT(DISTINCT citizen_id) AS taggers, COUNT(DISTINCT post_id) AS posts FROM tags GROUP BY tag ORDER BY tag ASC LIMIT N",
@@ -617,45 +674,12 @@
       "plan": [
         "witnesses: SCAN w"
       ]
-    },
-    "12f239d36b175ff3": {
-      "status": "debt",
-      "sql": "SELECT SUM(CASE WHEN tx IS NOT NULL AND tx <> '' THEN N ELSE N END) AS total, SUM(CASE WHEN tx IS NOT NULL AND tx <> '' AND hash IS NOT NULL AND instr(lower(description), lower(tx)) > N THEN N ELSE N END) AS covered FROM ledger",
-      "plan": [
-        "ledger: SCAN ledger"
-      ]
-    },
-    "b45eb4ee91e538d0": {
-      "status": "accepted",
-      "sql": "SELECT o.*, c.handle FROM offers o JOIN citizens c ON c.id = o.citizen_id WHERE o.mod_state IS NULL ORDER BY o.id DESC LIMIT N",
-      "plan": [
-        "offers: SCAN o"
-      ],
-      "reason": "GET /api/offers?include_closed=1 (migrations/0064): the archive view, which by definition wants rows the live index range excludes -- withdrawn and expired offers. It is the only read of `offers` that scans, it is capped at 200 rows, and the DEFAULT read beside it (open offers) is index-driven on idx_offers_expiry(expiry, id) precisely so the common path never pays for this. The table is bounded in practice by the five-per-citizen-per-day cap, and if it ever stops being small the fix is a cursor on id, not an index, because this query deliberately has no selective predicate."
-    },
-    "229c80e2492ef96c": {
-      "status": "debt",
-      "sql": "SELECT COUNT(*) AS n FROM offers o WHERE o.expiry > ? AND o.mod_state IS NULL AND o.withdrawn_at IS NULL",
-      "plan": [
-        "offers: SEARCH o USING INDEX idx_offers_expiry (expiry>?)"
-      ]
-    },
-    "4fba3811ce96bb37": {
-      "status": "debt",
-      "sql": "SELECT COUNT(*) AS n FROM offers o WHERE o.mod_state IS NULL",
-      "plan": [
-        "offers: SCAN o"
-      ]
     }
   },
   "uncovered_reads": {
     "5536dd5aa7ed6e82": {
       "file": "src/bindings.ts",
       "sql": "SELECT COUNT(*) AS n FROM bindings WHERE citizen_id = ?"
-    },
-    "70d9a6a8b617deb9": {
-      "file": "src/checkpoint.ts",
-      "sql": "SELECT id, tree_size, root, sig, created_at FROM checkpoints WHERE log = ? AND tree_size >= ? ORDER BY tree_size ASC LIMIT 1"
     },
     "92d27d97b5340508": {
       "file": "src/index.ts",
@@ -665,13 +689,9 @@
       "file": "src/index.ts",
       "sql": "SELECT MAX(id) AS id FROM listings WHERE withdrawn_at IS NULL"
     },
-    "670ceb2af79551f7": {
-      "file": "src/record.ts",
-      "sql": "SELECT hash FROM identity_events WHERE hash IS NOT NULL ORDER BY id ASC"
-    },
     "79e9f4db1e67e5a1": {
       "file": "src/society.ts",
-      "sql": "SELECT ${\u2026}, i.handle AS issuer, s.handle AS subject FROM attestations a JOIN citizens i ON i.id = a.issuer_id JOIN citizens s ON s.id = a.subject_id WHERE a.target_attestation_id = ? ORDER BY a.id ASC"
+      "sql": "SELECT ${…}, i.handle AS issuer, s.handle AS subject FROM attestations a JOIN citizens i ON i.id = a.issuer_id JOIN citizens s ON s.id = a.subject_id WHERE a.target_attestation_id = ? ORDER BY a.id ASC"
     },
     "64aec8bce46b06b8": {
       "file": "src/society.ts",
@@ -709,29 +729,9 @@
       "file": "src/society.ts",
       "sql": "SELECT id, citizen_id, public_key, epoch FROM witnesses WHERE url = ?"
     },
-    "dc3966a3193140c8": {
-      "file": "src/society.ts",
-      "sql": "SELECT id, detail, created_at FROM identity_events WHERE kind = 'moderation' ORDER BY id ASC"
-    },
     "edb9a215dfaa500f": {
       "file": "src/society.ts",
       "sql": "SELECT id, hash FROM seals WHERE citizen_id = ? AND label = ? ORDER BY id DESC LIMIT 1"
-    },
-    "710aae22e2171090": {
-      "file": "src/society.ts",
-      "sql": "SELECT id, mod_state FROM comments WHERE mod_state IS NOT NULL"
-    },
-    "1aa07dc3d59d95cc": {
-      "file": "src/society.ts",
-      "sql": "SELECT id, mod_state FROM listings WHERE mod_state IS NOT NULL"
-    },
-    "ce97c931607bc029": {
-      "file": "src/society.ts",
-      "sql": "SELECT id, mod_state FROM posts WHERE mod_state IS NOT NULL"
-    },
-    "10ef20770ad88f48": {
-      "file": "src/society.ts",
-      "sql": "SELECT MAX(id) AS id FROM identity_events WHERE kind = 'moderation'"
     },
     "c5caa8373a03e566": {
       "file": "src/society.ts",

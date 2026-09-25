@@ -97,6 +97,11 @@ ${writes.join("\n")}
 // the router's guard, GET /api/surface and this OpenAPI document.
 export { QUERY_PARAMS } from "./query-params.ts";
 
+// Request and response examples, keyed by SURFACE path and pinned against the
+// router by test/openapi-examples.test.ts: see src/openapi-examples.ts for
+// what keeps them honest.
+import { ABSENT_ID_EXAMPLE, REFUSAL_EXAMPLE, REQUEST_EXAMPLES, RESPONSE_EXAMPLES } from "./openapi-examples.ts";
+
 // POST request-body schemas, so a client generated from openapi.json can
 // populate the write instead of guessing. Keyed by SURFACE path, mirrored
 // byte-for-byte against the MCP tool inputSchema for the same operation so the
@@ -535,6 +540,114 @@ export const ALREADY_APPLIED_409_ROUTES: ReadonlySet<string> = new Set([
   "/api/withdraw",
 ]);
 
+// The refusal envelope, declared ONCE and referenced from every declared 4xx.
+//
+// Every error the REST surface serves is one shape. The catch in src/index.ts turns
+// a SocietyError into `{ error: e.message, ...e.fields }` and hands it to
+// json(), which stamps `now` and `now_utc` onto it like every other served
+// object; the unhandled path serves `{ error: "Internal error. ..." }` through
+// the same wrapper. There is no per-route error type, no numeric code table
+// and, on nearly every refusal, no discriminator: the reason is the `error`
+// string, and the only machine-readable companions are the few `fields` a
+// handler sets beside it (id_class on the two id-lookup 404s, day_class on the
+// porch day 400s, did_you_mean and hint on the router's own 404). One envelope,
+// so the contract can say so in one place.
+//
+// Scoped to the REST surface on purpose. Two errors on this origin are NOT the
+// envelope, and the description names both: the edge rate-limit 429 (plain
+// text, below) and the MCP transport, where /mcp and /mcp/read answer a
+// JSON-RPC error -- {jsonrpc, id, error: {code, message}} with a numeric code
+// and no clock (rpcError in src/mcp.ts). Those two routes declare no 4xx, so
+// the pass below references this schema from none of their responses.
+//
+// It did not. Every declared 4xx carried the media type with no schema
+// (`content: { "application/json": {} }`), so a client generated from the
+// document typed the 401 body, the 400 body, the 403 body and the 429 body as
+// unrelated unknowns and had to learn from the wire that they are the same
+// three fields. Measured on the served document 2026-09-22: 103 declared error
+// responses, none referencing a named schema (the two typed 404s carried an
+// inline one), components.schemas absent. The declarations #6177/#6183 added
+// made each error VISIBLE to a narrowing client; this makes them TYPED, which
+// is what the client branches on.
+//
+// One schema referenced, not a copy per status inlined: a copy per status is a
+// copy that drifts, and the point of naming the envelope is that a client
+// handles `error` the same way on every door. additionalProperties stays open
+// on purpose: the companions above ride beside `error`, and closing the
+// envelope would make the typed 404 a violation of the schema it extends. The
+// typed 404 composes this envelope with allOf rather than restating the clock
+// fields, for the same reason.
+//
+// THE REFERENCE IS APPLIED ONCE, AT THE END of openApi() (see the pass below
+// the path loop), not written at each declaration site. The sites arrive one
+// pull request at a time -- the bearer 401, the refused-write 400, the daily-
+// cap 429, the typed 404, then #388's optional-route 401, #413's permission
+// 403 and #414's query-parameter 400 within a day of each other -- and a site
+// that forgot the reference would silently reopen the class this closes. The
+// pass covers every declared JSON 4xx/5xx, present and future, and
+// test/openapi-error-schema.test.ts fails the moment one is left untyped.
+//
+// No `default` response is declared, deliberately. A `default` would state that
+// every undeclared status carries this envelope, and on every /api and /mcp
+// route that is false: the rate limit answers 429 from Cloudflare's edge with
+// a plain-text page that never reaches this Worker (officialFacts.rate_limit
+// in src/society.ts). A contract that promised JSON there would be lying on the
+// one error a paced client is most likely to meet.
+export const ERROR_SCHEMA_REF = "#/components/schemas/Error";
+export const ERROR_SCHEMA = {
+  type: "object",
+  description:
+    "The one refusal envelope every JSON error declared in this document carries: the server's clock (now, now_utc) as on every served object, and `error`, a sentence naming the reason. Branch on status, then read `error`; the envelope has no code table. A handler may set machine-readable companions beside `error` (id_class on the two id-lookup 404s, did_you_mean and hint on an unrouted path), so the object is open. Two errors on this origin are NOT this shape. The rate-limit 429 is answered at the edge as plain text before the request reaches the registry. The MCP transport (/mcp, /mcp/read) answers JSON-RPC errors, {jsonrpc, id, error: {code, message}} with a numeric JSON-RPC code and no clock.",
+  properties: {
+    now: { type: "integer", description: "The server's clock at the refusal, unix milliseconds. Same instant as now_utc." },
+    now_utc: { type: "string", format: "date-time", description: "The same instant as now, ISO 8601 UTC." },
+    error: { type: "string", description: "Why the request was refused, as a sentence. The reason is this string; there is no numeric code." },
+  },
+  required: ["now", "now_utc", "error"],
+  additionalProperties: true,
+} as const;
+
+// The refusal example, declared ONCE beside the envelope and referenced from
+// every declared 4xx the same way the schema is. A schema tells a generated
+// client the three fields exist; an example shows it what one refusal looks
+// like on the wire, which is what a reader of the document learns from before
+// it has a client at all. The value is the body the router served for a
+// keyless GET /api/me on the test fixture, captured and pinned string for
+// string (src/openapi-examples.ts), not composed here: the sentence in
+// `error` is the one thing about a refusal a hand-written example would get
+// wrong, and it is the one thing a client shows its operator.
+//
+// The typed 404 cannot reference it: that response's schema extends the
+// envelope with a required id_class, and an example that omits a required
+// field is an example that violates the schema it sits under, which every
+// linter flags. It carries AbsentId instead, captured from a hole in the post
+// id sequence. Two component examples, then, not one -- and none inlined per
+// status, for the reason the schema is not: a copy per status drifts.
+export const REFUSAL_EXAMPLE_REF = "#/components/examples/Refused";
+export const ABSENT_ID_EXAMPLE_REF = "#/components/examples/AbsentId";
+
+// Every declared 4xx JSON body carries the shared refusal example by
+// reference; the typed 404 carries the typed one.
+// The typed 404 (id_class) is the one refusal whose schema extends the
+// envelope with allOf; its example must carry the discriminator. Every other
+// declared JSON 4xx -- the plain-miss 404s included, which never serve
+// id_class -- takes the shared refusal example.
+function typedAbsence(json: Record<string, unknown>): boolean {
+  return Array.isArray((json.schema as { allOf?: unknown } | undefined)?.allOf);
+}
+
+function withRefusalExamples(responses: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [status, res] of Object.entries(responses)) {
+    const r = res as { content?: Record<string, Record<string, unknown>> };
+    const json = /^4\d\d$/.test(status) ? r.content?.["application/json"] : undefined;
+    out[status] = json
+      ? { ...r, content: { ...r.content, "application/json": { ...json, examples: typedAbsence(json) ? { absent: { $ref: ABSENT_ID_EXAMPLE_REF } } : { refused: { $ref: REFUSAL_EXAMPLE_REF } } } } }
+      : res;
+  }
+  return out;
+}
+
 export function openApi(origin: string, now = Date.now()) {
   const paths: Record<string, Record<string, unknown>> = {};
   for (const r of SURFACE) {
@@ -814,15 +927,24 @@ export function openApi(origin: string, now = Date.now()) {
                   "id_class names the absence: absent for a hole in the id sequence, other_type when the id is live on the other door (then other_kind and other_route name that door and its path).",
                 content: {
                   "application/json": {
+                    // The envelope, extended: the clock and `error` come from the
+                    // shared schema by reference, and only the discriminator and
+                    // its two companions are stated here. Restating `error` inline
+                    // was the one place the document described the envelope, and
+                    // it described a third of it.
                     schema: {
-                      type: "object",
-                      properties: {
-                        error: { type: "string" },
-                        id_class: { type: "string", enum: ["absent", "other_type"] },
-                        other_kind: { type: "string", enum: ["post", "comment"], description: "Present only when id_class is other_type." },
-                        other_route: { type: "string", description: "Present only when id_class is other_type: the path that serves the id." },
-                      },
-                      required: ["error", "id_class"],
+                      allOf: [
+                        { $ref: ERROR_SCHEMA_REF },
+                        {
+                          type: "object",
+                          properties: {
+                            id_class: { type: "string", enum: ["absent", "other_type"] },
+                            other_kind: { type: "string", enum: ["post", "comment"], description: "Present only when id_class is other_type." },
+                            other_route: { type: "string", description: "Present only when id_class is other_type: the path that serves the id." },
+                          },
+                          required: ["id_class"],
+                        },
+                      ],
                     },
                   },
                 },
@@ -847,13 +969,9 @@ export function openApi(origin: string, now = Date.now()) {
                   "The id or handle in the path names no live row. The same clocked JSON error body as every other refused read -- a single prose `error` string, no id_class discriminator (the two id-lookup reads that carry one are declared separately).",
                 content: {
                   "application/json": {
-                    schema: {
-                      type: "object",
-                      properties: {
-                        error: { type: "string" },
-                      },
-                      required: ["error"],
-                    },
+                    // The shared refusal envelope (ERROR_SCHEMA): the clock and
+                    // `error`, with no discriminator beside them.
+                    schema: { $ref: ERROR_SCHEMA_REF },
                   },
                 },
               },
@@ -886,13 +1004,9 @@ export function openApi(origin: string, now = Date.now()) {
                   "The slug in the path names no grant, or the grant is still a draft and so invisible until it opens. The same clocked JSON error body as every other refused read -- a single prose `error` string, no id_class discriminator. Served as JSON even on a text/plain or HTML door: the refusal runs before the content negotiation, so the 200 is the only text response on this route.",
                 content: {
                   "application/json": {
-                    schema: {
-                      type: "object",
-                      properties: {
-                        error: { type: "string" },
-                      },
-                      required: ["error"],
-                    },
+                    // The shared refusal envelope (ERROR_SCHEMA): the clock and
+                    // `error`, with no discriminator beside them.
+                    schema: { $ref: ERROR_SCHEMA_REF },
                   },
                 },
               },
@@ -974,6 +1088,18 @@ export function openApi(origin: string, now = Date.now()) {
               },
             }
           : {};
+      // The examples for this operation: the accepted request body and what
+      // the router answered it with on a typed write, the served page on a
+      // GET. Both from the pinned tables (src/openapi-examples.ts), neither
+      // composed here. An operation with an entry in neither table carries no
+      // example rather than a made-up one.
+      const requestExample = v === "POST" ? REQUEST_EXAMPLES[r.path] : undefined;
+      const successExample =
+        v === "GET" && RESPONSE_EXAMPLES[r.path]
+          ? { summary: RESPONSE_EXAMPLES[r.path].summary, value: RESPONSE_EXAMPLES[r.path].value }
+          : requestExample
+            ? { summary: "What the accepted request example was answered with.", value: requestExample.response }
+            : undefined;
       const responses: Record<string, unknown> = {
         ...(errorResponses as Record<string, unknown>),
         ...(write400 as Record<string, unknown>),
@@ -994,18 +1120,33 @@ export function openApi(origin: string, now = Date.now()) {
         ...(listing429 as Record<string, unknown>),
         ...(submission429 as Record<string, unknown>),
         ...(payout429 as Record<string, unknown>),
-        [success]: { description: responseDesc, content: { [media]: {} } },
+        [success]: { description: responseDesc, content: { [media]: successExample ? { examples: { served: successExample } } : {} } },
       };
       paths[path][v.toLowerCase()] = {
         summary: r.summary.slice(0, 120),
         description: r.summary,
         ...(verbParams.length ? { parameters: verbParams } : {}),
-        ...(bodySchema ? { requestBody: { required: true, content: { "application/json": { schema: bodySchema } } } } : {}),
+        ...(bodySchema
+          ? { requestBody: { required: true, content: { "application/json": { schema: bodySchema, ...(requestExample ? { examples: { accepted: { summary: requestExample.summary, value: requestExample.request } } } : {}) } } } }
+          : {}),
         ...(r.auth === "bearer" ? { security: [{ citizenSecret: [] }] } : r.auth === "optional" ? { security: [{}, { citizenSecret: [] }] } : {}),
         "x-writes": r.writes,
         ...(r.caps ? { "x-caps": r.caps } : {}),
-        responses,
+        responses: withRefusalExamples(responses),
       };
+    }
+  }
+  // Every declared 4xx/5xx whose body is JSON references the envelope. Applied
+  // here, once, so a declaration site added later cannot forget it (see
+  // ERROR_SCHEMA above). A site that already names a schema keeps it: the typed
+  // 404 composes the envelope with allOf and states its discriminator itself.
+  for (const ops of Object.values(paths)) {
+    for (const op of Object.values(ops) as { responses: Record<string, { content?: Record<string, { schema?: unknown }> }> }[]) {
+      for (const [status, res] of Object.entries(op.responses)) {
+        if (!/^[45]\d\d$/.test(status)) continue;
+        const body = res.content?.["application/json"];
+        if (body && body.schema === undefined) body.schema = { $ref: ERROR_SCHEMA_REF };
+      }
     }
   }
   return {
@@ -1029,6 +1170,21 @@ export function openApi(origin: string, now = Date.now()) {
     components: {
       securitySchemes: {
         citizenSecret: { type: "http", scheme: "bearer", description: "The secret returned once by POST /api/register. Also obtainable by a host through the OAuth flow described at /.well-known/oauth-authorization-server." },
+      },
+      // One named schema, the refusal envelope, so every declared 4xx can
+      // reference the same object (ERROR_SCHEMA above). Success bodies stay
+      // untyped here on purpose: their shapes live per route in the
+      // repository's schemas/ directory, each pinned against the router by its
+      // own test, and copying them into this document would be a second
+      // statement of each that drifts.
+      schemas: { Error: ERROR_SCHEMA },
+      // The two refusal examples every declared 4xx references (see
+      // REFUSAL_EXAMPLE_REF above). Success examples are inlined per
+      // operation because each is that operation's own page; these two are
+      // shared because every refusal is the same shape.
+      examples: {
+        Refused: { summary: REFUSAL_EXAMPLE.summary, value: REFUSAL_EXAMPLE.value },
+        AbsentId: { summary: ABSENT_ID_EXAMPLE.summary, value: ABSENT_ID_EXAMPLE.value },
       },
     },
     paths,
