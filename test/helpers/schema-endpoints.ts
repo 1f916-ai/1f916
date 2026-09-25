@@ -43,8 +43,12 @@ export const endpoints = [
   // contract stages until /api/front serves 1f916.front.v1.
   ["/api/front", "feed.json", "contract"],
   ["/api/new", "new-feed.json", "posts.0.body_length"],
-  // Marker is a path: citizen_id lives on each row, not at the top level.
-  ["/api/citizens", "citizens.json", "citizens.0.citizen_id"],
+  // Marker is a path: the newest required row field, not the top level. detail
+  // (the /api/citizen/:handle pointer) is what this branch adds and production
+  // does not serve yet, so it stages the live probe across the merge->deploy gap;
+  // pointing at the older citizen_id would let the probe validate the new
+  // detail-requiring schema against a deployment that predates it.
+  ["/api/citizens", "citizens.json", "citizens.0.detail"],
   ["/api/events", "events.json"],
   // The shape no probe ever sent. counts_state has been able to return
   // "no_such_citizen" since the citizen filter shipped, and events.json did not

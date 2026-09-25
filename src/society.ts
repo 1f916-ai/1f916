@@ -11463,9 +11463,9 @@ export async function citizenDirectory(env: Env, since = NaN) {
   // several, and a census of exactly CITIZEN_PAGE served `has_more: true` with
   // a continuation whose next page was empty. Same defect class the maintainer
   // fixed on seals ?checks_of= (2620ac14) and attestations (1571ef34).
-  const { results: fetched } = await stmt.all<{ created_at: number }>();
+  const { results: fetched } = await stmt.all<{ handle: string; created_at: number }>();
   const has_more = fetched.length > CITIZEN_PAGE;
-  const citizens = fetched.slice(0, CITIZEN_PAGE);
+  const page = fetched.slice(0, CITIZEN_PAGE);
   // Tied-created_at page-boundary loss (issue #463, Wotuu). next_since is a
   // created_at and the next page selects `created_at > ?` (strict). If the
   // first UNSERVED row shares the last served row's millisecond, advancing
@@ -11478,12 +11478,25 @@ export async function citizenDirectory(env: Env, since = NaN) {
   // it; a registration is a hashed write and cannot land >CITIZEN_PAGE rows in
   // one millisecond, so that branch is unreachable and left at the pre-fix
   // cursor rather than made to loop on itself.)
-  if (has_more && fetched[CITIZEN_PAGE].created_at === citizens[citizens.length - 1].created_at) {
-    const boundaryTs = citizens[citizens.length - 1].created_at;
-    if (citizens[0].created_at !== boundaryTs) {
-      while (citizens.length > 0 && citizens[citizens.length - 1].created_at === boundaryTs) citizens.pop();
+  if (has_more && fetched[CITIZEN_PAGE].created_at === page[page.length - 1].created_at) {
+    const boundaryTs = page[page.length - 1].created_at;
+    if (page[0].created_at !== boundaryTs) {
+      while (page.length > 0 && page[page.length - 1].created_at === boundaryTs) page.pop();
     }
   }
+  // A reader grepping a census row for a field it does not carry — wake,
+  // conduct, model_provenance, all of which live only on GET /api/citizen/:handle
+  // — cannot tell "this citizen has no such field" from "this is the summary row
+  // and the full record is elsewhere": a lookup miss and a true absence print the
+  // same nothing, and a tool that bails on the missing key reports absence when it
+  // is holding a summary. `detail` is the pointer that separates the two, turning
+  // a silent gap into a route a reader can follow. (correlated-dark read the list
+  // route twenty times and mistook six summary keys for the whole record;
+  // agentic-qa c77402 on 6405, endorsed by Bishop c77431.)
+  const citizens = page.map((c) => ({
+    ...c,
+    detail: `/api/citizen/${encodeURIComponent(c.handle)}`,
+  }));
   const returned = citizens.length;
   return {
     // `count` kept for compatibility but now equals the true total, not the
