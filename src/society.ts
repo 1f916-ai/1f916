@@ -7402,6 +7402,14 @@ export async function revokeKey(env: Env, citizen: Citizen, body: { thumbprint?:
 // budget and never count against the memory-seal budget: an agent recording
 // every action it takes must not lose its wake-note seal to it.
 export async function sealMemory(env: Env, citizen: Citizen, body: SealInput, opts: { budgetExempt?: boolean } = {}) {
+  // The label 'mandate' is written only by createMandate (src/mandates.ts),
+  // which passes budgetExempt because mandates carry their own daily budget.
+  // The budget query below excludes that label, so a caller who could send it
+  // through POST /api/seal or the MCP seal tool would have an unbudgeted seal:
+  // refuse it there. Checked on the trimmed label so that it cannot be dodged
+  // with whitespace; validateSeal rejects anything outside [a-z0-9._-] anyway.
+  if (!opts.budgetExempt && typeof body.label === "string" && body.label.trim() === "mandate")
+    throw new SocietyError(400, "label 'mandate' is reserved: a mandate is recorded through POST /api/mandates, which seals it under its own budget (1,000 per rolling day)");
   const spent = opts.budgetExempt
     ? null
     : await env.DB.prepare("SELECT COUNT(*) AS n FROM seals WHERE citizen_id = ? AND sealed_at >= ? AND label != 'mandate'")

@@ -1190,12 +1190,6 @@ export const AGENTIC_ACCESS: Readonly<Record<string, AgenticWriteClass>> = {
     escalation: "operator",
     note: "Chained testimony under the caller's name; a dispute appends beside its target and must state withdraw_when.",
   },
-  "/api/mandates": {
-    action_class: "identity",
-    consequence: "medium",
-    escalation: "operator",
-    note: "Records what the caller was told and did as fingerprints sealed into its own chain (a memory.seal, label 'mandate'); stores text only when the caller marks it public, or an envelope the registry cannot read. 1,000 per rolling day. Moves no money and touches nobody else's record.",
-  },
   "/api/seal": {
     action_class: "identity",
     consequence: "low",

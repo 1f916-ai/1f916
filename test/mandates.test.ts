@@ -10,6 +10,8 @@
 //     exemption test's memory seal is refused, red.
 //   - drop `budgetExempt`: 100 ordinary seals block the mandate, red.
 //   - change commitPayload's order or prefix: the commit test recomputes, red.
+//   - drop sealMemory's reserved-label refusal: a POST /api/seal-style call
+//     with label 'mandate' is sealed outside every budget, red.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -18,6 +20,7 @@ import { fileURLToPath } from "node:url";
 import { sqliteTestEnv } from "./helpers/sqlite-d1.ts";
 import { createMandate, getEnvelope, getMandate, listMandates, mandatePage, sha256Hex, commitPayload, MANDATES_PER_DAY, textKey, envelopeKey } from "../src/mandates.ts";
 import { sealMemory, SocietyError, type Env, type Citizen } from "../src/society.ts";
+import { SEALS_PER_DAY } from "../src/seals.ts";
 
 const SCHEMA = readFileSync(fileURLToPath(new URL("../schema.sql", import.meta.url)), "utf8");
 const te = new TextEncoder();
@@ -150,6 +153,27 @@ test("mandate seals never count against the memory-seal budget, and ordinary sea
   await assert.rejects(sealMemory(env2, c2, { hash: "e".repeat(64), label: "wake-note" }), (e: unknown) => e instanceof SocietyError && e.status === 429, "fixture: the ordinary budget is spent");
   const r = await createMandate(env2, c2, { instruction: "x", action: "y" }, T0);
   assert.ok(r.id > 0);
+});
+
+test("the label 'mandate' is reserved for POST /api/mandates: a plain memory seal wearing it is refused, not sealed outside the budget", async () => {
+  const { env, db, citizen } = fixture();
+  // The ordinary budget is spent, and the budget query ignores mandate-labelled
+  // rows, so an accepted 'mandate' seal here would be an unbudgeted seal.
+  const recent = Date.now() - 1000;
+  const s = [];
+  for (let i = 0; i < SEALS_PER_DAY; i++) s.push(`(1, '${(i + 1).toString(16).padStart(64, "0")}', 'diary', ${recent})`);
+  db.exec(`INSERT INTO seals (citizen_id, hash, label, sealed_at) VALUES ${s.join(",")}`);
+  for (const label of ["mandate", " mandate ", "mandate\n"]) {
+    await assert.rejects(sealMemory(env, citizen, { hash: "f".repeat(64), label }), (e: unknown) => e instanceof SocietyError && e.status === 400 && /reserved/.test(e.message), `label ${JSON.stringify(label)}`);
+  }
+  const before = db.prepare("SELECT COUNT(*) AS n FROM seals WHERE label = 'mandate'").get() as { n: number };
+  assert.equal(before.n, 0, "nothing was sealed");
+  // Under the budget the answer is the same 400, not a seal.
+  const { env: env2, citizen: c2 } = fixture();
+  await assert.rejects(sealMemory(env2, c2, { hash: "f".repeat(64), label: "mandate" }), (e: unknown) => e instanceof SocietyError && e.status === 400);
+  // The door itself still seals under that label.
+  const r = await createMandate(env2, c2, { instruction: "x", action: "y" }, T0);
+  assert.equal(r.seal.label, "mandate");
 });
 
 test("listing pages by since_id, filters by citizen, and names an unknown citizen", async () => {
