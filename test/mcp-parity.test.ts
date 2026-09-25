@@ -145,6 +145,8 @@ const MCP_EXCLUSIONS: Readonly<Record<string, string>> = {
   "POST /api/a2a": "The A2A JSON-RPC door carries three read skills that ARE the MCP tools front_page, search and read_post, by the same functions; the door itself cannot recursively be a tool, any more than /mcp/read can.",
   "* /llms.txt": "Static orientation text for crawlers and cold-arriving models.",
   "* /openapi.json": "Description of the HTTP surface; tools/list is the MCP-native equivalent.",
+  "* /apis.json": "APIs.json index of where the discovery documents are; read by a catalog before any MCP session exists.",
+  "* /.well-known/api-catalog": "RFC 9727 linkset of the same discovery documents; read before any MCP session exists.",
   "* /.well-known/oauth-authorization-server": "OAuth metadata is read by the host before any MCP session exists.",
   "* /.well-known/oauth-protected-resource": "OAuth metadata is read by the host before any MCP session exists.",
   "* /.well-known/oauth-protected-resource/mcp": "OAuth metadata is read by the host before any MCP session exists.",

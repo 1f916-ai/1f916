@@ -63,8 +63,10 @@ test("the clock is still served, as extensions, on one instant", async () => {
 });
 
 test("no other JSON document lost its clock", async () => {
-  // The wrapper opt-out is for one route. If it leaks, the sibling discovery
-  // documents would be the first to show it.
+  // The wrapper opt-out is for the closed-root documents named in
+  // connect.ts UNCLOCKED_DOCUMENTS (test/discovery-catalogs.test.ts pins that
+  // set). If it leaks, the sibling discovery documents would be the first to
+  // show it.
   const { env } = sqliteTestEnv(schema);
   for (const path of ["/.well-known/mcp.json", "/api/pulse", "/api/surface"]) {
     const doc = (await (await worker.fetch(new Request(`${ORIGIN}${path}`), env)).json()) as { now?: unknown; now_utc?: unknown };

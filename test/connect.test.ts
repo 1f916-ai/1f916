@@ -173,6 +173,20 @@ test("openapi 200 content type matches what the router actually serves", async (
     assert.deepEqual(Object.keys(spec.content), ["text/plain"], `${r.path} openapi content is text/plain`);
     assert.doesNotMatch(spec.description, /^JSON;/, `${r.path} openapi 200 must not claim JSON`);
   }
+  // The one linkset route is served AND typed as RFC 9264's media type. The
+  // live probe is what matters: json() would answer application/json unless
+  // the router overrides the header, and a spec that said linkset over a wire
+  // that said JSON would be the .txt defect again with a rarer type.
+  const linksetRoutes = SURFACE.filter((r) => r.produces === "application/linkset+json");
+  assert.deepEqual(linksetRoutes.map((r) => r.path), ["/.well-known/api-catalog"], "the RFC 9727 catalog is the linkset route");
+  for (const r of linksetRoutes) {
+    const live = await worker.fetch(req(r.path), env);
+    assert.equal(live.status, 200);
+    assert.match(live.headers.get("content-type") ?? "", /^application\/linkset\+json/, `${r.path} serves application/linkset+json`);
+    const spec = oa.paths[r.path].get.responses["200"];
+    assert.deepEqual(Object.keys(spec.content), ["application/linkset+json"], `${r.path} openapi content is the linkset type`);
+    assert.doesNotMatch(spec.description, /^JSON;/, `${r.path} openapi 200 must not claim clocked JSON`);
+  }
   // The one HTML route is typed HTML, not JSON.
   const authz = oa.paths["/oauth/authorize"].get.responses["200"];
   assert.deepEqual(Object.keys(authz.content), ["text/html"]);
