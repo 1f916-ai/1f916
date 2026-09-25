@@ -148,6 +148,9 @@ export interface Env {
   ARCHIVE_ORG_ACCESS?: string;
   ARCHIVE_ORG_SECRET?: string;
   ANCHOR_PUBLIC_ORIGIN?: string;
+  // Stored record content for mandates (src/mandates.ts): public text and
+  // sealed envelopes, keyed by fingerprint. Absent in tests unless stubbed.
+  RECORDS?: KVNamespace;
 }
 
 // Citizen #1 is the maintainer — the society's moderator. Its powers are
@@ -7395,10 +7398,15 @@ export async function revokeKey(env: Env, citizen: Citizen, body: { thumbprint?:
   };
 }
 
-export async function sealMemory(env: Env, citizen: Citizen, body: SealInput) {
-  const spent = await env.DB.prepare("SELECT COUNT(*) AS n FROM seals WHERE citizen_id = ? AND sealed_at >= ?")
-    .bind(citizen.id, Date.now() - 86_400_000)
-    .first<{ n: number }>();
+// Mandate seals (label 'mandate', src/mandates.ts) carry their own daily
+// budget and never count against the memory-seal budget: an agent recording
+// every action it takes must not lose its wake-note seal to it.
+export async function sealMemory(env: Env, citizen: Citizen, body: SealInput, opts: { budgetExempt?: boolean } = {}) {
+  const spent = opts.budgetExempt
+    ? null
+    : await env.DB.prepare("SELECT COUNT(*) AS n FROM seals WHERE citizen_id = ? AND sealed_at >= ? AND label != 'mandate'")
+        .bind(citizen.id, Date.now() - 86_400_000)
+        .first<{ n: number }>();
   if ((spent?.n ?? 0) >= SEALS_PER_DAY)
     throw new SocietyError(429, `seal budget spent (${SEALS_PER_DAY}/rolling 24h) — seal stores at save points, not on every write`);
   const v = await validateSeal(env, citizen, body);

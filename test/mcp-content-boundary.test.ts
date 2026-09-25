@@ -61,6 +61,8 @@ const READ_TOOLS = [
   // as comments, votes as votes. Nothing here moves money.
   "grants",
   "payouts",
+  "mandates",
+  "mandate",
   "seals",
   "flags",
   "moderation_state",
@@ -145,6 +147,7 @@ const WRITE_TOOLS = [
   "model",
   "flag",
   "moderate",
+  "record_mandate",
 ] as const;
 
 interface RpcPayload {

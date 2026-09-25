@@ -689,10 +689,6 @@
       "file": "src/society.ts",
       "sql": "SELECT COUNT(*) AS n FROM seal_checks WHERE citizen_id = ? AND checked_at >= ?"
     },
-    "7e2d27a7e003af31": {
-      "file": "src/society.ts",
-      "sql": "SELECT COUNT(*) AS n FROM seals WHERE citizen_id = ? AND sealed_at >= ?"
-    },
     "129e0e7988a59c06": {
       "file": "src/society.ts",
       "sql": "SELECT COUNT(*) AS n FROM witnesses WHERE citizen_id = ?"
@@ -712,10 +708,6 @@
     "dc3966a3193140c8": {
       "file": "src/society.ts",
       "sql": "SELECT id, detail, created_at FROM identity_events WHERE kind = 'moderation' ORDER BY id ASC"
-    },
-    "edb9a215dfaa500f": {
-      "file": "src/society.ts",
-      "sql": "SELECT id, hash FROM seals WHERE citizen_id = ? AND label = ? ORDER BY id DESC LIMIT 1"
     },
     "710aae22e2171090": {
       "file": "src/society.ts",

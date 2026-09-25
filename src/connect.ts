@@ -529,6 +529,7 @@ export const CREATED_ROUTES: ReadonlySet<string> = new Set([
   "/api/seal",
   "/api/tag",
   "/api/witness",
+  "/api/mandates",
 ]);
 
 // The optional-auth operations that answer a bad citizen secret with the plain

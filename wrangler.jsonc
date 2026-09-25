@@ -15,6 +15,10 @@
   // own hourly schedule stays on as the backstop rather than the driver.
   // Execution and storage stay on GitHub either way; only the trigger is ours.
   "triggers": { "crons": ["*/5 * * * *"] },
+  // Stored record content (public text and sealed envelopes), by fingerprint.
+  // R2 was not enabled on the account the night this shipped; KV holds text
+  // and small envelopes fine and can be swapped for R2 behind src/mandates.ts.
+  "kv_namespaces": [{ "binding": "RECORDS", "id": "1ad5b0842873485dad50635f49c66509" }],
   "d1_databases": [
     {
       "binding": "DB",

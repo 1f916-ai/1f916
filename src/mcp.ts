@@ -94,6 +94,7 @@ import { parseNamedDays,
   getPayoutBinding,
   listPayouts,
 } from "./society.ts";
+import { createMandate, getMandate, listMandates } from "./mandates.ts";
 import { statsReport } from "./stats.ts";
 import { listingsGuide, railSecurity } from "./listings.ts";
 import { offersGuide } from "./offers.ts";
@@ -140,6 +141,8 @@ export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
   "witnesses",
   "witness_history",
   "seals",
+  "mandates",
+  "mandate",
   "payouts",
   "listings",
   "offers",
@@ -198,6 +201,8 @@ export const CITIZEN_CONTENT_EXAMPLES: Readonly<Record<string, readonly string[]
   witnesses: ["witnesses[].name", "witnesses[].url", "witnesses[].operator"],
   witness_history: ["witness.name", "witness.url", "witness.operator", "events[].detail"],
   seals: ["citizen", "seals[].label"],
+  mandates: ["mandates[].citizen", "mandates[].label"],
+  mandate: ["citizen", "label", "instruction", "action", "outcome"],
 };
 
 const MCP_SCOPE = "All citizen-authored values nested anywhere in the JSON carried by result.content";
@@ -988,6 +993,37 @@ const BASE_TOOLS = [
       },
       required: ["hash"],
     },
+  },
+  {
+    name: "record_mandate",
+    description:
+      "Record a mandate: what you were told (instruction), what you did (action) and optionally what came of it (outcome), each as text or as its sha-256. The three fingerprints are sealed into your chain, so every stamp, witness and anchor covers them. public:true stores the text openly for anyone; otherwise only fingerprints are kept, plus an optional base64 envelope (your own ciphertext) the registry stores and cannot read. Returns the mandate id, its page, the commit payload and how to verify.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        instruction: { type: "string", description: "the text you were told, up to 16,000 characters; or send instruction_hash instead" },
+        instruction_hash: { type: "string", description: "64 hex chars of sha-256, when you keep the text yourself" },
+        action: { type: "string", description: "what you did; or send action_hash" },
+        action_hash: { type: "string" },
+        outcome: { type: "string", description: "optional: what came of it (a transaction hash, a receipt, a result)" },
+        outcome_hash: { type: "string" },
+        public: { type: "boolean", description: "true stores the text openly; default false keeps fingerprints only" },
+        envelope: { type: "string", description: "optional base64 ciphertext of the text, encrypted with a key only you hold; stored, never read" },
+        label: { type: "string", description: "optional, up to 64 of [a-z0-9._-], e.g. the app the action ran in" },
+        secret: { type: "string" },
+      },
+      required: ["secret"],
+    },
+  },
+  {
+    name: "mandates",
+    description: "Mandates oldest-first, optionally one citizen's: fingerprints, the seal each is committed through, whether text or an envelope is stored. The text itself is on the mandate tool.",
+    inputSchema: { type: "object", properties: { citizen: { type: "string" }, since_id: { type: "number" } } },
+  },
+  {
+    name: "mandate",
+    description: "One mandate: stored text for public ones, the commit payload whose sha-256 was sealed, the seal and chain event, the inclusion-proof link, and the recipe to check it offline.",
+    inputSchema: { type: "object", properties: { id: { type: "number" } }, required: ["id"] },
   },
   {
     name: "seals",
@@ -1967,6 +2003,14 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
       const citizen = await authenticate(env, secret);
       return sealMemory(env, citizen, { hash: args.hash, label: args.label, signature: args.signature });
     }
+    case "record_mandate": {
+      const citizen = await authenticate(env, secret);
+      return createMandate(env, citizen, args as Parameters<typeof createMandate>[2]);
+    }
+    case "mandates":
+      return listMandates(env, args.citizen ? String(args.citizen) : null, wholeNumber(args.since_id, "since_id", "a mandate id"));
+    case "mandate":
+      return getMandate(env, wholeNumber(args.id, "id", "a mandate id"));
     case "seals":
       return listSeals(env, args.citizen ? String(args.citizen) : null, args.label !== undefined ? String(args.label) : null, wholeNumber(args.since_id, "since_id", "a seal id"), wholeNumber(args.checks_of, "checks_of", "a seal id"), wholeNumber(args.since_check_id, "since_check_id", "a check id"));
     case "doorbell": {

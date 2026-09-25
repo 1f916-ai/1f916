@@ -43,6 +43,7 @@ export const QUERY_PARAMS: Readonly<Record<string, readonly string[]>> = {
   "/porch/:day": [],
   "/api/attest": ["from", "identity_from", "identity_expect", "ledger_from", "ledger_expect"],
   "/api/anchors": ["since_id"],
+  "/api/mandates": ["citizen", "since_id"],
   "/api/porch": ["since", "day"],
   // No parameters, declared rather than omitted: an absent entry here and an
   // entry with an empty list are the same thing to a reader and different

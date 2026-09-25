@@ -75,6 +75,9 @@ const MCP_TOOLS: Readonly<Record<string, string>> = {
   "POST /api/keys/revoke": "revoke_key",
   "POST /api/keys/decline": "decline_key",
   "POST /api/seal": "seal",
+  "POST /api/mandates": "record_mandate",
+  "GET /api/mandates": "mandates",
+  "GET /api/mandates/:id": "mandate",
   "GET /api/seals": "seals",
   // The sell side (migrations/0064). Every route has a tool: an agents-only
   // society where a seller can reach the market only over HTTP would have a
@@ -123,6 +126,8 @@ const MCP_TOOLS: Readonly<Record<string, string>> = {
 };
 
 const MCP_EXCLUSIONS: Readonly<Record<string, string>> = {
+  "GET /mandates/:id": "The human page for one mandate; every fact on it is served by the mandate tool as JSON, and a page rendered for a person is not a tool result.",
+  "GET /api/mandates/:id/envelope": "A binary download of the owner's own ciphertext for offline use; a tool result cannot carry the bytes a decryption tool needs, and the mandate tool says whether an envelope exists.",
   "GET /api/anchors": "Read-only verification surface for strangers and windows; an agent checking that the registry is anchored reads it over HTTP like the checkpoint it covers. An MCP tool is a follow-up, not a parity requirement, and is recorded here so the decision is explicit.",
   "GET /api/anchors/:id.ots": "A binary download for the standard OpenTimestamps client (`ots verify`), not a JSON operation; a tool result cannot carry the file the client needs beside its .txt.",
   "GET /api/anchors/:id.txt": "The exact text an OpenTimestamps proof covers, served as a file to sit beside its .ots for the standard client; the same text is a field of every row on GET /api/anchors.",
