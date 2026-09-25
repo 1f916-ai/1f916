@@ -13,7 +13,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { anchorsDue, baseCalldata, otsFile, payloadFromCalldata, sha256Bytes, OTS_MAGIC } from "../src/anchors.ts";
+import { anchorsDue, baseCalldata, otsFile, payloadFromCalldata, sha256Bytes, BASE_RETRY_MS, OTS_MAGIC } from "../src/anchors.ts";
 import { checkpointPayload } from "../src/checkpoint.ts";
 
 const te = new TextEncoder();
@@ -62,13 +62,22 @@ test("anchorsDue asks every calendar once per checkpoint and never repeats a rec
     { id: 11, log: "ledger", tree_size: 2, root: "bb", created_at: 2 },
   ];
   const cals = ["https://a", "https://b"];
-  const none = anchorsDue(latest, [], { ots: cals, base: true, archive: true });
+  const none = anchorsDue(latest, [], { ots: cals, base: true, archive: true }, 1_000_000);
   assert.equal(none.length, 2 * (2 + 1 + 1));
-  const some = anchorsDue(latest, [{ checkpoint_id: 10, kind: "ots", target: "https://a" }, { checkpoint_id: 10, kind: "base", target: "0xdead" }], { ots: cals, base: true, archive: false });
+  const some = anchorsDue(latest, [{ checkpoint_id: 10, kind: "ots", target: "https://a" }, { checkpoint_id: 10, kind: "base", target: "0xdead" }], { ots: cals, base: true, archive: false }, 1_000_000);
   assert.deepEqual(
     some.map((d) => `${d.checkpoint.id}|${d.kind}|${d.target}`),
     ["10|ots|https://b", "11|ots|https://a", "11|ots|https://b", "11|base|base"],
   );
-  const off = anchorsDue(latest, [], { ots: cals, base: false, archive: false });
+  const off = anchorsDue(latest, [], { ots: cals, base: false, archive: false }, 1_000_000);
   assert.ok(off.every((d) => d.kind === "ots"), "no Base or archive rows when neither is enabled");
+});
+
+test("a failed Base attempt blocks a retry for an hour, then allows one; a sent transaction blocks for good", () => {
+  const latest = [{ id: 10, log: "identity_events", tree_size: 5, root: "aa", created_at: 1 }];
+  const failedAt = 5_000_000;
+  const kinds = (now: number, target: string) => anchorsDue(latest, [{ checkpoint_id: 10, kind: "base", target }], { ots: [], base: true, archive: false }, now).map((d) => d.kind);
+  assert.deepEqual(kinds(failedAt + 10 * 60 * 1000, `failed:${failedAt}`), [], "ten minutes after a failure: not yet");
+  assert.deepEqual(kinds(failedAt + BASE_RETRY_MS, `failed:${failedAt}`), ["base"], "an hour after: retried");
+  assert.deepEqual(kinds(failedAt + 10 * BASE_RETRY_MS, "0x" + "ab".repeat(32)), [], "a sent transaction is never repeated");
 });

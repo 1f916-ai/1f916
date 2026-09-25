@@ -69,23 +69,26 @@ test("one pass anchors both heads to every calendar, Base once each, and the arc
   const { env, db } = fixture();
   const d = deps({ archive: "anon-500" });
   const r = await anchorCheckpoints({ ...env, ANCHOR_BASE_KEY: "0x" + "11".repeat(32) }, T0, d);
-  assert.equal(r.attempted, 2 * OTS_CALENDARS.length + 2 + 1);
-  assert.equal(r.recorded, 2 * OTS_CALENDARS.length + 2, "ots and base rows recorded");
+  assert.equal(r.attempted, 2 * OTS_CALENDARS.length + 1 + 1, "calendars for both heads, ONE Base send, one archive");
+  assert.equal(r.recorded, 2 * OTS_CALENDARS.length + 1, "ots and one base row recorded");
   assert.equal(r.failed, 1, "the anonymous archive refusal is one failed row, not an exception");
   assert.equal(r.base_enabled, true);
   const rows = db.prepare("SELECT checkpoint_id, kind, target, status, error FROM anchors ORDER BY id").all() as { checkpoint_id: number; kind: string; target: string; status: string; error: string | null }[];
   assert.equal(rows.length, r.attempted);
   assert.deepEqual(rows.filter((x) => x.kind === "archive").map((x) => [x.checkpoint_id, x.status, x.error]), [[10, "failed", "spn 500"]]);
-  assert.deepEqual(rows.filter((x) => x.kind === "base").map((x) => [x.checkpoint_id, x.status]), [[10, "pending"], [11, "pending"]]);
+  assert.deepEqual(rows.filter((x) => x.kind === "base").map((x) => [x.checkpoint_id, x.status]), [[10, "pending"]], "the ledger head's Base send waits for the next pass");
   for (const cal of OTS_CALENDARS) assert.equal(rows.filter((x) => x.kind === "ots" && x.target === cal).length, 2, `${cal} asked once per checkpoint`);
   // The Base calldata is the payload text, so the wallet stub saw it verbatim.
   assert.ok(d.calls.includes(`base ${checkpointPayload("identity_events", 5, ROOT_A, T0 - 1000)}`));
 
-  // Second pass at the same minute: nothing is due. No duplicate rows, no
-  // second archive attempt inside the hour.
+  // Second pass: only the ledger head's Base send is due. No duplicate rows,
+  // no second archive attempt inside the hour. Third pass: nothing at all.
   const again = await anchorCheckpoints({ ...env, ANCHOR_BASE_KEY: "0x" + "11".repeat(32) }, T0 + 30_000, d);
-  assert.equal(again.attempted, 0);
-  assert.equal((db.prepare("SELECT COUNT(*) AS n FROM anchors").get() as { n: number }).n, rows.length);
+  assert.equal(again.attempted, 1);
+  assert.deepEqual((db.prepare("SELECT checkpoint_id FROM anchors WHERE kind = 'base' ORDER BY id").all() as { checkpoint_id: number }[]).map((x) => x.checkpoint_id), [10, 11]);
+  const third = await anchorCheckpoints({ ...env, ANCHOR_BASE_KEY: "0x" + "11".repeat(32) }, T0 + 60_000, d);
+  assert.equal(third.attempted, 0);
+  assert.equal((db.prepare("SELECT COUNT(*) AS n FROM anchors").get() as { n: number }).n, rows.length + 1);
 });
 
 test("a new head inside the hour gets calendars and Base but not another archive attempt; after 55 minutes it does", async () => {
@@ -93,6 +96,7 @@ test("a new head inside the hour gets calendars and Base but not another archive
   const withKey = { ...env, ANCHOR_BASE_KEY: "0x" + "11".repeat(32) };
   await anchorCheckpoints(withKey, T0, deps({ archive: "anon-500" }));
   // Ten minutes later the identity log has a new head.
+  await anchorCheckpoints(withKey, T0 + 30_000, deps()); // the ledger head's Base send
   db.exec(`INSERT INTO checkpoints (id, log, tree_size, root, sig, created_at) VALUES (12, 'identity_events', 6, '${ROOT_B}', 'sigC', ${T0 + 600_000 - 1})`);
   const soon = await anchorCheckpoints(withKey, T0 + 600_000, deps({ archive: "anon-ok" }));
   assert.equal(soon.attempted, OTS_CALENDARS.length + 1, "calendars and Base for the new head; the archive is inside its hour");
@@ -110,6 +114,7 @@ test("Base rows confirm on a later pass, and a reverted receipt is recorded as f
   await anchorCheckpoints(withKey, T0, deps({ archive: "anon-500" }));
   const still = await anchorCheckpoints(withKey, T0 + 30_000, deps({ confirm: "pending" }));
   assert.equal(still.confirmed, 0, "younger than a minute: not even asked");
+  assert.equal(still.attempted, 1, "this pass sends the ledger head's Base transaction");
   const done = await anchorCheckpoints(withKey, T0 + 120_000, deps({ confirm: "confirmed" }));
   assert.equal(done.confirmed, 2);
   const rows = (db.prepare("SELECT status, confirmed_at FROM anchors WHERE kind = 'base' ORDER BY id").all() as { status: string; confirmed_at: number | null }[]).map((r) => ({ ...r }));
@@ -118,6 +123,7 @@ test("Base rows confirm on a later pass, and a reverted receipt is recorded as f
   const f2 = fixture();
   const k2 = { ...f2.env, ANCHOR_BASE_KEY: "0x" + "11".repeat(32) };
   await anchorCheckpoints(k2, T0, deps({ archive: "anon-500" }));
+  await anchorCheckpoints(k2, T0 + 30_000, deps());
   const bad = await anchorCheckpoints(k2, T0 + 120_000, deps({ confirm: "failed" }));
   assert.equal(bad.failed, 2);
   assert.deepEqual((f2.db.prepare("SELECT DISTINCT status FROM anchors WHERE kind = 'base'").all() as { status: string }[]).map((x) => x.status), ["failed"]);
@@ -127,7 +133,8 @@ test("Base confirmations are capped at two per pass, so a backlog drains over pa
   const { env, db } = fixture();
   const withKey = { ...env, ANCHOR_BASE_KEY: "0x" + "11".repeat(32) };
   await anchorCheckpoints(withKey, T0, deps({ archive: "anon-500" }));
-  db.exec(`INSERT INTO checkpoints (id, log, tree_size, root, sig, created_at) VALUES (12, 'identity_events', 6, '${ROOT_B}', 'sigC', ${T0 + 5_000})`);
+  await anchorCheckpoints(withKey, T0 + 5_000, deps());
+  db.exec(`INSERT INTO checkpoints (id, log, tree_size, root, sig, created_at) VALUES (12, 'identity_events', 6, '${ROOT_B}', 'sigC', ${T0 + 9_000})`);
   await anchorCheckpoints(withKey, T0 + 10_000, deps());
   assert.equal((db.prepare("SELECT COUNT(*) AS n FROM anchors WHERE kind = 'base' AND status = 'pending'").get() as { n: number }).n, 3, "three pending Base rows");
   const first = await anchorCheckpoints(withKey, T0 + 120_000, deps({ confirm: "confirmed" }));
@@ -170,6 +177,23 @@ test("an authenticated archive job is polled on later passes: success rewrites t
   assert.deepEqual({ ...r2 }, { status: "failed", error: "blocked by robots" });
 });
 
+test("a Base send that throws is one failed row, retried after an hour and not before", async () => {
+  const { env, db } = fixture();
+  const withKey = { ...env, ANCHOR_BASE_KEY: "0x" + "11".repeat(32) };
+  const boom = deps({ archive: "anon-500" }); boom.submitBase = async () => { throw new Error("nonce too low"); };
+  const r = await anchorCheckpoints(withKey, T0, boom);
+  assert.equal(r.failed, 2, "the Base send and the anonymous archive");
+  const failed = db.prepare("SELECT target, error FROM anchors WHERE kind = 'base'").all() as { target: string; error: string }[];
+  assert.equal(failed.length, 1);
+  assert.equal(failed[0].target, `failed:${T0}`);
+  assert.match(failed[0].error, /nonce too low/);
+  const soon = await anchorCheckpoints(withKey, T0 + 10 * 60_000, deps());
+  assert.equal(soon.attempted, 1, "only the other head's Base send; the failed one waits out its hour");
+  const later = await anchorCheckpoints(withKey, T0 + 61 * 60_000, deps());
+  assert.equal(later.attempted, 1, "the failed head is retried");
+  assert.equal((db.prepare("SELECT COUNT(*) AS n FROM anchors WHERE kind = 'base' AND status = 'pending'").get() as { n: number }).n, 2);
+});
+
 test("a calendar outage is one failed row with the error text; the other calendars still record", async () => {
   const { env, db } = fixture();
   const r = await anchorCheckpoints(env, T0, deps({ calendarFails: OTS_CALENDARS[0], archive: "anon-ok" }));
@@ -195,6 +219,7 @@ test("with archive keys the authenticated API is used and the job status URL is 
 test("GET /api/anchors lists rows oldest-first with the covered text, links the files, pages by since_id, and shows the current heads", async () => {
   const { env } = fixture();
   await anchorCheckpoints({ ...env, ANCHOR_BASE_KEY: "0x" + "11".repeat(32) }, T0, deps({ archive: "anon-500" }));
+  await anchorCheckpoints({ ...env, ANCHOR_BASE_KEY: "0x" + "11".repeat(32) }, T0 + 30_000, deps());
   const all = await listAnchors(env, undefined);
   assert.equal(all.anchors.length, 2 * OTS_CALENDARS.length + 3);
   assert.equal(all.has_more, false);

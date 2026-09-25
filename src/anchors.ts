@@ -100,16 +100,24 @@ export interface AnchorRow {
 // Pure: which (checkpoint, kind, target) pairs still need an attempt. Every
 // target is tried once per checkpoint; a failed row is a record, not a retry
 // queue, because the next checkpoint five minutes later gets its own attempt.
+// A failed Base attempt is recorded as target `failed:<ms>`; it blocks a retry
+// for an hour and no longer, so an empty wallet costs one row an hour, not
+// one every pass, and a transient node error is retried within the hour.
+export const BASE_RETRY_MS = 60 * 60 * 1000;
+
 export function anchorsDue(
   latest: CheckpointForAnchor[],
   existing: Pick<AnchorRow, "checkpoint_id" | "kind" | "target">[],
   targets: { ots: readonly string[]; base: boolean; archive: boolean },
+  now: number,
 ): { checkpoint: CheckpointForAnchor; kind: AnchorRow["kind"]; target: string }[] {
   const have = new Set(existing.map((a) => `${a.checkpoint_id}|${a.kind}|${a.target}`));
   const out: { checkpoint: CheckpointForAnchor; kind: AnchorRow["kind"]; target: string }[] = [];
+  const baseBlocked = (c: CheckpointForAnchor) =>
+    existing.some((a) => a.checkpoint_id === c.id && a.kind === "base" && (!a.target.startsWith("failed:") || now - Number(a.target.slice(7)) < BASE_RETRY_MS));
   for (const c of latest) {
     for (const cal of targets.ots) if (!have.has(`${c.id}|ots|${cal}`)) out.push({ checkpoint: c, kind: "ots", target: cal });
-    if (targets.base && !existing.some((a) => a.checkpoint_id === c.id && a.kind === "base")) out.push({ checkpoint: c, kind: "base", target: "base" });
+    if (targets.base && !baseBlocked(c)) out.push({ checkpoint: c, kind: "base", target: "base" });
     if (targets.archive && !existing.some((a) => a.checkpoint_id === c.id && a.kind === "archive")) out.push({ checkpoint: c, kind: "archive", target: "archive" });
   }
   return out;
@@ -240,10 +248,18 @@ export async function anchorCheckpoints(env: Env, now = Date.now(), deps: Anchor
   // checkpoint only, anonymous or not: Save Page Now rate-limits by source.
   const lastArchive = await env.DB.prepare("SELECT MAX(created_at) AS t FROM anchors WHERE kind = 'archive'").first<{ t: number | null }>();
   const archiveDue = !lastArchive?.t || now - lastArchive.t >= 55 * 60 * 1000;
-  const due = anchorsDue(latest, existing, { ots: OTS_CALENDARS, base: Boolean(env.ANCHOR_BASE_KEY), archive: archiveDue }).filter(
+  const due = anchorsDue(latest, existing, { ots: OTS_CALENDARS, base: Boolean(env.ANCHOR_BASE_KEY), archive: archiveDue }, now).filter(
     (d) => d.kind !== "archive" || d.checkpoint.log === "identity_events",
   );
+  // One Base transaction per pass. Two in the same second from one wallet
+  // raced on the nonce the first night (the second was refused with "nonce
+  // lower than current"); the other head takes the next pass, five minutes on.
+  let baseSent = false;
   for (const d of due) {
+    if (d.kind === "base") {
+      if (baseSent) continue;
+      baseSent = true;
+    }
     report.attempted++;
     const payload = payloadOf(d.checkpoint);
     try {
