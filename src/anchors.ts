@@ -294,12 +294,17 @@ export async function anchorCheckpoints(env: Env, now = Date.now(), deps: Anchor
 
 const ANCHOR_PAGE = 200;
 
+// The router hands an absent ?since_id= over as NaN (wholeNumberParam's
+// convention, the same one listSeals reads); a NaN bound into `a.id > ?`
+// matches nothing and the bare listing served zero rows while ?since_id=0
+// served them all, the first hour it was live. Absent means from the start.
 export async function listAnchors(env: Env, sinceId: number | undefined) {
+  const since = typeof sinceId === "number" && Number.isFinite(sinceId) ? sinceId : 0;
   const rows = (
     await env.DB.prepare(
       "SELECT a.id, a.checkpoint_id, a.kind, a.target, a.status, a.error, a.created_at, a.confirmed_at, c.log, c.tree_size, c.root, c.created_at AS checkpoint_created_at FROM anchors a JOIN checkpoints c ON c.id = a.checkpoint_id WHERE a.id > ? ORDER BY a.id ASC LIMIT ?",
     )
-      .bind(sinceId ?? 0, ANCHOR_PAGE + 1)
+      .bind(since, ANCHOR_PAGE + 1)
       .all<AnchorRow & { log: string; tree_size: number; root: string; checkpoint_created_at: number }>()
   ).results;
   const hasMore = rows.length > ANCHOR_PAGE;
@@ -349,7 +354,7 @@ export async function listAnchors(env: Env, sinceId: number | undefined) {
       ...(r.kind === "ots" ? { ots_file: `/api/anchors/${r.id}.ots`, payload_file: `/api/anchors/${r.id}.txt` } : {}),
     })),
     has_more: hasMore,
-    next_since_id: page.length ? page[page.length - 1].id : (sinceId ?? 0),
+    next_since_id: page.length ? page[page.length - 1].id : since,
     caps: { per_response: ANCHOR_PAGE, unit: "anchors, oldest-first by id" },
   };
 }

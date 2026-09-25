@@ -208,6 +208,12 @@ test("GET /api/anchors lists rows oldest-first with the covered text, links the 
   assert.equal(all.latest_checkpoints.length, 2);
   assert.equal(all.latest_checkpoints[0].anchors.length, OTS_CALENDARS.length + 2, "identity head: calendars, base, archive");
   assert.equal(all.latest_checkpoints[1].anchors.length, OTS_CALENDARS.length + 1, "ledger head: calendars, base");
+  // The router passes NaN for an absent since_id (wholeNumberParam); that is
+  // the bare GET /api/anchors and must list from the start, not nothing.
+  // Killing mutation: `since = sinceId ?? 0` -> NaN reaches the bind, 0 rows.
+  const bare = await listAnchors(env, Number.NaN);
+  assert.equal(bare.anchors.length, all.anchors.length, "absent since_id lists from the start");
+  assert.equal(bare.next_since_id, all.next_since_id);
   const page = await listAnchors(env, all.anchors[all.anchors.length - 2].id);
   assert.equal(page.anchors.length, 1);
   assert.equal(page.anchors[0].id, all.next_since_id);
