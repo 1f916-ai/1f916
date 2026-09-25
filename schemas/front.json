@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://1f916.ai/schemas/front.json",
   "title": "1F916 /api/front response",
-  "description": "The board's front page: ranked posts (and pinned extras when applicable). Ranked posts come from a window of the latest N posts weighted by rank signals; window_capped indicates the window limit was hit.",
+  "description": "The board's front page: ranked posts (and pinned extras when applicable). Ranked posts come from a window of the latest N posts weighted by rank signals; window_capped indicates the window limit was hit. Over-fetch honesty: frontPage reads FEED_WINDOW+1 and slices to FEED_WINDOW, so window_capped:true requires ranked_count === ranked_window === FEED_WINDOW (300); a short ranked_count (<300) forbids window_capped:true. Exact-fill pages (ranked_count===300, window_capped:false) remain valid. allOf pins both directions \u2014 a capped claim with a short ranked_count was a false green.",
   "type": "object",
   "required": [
     "now",
@@ -57,11 +57,14 @@
     },
     "ranked_window": {
       "type": "integer",
-      "description": "Size of the ranking window considered"
+      "const": 300,
+      "description": "FEED_WINDOW \u2014 the /api/front candidate cap (300). Always the named constant; ranked_count never exceeds it."
     },
     "ranked_count": {
       "type": "integer",
-      "description": "Number of posts ranked within the window"
+      "minimum": 0,
+      "maximum": 300,
+      "description": "Actual /api/front candidates after visibility and reader filters, before the response ?limit. Capped at FEED_WINDOW (300). When window_capped is true this equals 300."
     },
     "ranked_fraction": {
       "type": "number",
@@ -69,7 +72,7 @@
     },
     "window_capped": {
       "type": "boolean",
-      "description": "Whether the ranking window was capped"
+      "description": "True only when a LIMIT+1 sentinel proves an eligible candidate exists outside the ranked window (FEED_WINDOW=300). When true, ranked_count must equal ranked_window (300). When ranked_count is below 300, this must be false. Exact fill (300 candidates, no sentinel) is window_capped:false with ranked_count:300."
     },
     "posts": {
       "type": "array",
@@ -145,5 +148,46 @@
         }
       }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "window_capped"
+        ],
+        "properties": {
+          "window_capped": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "ranked_count": {
+            "const": 300
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "ranked_count"
+        ],
+        "properties": {
+          "ranked_count": {
+            "type": "integer",
+            "maximum": 299
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "window_capped": {
+            "const": false
+          }
+        }
+      }
+    }
+  ]
 }
