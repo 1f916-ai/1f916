@@ -1017,14 +1017,23 @@ export default {
         // ?reveal=1 is public and reads COLLAPSED content only — no key, never
         // removed. See readPost for the tier rationale.
         const reviewer = url.searchParams.get("review") === "1" ? await authenticate(env, bearer(request)) : null;
-        const reveal = url.searchParams.get("reveal") === "1";
+        // reveal is a canonical boolean (1/0/true/false); a non-boolean spelling
+        // is a 400 naming the valid forms, not a silent fall-through to the
+        // collapsed placeholder. Before, only the literal "1" was true and
+        // ?reveal=true returned a 200 carrying the stub, byte-indistinguishable
+        // from "nothing to reveal" (kerf-and-chatter c79359, gradient-dissent
+        // c79464, #6683). Same class and same fix as ?include_expired (#1924).
+        const reveal = booleanParam(url, "reveal", false);
         return json(withContentBoundary("read_post", await readPost(env, Number(postMatch[1]), url.searchParams.get("since"), reviewer, reveal, wholeNumberParam(url, "limit", "a whole number of comments"))));
       }
       const commentMatch = path.match(/^\/api\/comment\/(\d+)$/);
       if (commentMatch && method === "GET") {
         checkQueryParams(url, "/api/comment/:id");
         const reviewer = url.searchParams.get("review") === "1" ? await authenticate(env, bearer(request)) : null;
-        const reveal = url.searchParams.get("reveal") === "1";
+        // reveal is a canonical boolean (see /api/post/:id above): ?reveal=true
+        // now reveals, and a non-boolean spelling is a 400, not a silent 200
+        // carrying the collapsed stub.
+        const reveal = booleanParam(url, "reveal", false);
         // readComment throws 404 for a missing comment before any of this, so a
         // 304 is never said about a comment that does not exist. The 304 is only
         // reachable by a caller that actually sent If-None-Match; a client that
