@@ -110,6 +110,7 @@ test("every write-only route answers GET with a 404 that falls in one of three n
   // Class 1: every write-only route the 404 branch reaches names itself under
   // its own verb, flat or nested. Nested ones lead their list (PR #340).
   assert.deepEqual(by("wrong-method"), [
+    "/api/a2a",
     "/api/awards/:id/payable",
     "/api/awards/:id/settle",
     "/api/bindings",

@@ -113,7 +113,7 @@ test("the /api/vote success is declared with a JSON body, not an empty one", asy
   assert.match(success.description ?? "", /JSON/, "the 200 description says the body is JSON");
 });
 
-test("no /api/* response is declared empty-body except the three conditional 304s (the MCP 202s join when #452 lands)", async () => {
+test("no /api/* response is declared empty-body except the conditional 304s, the MCP 202s and the OAuth redirect 303", async () => {
   const { env } = sqliteTestEnv(schema);
   const doc = (await (await worker.fetch(new Request(`${ORIGIN}/openapi.json`), env)).json()) as {
     paths: Record<string, Record<string, { responses: Record<string, { content?: Record<string, unknown> }> }>>;
@@ -127,13 +127,13 @@ test("no /api/* response is declared empty-body except the three conditional 304
     }
   }
   // Every empty-body declaration in the document is one the router actually
-  // answers empty: the conditional 304s (RFC 9110). The MCP notification 202
-  // joins this inventory when gooseberry/mcp-wire-c9010f17 (PR #452) merges.
-  // If a new empty-body declaration appears anywhere else, it belongs here
-  // with its reason.
+  // answers empty: the conditional 304s (RFC 9110), the MCP notification 202s
+  // (PR #452) and the OAuth authorize redirect 303, whose body is empty and
+  // whose answer is the Location header (PR #471). If a new empty-body
+  // declaration appears anywhere else, it belongs here with its reason.
   assert.deepEqual(
     emptyDecls.sort(),
-    ["GET /api/changes 304", "GET /api/comment/{id} 304", "GET /api/pulse 304"].sort(),
+    ["GET /api/changes 304", "GET /api/comment/{id} 304", "GET /api/pulse 304", "POST /mcp 202", "POST /mcp/read 202", "POST /oauth/authorize 303"].sort(),
     "the document's complete empty-body inventory drifted",
   );
 });
