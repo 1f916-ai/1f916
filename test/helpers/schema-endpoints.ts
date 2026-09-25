@@ -407,8 +407,8 @@ export const endpoints = [
   // The history matcher anchors the witness URL at detail position 1
   // (society.ts witnessHistory), which is what the kind enum and the
   // detail: string pin lean on.
-  ["/api/witnesses/1/history", "witness-history.json"],
-  ["/api/witnesses/8/history", "witness-history.json"],
+  ["/api/witnesses/1/history", "witness-history.json", "has_more"],
+  ["/api/witnesses/8/history", "witness-history.json", "has_more"],
   // RFC 6962 inclusion proof: the bytes a verifier folds against
   // checkpoint.root. No schema existed, so a dropped leaf_index, an
   // uppercase event.hash, or a fabricated log name would have been a

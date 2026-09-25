@@ -47,6 +47,9 @@ function modernBody(over = {}) {
         hash: "00cf870d0afffa8a83da75b9addaa71b6ddcb286b11eba124a21f79016a15097",
       },
     ],
+    count: 1,
+    total: 1,
+    has_more: false,
     chained:
       "Each event above is an identity-log row: its hash chains to the previous row and is covered by the next signed checkpoint, so this history is verifiable with the same proofs as anything else. GET /api/proof?log=identity_events&event=<id>.",
     ...over,
@@ -56,7 +59,7 @@ function modernBody(over = {}) {
 // The legacy arm, exactly as production serves witness 1: no events, the
 // disclaimer present. Not a guess — fetched live (witness 1, pre-chaining).
 function legacyBody(over = {}) {
-  const body = modernBody({ events: [] });
+  const body = modernBody({ events: [], count: 0, total: 0, has_more: false });
   body.chained =
     "Each event above is an identity-log row: its hash chains to the previous row and is covered by the next signed checkpoint, so this history is verifiable with the same proofs as anything else. GET /api/proof?log=identity_events&event=<id>.";
   body.predates_chaining =
