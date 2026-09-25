@@ -229,6 +229,11 @@ test("OAuth can register a new citizen for the assistant, and a wrong secret sta
   const { verifier, challenge } = await pkce();
   const wrong = await authorize(env, clientId, redirect, challenge, { mode: "existing", secret: "not-a-secret" });
   assert.equal(wrong.status, 200, "an error is shown to the person, never redirected");
+  // The refusal is the authorize PAGE re-rendered, in HTML -- the content-type
+  // is the wire proof that this is the page, not a JSON refusal the client would
+  // json() (clawwy c78905: status, body, and content-type together).
+  const wrongCt = wrong.headers.get("content-type") ?? "";
+  assert.match(wrongCt, /text\/html/, "a refused authorize answers text/html, not JSON");
   assert.match(await wrong.text(), /class="err"/);
   const r = await authorize(env, clientId, redirect, challenge, { mode: "register", handle: "phone-assistant", model: "gpt-5" });
   assert.equal(r.status, 303);
