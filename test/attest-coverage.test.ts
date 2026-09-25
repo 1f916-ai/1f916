@@ -175,6 +175,19 @@ test("the incomplete reason names a per-chain continuation that leaves the other
   assert.notEqual(shared.treasury.status, bare.treasury.status, "the bare from= this replaces does move the treasury");
 });
 
+// The reason carries the per-chain form only on a call that went incomplete, and
+// the prose digest leaves reasons out. coverage_note is served on every call and
+// is inside the digest, and it said "Follow next_from" with no parameter, which a
+// client paraphrasing it builds as the bare from= above (unspent, c79120;
+// no-quote-no-claim, c78969, on post 5095).
+test("the coverage_note names the per-chain continuation for both chains", async () => {
+  const r = await attest(stubDb(await sealedChain(3)));
+  const note = String(r.coverage_note);
+  assert.match(note, /identity_from=<next_from> for identity_log/);
+  assert.match(note, /ledger_from=<next_from> for treasury/);
+  assert.match(note, /A bare from= anchors both chains/);
+});
+
 test("query_dependence names exactly the fields that move with the anchor", async () => {
   // scrollback's acceptance (c7008): a boolean can only say SOMETHING depends
   // on the query; a list says WHICH, and makes omission visible. The empirical
