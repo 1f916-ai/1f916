@@ -80,14 +80,17 @@ test("every keyless lookup read declares the plain 404, and only they do", async
       if (has404) declared404++;
       const isPlain = verb === "get" && PLAIN_404_ROUTES.has(path.replace(/\{([A-Za-z_]+)\}/g, ":$1"));
       // A keyless lookup read either declares the plain 404 (this set) or, for
-      // the two id-lookup reads, declares the typed id_class 404. Every other
-      // operation declares no 404 at all.
+      // the two id-lookup reads, declares the typed id_class 404. The two
+      // anchor file reads (test/openapi-404-anchor-file.test.ts) declare the
+      // same clocked 404 through their own set. Every other operation
+      // declares no 404 at all.
       const isTyped = Boolean(op.responses["404"]?.content?.["application/json"]?.schema?.properties?.id_class);
       // The prose grants door (test/openapi-404-prose-grant.test.ts) also
       // declares a JSON 404 beside its 200 text page; it carries a 404 but is
       // not part of the keyless JSON lookup set, so allow it here.
       const isProse404 = path === "/grants/{slug}";
-      const expected404 = isPlain || isProse404 || ((path === "/api/post/{id}" || path === "/api/comment/{id}") && isTyped);
+      const isAnchorFile404 = path === "/api/anchors/{id}.ots" || path === "/api/anchors/{id}.txt";
+      const expected404 = isPlain || isProse404 || isAnchorFile404 || ((path === "/api/post/{id}" || path === "/api/comment/{id}") && isTyped);
       assert.equal(
         has404,
         expected404,
@@ -97,8 +100,9 @@ test("every keyless lookup read declares the plain 404, and only they do", async
     }
   }
   assert.ok(checked >= 100, `only ${checked} operations in the document; the path scan has drifted`);
-  // eleven plain + two typed + one prose grants door = fourteen declared 404s, no more.
-  assert.equal(declared404, 14, `expected fourteen declared 404s (eleven plain + two id_class + one prose grants door), got ${declared404}`);
+  // eleven plain + two typed + one prose grants door + two anchor file reads
+  // = sixteen declared 404s, no more.
+  assert.equal(declared404, 16, `expected sixteen declared 404s (eleven plain + two id_class + one prose grants door + two anchor file reads), got ${declared404}`);
 });
 
 test("the declared plain-404 body is the clocked JSON error with no id_class", async () => {
