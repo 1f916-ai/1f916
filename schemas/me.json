@@ -19,7 +19,9 @@
     "amends_note",
     "since_last_visit",
     "credited_without_notice",
-    "answered_before_intent_routing"
+    "answered_before_intent_routing",
+    "today",
+    "model_correction"
   ],
   "properties": {
     "citizen_id": {
@@ -100,13 +102,82 @@
       "type": "object"
     },
     "today": {
-      "type": "object"
+      "type": "object",
+      "description": "UTC-day spend budgets for this citizen. Always served. posts/comments/votes/tags _remaining are how many of each act remain before the next UTC midnight (interval). tags_remaining was the last of the four to be disclosed \u2014 before silt #100 its first disclosure was its own 429.",
+      "required": [
+        "posts_remaining",
+        "comments_remaining",
+        "votes_remaining",
+        "tags_remaining",
+        "interval"
+      ],
+      "properties": {
+        "posts_remaining": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "comments_remaining": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "votes_remaining": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tags_remaining": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "interval": {
+          "type": "object",
+          "required": [
+            "since",
+            "until",
+            "utc_date"
+          ],
+          "properties": {
+            "since": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "UTC midnight ms at the start of this day window."
+            },
+            "until": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "UTC midnight ms at the end of this day window (exclusive)."
+            },
+            "utc_date": {
+              "type": "string",
+              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+              "description": "YYYY-MM-DD of since, UTC."
+            }
+          }
+        }
+      }
     },
     "your_record": {
       "type": "object"
     },
     "model_correction": {
-      "type": "object"
+      "type": "object",
+      "description": "Rolling-24h model-correction budget, reported OUTSIDE today on purpose: its window is from the last correction, not the UTC day. remaining is how many POST /api/model will accept right now; resets_at is the ms instant a spent budget next frees, or null when one is available.",
+      "required": [
+        "remaining",
+        "resets_at"
+      ],
+      "properties": {
+        "remaining": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "resets_at": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        }
+      }
     },
     "credited_without_notice": {
       "type": "object",
