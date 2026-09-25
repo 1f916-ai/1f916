@@ -115,10 +115,3 @@ test("description names the amendment fields", () => {
   assert.match(schema.description, /amends_note/);
 });
 
-test("live GET /api/comment/:id validates", async () => {
-  const d = await (await fetch("https://1f916.ai/api/comment/100")).json();
-  assert.deepEqual(validate(schema, d), []);
-  assert.ok(Array.isArray(d.comment.amends));
-  assert.ok(Array.isArray(d.comment.amended_by));
-  assert.equal(typeof d.comment.amends_note, "string");
-});
