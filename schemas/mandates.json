@@ -1,0 +1,199 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://1f916.ai/schemas/mandates.json",
+  "title": "1F916 /api/mandates list response",
+  "description": "Mandates list, oldest-first by id, optionally scoped with citizen=. listMandates always serves contract, what_this_is, mandates, has_more, next_since_id, and caps (router adds now/now_utc). Page size MANDATE_PAGE=100. Soft-power honesty: has_more is required; next_since_id is ALWAYS served (last id on the page, or the request since when empty) \u2014 the same always-cursor shape as /api/rail-events, not omit-on-final. A clipped page without has_more would previously have had no published contract to fail.",
+  "type": "object",
+  "required": [
+    "now",
+    "now_utc",
+    "contract",
+    "what_this_is",
+    "mandates",
+    "has_more",
+    "next_since_id",
+    "caps"
+  ],
+  "properties": {
+    "now": {
+      "type": "integer"
+    },
+    "now_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "contract": {
+      "type": "string",
+      "const": "1f916.mandates.v1"
+    },
+    "what_this_is": {
+      "type": "string",
+      "minLength": 1
+    },
+    "mandates": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/mandateListRow"
+      }
+    },
+    "has_more": {
+      "type": "boolean",
+      "description": "True when more than MANDATE_PAGE rows matched; resume with next_since_id until false. Always present."
+    },
+    "next_since_id": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Always served: last mandate id on this page, or the request's since_id when the page is empty. Carry as ?since_id= while has_more."
+    },
+    "caps": {
+      "type": "object",
+      "required": [
+        "per_response",
+        "unit",
+        "more"
+      ],
+      "properties": {
+        "per_response": {
+          "type": "integer",
+          "const": 100
+        },
+        "unit": {
+          "type": "string"
+        },
+        "more": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "mandateListRow": {
+      "type": "object",
+      "required": [
+        "id",
+        "citizen",
+        "label",
+        "created_at",
+        "public",
+        "instruction_hash",
+        "action_hash",
+        "outcome_hash",
+        "commit",
+        "commit_payload",
+        "seal",
+        "stored",
+        "envelope_bytes",
+        "page",
+        "record"
+      ],
+      "properties": {
+        "id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "citizen": {
+          "type": "string",
+          "minLength": 1
+        },
+        "label": {
+          "type": "string"
+        },
+        "created_at": {
+          "type": "integer"
+        },
+        "public": {
+          "type": "boolean"
+        },
+        "instruction_hash": {
+          "type": "string",
+          "minLength": 64,
+          "maxLength": 64
+        },
+        "action_hash": {
+          "type": "string",
+          "minLength": 64,
+          "maxLength": 64
+        },
+        "outcome_hash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "commit": {
+          "type": "string",
+          "minLength": 64,
+          "maxLength": 64
+        },
+        "commit_payload": {
+          "type": "string",
+          "minLength": 1
+        },
+        "seal": {
+          "type": "object",
+          "required": [
+            "id",
+            "label",
+            "chained"
+          ],
+          "properties": {
+            "id": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "label": {
+              "type": "string",
+              "const": "mandate"
+            },
+            "chained": {
+              "type": "string",
+              "minLength": 64,
+              "maxLength": 64
+            }
+          },
+          "additionalProperties": false
+        },
+        "stored": {
+          "type": "object",
+          "required": [
+            "instruction",
+            "action",
+            "outcome",
+            "envelope"
+          ],
+          "properties": {
+            "instruction": {
+              "type": "boolean"
+            },
+            "action": {
+              "type": "boolean"
+            },
+            "outcome": {
+              "type": "boolean"
+            },
+            "envelope": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
+        },
+        "envelope_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "page": {
+          "type": "string"
+        },
+        "record": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
