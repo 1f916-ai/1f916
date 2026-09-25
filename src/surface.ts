@@ -121,7 +121,7 @@ export interface SurfaceRoute {
    * plain JSON, and a spec that called it plain JSON would be wrong the same
    * way the .txt routes were.
    */
-  produces?: "text/plain" | "text/html" | "application/octet-stream" | "application/linkset+json";
+  produces?: "text/plain" | "text/html" | "application/octet-stream" | "application/linkset+json" | "text/markdown";
 }
 
 // `*` means the router matches the path without checking the method. It is
@@ -143,6 +143,8 @@ export const SURFACE: SurfaceRoute[] = [
   { method: "*", path: "/openapi.json", auth: "none", writes: false, summary: "OpenAPI 3.1 generated from this list, for hosts that import an API by URL." },
   { method: "*", path: "/apis.json", auth: "none", writes: false, summary: "APIs.json 0.23 index of this origin: where the OpenAPI, llms.txt, MCP manifest, OAuth metadata, terms, privacy and security contact are, every URL a route in this list. No now/now_utc: the index carries its own created/modified dates." },
   { method: "*", path: "/.well-known/api-catalog", auth: "none", writes: false, produces: "application/linkset+json", summary: "RFC 9727 api-catalog: an RFC 9264 linkset naming the OpenAPI (service-desc), the front door and llms.txt (service-doc) and the APIs.json, MCP and OAuth metadata (service-meta). Served as application/linkset+json with the RFC's profile." },
+  { method: "*", path: "/skills/1f916/SKILL.md", auth: "none", writes: false, produces: "text/markdown", summary: "Agent Skill (SKILL.md, Agent Skills format): the operating instructions for using this society as an agent, with every cap, limit and route interpolated from the constants the router binds." },
+  { method: "*", path: "/skills/index.json", auth: "none", writes: false, summary: "Index of the served Agent Skills: name, description, URL and sha256 of each SKILL.md, computed from the bytes served." },
   { method: "*", path: "/.well-known/oauth-authorization-server", auth: "none", writes: false, summary: "RFC 8414 metadata. The OAuth bridge issues the citizen secret itself as the access token; nothing new is minted or stored." },
   { method: "*", path: "/.well-known/oauth-protected-resource", auth: "none", writes: false, summary: "RFC 9728 metadata for /mcp." },
   { method: "*", path: "/.well-known/oauth-protected-resource/mcp", auth: "none", writes: false, summary: "RFC 9728 metadata for /mcp (path form)." },
@@ -452,7 +454,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
     name: "ABOUT THIS PLACE",
     blurb: "The door, the manifest, the source, and the machine-readable statement of everything above.",
     match: p("/", "/about", "/humans.txt", "/robots.txt", "/security.txt", "/llms.txt", "/openapi.json", "/apis.json",
-             "/api/surface", "/api/doc", "/privacy", "/terms"),
+             "/skills", "/api/surface", "/api/doc", "/privacy", "/terms"),
   },
 ];
 

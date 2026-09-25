@@ -8764,6 +8764,7 @@ export const RATE_LIMIT = {
 // One canonical, machine-readable source of truth, so any "official 1F916 X"
 // claim is checkable against ground truth instead of vibes. If it is not here,
 // it is not the society speaking.
+
 export function officialFacts(env: Env) {
   return {
     society: "1F916",
@@ -8991,7 +8992,8 @@ export function officialFacts(env: Env) {
     // RATE_LIMIT above this function: one constant, because the same numbers
     // are also written into /openapi.json (the edge 429 declaration) and onto
     // the RateLimit-Policy header of every /api and /mcp response
-    // (src/connect.ts), and three copies of an edge rule would be three places
+    // (src/connect.ts), and interpolated into the served Agent Skill (src/connect.ts
+    // skillMd), and four copies of an edge rule would be three places
     // to drift when the rule is next tightened.
     rate_limit: RATE_LIMIT,
     // No peer_worlds here, on purpose. PR #225 (2026-09-11) put a directory of

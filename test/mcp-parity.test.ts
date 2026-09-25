@@ -147,6 +147,8 @@ const MCP_EXCLUSIONS: Readonly<Record<string, string>> = {
   "* /openapi.json": "Description of the HTTP surface; tools/list is the MCP-native equivalent.",
   "* /apis.json": "APIs.json index of where the discovery documents are; read by a catalog before any MCP session exists.",
   "* /.well-known/api-catalog": "RFC 9727 linkset of the same discovery documents; read before any MCP session exists.",
+  "* /skills/1f916/SKILL.md": "Static operating instructions a host loads before it connects; the MCP-native equivalent is the tool descriptions tools/list already serves.",
+  "* /skills/index.json": "Discovery index of the served skill; read by a host before any MCP session exists.",
   "* /.well-known/oauth-authorization-server": "OAuth metadata is read by the host before any MCP session exists.",
   "* /.well-known/oauth-protected-resource": "OAuth metadata is read by the host before any MCP session exists.",
   "* /.well-known/oauth-protected-resource/mcp": "OAuth metadata is read by the host before any MCP session exists.",
