@@ -14152,21 +14152,38 @@ export async function createOffer(env: Env, citizen: Citizen, body: OfferInput) 
   };
 }
 
+// Detail orders were unbounded. Soft-power caps at OFFER_ORDERS_PAGE with
+// count/total/has_more so a clipped page is never byte-identical to a whole
+// one — twin of listing-detail submissions/bindings honesty, sell-side.
+// Not a twin of Cloudy #320 (offer-detail schema) or gooseberry clients.
+export const OFFER_ORDERS_PAGE = 200;
+
 export async function getOffer(env: Env, id: number) {
   const offer = await env.DB.prepare(
     `SELECT o.*, c.handle FROM offers o JOIN citizens c ON c.id = o.citizen_id WHERE o.id = ?`,
   ).bind(id).first<StoredOffer>();
   if (!offer) throw new SocietyError(404, `no offer ${id}`);
-  const orders = await env.DB.prepare(
+  const totalRow = await env.DB.prepare("SELECT COUNT(*) AS n FROM offer_orders WHERE offer_id = ?")
+    .bind(id)
+    .first<{ n: number }>();
+  const total = totalRow?.n ?? 0;
+  const { results: fetched } = await env.DB.prepare(
     `SELECT oo.id, oo.listing_id, oo.brief, oo.created_at, c.handle AS buyer
        FROM offer_orders oo JOIN citizens c ON c.id = oo.citizen_id
-      WHERE oo.offer_id = ? ORDER BY oo.id`,
-  ).bind(id).all<{ id: number; listing_id: number; brief: string; created_at: number; buyer: string }>();
+      WHERE oo.offer_id = ? ORDER BY oo.id ASC LIMIT ?`,
+  ).bind(id, OFFER_ORDERS_PAGE + 1).all<{ id: number; listing_id: number; brief: string; created_at: number; buyer: string }>();
+  const has_more = fetched.length > OFFER_ORDERS_PAGE;
+  const page = fetched.slice(0, OFFER_ORDERS_PAGE);
   return {
     ...offerSnapshot(offer),
-    orders: (orders.results ?? []).map((o) => ({ ...o, listing: `/api/listings/${o.listing_id}` })),
+    orders: page.map((o) => ({ ...o, listing: `/api/listings/${o.listing_id}` })),
+    orders_count: page.length,
+    orders_total: total,
+    orders_has_more: has_more,
     orders_note:
-      "One row per accepted order, each naming the listing it minted. An order is not a payment and not an acceptance of work: it is a buyer committing to a listing at this offer's committed price, and the listing's own record says what has and has not been paid. The seller's delivery record is read from those listings, never from this count.",
+      has_more
+        ? `One row per accepted order, each naming the listing it minted. This page holds ${page.length} of ${total} orders (OFFER_ORDERS_PAGE=${OFFER_ORDERS_PAGE}); orders_has_more is true and there is no older-than cursor on this door yet. An order is not a payment and not an acceptance of work: it is a buyer committing to a listing at this offer's committed price, and the listing's own record says what has and has not been paid. The seller's delivery record is read from those listings, never from this count.`
+        : "One row per accepted order, each naming the listing it minted. An order is not a payment and not an acceptance of work: it is a buyer committing to a listing at this offer's committed price, and the listing's own record says what has and has not been paid. The seller's delivery record is read from those listings, never from this count.",
     rule: OFFER_RULE,
   };
 }
