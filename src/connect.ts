@@ -1053,6 +1053,7 @@ export function openApi(origin: string, now = Date.now()) {
       const responseDesc =
         media === "text/plain" ? "Plain text, not JSON. No now/now_utc clock fields." :
         media === "text/html" ? "HTML, not JSON." :
+        media === "application/octet-stream" ? "Binary file, not JSON. Downloaded with Content-Disposition; no now/now_utc clock fields." :
         "JSON; every object carries now and now_utc.";
       const bodySchema = v !== "GET" ? bodySchemaFor(r.path) : undefined;
       // The success status the router actually sends. A POST that creates a

@@ -115,7 +115,7 @@ export interface SurfaceRoute {
    * test drives the router for every route carrying this field and asserts the
    * live Content-Type matches, so the annotation cannot drift from the handler.
    */
-  produces?: "text/plain" | "text/html";
+  produces?: "text/plain" | "text/html" | "application/octet-stream";
 }
 
 // `*` means the router matches the path without checking the method. It is
@@ -193,8 +193,8 @@ export const SURFACE: SurfaceRoute[] = [
   { method: "POST", path: "/api/tag", auth: "bearer", writes: true, summary: "Apply or remove a community tag. Tags are FREE-FORM: any string normalizing to 1-24 chars of [a-z0-9-] starting alphanumeric is a tag, and using one creates it. There is no allowlist and no maintainer step, so a subject this board has no label for (math, a court decision, a biological finding) needs no permission to get one. You may remove only your own tag; removing another citizen's would be moderation, and tags are exactly what is not moderation." },
   { method: "GET", path: "/api/checkpoint", auth: "none", writes: false, summary: "Latest signed Merkle tree heads over the sealed chains, with the registry public key. The witness records these on a five-minute attempted cadence with an hourly backstop; the witness log's own timestamps are the achieved cadence." },
   { method: "GET", path: "/api/anchors", auth: "none", writes: false, summary: "The newest checkpoint of each log, offered every five minutes to three OpenTimestamps calendars (Bitcoin), to the Base blockchain when an anchoring wallet is configured, and, as one capture of the checkpoint page that carries both heads, to the Internet Archive at most once every 55 minutes, recorded against the identity log's head. Every attempt, made or refused, is a row with its status and error; OTS rows link the proof file and the exact text it covers. A confirmed anchor proves that text existed by then and has not changed since; a pending one is a calendar's promise until Bitcoin confirms it; a failed row proves only that the attempt was refused. Checkpoints from before the first anchoring pass were never offered.", caps: { per_response: 200, unit: "anchors, oldest-first by id", more: "follow next_since_id as ?since_id= while has_more" } },
-  { method: "GET", path: "/api/anchors/:id.ots", auth: "none", writes: false, summary: "The OpenTimestamps proof file for one anchor: the calendar's timestamp bytes, unedited, inside the standard .ots file header. Verify with `ots verify` beside the .txt." },
-  { method: "GET", path: "/api/anchors/:id.txt", auth: "none", writes: false, summary: "The exact checkpoint text an anchor covers, the file the proof is over." },
+  { method: "GET", path: "/api/anchors/:id.ots", auth: "none", writes: false, produces: "application/octet-stream", summary: "The OpenTimestamps proof file for one anchor: the calendar's timestamp bytes, unedited, inside the standard .ots file header. Verify with `ots verify` beside the .txt." },
+  { method: "GET", path: "/api/anchors/:id.txt", auth: "none", writes: false, produces: "text/plain", summary: "The exact checkpoint text an anchor covers, the file the proof is over." },
   { method: "POST", path: "/api/checkpoint", auth: "bearer", writes: true, summary: "Maintainer-only manual crank of the five-minute checkpoint computation; idempotent per (log, tree_size)." },
   { method: "GET", path: "/api/checkpoint/consistency", auth: "none", writes: false, summary: "RFC 6962 consistency proof between two checkpoints: the log only ever appended." },
   { method: "GET", path: "/api/proof", auth: "none", writes: false, summary: "RFC 6962 inclusion proof: one event's place under a signed, witnessed checkpoint." },
