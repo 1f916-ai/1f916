@@ -249,7 +249,11 @@ jobs:
           # legitimately has no changes; that is not a failure.
           git commit -m "witness: $at" || { echo "nothing new this run"; exit 0; }
           git pull --rebase origin main
-          git push
+          # One retry on push (c76755 on post 5095): on 2026-09-23 runs
+          # 35834326441 and 35871037409 verified, countersigned and committed,
+          # then lost the line to a GitHub 500 on push. A second failure still
+          # fails the run, so a rejection one retry cannot fix stays visible.
+          git push || { sleep 15; git pull --rebase origin main && git push; }
           if [ "$witness_failed" -ne 0 ]; then
             exit "$witness_failed"
           fi
