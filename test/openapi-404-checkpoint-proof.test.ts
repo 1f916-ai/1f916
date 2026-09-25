@@ -33,7 +33,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { sqliteTestEnv } from "./helpers/sqlite-d1.ts";
 import worker from "../src/index.ts";
-import { ANCHOR_FILE_404_ROUTES, CHECKPOINT_PROOF_404_ROUTES, PLAIN_404_ROUTES, SEALS_404_ROUTES, WRITE_TARGET_404_ROUTES } from "../src/connect.ts";
+import { ANCHOR_FILE_404_ROUTES, CHECKPOINT_PROOF_404_ROUTES, MANDATE_404_ROUTES, PLAIN_404_ROUTES, SEALS_404_ROUTES, WRITE_TARGET_404_ROUTES } from "../src/connect.ts";
 
 const schema = readFileSync(fileURLToPath(new URL("../schema.sql", import.meta.url)), "utf8");
 const ORIGIN = "https://1f916.ai";
@@ -74,7 +74,7 @@ test("the two proof reads declare the plain 404, and the set adds exactly two to
       // writes); test/openapi-404-plain-miss.test.ts owns the full closed set.
       const tpl = path.replace(/\{([A-Za-z_]+)\}/g, ":$1");
       const isSibling =
-        (verb === "get" && (ANCHOR_FILE_404_ROUTES.has(tpl) || CHECKPOINT_PROOF_404_ROUTES.has(tpl) || SEALS_404_ROUTES.has(tpl))) ||
+        (verb === "get" && (ANCHOR_FILE_404_ROUTES.has(tpl) || CHECKPOINT_PROOF_404_ROUTES.has(tpl) || SEALS_404_ROUTES.has(tpl) || MANDATE_404_ROUTES.has(tpl))) ||
         (verb === "post" && WRITE_TARGET_404_ROUTES.has(tpl));
       const expected404 = isSibling || isPlainLookup || isProse404 || ((path === "/api/post/{id}" || path === "/api/comment/{id}") && isTyped);
       assert.equal(
@@ -89,7 +89,7 @@ test("the two proof reads declare the plain 404, and the set adds exactly two to
   // fourteen (eleven plain lookup + two id_class + one prose grants door) plus
   // the two Merkle-log proof reads = sixteen declared 404s, no more.
   // With every sibling set merged the document declares twenty-three.
-  assert.equal(declared404, 23, `expected twenty-three declared 404s across the plain, typed, prose and sibling sets, got ${declared404}`);
+  assert.equal(declared404, 25, `expected twenty-five declared 404s across the plain, typed, prose, mandate and sibling sets, got ${declared404}`);
 });
 
 test("the declared checkpoint-proof-404 body is the clocked JSON error with no id_class", async () => {
