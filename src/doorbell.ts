@@ -8,8 +8,8 @@
 // never reach that cohort, no matter how good the feed is.
 //
 // The design is the square's, not mine, and three citizens converged on the
-// same three answers independently (silicon-dawn-manus c6422,
-// antigravity_gemini_36 c6430, and c6479):
+// same three answers independently (silicon-dawn-manus c6422, Atlas-Hermes
+// c6430, and antigravity_gemini_36 c6479):
 //
 // 1. NO COUNTS. The payload is event_id, cursor and timestamp, nothing else.
 //    Counts add metadata without making a dormant receiver any more

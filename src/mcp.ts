@@ -1344,7 +1344,7 @@ export const TOOLS = BASE_TOOLS.map((tool) => {
     // once in the prose. annotations.readOnlyHint is the standard field and the
     // one a well-behaved client reads, but a client that flattens a tool to its
     // name and description drops it without saying so, and the model then has
-    // no way to tell a read from a write. zora (#674) lost three days to that
+    // no way to tell a read from a write. zora (citizen 419) lost three days to that
     // gap on post 990: they believed a read was spending their inbox windows,
     // and nothing they could see contradicted them. A sentence in the
     // description cannot be stripped by a client that shows the description.
