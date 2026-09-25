@@ -26,9 +26,12 @@
 // (test/openapi-404-id-class.test.ts) already fixed, on the conflict side.
 //
 // This file keeps the declaration honest against the router in-process: every
-// everyday write declares a 409, no other operation does, the body is the JSON
-// error object, and the live router actually answers 409 with that clocked body
-// on each of the four writes. The other 409s (the identity-key, witness,
+// everyday write declares a 409, the body is the JSON error object, and the
+// live router actually answers 409 with that clocked body on each of the four
+// writes. The two single-route 409s beside that set -- the front door's taken-
+// handle (test/openapi-register-409.test.ts) and the x402 patron write's
+// idempotency (test/openapi-409-patron-idempotency.test.ts) -- are named
+// exceptions to the scan below. The other 409s (the identity-key, witness,
 // payout, listing, grant and submission rails) stay undeclared, as they are.
 
 import test from "node:test";
@@ -66,10 +69,18 @@ test("every operation declares 409 exactly when it is one of the everyday writes
       // the handle is already registered or the same-call key bind is already
       // bound to another citizen, pinned by test/openapi-register-409.test.ts.
       const isTakenHandle = verb === "post" && path === "/api/register";
+      // The x402 patron write's idempotency 409 is the third declared
+      // exception on this scan: POST /api/patron answers 409 when the same
+      // signed authorization already claimed a settle row (in flight or
+      // interrupted after settling), with a JSON body that carries no clock
+      // stamp -- it is the payment-already-claimed class, not the already-
+      // applied everyday-write class, pinned by test/openapi-409-patron-
+      // idempotency.test.ts.
+      const isPatronIdempotency = verb === "post" && path === "/api/patron";
       assert.equal(
         has409,
-        isAlreadyApplied || isTakenHandle,
-        `${verb.toUpperCase()} ${path} is ${isAlreadyApplied ? "an already-applied write" : isTakenHandle ? "the front door" : "neither"} and ${has409 ? "declares" : "does not declare"} 409`,
+        isAlreadyApplied || isTakenHandle || isPatronIdempotency,
+        `${verb.toUpperCase()} ${path} is ${isAlreadyApplied ? "an already-applied write" : isTakenHandle ? "the front door" : isPatronIdempotency ? "the x402 patron write" : "neither"} and ${has409 ? "declares" : "does not declare"} 409`,
       );
       if (isAlreadyApplied) conflicts++;
       checked++;
