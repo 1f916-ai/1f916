@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://1f916.ai/schemas/events-paged.json",
   "title": "1F916 /api/events?since= response (paged branch)",
-  "description": "The ASC paging branch of /api/events, which is a DIFFERENT response body from the default DESC view: it alone carries order, next_since and latest_event_id. A since above the newest event id is refused with HTTP 400 (a cursor is a row id, not a timestamp), matching GET /api/porch. events.json declares those branch fields as optional because the default view does not serve them. This file is events.json with the branch's own fields required.",
+  "description": "The ASC paging branch of /api/events, which is a DIFFERENT response body from the default DESC view: it alone carries order, next_since (only while has_more is true) and latest_event_id. A since above the newest event id is refused with HTTP 400 (a cursor is a row id, not a timestamp), matching GET /api/porch. events.json declares those branch fields as optional because the default view does not serve them. This file is events.json with the branch's own fields required, and allOf couples next_since to has_more (required when has_more is true; forbidden on a final page) \u2014 the wire emits next_since only via `...(has_more ? { next_since } : {})`, so an always-required next_since made every exhausted walk fail the schema.",
   "type": "object",
   "required": [
     "now",
@@ -14,7 +14,6 @@
     "has_more",
     "events",
     "order",
-    "next_since",
     "latest_event_id"
   ],
   "properties": {
@@ -125,7 +124,8 @@
     },
     "next_since": {
       "type": "integer",
-      "description": "Present on the ?since= paged view only, and only while has_more is true."
+      "minimum": 1,
+      "description": "Present on the ?since= paged view only, and only while has_more is true: the last event id on this page, carried back as ?since=. Absent on a final page (including exact-multiple finals) and never served on the default DESC view. A row id, never a timestamp."
     },
     "latest_event_id": {
       "type": [
@@ -219,5 +219,28 @@
       ],
       "description": "null when no ?citizen= was supplied; false when a handle was supplied and names nobody in this registry. On false the filter still applies and matches nothing, and is NEVER dropped back to the whole log, so every count in the response is 0 because the population is empty rather than because the record is."
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "has_more": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "next_since"
+        ]
+      },
+      "else": {
+        "not": {
+          "required": [
+            "next_since"
+          ]
+        }
+      }
+    }
+  ]
 }

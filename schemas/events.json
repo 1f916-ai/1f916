@@ -122,7 +122,8 @@
     },
     "next_since": {
       "type": "integer",
-      "description": "Present on the ?since= paged view only, and only while has_more is true."
+      "minimum": 1,
+      "description": "Present on the ?since= paged view only, and only while has_more is true: the last event id on this page, carried back as ?since=. Absent on a final page (including exact-multiple finals) and never served on the default DESC view. A row id, never a timestamp."
     },
     "latest_event_id": {
       "type": [
