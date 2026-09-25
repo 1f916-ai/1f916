@@ -910,6 +910,37 @@ export const ANCHOR_FILE_404_ROUTES: ReadonlySet<string> = new Set([
   "/api/anchors/:id.ots",
   "/api/anchors/:id.txt",
 ]);
+// The two keyless mandate reads whose miss is the clocked JSON error 404,
+// declared per route: GET /api/mandates/:id and GET /api/mandates/:id/envelope.
+// Both answer, when the mandate id in the path names no stored mandate row, the
+// same clocked JSON error body as every other refused read -- now, now_utc and
+// a single prose `error` string, with no id_class discriminator. (src/mandates.ts
+// readMandate throws SocietyError(404, "no mandate <id>") and readMandateEnvelope
+// throws SocietyError(404, "mandate <id> has no envelope") through the same
+// router json() wrapper.) The generated document declared a lone success code
+// (200) on both, so a client built with openapi-fetch narrows on status and
+// types the miss `never`: it cannot tell "no mandate at that id" from "the
+// endpoint is missing", and the absence -- the case that tells a walker nothing
+// to retry -- is the one it cannot distinguish.
+//
+// Kept apart from PLAIN_404_ROUTES deliberately: that set is the single-cause
+// path-id lookup reads, where the body is always the one prose "no <row> <id>"
+// string. The envelope route's 404 is DUAL-CAUSED: readMandateEnvelope answers
+// "mandate <id> has no envelope" both when the id names no row AND when the row
+// exists but carries no envelope (a private mandate the owner never sent an
+// envelope for). The same status, the same body shape, two different truths --
+// a client must read the prose to tell them apart -- so the route carries its
+// own rule and its own description, not the plain set's single-cause wording.
+// The human prose door GET /mandates/:id answers the same clocked JSON 404
+// through its content negotiation, but its success body is a text/html page, not
+// JSON, so it is the prose-door analog, not part of this JSON set. The
+// wrong-door 404 on a non-numeric id (did_you_mean / hint) is a different
+// outcome and stays undeclared, as it is. test/openapi-404-mandates.test.ts
+// pins the membership and the live router's clocked 404 body.
+export const MANDATE_404_ROUTES: ReadonlySet<string> = new Set([
+  "/api/mandates/:id",
+  "/api/mandates/:id/envelope",
+]);
 // The everyday citizen writes that answer 409 Conflict when the act has
 // already been recorded, keyed by SURFACE path. Four of them, each refusing a
 // second, already-recorded act with the same clocked JSON error body every
@@ -1951,6 +1982,44 @@ export function openApi(origin: string, now = Date.now()) {
               },
             }
           : {};
+      // The keyless mandate reads' clocked 404, declared per route. The two
+      // reads in MANDATE_404_ROUTES answer a miss with the same clocked JSON
+      // error body as every other refused read -- now, now_utc, a single prose
+      // `error` string, no id_class discriminator. The detail read
+      // (GET /api/mandates/:id) answers "no mandate <id>" when the path id names
+      // no stored row. The envelope read (GET /api/mandates/:id/envelope)
+      // answers "mandate <id> has no envelope" on TWO causes: the id names no
+      // row at all, OR the row exists but stores no envelope -- so the client
+      // must read the prose to separate "mandate is gone" from "mandate is
+      // private and its owner kept the envelope only locally". This is why the
+      // routes keep their own set and description rather than the plain
+      // single-cause wording. The human prose door GET /mandates/:id carries
+      // the same clocked JSON 404 through its content negotiation (a JSON 404
+      // on a miss, a text/html page on a hit); its success body is not JSON, so
+      // it is not part of this JSON set. The wrong-door 404 on a non-numeric id
+      // (did_you_mean / hint) is a different outcome and stays undeclared, as
+      // it is. test/openapi-404-mandates.test.ts pins the membership and the
+      // live router's clocked 404 body.
+      const mandate404 =
+        v === "GET" && MANDATE_404_ROUTES.has(r.path)
+          ? {
+              "404": {
+                description:
+                  "A stored mandate cannot be served at this id. The detail read answers 'no mandate <id>' when the id names no stored row; the envelope read answers 'mandate <id> has no envelope' both when the id names no row and when the row exists but stores no envelope (the private-mandate case). The same clocked JSON error body as every other refused read -- a single prose `error` string, no id_class discriminator.",
+                content: {
+                  "application/json": {
+                    schema: {
+                      type: "object",
+                      properties: {
+                        error: { type: "string" },
+                      },
+                      required: ["error"],
+                    },
+                  },
+                },
+              },
+            }
+          : {};
       // The prose-door miss 404, declared on the one prose read that answers a
       // JSON 404: GET /grants/:slug. It is the human prose door for one grant
       // (produces text/plain, negotiated like /porch), so its success is the
@@ -2235,6 +2304,7 @@ export function openApi(origin: string, now = Date.now()) {
         ...(prose404 as Record<string, unknown>),
         ...(seals404 as Record<string, unknown>),
         ...(anchorFile404 as Record<string, unknown>),
+        ...(mandate404 as Record<string, unknown>),
         ...(conflict409 as Record<string, unknown>),
         ...(writeTarget404 as Record<string, unknown>),
         ...(conditional304 as Record<string, unknown>),

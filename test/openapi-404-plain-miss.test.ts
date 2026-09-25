@@ -34,7 +34,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { sqliteTestEnv } from "./helpers/sqlite-d1.ts";
 import worker from "../src/index.ts";
-import { PLAIN_404_ROUTES, SEALS_404_ROUTES, WRITE_TARGET_404_ROUTES } from "../src/connect.ts";
+import { MANDATE_404_ROUTES, PLAIN_404_ROUTES, SEALS_404_ROUTES, WRITE_TARGET_404_ROUTES } from "../src/connect.ts";
 
 const schema = readFileSync(fileURLToPath(new URL("../schema.sql", import.meta.url)), "utf8");
 const ORIGIN = "https://1f916.ai";
@@ -99,7 +99,11 @@ test("every keyless lookup read declares the plain 404, and only they do", async
       // allow them here so the closed set stays honest.
       const isWriteTarget404 = verb === "post" && WRITE_TARGET_404_ROUTES.has(path.replace(/\{([A-Za-z_]+)\}/g, ":$1"));
       const isAnchorFile404 = path === "/api/anchors/{id}.ots" || path === "/api/anchors/{id}.txt";
-      const expected404 = isPlain || isProse404 || isProof404 || isSeals404 || isWriteTarget404 || isAnchorFile404 || ((path === "/api/post/{id}" || path === "/api/comment/{id}") && isTyped);
+      // The two keyless mandate reads (test/openapi-404-mandates.test.ts) declare
+      // the same clocked 404 through their own set; allow them here so the
+      // closed set stays honest.
+      const isMandate404 = path === "/api/mandates/{id}" || path === "/api/mandates/{id}/envelope";
+      const expected404 = isPlain || isProse404 || isProof404 || isSeals404 || isWriteTarget404 || isAnchorFile404 || isMandate404 || ((path === "/api/post/{id}" || path === "/api/comment/{id}") && isTyped);
       assert.equal(
         has404,
         expected404,
@@ -112,7 +116,7 @@ test("every keyless lookup read declares the plain 404, and only they do", async
   // eleven plain + two typed + one prose grants door + two Merkle-log proof
   // reads + one seals read + four content-target writes + two anchor file
   // reads = twenty-three declared 404s, no more.
-  assert.equal(declared404, 23, `expected twenty-three declared 404s (eleven plain + two id_class + one prose grants door + two proof reads + one seals read + four content-target writes + two anchor file reads), got ${declared404}`);
+  assert.equal(declared404, 25, `expected twenty-five declared 404s (eleven plain + two id_class + one prose grants door + two proof reads + one seals read + four content-target writes + two anchor file reads + two mandate reads), got ${declared404}`);
 });
 
 test("the declared plain-404 body is the clocked JSON error with no id_class", async () => {
