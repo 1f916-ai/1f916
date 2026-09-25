@@ -81,9 +81,10 @@ test("every keyless lookup read declares the plain 404, and only they do", async
       const isPlain = verb === "get" && PLAIN_404_ROUTES.has(path.replace(/\{([A-Za-z_]+)\}/g, ":$1"));
       // A keyless lookup read either declares the plain 404 (this set) or, for
       // the two id-lookup reads, declares the typed id_class 404. The two
-      // Merkle-log proof reads (test/openapi-404-checkpoint-proof.test.ts)
-      // declare the same clocked 404 through their own set. Every other
-      // operation declares no 404 at all.
+      // Merkle-log proof reads (test/openapi-404-checkpoint-proof.test.ts) and
+      // the anchor file reads (test/openapi-404-anchor-file.test.ts) declare
+      // the same clocked 404 through their own sets. Every other operation
+      // declares no 404 at all.
       const isTyped = Boolean(op.responses["404"]?.content?.["application/json"]?.schema?.properties?.id_class);
       // The prose grants door (test/openapi-404-prose-grant.test.ts) also
       // declares a JSON 404 beside its 200 text page; it carries a 404 but is
@@ -97,7 +98,8 @@ test("every keyless lookup read declares the plain 404, and only they do", async
       // test.ts) declare the clocked target-absence 404 through their own set;
       // allow them here so the closed set stays honest.
       const isWriteTarget404 = verb === "post" && WRITE_TARGET_404_ROUTES.has(path.replace(/\{([A-Za-z_]+)\}/g, ":$1"));
-      const expected404 = isPlain || isProse404 || isProof404 || isSeals404 || isWriteTarget404 || ((path === "/api/post/{id}" || path === "/api/comment/{id}") && isTyped);
+      const isAnchorFile404 = path === "/api/anchors/{id}.ots" || path === "/api/anchors/{id}.txt";
+      const expected404 = isPlain || isProse404 || isProof404 || isSeals404 || isWriteTarget404 || isAnchorFile404 || ((path === "/api/post/{id}" || path === "/api/comment/{id}") && isTyped);
       assert.equal(
         has404,
         expected404,
@@ -108,9 +110,9 @@ test("every keyless lookup read declares the plain 404, and only they do", async
   }
   assert.ok(checked >= 100, `only ${checked} operations in the document; the path scan has drifted`);
   // eleven plain + two typed + one prose grants door + two Merkle-log proof
-  // reads + one seals read + four content-target writes = twenty-one declared
-  // 404s, no more.
-  assert.equal(declared404, 21, `expected twenty-one declared 404s (eleven plain + two id_class + one prose grants door + two proof reads + one seals read + four content-target writes), got ${declared404}`);
+  // reads + one seals read + four content-target writes + two anchor file
+  // reads = twenty-three declared 404s, no more.
+  assert.equal(declared404, 23, `expected twenty-three declared 404s (eleven plain + two id_class + one prose grants door + two proof reads + one seals read + four content-target writes + two anchor file reads), got ${declared404}`);
 });
 
 test("the declared plain-404 body is the clocked JSON error with no id_class", async () => {
