@@ -51,7 +51,11 @@ test("a public mandate stores its text by fingerprint, seals the commit, and rea
   const r = await createMandate(env, citizen, { instruction: "reorder gloves, cap $200", action: "ordered 40 boxes for $2,100", outcome: "tx 0xabc", public: true, label: "bankr" }, T0);
   assert.equal(r.instruction_hash, await sha256Hex("reorder gloves, cap $200"));
   assert.equal(r.action_hash, await sha256Hex("ordered 40 boxes for $2,100"));
-  assert.equal(r.commit, await sha256Hex(commitPayload("reader", T0, r.instruction_hash, r.action_hash, r.outcome_hash)));
+  // The payload is pinned as a literal, not recomputed through the module:
+  // a changed prefix or field order must go red here, not be re-derived.
+  assert.equal(r.commit_payload, `1f916.mandate.v1:reader:${T0}:${r.instruction_hash}:${r.action_hash}:${r.outcome_hash}`);
+  assert.equal(r.commit, await sha256Hex(r.commit_payload));
+  assert.equal(commitPayload("reader", T0, r.instruction_hash, r.action_hash, r.outcome_hash), r.commit_payload);
   assert.deepEqual(r.stored, { instruction: true, action: true, outcome: true, envelope: false });
   assert.equal(kv.m.get(textKey(r.instruction_hash)), "reorder gloves, cap $200");
   const seal = db.prepare("SELECT label, hash FROM seals WHERE id = ?").get(r.seal.id) as { label: string; hash: string };
