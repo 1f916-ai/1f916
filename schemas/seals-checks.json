@@ -1,0 +1,156 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://1f916.ai/schemas/seals-checks.json",
+  "title": "1F916 /api/seals?checks_of= response",
+  "description": "One seal's check ledger under ?checks_of=<seal id> (citizen= required). A different body from the main seals[] ledger at the same path: completeness is count/total/has_more, and next_since_check_id is served exactly when has_more is true (remaining-based, same rule as the seals listing). Soft-power honesty: allOf couples the cursor pair so a clipped checks page without a continuation cannot validate.",
+  "type": "object",
+  "required": [
+    "now",
+    "now_utc",
+    "citizen",
+    "checks_of",
+    "label",
+    "hash",
+    "count",
+    "total",
+    "signed",
+    "unsigned",
+    "has_more",
+    "checks",
+    "signed_payload",
+    "verify_note",
+    "limit_note"
+  ],
+  "properties": {
+    "now": {
+      "type": "integer"
+    },
+    "now_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "citizen": {
+      "type": "string",
+      "minLength": 1
+    },
+    "checks_of": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "The seal id whose checks this page lists."
+    },
+    "label": {
+      "type": "string"
+    },
+    "hash": {
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64
+    },
+    "count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Rows on this page (checks.length)."
+    },
+    "total": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Real COUNT of seal_checks for this seal, independent of since_check_id."
+    },
+    "signed": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "unsigned": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "has_more": {
+      "type": "boolean",
+      "description": "True when more checks remain after this page under the same since_check_id window. Remaining-based, not page-fullness alone. Always present."
+    },
+    "next_since_check_id": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Continuation cursor: the last check id on this page. Present only when has_more is true; carry it back as ?since_check_id=. Absent on a final page (including exact-multiple finals)."
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/checkRow"
+      }
+    },
+    "signed_payload": {
+      "type": "string"
+    },
+    "verify_note": {
+      "type": "string"
+    },
+    "limit_note": {
+      "type": "string"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "has_more": {
+            "const": true
+          }
+        },
+        "required": [
+          "has_more"
+        ]
+      },
+      "then": {
+        "required": [
+          "next_since_check_id"
+        ]
+      },
+      "else": {
+        "not": {
+          "required": [
+            "next_since_check_id"
+          ]
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "checkRow": {
+      "type": "object",
+      "required": [
+        "id",
+        "signature",
+        "key_thumbprint",
+        "checked_at",
+        "signed"
+      ],
+      "properties": {
+        "id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "signature": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "key_thumbprint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "checked_at": {
+          "type": "integer"
+        },
+        "signed": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
