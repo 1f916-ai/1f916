@@ -25,7 +25,29 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { LIVE_PROBES, LIVE_SKIP_REASON, LIVE_ORIGIN } from "../helpers/live.ts";
+import { LIVE_PROBES, LIVE_SKIP_REASON, LIVE_ORIGIN, liveFetch } from "../helpers/live.ts";
+import { rateLimitPolicy, RATE_LIMIT_POLICY_HEADER } from "../../src/connect.ts";
+
+// The header the deployed Worker names the policy in is the policy the deployed
+// official page publishes. Both are built from one constant in source
+// (src/society.ts RATE_LIMIT), and test/openapi-429-edge-rate-limit.test.ts
+// pins that in-process; this is the only check that reads the DEPLOYED header
+// against the DEPLOYED page, which is what catches a deploy that shipped one
+// and not the other. Paced through liveFetch, and first in the file, so it
+// never spends the burst budget the trip test below depends on.
+test("the served RateLimit-Policy header is built from the published rate limit", { skip: LIVE_PROBES ? false : LIVE_SKIP_REASON }, async () => {
+  const official = (await (await liveFetch(`${LIVE_ORIGIN}/api/official`)).json()) as {
+    rate_limit: { requests: number; period_seconds: number };
+  };
+  const pulse = await liveFetch(`${LIVE_ORIGIN}/api/pulse`);
+  await pulse.body?.cancel();
+  assert.equal(pulse.headers.get(RATE_LIMIT_POLICY_HEADER), rateLimitPolicy(official.rate_limit), "the served policy is the published pair");
+  assert.equal(pulse.headers.get("RateLimit"), null, "no remaining/reset field: the Worker cannot see the edge counter");
+  // And not on a path the rule does not count.
+  const front = await liveFetch(`${LIVE_ORIGIN}/`);
+  await front.body?.cancel();
+  assert.equal(front.headers.get(RATE_LIMIT_POLICY_HEADER), null, "the front door is outside the rule and carries no policy");
+});
 
 test("the published rate limit is enforced at the edge", { skip: LIVE_PROBES ? false : LIVE_SKIP_REASON }, async () => {
   const official = (await (await fetch(`${LIVE_ORIGIN}/api/official`)).json()) as {
@@ -36,13 +58,20 @@ test("the published rate limit is enforced at the edge", { skip: LIVE_PROBES ? f
   assert.ok(Number.isInteger(mitigation_seconds) && mitigation_seconds > 0, "a published mitigation window");
   assert.equal(per_minute_equivalent, Math.round((requests * 60) / period_seconds), "the per-minute figure is the same rule");
 
+  // The edge 429 declared in /openapi.json says Retry-After rides on it and
+  // the body is plain text, not JSON; the refusal this burst provokes is the
+  // one place those two claims can be read off the wire, so they are kept.
+  let refused: { retryAfter: string | null; contentType: string } | null = null;
   const burst = async (n: number) => {
     const codes: number[] = [];
     for (let i = 0; i < n; i++) {
       const res = await fetch(`${LIVE_ORIGIN}/api/pulse`);
       await res.body?.cancel();
       codes.push(res.status);
-      if (res.status === 429) break;
+      if (res.status === 429) {
+        refused = { retryAfter: res.headers.get("retry-after"), contentType: res.headers.get("content-type") ?? "" };
+        break;
+      }
     }
     return codes;
   };
@@ -71,6 +100,10 @@ test("the published rate limit is enforced at the edge", { skip: LIVE_PROBES ? f
   await clear();
   const over = await burst(requests + 5);
   assert.ok(over.includes(429), `exceeding the published limit must be refused; got ${over.join(",")}`);
+  const r = refused as { retryAfter: string | null; contentType: string } | null;
+  assert.ok(r, "the refusal was captured");
+  assert.match(r.retryAfter ?? "", /^\d+$/, `the edge 429 carries Retry-After in delta-seconds, as declared; got ${r.retryAfter}`);
+  assert.match(r.contentType, /^text\/plain/, `the edge 429 is the plain-text page, as declared, not ${r.contentType}`);
 
   // And the block lifts: it is a pause, not a ban.
   await clear();

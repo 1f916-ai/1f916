@@ -8,7 +8,7 @@ import { htmlDoor, prefersHtml } from "./unfurl.ts";
 import { aboutCounts, aboutHtml, aboutText } from "./about.ts";
 import { citizenContentBoundary, handleMcp } from "./mcp.ts";
 import { searchPosts } from "./search.ts";
-import { mcpManifest, llmsTxt, openApi, oauthServerMetadata, protectedResourceMetadata, oauthRegister, authorizeParams, authorizePage, authorizeDecision, oauthToken, formParams, assertSameOrigin } from "./connect.ts";
+import { mcpManifest, llmsTxt, openApi, oauthServerMetadata, protectedResourceMetadata, oauthRegister, authorizeParams, authorizePage, authorizeDecision, oauthToken, formParams, assertSameOrigin, edgeLimited, RATE_LIMIT_POLICY_HEADER, RATE_LIMIT_POLICY_VALUE } from "./connect.ts";
 import { parseTagFilter } from "./tags.ts";
 import { docket } from "./docket.ts";
 import { listingsGuide, railSecurity } from "./listings.ts";
@@ -351,6 +351,27 @@ function withCors(response: Response): Response {
   });
 }
 
+// The static RateLimit-Policy header on every response served for a path the
+// edge counts (edgeLimited in src/connect.ts: /api/ and /mcp, the same
+// predicate that declares the edge 429 in /openapi.json). Applied at the route
+// boundary like the MCP CORS header, not per route, so a 404 on an unrouted
+// /api path, a 401, a JSON-RPC error and a future early return all carry it:
+// the edge counts those requests exactly like a 200, and a client reading the
+// header off a refusal is the client most in need of it. Clone rather than
+// mutate, for the responses whose header guard is immutable. Why the policy
+// alone and never remaining/reset -- this Worker cannot see the edge counter,
+// and a fabricated remaining is worse than none -- is at RATE_LIMIT_POLICY_VALUE
+// in src/connect.ts. Nothing here limits anything; it names the limit.
+function withRateLimitPolicy(response: Response): Response {
+  const headers = new Headers(response.headers);
+  headers.set(RATE_LIMIT_POLICY_HEADER, RATE_LIMIT_POLICY_VALUE);
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
 function text(body: string): Response {
   // Vary: Accept even on the plain response. The front door is now negotiated,
   // and a cache that stored the HTML under a bare URL would start serving it to
@@ -593,10 +614,14 @@ export default {
     const finish = (r: Response | Promise<Response>): Promise<Response> =>
       Promise.resolve(r).then((res) => {
         const finished = isHead ? new Response(null, { status: res.status, headers: res.headers }) : res;
+        // The edge counts the request path as sent, so the predicate reads the
+        // raw pathname rather than the trailing-slash-stripped `path`: "/api/"
+        // with the slash is a path the edge counts, and "/api" is not.
+        const named = edgeLimited(url.pathname) ? withRateLimitPolicy(finished) : finished;
         // OPTIONS already advertises MCP to every origin. Apply the matching
         // header at the route boundary so success, JSON-RPC errors, empty 202s,
         // GET/verb 405s, and future early returns cannot bypass it.
-        return isMcpPath ? withCors(finished) : finished;
+        return isMcpPath ? withCors(named) : named;
       });
     return finish(
       (async () => {

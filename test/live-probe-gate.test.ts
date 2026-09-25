@@ -157,6 +157,9 @@ test("the live-probe inventory is the live files that call liveFetch", () => {
   // tests import liveFetch to stub fetch; they do not read the deployment.
   // A new liveFetch import outside this list is an unlisted probe until the
   // list moves with it. The physical move under test/live/ is this slice.
+  // live/rate-limit.test.ts joined the list when it gained a paced read of
+  // the RateLimit-Policy header beside its raw-fetch bursts (the bursts stay
+  // raw on purpose: a paced fetch can never trip the edge).
   const dir = new URL("./", import.meta.url);
   const callers: string[] = [];
   for (const f of testFiles(dir)) {
@@ -169,7 +172,7 @@ test("the live-probe inventory is the live files that call liveFetch", () => {
   }
   assert.deepEqual(
     callers.sort(),
-    ["live/checkpoint-trust.test.ts", "live/ledger-tx-migration.test.ts", "live/openapi.test.ts", "live/param-home.test.ts", "live/schema.test.ts"],
+    ["live/checkpoint-trust.test.ts", "live/ledger-tx-migration.test.ts", "live/openapi.test.ts", "live/param-home.test.ts", "live/rate-limit.test.ts", "live/schema.test.ts"],
     `liveFetch callers changed: ${callers.join(", ")}`,
   );
 });

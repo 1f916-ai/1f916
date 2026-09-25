@@ -69,11 +69,14 @@ test("no other operation claims the listing-budget 429", async () => {
   const doc = (await (await worker.fetch(new Request(`${ORIGIN}/openapi.json`), env)).json()) as {
     paths: Record<string, Record<string, { responses: Record<string, unknown> }>>;
   };
+  // A claimant declares the JSON 429 body. Every edge-counted operation
+  // declares a 429 for the edge page (test/openapi-429-edge-rate-limit.test.ts),
+  // so the bare status no longer names a budget.
   const claimants: string[] = [];
   for (const [path, ops] of Object.entries(doc.paths)) {
     for (const [verb, op] of Object.entries(ops)) {
       if (
-        Object.keys(op.responses).includes("429") &&
+        (op.responses["429"] as { content?: Record<string, unknown> } | undefined)?.content?.["application/json"] !== undefined &&
         !(verb === "post" && path === "/api/listings")
       ) {
         // The four per-day writes own the daily-cap 429
@@ -115,7 +118,10 @@ test("the declared listing-budget 429 carries the JSON error body, not an empty 
   };
   const body = doc.paths["/api/listings"].post.responses["429"];
   assert.ok(body, "POST /api/listings declares 429 with no body");
-  assert.deepEqual(Object.keys(body.content ?? {}), ["application/json"], "429 content");
+  // The JSON budget body, and beside it the edge rate limit's plain-text page:
+  // the path is edge-counted, so the one 429 carries both, keyed by media type
+  // (test/openapi-429-edge-rate-limit.test.ts owns the text/plain side).
+  assert.deepEqual(Object.keys(body.content ?? {}).sort(), ["application/json", "text/plain"], "429 content");
   assert.match(body.description ?? "", /listing budget|24h/i, "429 description names the window it rolls");
 });
 

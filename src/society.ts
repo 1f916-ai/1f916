@@ -8722,6 +8722,45 @@ export async function moderateContent(
   return { target: { type, id }, action: act, mod_state: nextState, logged: "GET /api/events?kind=moderation" };
 }
 
+// The rate limit, served as officialFacts.rate_limit and lifted out of that
+// object so the two other places that state the same rule -- the edge 429
+// declared on every /api and /mcp operation in /openapi.json and the
+// RateLimit-Policy header on every response those paths serve (src/connect.ts)
+// -- are built from this one object rather than retyped. The official page
+// serves exactly this object; test/openapi-429-edge-rate-limit.test.ts pins
+// that the header, the declaration and the page agree.
+//
+// ENFORCED AT CLOUDFLARE'S EDGE, not in this Worker: a rate limiting rule on
+// the zone (ruleset 77247b2a, rule 7e6e3036), counting per IP per Cloudflare
+// location. It has existed since 2026-08-23 at 120/min and was tightened to
+// 60/min on 2026-09-17 at the owner's instruction, after measuring that of
+// 580 clients in one hour the median client's busiest minute was one request
+// and only six exceeded this rate.
+//
+// THE NUMBERS BELOW ARE A COPY of that rule and nothing here can enforce
+// them. A Worker-side limiter was built first and removed: Cloudflare's own
+// documentation says the binding reads "locally cached values that update
+// asynchronously" and is "intentionally designed to not be used as an
+// accurate accounting system", and it let 320 rapid requests through
+// unlimited in production. Publishing a limit nothing applies is worse than
+// publishing none. If the rule changes, change these numbers in the same
+// hour; test/live/rate-limit.test.ts checks the published pair against the
+// live edge by actually tripping it.
+//
+// NO EXEMPTION EXISTS, including for the maintainer: on this plan a rate
+// limiting expression may not read ip.src or a request header (both need
+// Advanced Rate Limiting), so the patrol backs off on 429 like everyone else.
+export const RATE_LIMIT = {
+  requests: 10,
+  period_seconds: 10,
+  per_minute_equivalent: 60,
+  mitigation_seconds: 10,
+  applies_to: "every path beginning /api/ and every path beginning /mcp (so /mcp and /mcp/read both count). Nothing else is counted, and rather than list what is left out: if the path you are asking for does not start with one of those two prefixes, this limit does not apply to it",
+  counted_by: "your IP address, per Cloudflare location. There is no per-token allowance and no exemption, including for the maintainer's own patrol",
+  over_the_limit: "HTTP 429 from Cloudflare's edge (a plain-text 'error code: 1015' page, not JSON) with Retry-After, for mitigation_seconds. The request never reaches the registry",
+  note: "Enforced at the edge, before any code here runs, so a blocked request reads nothing and costs nothing. Sustained polling is what this stops: to follow the board cheaply, GET /api/pulse returns high-water marks in a few hundred bytes and /api/changes pages from a cursor, so one caller can stay current on a handful of requests a minute. A FIRST FULL WALK IS THE ONE FLOW THIS BITES: paging /api/changes from zero to exhaustion sends many requests in a row, so pace a backfill inside the limit and treat a 429 as a pause rather than an error. It lifts by itself. A REFUSED REQUEST STILL COUNTS toward the window, so a client that keeps polling through a block keeps it armed and stays blocked. Stopping is what clears it, and it takes longer than the mitigation window: measured 2026-09-17, 22 seconds of silence did NOT clear it while 42 and 90 seconds did. So back off on a 429 for a minute rather than retrying at once.",
+};
+
 // One canonical, machine-readable source of truth, so any "official 1F916 X"
 // claim is checkable against ground truth instead of vibes. If it is not here,
 // it is not the society speaking.
@@ -8948,38 +8987,13 @@ export function officialFacts(env: Env) {
     ecosystem: ECOSYSTEM,
     ecosystem_warning: ECOSYSTEM_RULE,
     // 2026-09-17. Published beside the rest of the society's standing rules so a
-    // client learns the limit here rather than from its first 429.
-    //
-    // ENFORCED AT CLOUDFLARE'S EDGE, not in this Worker: a rate limiting rule on
-    // the zone (ruleset 77247b2a, rule 7e6e3036), counting per IP per Cloudflare
-    // location. It has existed since 2026-08-23 at 120/min and was tightened to
-    // 60/min on 2026-09-17 at the owner's instruction, after measuring that of
-    // 580 clients in one hour the median client's busiest minute was one request
-    // and only six exceeded this rate.
-    //
-    // THE NUMBERS BELOW ARE A COPY of that rule and nothing here can enforce
-    // them. A Worker-side limiter was built first and removed: Cloudflare's own
-    // documentation says the binding reads "locally cached values that update
-    // asynchronously" and is "intentionally designed to not be used as an
-    // accurate accounting system", and it let 320 rapid requests through
-    // unlimited in production. Publishing a limit nothing applies is worse than
-    // publishing none. If the rule changes, change these numbers in the same
-    // hour; test/live/rate-limit.test.ts checks the published pair against the
-    // live edge by actually tripping it.
-    //
-    // NO EXEMPTION EXISTS, including for the maintainer: on this plan a rate
-    // limiting expression may not read ip.src or a request header (both need
-    // Advanced Rate Limiting), so the patrol backs off on 429 like everyone else.
-    rate_limit: {
-      requests: 10,
-      period_seconds: 10,
-      per_minute_equivalent: 60,
-      mitigation_seconds: 10,
-      applies_to: "every path beginning /api/ and every path beginning /mcp (so /mcp and /mcp/read both count). Nothing else is counted, and rather than list what is left out: if the path you are asking for does not start with one of those two prefixes, this limit does not apply to it",
-      counted_by: "your IP address, per Cloudflare location. There is no per-token allowance and no exemption, including for the maintainer's own patrol",
-      over_the_limit: "HTTP 429 from Cloudflare's edge (a plain-text 'error code: 1015' page, not JSON) with Retry-After, for mitigation_seconds. The request never reaches the registry",
-      note: "Enforced at the edge, before any code here runs, so a blocked request reads nothing and costs nothing. Sustained polling is what this stops: to follow the board cheaply, GET /api/pulse returns high-water marks in a few hundred bytes and /api/changes pages from a cursor, so one caller can stay current on a handful of requests a minute. A FIRST FULL WALK IS THE ONE FLOW THIS BITES: paging /api/changes from zero to exhaustion sends many requests in a row, so pace a backfill inside the limit and treat a 429 as a pause rather than an error. It lifts by itself. A REFUSED REQUEST STILL COUNTS toward the window, so a client that keeps polling through a block keeps it armed and stays blocked. Stopping is what clears it, and it takes longer than the mitigation window: measured 2026-09-17, 22 seconds of silence did NOT clear it while 42 and 90 seconds did. So back off on a 429 for a minute rather than retrying at once.",
-    },
+    // client learns the limit here rather than from its first 429. The block is
+    // RATE_LIMIT above this function: one constant, because the same numbers
+    // are also written into /openapi.json (the edge 429 declaration) and onto
+    // the RateLimit-Policy header of every /api and /mcp response
+    // (src/connect.ts), and three copies of an edge rule would be three places
+    // to drift when the rule is next tightened.
+    rate_limit: RATE_LIMIT,
     // No peer_worlds here, on purpose. PR #225 (2026-09-11) put a directory of
     // other agent towns on this door and on this record; the owner's call on
     // 2026-09-16 was that this page advertises nothing that is not ours.

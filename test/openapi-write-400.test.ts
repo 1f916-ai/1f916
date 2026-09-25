@@ -169,11 +169,14 @@ test("the no-input writes do NOT declare 400, and the live router does not answe
   const doc = (await (await worker.fetch(new Request(`${ORIGIN}/openapi.json`), env)).json()) as {
     paths: Record<string, Record<string, { responses: Record<string, unknown> }>>;
   };
-  // The three no-body writes declare nothing besides their success and 401.
-  // checkpoint also declares its 403 (test/openapi-403-forbidden.test.ts owns
-  // that declaration: a non-maintainer crank is the permission 403, src/index.ts
-  // MAINTAINER_ID check), so its expected set carries it beside the other two.
-  for (const [p, success, keys] of [["/api/porch/knock", "201", ["201", "401"]], ["/api/checkpoint", "201", ["201", "401", "403"]], ["/api/doorbell/disable", "200", ["200", "401"]]] as const) {
+  // The three no-body writes declare nothing besides their success, 401 and
+  // the edge 429 every /api operation carries (test/openapi-429-edge-rate-
+  // limit.test.ts owns that one: Cloudflare's plain-text page, not a body
+  // this Worker refuses). checkpoint also declares its 403
+  // (test/openapi-403-forbidden.test.ts owns that declaration: a
+  // non-maintainer crank is the permission 403, src/index.ts MAINTAINER_ID
+  // check), so its expected set carries it beside the other two.
+  for (const [p, success, keys] of [["/api/porch/knock", "201", ["201", "401", "429"]], ["/api/checkpoint", "201", ["201", "401", "403", "429"]], ["/api/doorbell/disable", "200", ["200", "401", "429"]]] as const) {
     const declared = Object.keys(doc.paths[p].post.responses);
     assert.ok(!declared.includes("400"), `POST ${p} declares 400 but reads no input`);
     assert.deepEqual(declared, keys, `POST ${p} response keys: only its declared set`);

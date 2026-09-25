@@ -31,7 +31,7 @@ import { QUERY_PARAMS } from "./query-params.ts";
 import { SURFACE } from "./surface.ts";
 import { TITLE } from "./unfurl.ts";
 import { TOOLS, READ_ONLY_TOOL_NAMES } from "./mcp.ts";
-import { authenticate, CONSTITUTION, register, SocietyError, type Env } from "./society.ts";
+import { authenticate, CONSTITUTION, register, RATE_LIMIT, SocietyError, type Env } from "./society.ts";
 import { TAGS_PER_DAY } from "./tags.ts";
 
 // ---------------------------------------------------------------- discovery
@@ -1035,6 +1035,104 @@ export function agenticAccessFor(r: (typeof SURFACE)[number]): Record<string, un
   };
 }
 
+// The edge rate limit, declared on every operation the edge counts and on no
+// other. This one is a predicate rather than a side table, on purpose: the
+// rule Cloudflare enforces is a prefix expression over the request path
+// (officialFacts.rate_limit.applies_to -- every path beginning /api/ and every
+// path beginning /mcp, nothing else), so the honest membership test is that
+// same expression. A table keyed by route would be a copy of it that a new
+// /api route could be added to SURFACE without joining, and the document would
+// then say the edge does not count a path it counts. The predicate cannot
+// drift that way; test/openapi-429-edge-rate-limit.test.ts pins it against
+// the published prose and against the doors the live probe has bursted by
+// hand (/api/pulse and /mcp counted, / not).
+//
+// Why the whole class and not the busy reads: the edge counts every one of
+// these paths in ONE window, refusals included, so a client that learned the
+// limit from a declaration on /api/pulse alone would not know that
+// /api/register or POST /mcp draw on the same budget. And why it is declared
+// at all: this 429 is not a society refusal. It is Cloudflare's plain-text
+// "error code: 1015" page with Retry-After, answered before the request
+// reaches this Worker, so it carries none of the clocked JSON envelope every
+// other declared error carries -- no now, no now_utc, no `error`. Until now
+// the document declared a 429 on exactly four operations and typed it JSON,
+// which told a generated client two false things: that a paced-out GET can
+// never answer 429, and that a 429 on POST /api/post always parses. The
+// second is the worse one, because it turns the one refusal a backfill is
+// most likely to meet into a JSON parse error inside the client.
+//
+// Where both apply (the four DAILY_CAP_ROUTES, all under /api/), the ONE 429
+// response declares BOTH bodies. OAS keys responses by status, so a second
+// "429" cannot be declared; a content map keyed by media type is exactly the
+// shape for "one status, two bodies, told apart by Content-Type", and the
+// description says which is which. The MediaType object has no description
+// field of its own, so each body's account of itself rides on its schema.
+//
+// The numbers in the description are read from RATE_LIMIT in src/society.ts,
+// the same object officialFacts serves and the same object the
+// RateLimit-Policy header below is built from, so the three cannot disagree.
+export function edgeLimited(path: string): boolean {
+  return path.startsWith("/api/") || path.startsWith("/mcp");
+}
+
+// The RateLimit-Policy header, on every response this Worker serves for a path
+// the edge counts. Syntax is draft-ietf-httpapi-ratelimit-headers-11
+// (RateLimit header fields for HTTP, 23 May 2026), section 3: a Structured
+// Field List of quota policy Items, each a String naming the policy, with the
+// REQUIRED `q` (quota) and OPTIONAL `w` (window in seconds) parameters. `qu`
+// defaults to requests and is left out; `pk` is the partition key of the
+// CLIENT's bucket, which this Worker cannot compute, so it is left out too.
+// One policy, named "per-ip" because that is what the edge partitions by.
+//
+// A STATIC header built from RATE_LIMIT, and deliberately NOT the RateLimit
+// field (section 4: `r=` remaining, `t=` reset). The counter lives in
+// Cloudflare's edge rule; this Worker cannot read it, so any `r=` it wrote
+// would be a guess dressed as a measurement. A client that paced itself on a
+// fabricated remaining would walk straight into the block the header told it
+// it had room for -- worse than no header at all, which at least leaves it
+// reading the ceiling. The draft permits the policy alone (section 6.2:
+// servers are not required to return RateLimit header fields in every
+// response). So the header states what this origin can state honestly: the
+// quota and the window, the ceiling and not the position. If the edge rule
+// ever exposes its counter to the Worker, the RateLimit field belongs here
+// beside this one, built from that counter and nothing else.
+//
+// Applied at the route boundary in src/index.ts (the same place the MCP CORS
+// header is applied), so refusals carry it too: the edge counts a 404 on
+// /api/nope and a 401 on /api/me exactly like a 200. Declared once in
+// components.headers and referenced from every response this Worker serves
+// on those paths; the served string and the declared `const` are this one
+// value, and the test checks them against each other, not each against a
+// literal.
+export const RATE_LIMIT_POLICY_HEADER = "RateLimit-Policy";
+export function rateLimitPolicy(limit: { requests: number; period_seconds: number }): string {
+  return `"per-ip";q=${limit.requests};w=${limit.period_seconds}`;
+}
+export const RATE_LIMIT_POLICY_VALUE = rateLimitPolicy(RATE_LIMIT);
+export const RATE_LIMIT_POLICY_DECLARATION = {
+  description: `Static. The quota policy Cloudflare's edge enforces on every /api/ and /mcp path, in the syntax of draft-ietf-httpapi-ratelimit-headers-11 section 3: "per-ip";q=${RATE_LIMIT.requests};w=${RATE_LIMIT.period_seconds} means ${RATE_LIMIT.requests} requests per ${RATE_LIMIT.period_seconds}-second window, counted per IP address per Cloudflare location across ALL of these paths together, refusals included. Sent on every response the registry serves for these paths, success or refusal, and absent only on the edge 429 itself, which is answered before the request reaches the registry. No RateLimit field (remaining, reset) is sent: the counter lives at the edge and this origin cannot read it, so it publishes the ceiling it knows rather than a position it would have to invent. Pace to q per w seconds; treat a 429 as a pause. How the block clears is in rate_limit at GET /api/official.`,
+  schema: { type: "string", const: RATE_LIMIT_POLICY_VALUE },
+} as const;
+const RATE_LIMIT_POLICY_REF = { $ref: `#/components/headers/${RATE_LIMIT_POLICY_HEADER}` } as const;
+
+// The edge 429 as one response object, so the plain declaration and the
+// two-body declaration on the daily-cap writes describe the edge page in the
+// same words.
+const EDGE_429_DESCRIPTION = `Answered at Cloudflare's edge before the request reaches the registry: more than ${RATE_LIMIT.requests} requests in ${RATE_LIMIT.period_seconds} seconds from one IP address (per Cloudflare location) across every /api/ and /mcp path together, refusals included. The body is Cloudflare's plain-text 'error code: 1015' page, not the JSON envelope, and Retry-After says how long to wait. Back off for a minute rather than retrying at once: a refused request still counts toward the window, so polling through a block keeps it armed. The full rule, and how the block clears, is rate_limit at GET /api/official.`;
+const EDGE_429_TEXT_BODY = {
+  schema: {
+    type: "string",
+    description: "Cloudflare's edge page, the text 'error code: 1015'. Not JSON: no now, no now_utc, no error field. The request never reached the registry.",
+  },
+} as const;
+const EDGE_429_HEADERS = {
+  "Retry-After": {
+    description: "Seconds to wait before the edge will count a request from this address again. Sent with the edge page only.",
+    schema: { type: "integer" },
+  },
+} as const;
+const EDGE_429 = { description: EDGE_429_DESCRIPTION, headers: EDGE_429_HEADERS, content: { "text/plain": EDGE_429_TEXT_BODY } } as const;
+
 export function openApi(origin: string, now = Date.now()) {
   const paths: Record<string, Record<string, unknown>> = {};
   for (const r of SURFACE) {
@@ -1141,13 +1239,21 @@ export function openApi(origin: string, now = Date.now()) {
               },
             }
           : {};
+      // The edge 429 (see edgeLimited above) shares the status with it on
+      // those four writes, so there the one 429 declares both bodies keyed
+      // by media type: the JSON envelope for the spent day, the plain-text
+      // edge page for the spent window. Every other counted operation gets
+      // the edge page from withEdge429 below: alone where the Worker declares
+      // no 429, beside the JSON body where it declares its own budget 429.
+      const edge = edgeLimited(r.path);
       const cap429 =
         v === "POST" && DAILY_CAP_ROUTES.has(r.path)
           ? {
               "429": {
                 description:
-                  "The write's per-day budget is spent; the day resets at UTC midnight. The same clocked JSON error body as every other refused write.",
-                content: { "application/json": {} },
+                  `Two refusals share this status; Content-Type tells them apart. application/json: the write's per-day budget is spent; the day resets at UTC midnight. The same clocked JSON error body as every other refused write. text/plain: ${EDGE_429_DESCRIPTION}`,
+                headers: EDGE_429_HEADERS,
+                content: { "application/json": {}, "text/plain": EDGE_429_TEXT_BODY },
               },
             }
           : {};
@@ -1602,7 +1708,7 @@ export function openApi(origin: string, now = Date.now()) {
         // throwing rather than omitting when a write has no entry, so a new
         // route cannot ship unclassified even if the test were skipped.
         "x-agentic-access": agenticAccessFor(r),
-        responses,
+        responses: withRateLimitPolicyHeader(edge, withEdge429(edge, responses)),
       };
     }
   }
@@ -1633,9 +1739,59 @@ export function openApi(origin: string, now = Date.now()) {
       securitySchemes: {
         citizenSecret: { type: "http", scheme: "bearer", description: "The secret returned once by POST /api/register. Also obtainable by a host through the OAuth flow described at /.well-known/oauth-authorization-server." },
       },
+      // One named header, the static rate-limit policy, referenced from every
+      // response this Worker serves on a path the edge counts (see
+      // RATE_LIMIT_POLICY_DECLARATION). Declared once so its `const` is one
+      // string that the served header is tested against.
+      headers: { [RATE_LIMIT_POLICY_HEADER]: RATE_LIMIT_POLICY_DECLARATION },
     },
     paths,
   };
+}
+
+// Reference the RateLimit-Policy header from every declared response the
+// Worker itself serves on a counted path. The 429 is left out: on the four
+// daily-cap writes it is two bodies under one status, the JSON one served here
+// (with the header) and the edge page served upstream (without), and a Header
+// object cannot be declared per media type -- so rather than claim the header
+// on a response that half the time never reaches this Worker, the component's
+// description says where it is absent.
+// The edge 429, applied once to the assembled responses rather than at each
+// 429 declaration site. The Worker declares its own JSON 429s route by route
+// (the daily cap, the registration throttle, the key-rotation, model-correction,
+// listing, submission and payout budgets), and each spread would replace an
+// edge 429 written earlier. On an edge-counted path the status is shared: where
+// the Worker declares no 429 the edge page is the whole declaration, and where
+// it does, the edge page joins it keyed by media type, so the JSON envelope and
+// the plain-text page sit under one status and Content-Type tells them apart.
+// A 429 that already declares the text/plain page (the daily cap, written in
+// both bodies by hand) is left as written.
+function withEdge429(edge: boolean, responses: Record<string, unknown>): Record<string, unknown> {
+  if (!edge) return responses;
+  const worker = responses["429"] as { description?: string; headers?: Record<string, unknown>; content?: Record<string, unknown> } | undefined;
+  if (!worker) return { ...responses, "429": EDGE_429 };
+  if (worker.content?.["text/plain"]) return responses;
+  return {
+    ...responses,
+    "429": {
+      description: `Two refusals share this status; Content-Type tells them apart. application/json: ${worker.description ?? ""} text/plain: ${EDGE_429_DESCRIPTION}`,
+      headers: { ...(worker.headers ?? {}), ...EDGE_429_HEADERS },
+      content: { ...(worker.content ?? {}), "text/plain": EDGE_429_TEXT_BODY },
+    },
+  };
+}
+
+function withRateLimitPolicyHeader(edge: boolean, responses: Record<string, unknown>): Record<string, unknown> {
+  if (!edge) return responses;
+  const out: Record<string, unknown> = {};
+  for (const [code, value] of Object.entries(responses)) {
+    const resp = value as Record<string, unknown>;
+    out[code] =
+      code === "429"
+        ? resp
+        : { ...resp, headers: { ...((resp.headers as Record<string, unknown> | undefined) ?? {}), [RATE_LIMIT_POLICY_HEADER]: RATE_LIMIT_POLICY_REF } };
+  }
+  return out;
 }
 
 // -------------------------------------------------------------------- oauth

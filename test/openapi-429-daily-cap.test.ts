@@ -15,9 +15,20 @@
 //
 // This file keeps the declaration honest against the router in-process: every
 // everyday write declares a 429, no other operation does, the body is the JSON
-// error object, and the live router actually answers 429 with that body. Every other budget 429 is declared; the registration
-// throttle's 429 and the key-rotation 429 are the declared exceptions
-// (test/openapi-429-registration-throttle.test.ts).
+// error object, and the live router actually answers 429 with that body. The
+// other budget 429s (the registration throttle, key rotation, model
+// correction, the listing / submission / payout budgets) declare the same JSON
+// body and are the declared exceptions on this scan, each owned by its own file
+// (test/openapi-429-registration-throttle.test.ts and its neighbours).
+//
+// Since the edge rate limit was declared (src/connect.ts edgeLimited,
+// test/openapi-429-edge-rate-limit.test.ts), every /api and /mcp operation
+// declares a 429 for Cloudflare's plain-text page, so "no other operation
+// declares 429" is no longer the claim. The claim this file keeps is narrower
+// and still exact: a JSON 429 BODY is declared on the four everyday writes
+// and the declared exceptions, and on no other operation. On those four the one 429 carries both
+// bodies keyed by media type -- OAS keys responses by status, so the JSON
+// envelope and the edge page share the key and Content-Type tells them apart.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -38,16 +49,16 @@ test("DAILY_CAP_ROUTES is exactly the four everyday per-day writes", () => {
   );
 });
 
-test("every operation declares 429 exactly when it is one of the everyday writes", async () => {
+test("every operation declares the JSON daily-cap 429 body exactly when it is one of the everyday writes", async () => {
   const { env } = sqliteTestEnv(schema);
   const doc = (await (await worker.fetch(new Request(`${ORIGIN}/openapi.json`), env)).json()) as {
-    paths: Record<string, Record<string, { responses: Record<string, unknown> }>>;
+    paths: Record<string, Record<string, { responses: Record<string, { content?: Record<string, unknown> }> }>>;
   };
   let checked = 0;
   let caps = 0;
   for (const [path, ops] of Object.entries(doc.paths)) {
     for (const [verb, op] of Object.entries(ops)) {
-      const has429 = Object.keys(op.responses).includes("429");
+      const has429 = op.responses["429"]?.content?.["application/json"] !== undefined;
       const isDailyCap = verb === "post" && DAILY_CAP_ROUTES.has(path.replace(/\{([A-Za-z_]+)\}/g, ":$1"));
       // The registration door's throttle 429
       // (test/openapi-429-registration-throttle.test.ts), the key-rotation
@@ -67,7 +78,7 @@ test("every operation declares 429 exactly when it is one of the everyday writes
       assert.equal(
         has429,
         isDailyCap || isDeclaredException,
-        `${verb.toUpperCase()} ${path} is ${isDailyCap ? "a per-day write" : isDeclaredException ? "a declared 429 exception" : "neither"} and ${has429 ? "declares" : "does not declare"} 429`,
+        `${verb.toUpperCase()} ${path} is ${isDailyCap ? "a per-day write" : isDeclaredException ? "a declared 429 exception" : "neither"} and ${has429 ? "declares" : "does not declare"} the JSON 429 body`,
       );
       if (isDailyCap) caps++;
       checked++;
@@ -86,7 +97,10 @@ test("the declared 429 carries the JSON error body, not an empty default", async
     const op = doc.paths[p].post;
     const body = op.responses["429"];
     assert.ok(body, `POST ${p} declares 429 with no body`);
-    assert.deepEqual(Object.keys(body.content ?? {}), ["application/json"], `POST ${p} 429 content`);
+    // Both bodies under the one status: the JSON envelope this Worker serves
+    // for the spent day and the plain-text page the edge serves for the spent
+    // window (test/openapi-429-edge-rate-limit.test.ts owns the second).
+    assert.deepEqual(Object.keys(body.content ?? {}).sort(), ["application/json", "text/plain"], `POST ${p} 429 content`);
     assert.match(body.description ?? "", /per-day budget|UTC midnight/, `POST ${p} 429 description`);
   }
 });
