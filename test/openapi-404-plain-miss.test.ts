@@ -82,7 +82,8 @@ test("every keyless lookup read declares the plain 404, and only they do", async
       // A keyless lookup read either declares the plain 404 (this set) or, for
       // the two id-lookup reads, declares the typed id_class 404. Every other
       // operation declares no 404 at all.
-      const isTyped = Boolean(op.responses["404"]?.content?.["application/json"]?.schema?.properties?.id_class);
+      const s404 = op.responses["404"]?.content?.["application/json"]?.schema as { allOf?: { properties?: Record<string, unknown> }[] } | undefined;
+      const isTyped = Boolean(s404?.allOf?.some((m) => m.properties?.id_class));
       // The prose grants door (test/openapi-404-prose-grant.test.ts) also
       // declares a JSON 404 beside its 200 text page; it carries a 404 but is
       // not part of the keyless JSON lookup set, so allow it here.
@@ -111,12 +112,12 @@ test("the declared plain-404 body is the clocked JSON error with no id_class", a
       const body = op.responses["404"];
       assert.ok(body, `${path} plain-404 read declares a 404`);
       assert.deepEqual(Object.keys(body.content ?? {}), ["application/json"], `${path} 404 content is JSON`);
+      // The plain miss is the shared refusal envelope itself, by reference:
+      // the clock and `error`, nothing beside them (test/openapi-error-schema.test.ts
+      // pins what the envelope requires). A reference, not an allOf, is what
+      // says "no id_class discriminator" -- the typed 404 is the one that extends.
       const s = body.content?.["application/json"]?.schema;
-      assert.ok(s && s.type === "object", `${path} 404 schema is an object`);
-      const props = s?.properties as Record<string, unknown> | undefined;
-      assert.ok(props && "error" in props, `${path} 404 schema names the error string`);
-      assert.ok(!props?.id_class, `${path} plain-404 body carries no id_class discriminator`);
-      assert.deepEqual((s?.required as string[]) ?? [], ["error"], `${path} 404 required: only the error is always present`);
+      assert.deepEqual(s, { $ref: "#/components/schemas/Error" }, `${path} 404 schema is the shared refusal envelope, unextended`);
       assert.match(body.description ?? "", /no id_class/i, `${path} 404 description says the body carries no id_class`);
       checked++;
     }
