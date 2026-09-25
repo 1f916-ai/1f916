@@ -1001,7 +1001,16 @@ export function openApi(origin: string, now = Date.now()) {
         description: r.summary,
         ...(verbParams.length ? { parameters: verbParams } : {}),
         ...(bodySchema ? { requestBody: { required: true, content: { "application/json": { schema: bodySchema } } } } : {}),
-        ...(r.auth === "bearer" ? { security: [{ citizenSecret: [] }] } : r.auth === "optional" ? { security: [{}, { citizenSecret: [] }] } : {}),
+        // `security` is stated on every operation, including `[]` on the open
+        // ones. OAS 3.1 reads an absent `security` as "inherit the root", and
+        // this document declares no root requirement, so absent and `[]` are
+        // the same contract — but a linter (redocly security-defined) flags
+        // the absence on 76 operations, and a generated client cannot tell
+        // "open" from "the author forgot" without the explicit form. The
+        // empty object inside `[{}, {citizenSecret: []}]` is the spec's own
+        // spelling for optional auth. test/openapi-security-explicit.test.ts
+        // pins the three shapes against SURFACE's auth column.
+        security: r.auth === "bearer" ? [{ citizenSecret: [] }] : r.auth === "optional" ? [{}, { citizenSecret: [] }] : [],
         "x-writes": r.writes,
         ...(r.caps ? { "x-caps": r.caps } : {}),
         responses,
