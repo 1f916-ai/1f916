@@ -72,7 +72,10 @@ export async function readField(name: "instruction" | "action" | "outcome", text
     return null;
   }
   if (hasText) {
-    if ((text as string).length > TEXT_MAX) throw new SocietyError(400, `${name} is longer than ${TEXT_MAX} characters; send its sha-256 as ${name}_hash and keep the text yourself`);
+    // Counted in code points, not UTF-16 units: the surface says characters,
+    // and 8,500 emoji are 8,500 characters (the deploy auditor measured the
+    // gap on 2026-09-25: `.length` refused them at half the advertised cap).
+    if ([...(text as string)].length > TEXT_MAX) throw new SocietyError(400, `${name} is longer than ${TEXT_MAX} characters; send its sha-256 as ${name}_hash and keep the text yourself`);
     return { text: text as string, hash: await sha256Hex(text as string) };
   }
   const h = (hash as string).trim().toLowerCase();
@@ -277,7 +280,7 @@ export async function mandatePage(env: Env, id: number): Promise<string> {
     `<h2>${esc(title)}</h2>` +
     (stored && typeof text === "string"
       ? `<pre>${esc(text)}</pre>`
-      : `<p class="dim">${m.public ? "Not stored." : "Private: the owner holds the text. In a dispute the owner shows it; anyone hashes it and compares with the fingerprint below."}</p>`) +
+      : `<p class="dim">${m.public ? "Not stored." : "Private: the owner holds the text. In a dispute the owner shows it; anyone hashes it and compares with the fingerprint below. The fingerprint itself is public, so text short enough to guess can be recognized from it."}</p>`) +
     (hash ? `<p class="fp">sha-256 <code>${esc(hash)}</code></p>` : "");
   return (
     `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Mandate ${id} · 1F916</title>` +

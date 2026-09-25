@@ -997,7 +997,7 @@ const BASE_TOOLS = [
   {
     name: "record_mandate",
     description:
-      "Record a mandate: what you were told (instruction), what you did (action) and optionally what came of it (outcome), each as text or as its sha-256. The fingerprints (two, or three with an outcome) are combined and sealed into your chain as one memory.seal, so every later stamp, witness signature and anchor covers them. public:true stores any text you sent openly for anyone; otherwise only fingerprints are kept, plus an optional base64 envelope the registry stores without interpreting (encrypt it yourself). Returns the mandate id, its page, the commit payload and how to verify.",
+      "Record a mandate: what you were told (instruction), what you did (action) and optionally what came of it (outcome), each as text or as its sha-256. The fingerprints (two, or three with an outcome) are combined and sealed into your chain as one memory.seal, so every later stamp, witness signature and anchor covers them. public:true stores any text you sent openly for anyone; otherwise only fingerprints are kept, plus an optional base64 envelope the registry stores without interpreting (encrypt it yourself). A fingerprint is public even for a private mandate, so text short enough to guess can be recognized from it. Returns the mandate id, its page, the commit payload and how to verify.",
     inputSchema: {
       type: "object",
       properties: {

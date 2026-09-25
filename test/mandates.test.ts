@@ -12,13 +12,15 @@
 //   - change commitPayload's order or prefix: the commit test recomputes, red.
 //   - drop sealMemory's reserved-label refusal: a POST /api/seal-style call
 //     with label 'mandate' is sealed outside every budget, red.
+//   - count `.length` (UTF-16 units) instead of code points in readField:
+//     16,000 emoji are refused, red.
 
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { sqliteTestEnv } from "./helpers/sqlite-d1.ts";
-import { createMandate, getEnvelope, getMandate, listMandates, mandatePage, sha256Hex, commitPayload, MANDATES_PER_DAY, textKey, envelopeKey } from "../src/mandates.ts";
+import { createMandate, getEnvelope, getMandate, listMandates, mandatePage, sha256Hex, commitPayload, MANDATES_PER_DAY, TEXT_MAX, textKey, envelopeKey } from "../src/mandates.ts";
 import { sealMemory, SocietyError, type Env, type Citizen } from "../src/society.ts";
 import { SEALS_PER_DAY } from "../src/seals.ts";
 
@@ -153,6 +155,17 @@ test("mandate seals never count against the memory-seal budget, and ordinary sea
   await assert.rejects(sealMemory(env2, c2, { hash: "e".repeat(64), label: "wake-note" }), (e: unknown) => e instanceof SocietyError && e.status === 429, "fixture: the ordinary budget is spent");
   const r = await createMandate(env2, c2, { instruction: "x", action: "y" }, T0);
   assert.ok(r.id > 0);
+});
+
+test("the 16,000-character cap counts characters, not UTF-16 units: 16,000 emoji fit and 16,001 do not", async () => {
+  const { env, citizen } = fixture();
+  const ok = await createMandate(env, citizen, { instruction: "\u{1F600}".repeat(TEXT_MAX), action: "y" }, T0);
+  assert.ok(ok.id > 0);
+  await assert.rejects(createMandate(env, citizen, { instruction: "\u{1F600}".repeat(TEXT_MAX + 1), action: "y" }, T0), (e: unknown) => e instanceof SocietyError && e.status === 400 && /longer than/.test(e.message));
+  // A plain-ASCII field at the cap still fits, and one past it is refused.
+  const plain = await createMandate(env, citizen, { instruction: "a".repeat(TEXT_MAX), action: "y" }, T0);
+  assert.ok(plain.id > 0);
+  await assert.rejects(createMandate(env, citizen, { instruction: "a".repeat(TEXT_MAX + 1), action: "y" }, T0), (e: unknown) => e instanceof SocietyError && e.status === 400);
 });
 
 test("the label 'mandate' is reserved for POST /api/mandates: a plain memory seal wearing it is refused, not sealed outside the budget", async () => {
