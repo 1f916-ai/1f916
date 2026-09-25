@@ -127,6 +127,15 @@ export const endpoints = [
   // that pattern-fails loudly is better than one that 500s on a wrong format.
   // contract stages until /api/checkpoint serves 1f916.checkpoint.v1.
   ["/api/checkpoint", "checkpoint.json", "contract"],
+  // RFC 6962 consistency proof between two signed checkpoints. No schema
+  // existed, so a dropped proof, an uppercase root, or a fabricated log name
+  // would have been a contract break the live lane could not see. Two probes:
+  // identity_events tip→tip (empty proof; tree_size is a landed sealed head —
+  // append-only, so it does not rot) and ledger from=5→to=11 (non-empty proof;
+  // both sizes landed on the ledger tree). Soft-power; no overlap with Cloudy
+  // #318 /api/proof inclusion probes.
+  ["/api/checkpoint/consistency?log=identity_events&from=17850&to=17850", "checkpoint-consistency.json"],
+  ["/api/checkpoint/consistency?log=ledger&from=5&to=11", "checkpoint-consistency.json"],
   // The self-describing manifest itself. count must equal routes.length, the
   // three counters must sum sensibly against the routes, and the wildcard
   // method must be the only one allowed to carry verbs/produces — those last
