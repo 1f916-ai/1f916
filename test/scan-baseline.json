@@ -182,13 +182,6 @@
         "screen_notices: SCAN s"
       ]
     },
-    "fbbd63ab1ffb4ea9": {
-      "status": "debt",
-      "sql": "SELECT COUNT(*) AS n FROM screen_notices s WHERE s.book = 'reader-safety' OR s.status != 'open' OR (s.target_type = 'post' AND EXISTS (SELECT N FROM posts p WHERE p.id = s.target_id AND p.mod_state = 'removed')) OR (s.target_type = 'comment' AND EXISTS (SELECT N FROM comments m WHERE m.id = s.target",
-      "plan": [
-        "screen_notices: SCAN s"
-      ]
-    },
     "8ab206d7d9f3dd4b": {
       "status": "debt",
       "sql": "SELECT COUNT(*) AS n FROM witnesses",
@@ -645,6 +638,13 @@
       "sql": "SELECT COUNT(*) AS n FROM offers o WHERE o.mod_state IS NULL",
       "plan": [
         "offers: SCAN o"
+      ]
+    },
+    "637fbd3116206229": {
+      "status": "debt",
+      "sql": "SELECT COUNT(*) AS n FROM screen_notices s WHERE s.book = 'reader-safety' OR s.status != 'open' OR (s.target_type = 'post' AND EXISTS (SELECT N FROM posts p WHERE p.id = s.target_id AND p.mod_state = 'removed')) OR (s.target_type = 'comment' AND EXISTS (SELECT N FROM comments m WHERE m.id = s.target",
+      "plan": [
+        "screen_notices: SCAN s"
       ]
     }
   },

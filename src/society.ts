@@ -9699,16 +9699,22 @@ export async function recordScreenNotices(
 // test/surface-caps.test.ts binds the declaration to the query.
 export const SCREEN_NOTICE_PAGE = 200;
 
+// Visibility predicate for GET /api/screen-notices. Shared by the page SELECT,
+// notices_withheld (as NOT (...)), and total — three statements that must
+// agree on which rows a reader is entitled to see. A listing arm that exists
+// in only one of them is exactly how total drifted below notices.length.
+export const SCREEN_NOTICE_VISIBLE_SQL = `s.book = 'reader-safety'
+        OR s.status != 'open'
+        OR (s.target_type = 'post'    AND EXISTS (SELECT 1 FROM posts    p WHERE p.id = s.target_id AND p.mod_state = 'removed'))
+        OR (s.target_type = 'comment' AND EXISTS (SELECT 1 FROM comments m WHERE m.id = s.target_id AND m.mod_state = 'removed'))
+        OR (s.target_type = 'listing' AND EXISTS (SELECT 1 FROM listings l WHERE l.id = s.target_id AND l.mod_state = 'removed'))`;
+
 export async function screenNotices(env: Env, limit = 50) {
   const n = Math.min(Math.max(Number(limit) || 50, 1), SCREEN_NOTICE_PAGE);
   const { results } = await env.DB.prepare(
     `SELECT s.id, s.target_type, s.target_id, s.book, s.rule, s.screen_version, s.rules_hash, s.status, s.created_at, c.handle AS author
      FROM screen_notices s JOIN citizens c ON c.id = s.citizen_id
-     WHERE s.book = 'reader-safety'
-        OR s.status != 'open'
-        OR (s.target_type = 'post'    AND EXISTS (SELECT 1 FROM posts    p WHERE p.id = s.target_id AND p.mod_state = 'removed'))
-        OR (s.target_type = 'comment' AND EXISTS (SELECT 1 FROM comments m WHERE m.id = s.target_id AND m.mod_state = 'removed'))
-        OR (s.target_type = 'listing' AND EXISTS (SELECT 1 FROM listings l WHERE l.id = s.target_id AND l.mod_state = 'removed'))
+     WHERE ${SCREEN_NOTICE_VISIBLE_SQL}
      ORDER BY s.created_at DESC LIMIT ?`,
   )
     .bind(n)
@@ -9774,11 +9780,7 @@ export async function screenNotices(env: Env, limit = 50) {
   const withheldRead = await env.DB.prepare(
     `SELECT COUNT(*) AS n
        FROM screen_notices s
-      WHERE NOT (s.book = 'reader-safety'
-        OR s.status != 'open'
-        OR (s.target_type = 'post'    AND EXISTS (SELECT 1 FROM posts    p WHERE p.id = s.target_id AND p.mod_state = 'removed'))
-        OR (s.target_type = 'comment' AND EXISTS (SELECT 1 FROM comments m WHERE m.id = s.target_id AND m.mod_state = 'removed'))
-        OR (s.target_type = 'listing' AND EXISTS (SELECT 1 FROM listings l WHERE l.id = s.target_id AND l.mod_state = 'removed')))`,
+      WHERE NOT (${SCREEN_NOTICE_VISIBLE_SQL})`,
   ).first<{ n: number }>();
   // The visible half of the same clause withheldRead negates: how many rows a
   // reader is ENTITLED to see right now, against however many this page
@@ -9790,13 +9792,16 @@ export async function screenNotices(env: Env, limit = 50) {
   // included, on the same reasoning as notices_withheld above: a key present
   // only when it is interesting is indistinguishable, on the wire, from an old
   // deployment that lacks it.
+  // Same predicate as the notices SELECT and as the NOT(...) inside
+  // notices_withheld. The listing arm used to be missing here alone, so a
+  // removed-listing hygiene notice was served in notices[] while total skipped
+  // it — notices.length could exceed total, and truncated lied about whether
+  // the page held every entitled row. Soft-power: the three sites share one
+  // clause so a dropped arm cannot leave total/withheld/list disagreeing.
   const visibleRead = await env.DB.prepare(
     `SELECT COUNT(*) AS n
        FROM screen_notices s
-      WHERE s.book = 'reader-safety'
-        OR s.status != 'open'
-        OR (s.target_type = 'post'    AND EXISTS (SELECT 1 FROM posts    p WHERE p.id = s.target_id AND p.mod_state = 'removed'))
-        OR (s.target_type = 'comment' AND EXISTS (SELECT 1 FROM comments m WHERE m.id = s.target_id AND m.mod_state = 'removed'))`,
+      WHERE ${SCREEN_NOTICE_VISIBLE_SQL}`,
   ).first<{ n: number }>();
   const visibleTotal = visibleRead?.n ?? 0;
   return {

@@ -115,7 +115,9 @@ const EXPECTED_SCANS: string[] = [
   "n :: SELECT COUNT(*) AS c FROM payload_notices n JOIN citizens c ON c.id = n.citizen_id",
   "c :: SELECT COUNT(DISTINCT c.id) AS n FROM citizens c WHERE NOT EXIST …  WHERE citizen_id = c.id AND kind = 'key-bind'), 0))",
   "s :: SELECT COUNT(*) AS n FROM screen_notices s WHERE NOT (s.book = ' … RE l.id = s.target_id AND l.mod_state = 'removed')))",
-  "s :: SELECT COUNT(*) AS n FROM screen_notices s WHERE s.book = 'reade … ERE m.id = s.target_id AND m.mod_state = 'removed'))",
+  // /api/screen-notices visible total: re-keyed 2026-09-23 when SCREEN_NOTICE_VISIBLE_SQL
+  // gained the listing arm; fingerprint tail moved from comment (m.id) to listing (l.id).
+  "s :: SELECT COUNT(*) AS n FROM screen_notices s WHERE s.book = 'reade … ERE l.id = s.target_id AND l.mod_state = 'removed'))",
   "screen_notices :: SELECT rule, COUNT(*) AS notices FROM screen_notices WHERE book = 'hygiene' GROUP BY rule",
   "screen_refusals :: SELECT rule, COUNT(*) AS refusals FROM screen_refusals GROUP BY rule",
 
