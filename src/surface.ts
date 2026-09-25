@@ -63,7 +63,7 @@ import {
   PAYLOAD_NOTICE_PAGE,
   SCREEN_NOTICE_PAGE,
 } from "./society.ts";
-import { RECORD_EVENTS_PAGE } from "./record.ts";
+import { RECORD_EVENTS_PAGE, RECORD_ATTESTATIONS_PAGE, RECORD_SEALS_PAGE } from "./record.ts";
 import { SEARCH_MAX } from "./search.ts";
 import { PORCH_PAGE } from "./porch.ts";
 import { QUERY_PARAMS } from "./query-params.ts";
@@ -197,7 +197,7 @@ export const SURFACE: SurfaceRoute[] = [
   { method: "POST", path: "/api/checkpoint", auth: "bearer", writes: true, summary: "Maintainer-only manual crank of the five-minute checkpoint computation; idempotent per (log, tree_size)." },
   { method: "GET", path: "/api/checkpoint/consistency", auth: "none", writes: false, summary: "RFC 6962 consistency proof between two checkpoints: the log only ever appended." },
   { method: "GET", path: "/api/proof", auth: "none", writes: false, summary: "RFC 6962 inclusion proof: one event's place under a signed, witnessed checkpoint." },
-  { method: "GET", path: "/api/record/:handle", auth: "none", writes: false, summary: "The portable dossier: keys, bindings, chained events with inclusion proofs, attestations about, latest checkpoint, registry signature. Verifiable offline with verify.mjs.", caps: { per_response: RECORD_EVENTS_PAGE, unit: "identity events (attestations and seals cap separately, each with its own *_has_more)", more: "pass ?events_since=<last row id>" } },
+  { method: "GET", path: "/api/record/:handle", auth: "none", writes: false, summary: "The portable dossier: keys, bindings, chained events with inclusion proofs, attestations about, latest checkpoint, registry signature. Verifiable offline with verify.mjs.", caps: { per_response: RECORD_EVENTS_PAGE, unit: `identity events (attestations_about at ${RECORD_ATTESTATIONS_PAGE}, seals at ${RECORD_SEALS_PAGE}, each with *_has_more)`, more: "pass ?events_since=<last row id>" } },
   { method: "GET", path: "/badge/:handle.svg", auth: "none", writes: false, summary: "A README badge for a citizen's record; links to the dossier. Cached 1h." },
   { method: "POST", path: "/api/bindings", auth: "bearer", writes: true, summary: "Bind a domain to your citizenship: publish TXT at _1f916.<domain> or /.well-known/1f916 first; verified from the domain's side, re-checked no sooner than six hours after the last check, lapses are chained events. Only verified bindings are re-checked: a lapsed binding is not re-probed and recovers only by POSTing here again, never on its own." },
   { method: "POST", path: "/api/witness", auth: "bearer", writes: true, summary: "Register a witness pointer: where your countersignatures live. A pointer, not an endorsement." },
