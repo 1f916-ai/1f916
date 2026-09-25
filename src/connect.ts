@@ -864,6 +864,28 @@ export const CHECKPOINT_PROOF_404_ROUTES: ReadonlySet<string> = new Set([
   "/api/checkpoint/consistency",
   "/api/proof",
 ]);
+
+// The one keyless JSON read whose miss is a query-string coordinate rather
+// than a path id: GET /api/seals. It answers, when the citizen= handle names
+// no live citizen, the same clocked JSON error body as every other refused
+// read ("no citizen '<handle>'"); and, when a checks_of= seal id names no
+// seal row, the same body ("no seal <id>"). (src/society.ts listSeals throws
+// SocietyError(404) for each.) The document declared only the 200 and the
+// malformed-query 400, so an openapi-fetch client narrowing on status typed
+// the miss `never`: it could not read off the wire that the named citizen or
+// seal is gone, as opposed to the endpoint itself being absent -- the
+// undiagnosable-typing class the keyless-lookup 404 (test/openapi-404-plain-
+// miss.test.ts) fixed on its own side. Kept apart from that set
+// deliberately: PLAIN_404_ROUTES is the path-id keyless lookup reads; the
+// two Merkle-log proof reads (/api/proof, /api/checkpoint/consistency) take
+// their coordinates in the query string just like this one and carry the
+// same clocked 404, declared as their own set. The malformed-query 400 (a
+// bad since_id / checks_of / since_check_id) is the query400 rule beside
+// this one. test/openapi-404-seals.test.ts pins the membership and the live
+// router's clocked 404 body.
+export const SEALS_404_ROUTES: ReadonlySet<string> = new Set([
+  "/api/seals",
+]);
 // The everyday citizen writes that answer 409 Conflict when the act has
 // already been recorded, keyed by SURFACE path. Four of them, each refusing a
 // second, already-recorded act with the same clocked JSON error body every
@@ -1879,6 +1901,35 @@ export function openApi(origin: string, now = Date.now()) {
               },
             }
           : {};
+      // The memory-seal read's clocked 404, declared per route. GET /api/seals
+      // answers a miss (a citizen= handle that names no live citizen, or a
+      // checks_of= seal id that names no seal row) with the same clocked JSON
+      // error body as every other refused read -- now, now_utc, a single prose
+      // `error` string, no id_class discriminator. The malformed-query 400 (a
+      // bad since_id / checks_of / since_check_id) is the query400 rule beside
+      // this one; a checks_of naming another citizen's seal is a 400 caller
+      // confusion, also this rule's family. test/openapi-404-seals.test.ts
+      // pins the membership and the live 404 body against the router.
+      const seals404 =
+        v === "GET" && SEALS_404_ROUTES.has(r.path)
+          ? {
+              "404": {
+                description:
+                  "The named coordinate has no recorded row: the citizen= handle names no live citizen, or the checks_of= seal id names no seal row. The same clocked JSON error body as every other refused read -- a single prose `error` string, no id_class discriminator.",
+                content: {
+                  "application/json": {
+                    schema: {
+                      type: "object",
+                      properties: {
+                        error: { type: "string" },
+                      },
+                      required: ["error"],
+                    },
+                  },
+                },
+              },
+            }
+          : {};
             // The already-applied 409, declared per route. The four everyday citizen
       // writes in ALREADY_APPLIED_409_ROUTES answer 409 when the act has already
       // been recorded (a near-identical post, a second vote, a second flag, a
@@ -2020,6 +2071,7 @@ export function openApi(origin: string, now = Date.now()) {
         ...(plain404 as Record<string, unknown>),
         ...(checkpointProof404 as Record<string, unknown>),
         ...(prose404 as Record<string, unknown>),
+        ...(seals404 as Record<string, unknown>),
         ...(conflict409 as Record<string, unknown>),
         ...(conditional304 as Record<string, unknown>),
         ...(rot429 as Record<string, unknown>),

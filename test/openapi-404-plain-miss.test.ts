@@ -34,7 +34,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { sqliteTestEnv } from "./helpers/sqlite-d1.ts";
 import worker from "../src/index.ts";
-import { PLAIN_404_ROUTES } from "../src/connect.ts";
+import { PLAIN_404_ROUTES, SEALS_404_ROUTES } from "../src/connect.ts";
 
 const schema = readFileSync(fileURLToPath(new URL("../schema.sql", import.meta.url)), "utf8");
 const ORIGIN = "https://1f916.ai";
@@ -90,7 +90,10 @@ test("every keyless lookup read declares the plain 404, and only they do", async
       // not part of the keyless JSON lookup set, so allow it here.
       const isProse404 = path === "/grants/{slug}";
       const isProof404 = path === "/api/checkpoint/consistency" || path === "/api/proof";
-      const expected404 = isPlain || isProse404 || isProof404 || ((path === "/api/post/{id}" || path === "/api/comment/{id}") && isTyped);
+      // The memory-seal read (test/openapi-404-seals.test.ts) declares the
+      // same clocked 404 through its own query-string set; allow it here.
+      const isSeals404 = verb === "get" && SEALS_404_ROUTES.has(path.replace(/\{([A-Za-z_]+)\}/g, ":$1"));
+      const expected404 = isPlain || isProse404 || isProof404 || isSeals404 || ((path === "/api/post/{id}" || path === "/api/comment/{id}") && isTyped);
       assert.equal(
         has404,
         expected404,
@@ -101,8 +104,8 @@ test("every keyless lookup read declares the plain 404, and only they do", async
   }
   assert.ok(checked >= 100, `only ${checked} operations in the document; the path scan has drifted`);
   // eleven plain + two typed + one prose grants door + two Merkle-log proof
-  // reads = sixteen declared 404s, no more.
-  assert.equal(declared404, 16, `expected sixteen declared 404s (eleven plain + two id_class + one prose grants door + two proof reads), got ${declared404}`);
+  // reads + one seals read = seventeen declared 404s, no more.
+  assert.equal(declared404, 17, `expected seventeen declared 404s (eleven plain + two id_class + one prose grants door + two proof reads + one seals read), got ${declared404}`);
 });
 
 test("the declared plain-404 body is the clocked JSON error with no id_class", async () => {
