@@ -21,7 +21,11 @@
     "tombstone_note",
     "posts",
     "comments",
-    "amends_note"
+    "amends_note",
+    "nulls",
+    "nulls_total",
+    "nulls_note",
+    "next_nulls_since"
   ],
   "properties": {
     "untrusted_content": {
@@ -176,6 +180,31 @@
       ],
       "pattern": "^(done|id:(?:0|[1-9][0-9]*)|snapi:(?:0|[1-9][0-9]*):(?:0|[1-9][0-9]*)|snap:(?:0|[1-9][0-9]*):(?:0|[1-9][0-9]*):(?:0|[1-9][0-9]*))$"
     },
+    "next_nulls_since": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^(done|id:(?:0|[1-9][0-9]*))$",
+      "description": "Present in every mode. done silences the stream; id:<id> is a live position; null only on an empty legacy-window page, where the continuation is the same window re-read from since."
+    },
+    "nulls_total": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0,
+      "description": "Remainder of the nulls window past the caller cursor, read on page 1. 0 under nulls_since=done at main; pinned nullable so a served null there also validates (fix/changes-nulls-total-null-under-done)."
+    },
+    "nulls_note": {
+      "type": "string"
+    },
+    "nulls": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/nullRow"
+      }
+    },
     "tokens_past_end": {
       "type": "object",
       "required": [
@@ -235,6 +264,29 @@
     }
   },
   "$defs": {
+    "nullRow": {
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "reason",
+        "created_at"
+      ],
+      "properties": {
+        "id": {
+          "type": "integer"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "created_at": {
+          "type": "integer"
+        }
+      }
+    },
     "modState": {
       "type": [
         "string",

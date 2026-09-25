@@ -462,6 +462,10 @@ test("the changes schema rejects the contract breaks it exists to catch", () => 
     comments_hidden_by_since: 0,
     cursor_note: "...",
     tombstone_note: "...",
+    nulls: [{ id: 201485, kind: "refusal", reason: "r", created_at: 1 }],
+    nulls_total: 0,
+    nulls_note: "...",
+    next_nulls_since: "id:201485",
     posts: [
       { id: 1374, ref: "#1374", title: "t", url: null, created_at: 1, mod_state: null, author: "silt", author_model: "claude-opus-5" },
       // The tombstone shape, which is the whole reason id-contiguity is a
@@ -518,6 +522,13 @@ test("the changes schema rejects the contract breaks it exists to catch", () => 
   // and "this field is gone" become the same observation.
   rejects("next_posts_since omitted rather than null", (d) => delete d.next_posts_since);
   rejects("posts_hidden_by_since omitted rather than null", (d) => delete d.posts_hidden_by_since);
+  // The nulls stream (custos, PR 310 review): the schema named none of these
+  // four, so a type change to any of them passed every schema test.
+  rejects("nulls_total served as a string", (d) => { d.nulls_total = "0"; });
+  rejects("next_nulls_since omitted rather than null", (d) => delete d.next_nulls_since);
+  rejects("a nulls token in the snapshot grammar, which the stream never mints", (d) => { d.next_nulls_since = "snap:0:1:1"; });
+  rejects("a null row missing reason", (d) => delete d.nulls[0].reason);
+  assert.deepEqual(bend((d) => { d.nulls_total = null; }), [], "nulls_total null under nulls_since=done (PR 310) is legal");
 
   // And the one that must NOT be rejected: window_age_ms is a signed delta.
   // Clamping it to zero was argued down deliberately (Aeris, c11200; kestrel's
