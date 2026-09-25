@@ -507,6 +507,33 @@ export const PLAIN_404_ROUTES: ReadonlySet<string> = new Set([
   "/api/record/:handle",
   "/api/witnesses/:id/history",
 ]);
+
+// The Merkle-log proof reads whose miss is the PLAIN clocked error 404,
+// declared per route: GET /api/checkpoint/consistency and GET /api/proof.
+// Both answer, when the log, tree size or row in the query names nothing
+// recorded, the same clocked JSON error body as every other refused read --
+// now, now_utc and a single prose `error` string, with no id_class
+// discriminator. (src/checkpoint.ts throws SocietyError(404) for each:
+// "no checkpoint at <operand> for log <log>" when a named tree size has no
+// checkpoint row, "<log> has no row <event>" when the event id names no
+// chain row, and "no checkpoint covers this event yet" when the newest
+// checkpoint is short of the event.) The doc declared only the 200 and the
+// query 400 on these two, so an openapi-fetch client narrowing on status
+// typed the miss `never` and could not tell "nothing is recorded at that
+// coordinate yet" from "the endpoint is missing" -- the undiagnosable-typing
+// class the keyless-lookup 404 beside this one fixed on its own side. The
+// malformed-query 400 (a bad log, sizes, or event id) stays a different
+// outcome: it is declared by the query400 rule. The legacy_unsealed 409 on
+// /api/proof is a state refusal, not an absence, and stays undeclared, as
+// it is. Kept apart from PLAIN_404_ROUTES deliberately: that set is the
+// path-id keyless lookup reads (test/openapi-404-plain-miss.test.ts pins
+// its eleven), while these two take their arguments in the query string.
+// test/openapi-404-checkpoint-proof.test.ts pins the membership and the
+// live router's clocked 404 body.
+export const CHECKPOINT_PROOF_404_ROUTES: ReadonlySet<string> = new Set([
+  "/api/checkpoint/consistency",
+  "/api/proof",
+]);
 // The everyday citizen writes that answer 409 Conflict when the act has
 // already been recorded, keyed by SURFACE path. Four of them, each refusing a
 // second, already-recorded act with the same clocked JSON error body every
@@ -1332,6 +1359,36 @@ export function openApi(origin: string, now = Date.now()) {
               },
             }
           : {};
+      // The Merkle-log proof reads' clocked 404, declared per route. The two
+      // reads in CHECKPOINT_PROOF_404_ROUTES answer a miss (a tree size with
+      // no checkpoint row, a row id that names no chain row, or an event the
+      // newest checkpoint does not yet cover) with the same clocked JSON
+      // error body as every other refused read -- now, now_utc, a single
+      // prose `error` string, no id_class discriminator. The malformed-query
+      // 400 is the query400 rule beside this one; the legacy_unsealed 409 on
+      // /api/proof is a state refusal, not an absence, and stays undeclared.
+      // test/openapi-404-checkpoint-proof.test.ts pins the membership and
+      // the live 404 body against the router.
+      const checkpointProof404 =
+        v === "GET" && CHECKPOINT_PROOF_404_ROUTES.has(r.path)
+          ? {
+              "404": {
+                description:
+                  "The named log coordinate has no recorded row: the tree size has no checkpoint, the row id names no chain row, or the newest checkpoint does not cover the event yet. The same clocked JSON error body as every other refused read -- a single prose `error` string, no id_class discriminator.",
+                content: {
+                  "application/json": {
+                    schema: {
+                      type: "object",
+                      properties: {
+                        error: { type: "string" },
+                      },
+                      required: ["error"],
+                    },
+                  },
+                },
+              },
+            }
+          : {};
       // The prose-door miss 404, declared on the one prose read that answers a
       // JSON 404: GET /grants/:slug. It is the human prose door for one grant
       // (produces text/plain, negotiated like /porch), so its success is the
@@ -1510,6 +1567,7 @@ export function openApi(origin: string, now = Date.now()) {
         ...(screen422 as Record<string, unknown>),
         ...(typed404 as Record<string, unknown>),
         ...(plain404 as Record<string, unknown>),
+        ...(checkpointProof404 as Record<string, unknown>),
         ...(prose404 as Record<string, unknown>),
         ...(conflict409 as Record<string, unknown>),
         ...(conditional304 as Record<string, unknown>),
