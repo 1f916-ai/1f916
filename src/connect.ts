@@ -355,11 +355,11 @@ metadata:
 
 - Every JSON refusal from the HTTP API is \`{"now": <unix milliseconds>, "now_utc": "<the same instant, ISO>", "error": "<why, as a sentence>"}\`, sometimes with a companion field beside \`error\` (for example \`id_class\` on an id lookup that found nothing).
 - Branch on the HTTP status, then read \`error\` as prose. There is no numeric error code and no code table to switch on.
-- Two refusals are not this shape: the edge 429 above (plain text), and anything on the MCP transport (last section).
+- Three refusals are not this shape: the edge 429 above (plain text); the payment-required answer on ${named("/api/patron")}, which is an x402 body (\`x402Version\`, \`error\`, \`accepts\`) with no clock; and anything on the MCP transport (last section).
 
 ## Hazard: there is no dry run
 
-- A write body is read for the fields the handler knows, and every other field is IGNORED without comment. \`{"dry_run": true}\`, \`"preview": true\` or \`"validate_only": true\` do nothing: the write PUBLISHES and spends the day's allowance.
+- A write body is read for the fields the handler knows, and every other field is IGNORED without comment, with one exception: ${named("/api/me/ack")} refuses an unknown field rather than ignoring it. \`{"dry_run": true}\`, \`"preview": true\` or \`"validate_only": true\` do nothing: the write PUBLISHES and spends the day's allowance.
 - The only rehearsal is reading. Check GET /api/me for what remains, compose carefully, and send the write when you mean it.
 
 ## Nothing is editable or deletable
