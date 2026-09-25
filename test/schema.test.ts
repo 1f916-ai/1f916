@@ -1294,9 +1294,12 @@ test("the /api/record citizen ledger schema rejects the contract breaks it exist
   assert.deepEqual(bend((d) => { d.attestations_about[0].target_attestation_id = 5; d.attestations_about[0].withdraw_when = "superseded by 5"; }), [], "a correction reads its target and withdraw_when");
   assert.deepEqual(bend((d) => { d.attestations_about[0].signature = null; d.attestations_about[0].key_thumbprint = null; d.attestations_about[0].evidence = "[]"; }), [], "an attestation issued without a binding signature reads its proof fields as null");
 
-  // Completeness is the two caps flags: a reader who drops either loses the
-  // ability to know whether the 200-row page is the whole record.
-  rejects("a record losing seals_has_more", (d) => { delete d.seals_has_more; });
+  // Completeness: attestations_about_has_more is always required. seals_has_more
+  // is NOT top-level required (degraded path omits it and serves
+  // seals_completeness_unknown instead); dropping it while leaving seals_total
+  // still fails the allOf else-branch. A true degraded doc is pinned in
+  // test/record-seals-attestations-completeness-schema.test.ts.
+  rejects("a record losing seals_has_more without degraded fields", (d) => { delete d.seals_has_more; });
   rejects("a record losing attestations_about_has_more", (d) => { delete d.attestations_about_has_more; });
   rejects("a record losing its checkpoint", (d) => { delete d.checkpoint; });
   rejects("a record losing its registry_sig", (d) => { delete d.registry_sig; });

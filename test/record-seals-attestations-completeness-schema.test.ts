@@ -17,6 +17,8 @@
 //   2. Drop attestations_about_total from required — has_more without total validates.
 //   3. Remove seals_total from the seals_has_more then-branch — healthy path
 //      without seals_total validates.
+//   4. Put seals_has_more back in top-level required — degraded path fails again
+//      before the else-branch can pin seals_completeness_unknown (custos on #470).
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -133,4 +135,29 @@ test("description names seals/attestations completeness (no record-side cursor)"
   assert.match(schema.description, /seals_returned/);
   assert.match(schema.description, /attestations_about_total|attestations_about/);
   assert.match(schema.description, /No record-side|no record-side/i);
+});
+
+test("degraded seals path validates without seals_has_more/seals_total when seals_completeness_unknown is present", () => {
+  const degraded = base();
+  delete (degraded as { seals_has_more?: boolean }).seals_has_more;
+  delete (degraded as { seals_total?: number }).seals_total;
+  degraded.seals_completeness_unknown = "seals COUNT unreadable; page may be incomplete";
+  assert.deepEqual(validate(schema, degraded), []);
+});
+
+test("degraded seals path without seals_completeness_unknown must NOT validate", () => {
+  const degraded = base();
+  delete (degraded as { seals_has_more?: boolean }).seals_has_more;
+  delete (degraded as { seals_total?: number }).seals_total;
+  const errors = validate(schema, degraded);
+  assert.ok(
+    errors.some((e) => /seals_completeness_unknown/.test(e)),
+    errors.join("; "),
+  );
+});
+
+test("seals_has_more is NOT top-level required (else degraded path is unreachable)", () => {
+  assert.ok(!schema.required.includes("seals_has_more"));
+  assert.ok(schema.properties.seals_has_more);
+  assert.ok(schema.properties.seals_completeness_unknown);
 });

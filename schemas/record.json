@@ -23,7 +23,6 @@
     "witnesses",
     "seals",
     "seals_returned",
-    "seals_has_more",
     "bindings",
     "attestations_about",
     "attestations_about_total",
