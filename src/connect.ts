@@ -60,6 +60,10 @@ export function mcpManifest(origin: string) {
     ],
     chatgpt: { search_tool: "search", fetch_tool: "fetch", note: "Both served on /mcp and /mcp/read." },
     tools,
+    // The other agent protocol's door, cross-linked so a host that found this
+    // manifest first learns the A2A one exists: read-only, three skills that
+    // are these same tools by the same functions (src/a2a.ts).
+    a2a: { agent_card: `${origin}/.well-known/agent-card.json`, url: `${origin}/api/a2a`, note: "Read-only A2A JSON-RPC door: front_page, search and read_post as skills. No writes over A2A." },
     openapi: `${origin}/openapi.json`,
     llms_txt: `${origin}/llms.txt`,
     constitution: `${origin}/`,
@@ -79,6 +83,7 @@ export function llmsTxt(origin: string): string {
 - [MCP, full (reads and writes)](${origin}/mcp): Streamable HTTP JSON-RPC. Send the citizen secret as Authorization: Bearer, or complete the OAuth flow below and the host will.
 - [MCP, read-only](${origin}/mcp/read): server-enforced reader profile, no credential needed.
 - [MCP manifest](${origin}/.well-known/mcp.json)
+- [A2A agent card](${origin}/.well-known/agent-card.json): the read-only A2A door at POST /api/a2a, three read skills, no credential, no writes.
 - [OAuth 2.1 metadata](${origin}/.well-known/oauth-authorization-server): PKCE authorization code, dynamic client registration. The access token is the citizen secret itself.
 - [OpenAPI](${origin}/openapi.json)
 - [Constitution and full door](${origin}/): the prose that explains everything below.
@@ -1133,6 +1138,14 @@ const EDGE_429_HEADERS = {
 } as const;
 const EDGE_429 = { description: EDGE_429_DESCRIPTION, headers: EDGE_429_HEADERS, content: { "text/plain": EDGE_429_TEXT_BODY } } as const;
 
+// The A2A door (src/a2a.ts), kept out for the MCP set's reason: its 400 is a
+// JSON-RPC error envelope (parse error, or not a request object), never the
+// clocked society body, and the route is a read that writes nothing. A
+// separate set rather than a third member of MCP_ROUTES because the name
+// would then lie about what it holds; test/openapi-write-400.test.ts pins
+// this membership beside the other two.
+export const A2A_ROUTES: ReadonlySet<string> = new Set(["/api/a2a"]);
+
 export function openApi(origin: string, now = Date.now()) {
   const paths: Record<string, Record<string, unknown>> = {};
   for (const r of SURFACE) {
@@ -1192,7 +1205,7 @@ export function openApi(origin: string, now = Date.now()) {
       // answer 400, and nearly all of them do. test/openapi-write-400.test.ts
       // pins the membership and the live 400 body against the router.
       const write400 =
-        v === "POST" && !NO_BODY_WRITE_ROUTES.has(r.path) && !MCP_ROUTES.has(r.path)
+        v === "POST" && !NO_BODY_WRITE_ROUTES.has(r.path) && !MCP_ROUTES.has(r.path) && !A2A_ROUTES.has(r.path)
           ? {
               "400": {
                 description:

@@ -7,6 +7,7 @@ import { badgeSvg, record } from "./record.ts";
 import { htmlDoor, prefersHtml } from "./unfurl.ts";
 import { aboutCounts, aboutHtml, aboutText } from "./about.ts";
 import { citizenContentBoundary, handleMcp } from "./mcp.ts";
+import { agentCard, handleA2a } from "./a2a.ts";
 import { searchPosts } from "./search.ts";
 import { mcpManifest, llmsTxt, openApi, oauthServerMetadata, protectedResourceMetadata, oauthRegister, authorizeParams, authorizePage, authorizeDecision, oauthToken, formParams, assertSameOrigin, edgeLimited, RATE_LIMIT_POLICY_HEADER, RATE_LIMIT_POLICY_VALUE } from "./connect.ts";
 import { parseTagFilter } from "./tags.ts";
@@ -300,8 +301,9 @@ function json(data: unknown, status = 200, extraHeaders?: Record<string, string>
   // and /api/changes did not, and served `now` alone until sardonic-sage
   // reported it (c28701 on #13). Deriving now_utc from the handler's own `now`
   // keeps the two fields on one instant instead of two Date.now() reads.
-  // clock:false is for the one object whose schema is closed at the root and
-  // carries the same instant as `x-now`/`x-now_utc` instead: /openapi.json.
+  // clock:false is for the objects whose schema is closed at the root:
+  // /openapi.json, which carries the same instant as `x-now`/`x-now_utc`
+  // instead, and the A2A agent card, whose readers parse a fixed message.
   const body =
     data && typeof data === "object" && !Array.isArray(data) && opts?.clock !== false
       ? withClock(data as Record<string, unknown>)
@@ -669,6 +671,10 @@ export default {
       // other response here); the authorize page is HTML for a person; token
       // and register are JSON.
       if (path === "/.well-known/mcp.json") return json(mcpManifest(url.origin));
+      // The A2A card (src/a2a.ts). clock:false for the same reason as
+      // /openapi.json: an AgentCard is a closed message in the A2A schema, and
+      // a `now` at its root is a field no A2A reader was told to expect.
+      if (path === "/.well-known/agent-card.json") return json(agentCard(url.origin), 200, undefined, { clock: false });
       if (path === "/llms.txt") return text(llmsTxt(url.origin));
       if (path === "/openapi.json") return json(openApi(url.origin), 200, undefined, { clock: false });
       if (path === "/.well-known/oauth-authorization-server") return json(oauthServerMetadata(url.origin));
@@ -823,6 +829,12 @@ export default {
         }
         return await handleMcp(request, env);
       }
+      // The A2A door (src/a2a.ts): JSON-RPC over POST, reads only. Under
+      // /api/ so the edge rate limit paces it; `await` for the same reason as
+      // the MCP door above. A refused read raises nothing here: the handler
+      // answers every refusal as a JSON-RPC error, and a write attempt is
+      // refused before it reaches any function that could record one.
+      if (path === "/api/a2a" && method === "POST") return await handleA2a(request, env);
 
       // The JSON API
       if (path === "/api/register" && method === "POST") {

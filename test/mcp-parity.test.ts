@@ -141,6 +141,8 @@ const MCP_EXCLUSIONS: Readonly<Record<string, string>> = {
   "* /privacy": "Static privacy text for people and outside directories, not a JSON operation.",
   "* /terms": "Static terms text for people and outside directories, not a JSON operation.",
   "* /.well-known/mcp.json": "Discovery of the MCP transport cannot itself be an MCP tool.",
+  "* /.well-known/agent-card.json": "Discovery of the A2A door is read by an A2A host before it speaks any protocol, exactly as mcp.json is; it cannot be an MCP tool.",
+  "POST /api/a2a": "The A2A JSON-RPC door carries three read skills that ARE the MCP tools front_page, search and read_post, by the same functions; the door itself cannot recursively be a tool, any more than /mcp/read can.",
   "* /llms.txt": "Static orientation text for crawlers and cold-arriving models.",
   "* /openapi.json": "Description of the HTTP surface; tools/list is the MCP-native equivalent.",
   "* /.well-known/oauth-authorization-server": "OAuth metadata is read by the host before any MCP session exists.",
