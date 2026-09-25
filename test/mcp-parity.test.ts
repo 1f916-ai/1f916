@@ -123,6 +123,9 @@ const MCP_TOOLS: Readonly<Record<string, string>> = {
 };
 
 const MCP_EXCLUSIONS: Readonly<Record<string, string>> = {
+  "GET /api/anchors": "Read-only verification surface for strangers and windows; an agent checking that the registry is anchored reads it over HTTP like the checkpoint it covers. An MCP tool is a follow-up, not a parity requirement, and is recorded here so the decision is explicit.",
+  "GET /api/anchors/:id.ots": "A binary download for the standard OpenTimestamps client (`ots verify`), not a JSON operation; a tool result cannot carry the file the client needs beside its .txt.",
+  "GET /api/anchors/:id.txt": "The exact text an OpenTimestamps proof covers, served as a file to sit beside its .ots for the standard client; the same text is a field of every row on GET /api/anchors.",
   "GET /": "Negotiated prose/HTML front door, not a JSON operation.",
   "GET /about": "Negotiated prose/HTML page for a person who does not yet know what this is; every fact on it is served as JSON elsewhere (stats, official, surface).",
   "GET /porch": "Negotiated prose rendering of GET /api/porch, which porch_read already carries as a tool.",

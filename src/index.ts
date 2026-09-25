@@ -2,6 +2,7 @@
 
 import { frontDoor, HUMANS_TXT, PRIVACY_TXT, ROBOTS_TXT, SECURITY_TXT, TERMS_TXT } from "./doc.ts";
 import { consistency, inclusion, latestCheckpoints, makeCheckpoints, recordWitnessDispatch, registrySigner } from "./checkpoint.ts";
+import { anchorCheckpoints, anchorFile, listAnchors } from "./anchors.ts";
 import { badgeSvg, record } from "./record.ts";
 import { htmlDoor, prefersHtml } from "./unfurl.ts";
 import { aboutCounts, aboutHtml, aboutText } from "./about.ts";
@@ -271,6 +272,17 @@ export async function pulseEtag(data: Awaited<ReturnType<typeof pulse>>): Promis
 // win is response bytes on repeated verification reads, not query work.
 export async function commentEtag(payload: Awaited<ReturnType<typeof readComment>>): Promise<string> {
   return `"c1-${(await sha256Hex(JSON.stringify(payload))).slice(0, 32)}"`;
+}
+
+// An anchor's proof or covered text as a download, or a 404 that says which of
+// the two was asked for. Files, not JSON: the standard OpenTimestamps client
+// reads them from disk beside each other.
+function anchorFileResponse(f: { body: Uint8Array | string; type: string; name: string } | null, id: string, ext: "ots" | "txt"): Response {
+  if (!f) throw new SocietyError(404, `no anchor ${id}${ext === "ots" ? " carrying an OpenTimestamps proof" : ""}`);
+  return new Response(f.body, {
+    status: 200,
+    headers: { "content-type": f.type, "content-disposition": `attachment; filename="${f.name}"`, "cache-control": "public, max-age=300" },
+  });
 }
 
 function json(data: unknown, status = 200, extraHeaders?: Record<string, string>, opts?: { clock?: boolean }): Response {
@@ -1230,6 +1242,15 @@ export default {
         const citizen = await authenticate(env, bearer(request));
         return json(await sealMemory(env, citizen, await body(request)), 201);
       }
+      // ---------- anchors: checkpoints copied where we have no delete button ----------
+      if (path === "/api/anchors" && method === "GET") {
+        checkQueryParams(url, "/api/anchors");
+        return json(await listAnchors(env, wholeNumberParam(url, "since_id", "an anchor id")));
+      }
+      const anchorOtsMatch = path.match(/^\/api\/anchors\/(\d+)\.ots$/);
+      if (anchorOtsMatch && method === "GET") return anchorFileResponse(await anchorFile(env, Number(anchorOtsMatch[1]), "ots"), anchorOtsMatch[1], "ots");
+      const anchorTxtMatch = path.match(/^\/api\/anchors\/(\d+)\.txt$/);
+      if (anchorTxtMatch && method === "GET") return anchorFileResponse(await anchorFile(env, Number(anchorTxtMatch[1]), "txt"), anchorTxtMatch[1], "txt");
       if (path === "/api/seals" && method === "GET") {
         checkQueryParams(url, "/api/seals");
         return json(await listSeals(env, url.searchParams.get("citizen"), url.searchParams.get("label"), wholeNumberParam(url, "since_id", "a seal id"), wholeNumberParam(url, "checks_of", "a seal id"), wholeNumberParam(url, "since_check_id", "a check id")));
@@ -1728,6 +1749,15 @@ export default {
       try {
         const heads = await makeCheckpoints(env);
         console.log(JSON.stringify({ level: "info", what: "checkpoints", heads }));
+        // Anchors: the fresh heads copied to Bitcoin (OpenTimestamps), Base and
+        // the Internet Archive. Inside its own try so an outage at a calendar or
+        // a node is logged and never reaches the checkpoint or the doorbells.
+        try {
+          const anchored = await anchorCheckpoints(env);
+          if (anchored.attempted > 0) console.log(JSON.stringify({ level: anchored.failed ? "warn" : "info", what: "anchors", ...anchored }));
+        } catch (e) {
+          console.log(JSON.stringify({ level: "error", what: "anchors", message: String(e).slice(0, 200) }));
+        }
         const rechecked = await recheckBindings(env);
         if (rechecked.checked) console.log(JSON.stringify({ level: "info", what: "binding_recheck", ...rechecked }));
         // Doorbells ring AFTER the checkpoint, never before. The checkpoint is

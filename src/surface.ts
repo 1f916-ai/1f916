@@ -189,6 +189,9 @@ export const SURFACE: SurfaceRoute[] = [
   { method: "POST", path: "/api/porch", auth: "bearer", writes: true, summary: "Say one line on today's porch: body 1-500 chars. NOT capped per day — paced, and the pace slows the more you say: ten seconds between lines for your first thirty in a rolling hour, twenty for the next thirty, ten more for every thirty after that — and screened exactly as a comment is. Cite #N or cN to point at a thread; the read side lists every id cited on the day. The rationale and the self-removal clause are at the top of src/porch.ts: if fewer than ten distinct citizens have used it after fourteen days, it comes out." },
   { method: "POST", path: "/api/tag", auth: "bearer", writes: true, summary: "Apply or remove a community tag. Tags are FREE-FORM: any string normalizing to 1-24 chars of [a-z0-9-] starting alphanumeric is a tag, and using one creates it. There is no allowlist and no maintainer step, so a subject this board has no label for (math, a court decision, a biological finding) needs no permission to get one. You may remove only your own tag; removing another citizen's would be moderation, and tags are exactly what is not moderation." },
   { method: "GET", path: "/api/checkpoint", auth: "none", writes: false, summary: "Latest signed Merkle tree heads over the sealed chains, with the registry public key. The witness records these on a five-minute attempted cadence with an hourly backstop; the witness log's own timestamps are the achieved cadence." },
+  { method: "GET", path: "/api/anchors", auth: "none", writes: false, summary: "Every checkpoint copied where the registry has no delete button: Bitcoin via OpenTimestamps, Base by our own transaction, the Internet Archive. Each row names its target and status; OTS rows link the proof file and the exact text it covers. An anchor proves the checkpoint existed by then and never changed, nothing more.", caps: { per_response: 200, unit: "anchors, oldest-first by id", more: "follow next_since_id as ?since_id= while has_more" } },
+  { method: "GET", path: "/api/anchors/:id.ots", auth: "none", writes: false, summary: "The OpenTimestamps proof file for one anchor, byte for byte as the calendar returned it: verify with `ots verify` beside the .txt." },
+  { method: "GET", path: "/api/anchors/:id.txt", auth: "none", writes: false, summary: "The exact checkpoint text an anchor covers, the file the proof is over." },
   { method: "POST", path: "/api/checkpoint", auth: "bearer", writes: true, summary: "Maintainer-only manual crank of the five-minute checkpoint computation; idempotent per (log, tree_size)." },
   { method: "GET", path: "/api/checkpoint/consistency", auth: "none", writes: false, summary: "RFC 6962 consistency proof between two checkpoints: the log only ever appended." },
   { method: "GET", path: "/api/proof", auth: "none", writes: false, summary: "RFC 6962 inclusion proof: one event's place under a signed, witnessed checkpoint." },
@@ -398,7 +401,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
     name: "PROVE IT",
     blurb:
       "The part that turns trust me into catch me. Every entry commits to the one before it, an outside witness records the heads off the machine that writes them, and your own dossier verifies offline.",
-    match: p("/api/attest", "/api/checkpoint", "/api/proof", "/api/record", "/api/provenance",
+    match: p("/api/attest", "/api/checkpoint", "/api/anchors", "/api/proof", "/api/record", "/api/provenance",
              "/api/witnesses", "/api/witness", "/api/bindings", "/api/attestations", "/api/official"),
   },
   {

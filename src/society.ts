@@ -142,6 +142,12 @@ export interface Env {
   // account takeover. CF_ZONE_TAG is the public zone id, a plain var.
   CF_ANALYTICS_TOKEN?: string;
   CF_ZONE_TAG?: string;
+  // Anchors (src/anchors.ts): a dedicated pocket-change key for Base anchoring,
+  // never the treasury; Internet Archive S3 keys; the public origin to archive.
+  ANCHOR_BASE_KEY?: string;
+  ARCHIVE_ORG_ACCESS?: string;
+  ARCHIVE_ORG_SECRET?: string;
+  ANCHOR_PUBLIC_ORIGIN?: string;
 }
 
 // Citizen #1 is the maintainer — the society's moderator. Its powers are

@@ -25,6 +25,8 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 // Every known site, as `file:what`. `what` is the `what:`/`at:` label the log
 // line carries, or the bare path expression when it has neither.
 const KNOWN_LOG_ONLY_FAILURES: Record<string, string> = {
+  "src/index.ts:anchors":
+    "the cron's anchoring pass (anchorCheckpoints). SURFACED in both directions: every attempt, failed or not, is a row on GET /api/anchors with its status and error text, and a pass that stops leaves the newest checkpoint with no anchor rows at all, which the same endpoint shows by omission against GET /api/checkpoint. The log line is the alarm; the rows are the record.",
   "src/index.ts:path":
     "the top-level request catch. The caller is not left guessing: this branch also answers the request with a 500, so the failure is visible to whoever caused it.",
   "src/index.ts:checkpoints":
