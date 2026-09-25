@@ -176,7 +176,7 @@ async function confirmBase(env: Env, txHash: string): Promise<"pending" | "confi
 
 // Internet Archive: Save Page Now. With account keys, the authenticated API
 // (a job id, polled later). Without keys, the anonymous form, at most once an
-// hour, recorded as failed when the archive refuses.
+// 55 minutes, recorded as failed when the archive refuses.
 async function submitArchive(f: typeof fetch, env: Env, target: string): Promise<{ target: string; status: "pending" | "confirmed" | "failed"; error: string | null }> {
   if (env.ARCHIVE_ORG_ACCESS && env.ARCHIVE_ORG_SECRET) {
     const res = await f("https://web.archive.org/save", {
@@ -224,7 +224,7 @@ export async function anchorCheckpoints(env: Env, now = Date.now(), deps: Anchor
       .bind(...ids)
       .all<Pick<AnchorRow, "checkpoint_id" | "kind" | "target">>()
   ).results;
-  // The archive is asked at most once an hour, for the newest identity-log
+  // The archive is asked at most once every 55 minutes, for the newest identity-log
   // checkpoint only, anonymous or not: Save Page Now rate-limits by source.
   const lastArchive = await env.DB.prepare("SELECT MAX(created_at) AS t FROM anchors WHERE kind = 'archive'").first<{ t: number | null }>();
   const archiveDue = !lastArchive?.t || now - lastArchive.t >= 55 * 60 * 1000;
@@ -295,19 +295,19 @@ export async function listAnchors(env: Env, sinceId: number | undefined) {
   return {
     contract: "1f916.anchors.v1",
     what_this_is:
-      "The newest checkpoint of each log, offered every five minutes to the targets listed under `targets`: three OpenTimestamps calendars (the Bitcoin blockchain), the Base blockchain when an anchoring wallet is configured, and the Internet Archive at most once an hour. Every attempt, made or refused, is a row here with its status and error. Checkpoints from before the first anchoring pass were never offered.",
+      "The newest checkpoint of each log, offered every five minutes to the targets listed under `targets`: three OpenTimestamps calendars (the Bitcoin blockchain), the Base blockchain when an anchoring wallet is configured, and the Internet Archive at most once every 55 minutes. Every attempt, made or refused, is a row here with its status and error. Checkpoints from before the first anchoring pass were never offered.",
     what_an_anchor_proves:
       "A confirmed anchor proves that the exact checkpoint text existed by that time and has not changed since. A pending OpenTimestamps row is the calendar's promise until its Bitcoin transaction confirms; a pending Base row is a transaction not yet seen in a block; a failed row proves only that the attempt was made and refused. No anchor says anything about whether what the checkpoint covers is true.",
     targets: {
       ots_calendars: OTS_CALENDARS,
       base: Boolean(env.ANCHOR_BASE_KEY),
-      archive: env.ARCHIVE_ORG_ACCESS && env.ARCHIVE_ORG_SECRET ? "authenticated, hourly" : "anonymous, hourly; refusals are recorded as failed rows",
+      archive: env.ARCHIVE_ORG_ACCESS && env.ARCHIVE_ORG_SECRET ? "authenticated, at most once every 55 minutes" : "anonymous, at most once every 55 minutes; refusals are recorded as failed rows",
     },
     anchored_text: "the checkpoint's signed payload, byte for byte: 1f916.checkpoint.v1:<log>:<tree_size>:<root>:<created_at>. GET /api/anchors/<id>.txt serves it.",
     how_to_verify: {
       ots: "GET /api/anchors/<id>.txt as payload.txt and /api/anchors/<id>.ots as payload.txt.ots, then `ots verify payload.txt.ots` with the standard OpenTimestamps client (opentimestamps.org). A fresh proof is pending until the calendar's Bitcoin transaction confirms; `ots upgrade payload.txt.ots` fetches the completed proof from the calendar. The registry serves the pending file it received and never edits it.",
       base: "target is the Base transaction hash. Read the transaction's input data on any Base node or explorer and decode it as UTF-8: it is the payload text. The sender is the anchoring wallet, a dedicated pocket-change key that is not the treasury.",
-      archive: "target is the Wayback Machine capture of GET /api/checkpoint at that hour, or the job status URL while the capture is being made.",
+      archive: "target is the Wayback Machine capture of GET /api/checkpoint at that time, or the job status URL while the capture is being made.",
     },
     latest_checkpoints: latest.map((c) => ({ checkpoint_id: c.id, log: c.log, tree_size: c.tree_size, root: c.root, payload: payloadOf(c), anchors: latestAnchors.filter((a) => a.checkpoint_id === c.id).map(({ checkpoint_id: _c, ...rest }) => rest) })),
     anchors: page.map((r) => ({
