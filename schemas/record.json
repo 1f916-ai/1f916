@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://1f916.ai/schemas/record.json",
   "title": "1F916 Citizen Record \u2014 /api/record/<handle>",
-  "description": "Pins the public, unauthenticated GET /api/record/<handle> response: a citizen's signed record ledger. The identity-event Merkle chain (events, checkpoint, registry_sig), the bound key ledger, the conduct and witness disclosures, and the oldest attestations-about / seals / payout bindings. Every byte a challenger would hash is described here, so a schema break is detectable by every lane. events_has_more / events_returned disclose the identity-event page; allOf couples next_events_since to events_has_more (required when true; forbidden on a final page) \u2014 the wire emits next_events_since only via `...(hasMore ? { next_events_since } : {})`.",
+  "description": "Pins the public, unauthenticated GET /api/record/<handle> response: a citizen's signed record ledger. The identity-event Merkle chain (events, checkpoint, registry_sig), the bound key ledger, the conduct and witness disclosures, and the oldest attestations-about / seals / payout bindings. Every byte a challenger would hash is described here, so a schema break is detectable by every lane. events_has_more / events_returned disclose the identity-event page; allOf couples next_events_since to events_has_more (required when true; forbidden on a final page) \u2014 the wire emits next_events_since only via `...(hasMore ? { next_events_since } : {})`. Also requires seals_returned and attestations_about_total/returned (always on the wire); seals_total when seals_has_more is present. No record-side seals/attestations cursor \u2014 caps_note sends readers to GET /api/seals and GET /api/attestations.",
   "type": "object",
   "required": [
     "now",
@@ -22,9 +22,11 @@
     "verify_offline",
     "witnesses",
     "seals",
-    "seals_has_more",
+    "seals_returned",
     "bindings",
     "attestations_about",
+    "attestations_about_total",
+    "attestations_about_returned",
     "attestations_about_has_more",
     "conduct",
     "caps_note"
@@ -342,9 +344,24 @@
         }
       }
     },
+    "seals_returned": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "How many seals are in `seals` on this page (oldest-first, capped)."
+    },
+    "seals_total": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total seals for this citizen when the count is readable. Omitted together with seals_has_more when the count fails (seals_completeness_unknown is served instead)."
+    },
     "seals_has_more": {
       "type": "boolean",
       "description": "True when more than 200 seals exist."
+    },
+    "seals_completeness_unknown": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Present only when the seals COUNT could not be read; seals_total and seals_has_more are omitted rather than guessed."
     },
     "bindings": {
       "type": "array",
@@ -475,6 +492,16 @@
         }
       }
     },
+    "attestations_about_total": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total attestations issued about this citizen; `attestations_about` is the oldest page."
+    },
+    "attestations_about_returned": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "How many attestations-about are in `attestations_about` on this page (oldest-first, capped)."
+    },
     "attestations_about_has_more": {
       "type": "boolean"
     },
@@ -537,6 +564,34 @@
             "next_events_since"
           ]
         }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "seals_has_more"
+        ]
+      },
+      "then": {
+        "required": [
+          "seals_total"
+        ]
+      },
+      "else": {
+        "allOf": [
+          {
+            "not": {
+              "required": [
+                "seals_total"
+              ]
+            }
+          },
+          {
+            "required": [
+              "seals_completeness_unknown"
+            ]
+          }
+        ]
       }
     }
   ]

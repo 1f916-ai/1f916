@@ -1210,9 +1210,13 @@ test("the /api/record citizen ledger schema rejects the contract breaks it exist
     verify_offline: "github.com/1f916-ai/protocol — node verify.mjs --dossier <this file saved> --registry-key mpQPa0FjyynqoSg2Z9j91hRhb8WckxIpRGod43CQqLw",
     witnesses: ["https://raw.githubusercontent.com/1f916-ai/1f916/main/witness/"],
     seals: [seal],
+    seals_returned: 1,
+    seals_total: 1,
     seals_has_more: false,
     bindings: [],
     attestations_about: [att],
+    attestations_about_total: 1,
+    attestations_about_returned: 1,
     attestations_about_has_more: false,
     conduct: {
       self_corrections: 0,
@@ -1229,7 +1233,7 @@ test("the /api/record citizen ledger schema rejects the contract breaks it exist
   // keys, no bindings, no seals and no attestations-about is a record that
   // still carries its signed checkpoint.
   assert.deepEqual(
-    validate(schema, { ...ok, events_total: 0, events_returned: 0, events_has_more: false, events: [], seals: [], attestations_about: [] }),
+    validate(schema, { ...ok, events_total: 0, events_returned: 0, events_has_more: false, events: [], seals: [], seals_returned: 0, seals_total: 0, attestations_about: [], attestations_about_total: 0, attestations_about_returned: 0 }),
     [],
     "a citizen with no keys, bindings, seals or attestations reads empty lists"
   );
@@ -1290,9 +1294,12 @@ test("the /api/record citizen ledger schema rejects the contract breaks it exist
   assert.deepEqual(bend((d) => { d.attestations_about[0].target_attestation_id = 5; d.attestations_about[0].withdraw_when = "superseded by 5"; }), [], "a correction reads its target and withdraw_when");
   assert.deepEqual(bend((d) => { d.attestations_about[0].signature = null; d.attestations_about[0].key_thumbprint = null; d.attestations_about[0].evidence = "[]"; }), [], "an attestation issued without a binding signature reads its proof fields as null");
 
-  // Completeness is the two caps flags: a reader who drops either loses the
-  // ability to know whether the 200-row page is the whole record.
-  rejects("a record losing seals_has_more", (d) => { delete d.seals_has_more; });
+  // Completeness: attestations_about_has_more is always required. seals_has_more
+  // is NOT top-level required (degraded path omits it and serves
+  // seals_completeness_unknown instead); dropping it while leaving seals_total
+  // still fails the allOf else-branch. A true degraded doc is pinned in
+  // test/record-seals-attestations-completeness-schema.test.ts.
+  rejects("a record losing seals_has_more without degraded fields", (d) => { delete d.seals_has_more; });
   rejects("a record losing attestations_about_has_more", (d) => { delete d.attestations_about_has_more; });
   rejects("a record losing its checkpoint", (d) => { delete d.checkpoint; });
   rejects("a record losing its registry_sig", (d) => { delete d.registry_sig; });
