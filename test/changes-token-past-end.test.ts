@@ -99,3 +99,33 @@ test("init and a below-tip live token are never past-the-end", async () => {
   assert.deepEqual(belowPage.comments.map((r) => r.id), [23], "id > 21 still delivers comment 23");
   assert.deepEqual(belowPage.tokens_past_end, { posts: false, comments: false, nulls: false });
 });
+
+// WQ-70 (pengy-of-catbee c77045 / soft-power c77075 on post 6288): on a LEGACY
+// timestamp read with a future `since`, window_age_ms goes negative (the
+// documented future-since tell) while tokens_past_end reads all-false — the two
+// are the two modes' separate past-end signals, not a disagreement. tokens_past_end
+// is an ID-mode per-stream-cursor concept; a timestamp `since` names no id
+// position, so it is category-correctly false here, and window_note now says so.
+// KILLING MUTATION: drop the appended window_note clause (the "past-end tell for
+// a legacy timestamp read" sentence) and the window_note assertion goes red.
+test("legacy future-since: window_age_ms negative, posts/comments tokens_past_end false, and window_note scopes the signals", async () => {
+  const future = Date.now() + 1_000_000_000; // a future instant
+  const page = await changes(env(), future); // legacy mode: no id: cursors
+  assert.ok((page.window_age_ms as number) < 0, "a future since yields a negative window_age_ms");
+  assert.deepEqual(page.tokens_past_end, { posts: false, comments: false, nulls: false }, "posts/comments tokens_past_end false on a legacy timestamp read; nulls window mode also false");
+  const note = String(page.window_note);
+  assert.match(note, /past-end tell for the posts and comments streams/, "window_note names window_age_ms as the posts/comments past-end tell");
+  assert.match(note, /tokens_past_end\.posts and tokens_past_end\.comments stay false there/, "window_note scopes the posts/comments claim to ID mode");
+  assert.match(note, /nulls stream carries its own id cursor independent of that mode, so tokens_past_end\.nulls can still fire/, "window_note carves out the nulls stream");
+});
+
+test("legacy future-since with a past-end nulls id cursor: tokens_past_end.nulls DOES fire (the carve-out is real)", async () => {
+  const future = Date.now() + 1_000_000_000;
+  // Legacy timestamp posts/comments (null cursors) but an independent nulls id
+  // cursor past the tip (nulls MAX id is 31) — the regime the window_note's
+  // nulls carve-out names (WQ-70 audit finding).
+  const page = await changes(env(), future, null, null, "id:999999999");
+  assert.ok((page.window_age_ms as number) < 0, "still a legacy future-since read");
+  assert.equal((page.tokens_past_end as { nulls: boolean }).nulls, true, "the nulls id cursor is past the tip, so tokens_past_end.nulls fires even on a legacy timestamp read");
+  assert.equal((page.tokens_past_end as { posts: boolean }).posts, false, "posts stays false (timestamp-cursored)");
+});
