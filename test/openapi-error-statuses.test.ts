@@ -22,8 +22,10 @@
 // secret, no other operation does, and the live router actually answers 401
 // with the JSON error body the declaration describes. The other `optional`
 // routes (POST /mcp and /mcp/read) answer the RFC 9728 protected-resource
-// pointer, not the society error body, and keep their 401 undeclared here --
-// that is a different mechanism, out of scope for this file.
+// pointer, not the society error body. They now DO declare that 401 (the
+// JSON-RPC transport 401, owned by test/openapi-mcp-wire.test.ts); this file
+// excludes them from its society-body membership because it is a different
+// mechanism.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -79,10 +81,22 @@ test("every operation declares 401 exactly when it is bearer-guarded", async () 
   const bearer = bearerOps();
   const plain = plain401Ops();
   let checked = 0;
+  let mcpChecked = 0;
   for (const [path, ops] of Object.entries(doc.paths)) {
     for (const [verb, op] of Object.entries(ops)) {
       const has401 = Object.keys(op.responses).includes("401");
       const shouldBe = bearer.has(`${path} ${verb}`) || plain.has(`${path} ${verb}`);
+      const isMcpDoor = (path === "/mcp" || path === "/mcp/read") && verb === "post";
+      if (isMcpDoor) {
+        // The MCP doors declare a 401 too, but it is the JSON-RPC transport
+        // 401 (no usable credential on a write tool, the RFC 9728 pointer in
+        // WWW-Authenticate, the body still the isError result), not the
+        // society clocked body this file pins. test/openapi-mcp-wire.test.ts
+        // owns that declaration; it is excluded from this membership.
+        assert.equal(has401, true, `${path} declares the JSON-RPC transport 401 (owned by the mcp-wire test)`);
+        mcpChecked++;
+        continue;
+      }
       const kind = bearer.has(`${path} ${verb}`) ? "bearer-guarded" : plain.has(`${path} ${verb}`) ? "optional-JSON" : "neither";
       assert.equal(
         has401,
@@ -92,6 +106,7 @@ test("every operation declares 401 exactly when it is bearer-guarded", async () 
       checked++;
     }
   }
+  assert.equal(mcpChecked, 2, "the two MCP doors were checked and carved out");
   assert.ok(checked >= 100, `only ${checked} operations in the document; the path scan has drifted`);
 });
 

@@ -1447,6 +1447,57 @@ export function openApi(origin: string, now = Date.now()) {
               },
             }
           : {};
+      // The two MCP doors' JSON-RPC transport statuses, declared on POST /mcp
+      // and POST /mcp/read. A generated client reading /openapi.json sees
+      // exactly one response on each -- the 200 -- so every other status the
+      // live router (handleMcp, src/mcp.ts) serves is typed `never`. The
+      // transport answers a JSON-RPC client with THREE statuses beside the
+      // 200, each a class the client must tell apart:
+      //   202  a notification (any method, no id) is acknowledged with no
+      //         body -- JSON-RPC forbids answering a notification, even with
+      //         an error, so the client must not wait for one;
+      //   400  the transport refused the message before any tool ran: -32700
+      //         on a body that is not JSON, -32600 on an array body (batches
+      //         were removed in the 2025-06-18 revision), on a body that is
+      //         not a single object, or on an MCP-Protocol-Version header
+      //         this server never agreed to speak. The body is the JSON-RPC
+      //         error envelope (jsonrpc / id / error{code, message}), NOT the
+      //         registry's clocked error body;
+      //   401  a write tool called with no usable credential. The body is
+      //         still the isError tool result every existing client parses --
+      //         the 401 is carried by the status, not a different body shape;
+      //         the WWW-Authenticate header carries the RFC 9728 pointer
+      //         naming /.well-known/oauth-protected-resource/mcp, which is
+      //         how an MCP host learns where to start the OAuth flow.
+      // A tool-level 4xx is deliberately NOT a status code: an unknown tool,
+      // a spent budget, or the read-only door's write refusal answers 200
+      // with isError: true and the clocked error string inside the text
+      // block. Declaring the three transport statuses is what lets an MCP
+      // client tell "the door refused the transport" from "the tool ran and
+      // refused the call" from "nothing was recorded, acknowledge with 202"
+      // -- the same undiagnosable-success failure the daily-cap 429, the
+      // typed-absence 404 and the x402 402 already fixed, on the JSON-RPC
+      // door. test/openapi-mcp-wire.test.ts pins the declaration and the
+      // live statuses against the router in-process.
+      const mcpTransport =
+        v === "POST" && (r.path === "/mcp" || r.path === "/mcp/read")
+          ? {
+              "202": {
+                description:
+                  "A JSON-RPC notification (any method, no id) is acknowledged with no body. JSON-RPC forbids answering a notification, even with an error, so a client must not wait for one: fire-and-forget.",
+              },
+              "400": {
+                description:
+                  "The transport refused the message before any tool ran. The body is the JSON-RPC error envelope (jsonrpc, id, error{code, message}), not the registry's clocked error body: -32700 parse error on a body that is not JSON, -32600 on an array body (batches were removed in the 2025-06-18 revision), on a body that is not a single object, or on an MCP-Protocol-Version header this server never agreed to speak.",
+                content: { "application/json": {} },
+              },
+              "401": {
+                description:
+                  "A write tool was called with no usable citizen credential. The body is still the isError tool result every existing client parses -- the 401 is carried by the status, not a different body shape -- and the WWW-Authenticate header carries the RFC 9728 pointer (Bearer resource_metadata=.../.well-known/oauth-protected-resource/mcp), which is how an MCP host learns where to start the OAuth flow.",
+                content: { "application/json": {} },
+              },
+            }
+          : {};
       const responses: Record<string, unknown> = {
         ...(errorResponses as Record<string, unknown>),
         ...(write400 as Record<string, unknown>),
@@ -1467,6 +1518,7 @@ export function openApi(origin: string, now = Date.now()) {
         ...(listing429 as Record<string, unknown>),
         ...(submission429 as Record<string, unknown>),
         ...(payout429 as Record<string, unknown>),
+        ...(mcpTransport as Record<string, unknown>),
         [success]: { description: responseDesc, content: { [media]: {} } },
       };
       paths[path][v.toLowerCase()] = {
