@@ -174,6 +174,18 @@ async function confirmBase(env: Env, txHash: string): Promise<"pending" | "confi
   }
 }
 
+// A pending authenticated capture is a job the archive is still running. One
+// per pass, the oldest first: success rewrites the row to the capture URL,
+// an archive error is recorded, anything else stays pending for the next pass.
+async function pollArchiveJob(f: typeof fetch, env: Env, statusUrl: string): Promise<{ status: "pending" | "confirmed" | "failed"; target: string; error: string | null }> {
+  const res = await f(statusUrl, { headers: { accept: "application/json", authorization: `LOW ${env.ARCHIVE_ORG_ACCESS}:${env.ARCHIVE_ORG_SECRET}` } });
+  if (!res.ok) return { status: "pending", target: statusUrl, error: null };
+  const j = (await res.json()) as { status?: string; timestamp?: string; original_url?: string; message?: string };
+  if (j.status === "success" && j.timestamp && j.original_url) return { status: "confirmed", target: `https://web.archive.org/web/${j.timestamp}/${j.original_url}`, error: null };
+  if (j.status === "error") return { status: "failed", target: statusUrl, error: (j.message || "archive error").slice(0, 200) };
+  return { status: "pending", target: statusUrl, error: null };
+}
+
 // Internet Archive: Save Page Now. With account keys, the authenticated API
 // (a job id, polled later). Without keys, the anonymous form, at most once an
 // 55 minutes, recorded as failed when the archive refuses.
@@ -266,6 +278,17 @@ export async function anchorCheckpoints(env: Env, now = Date.now(), deps: Anchor
       if (s === "confirmed") report.confirmed++; else report.failed++;
     }
   }
+  // Archive jobs: one pending authenticated capture per pass, oldest first.
+  if (env.ARCHIVE_ORG_ACCESS && env.ARCHIVE_ORG_SECRET) {
+    const job = await env.DB.prepare("SELECT id, target FROM anchors WHERE kind = 'archive' AND status = 'pending' ORDER BY id ASC LIMIT 1").first<{ id: number; target: string }>();
+    if (job && job.target.startsWith("https://web.archive.org/save/status/")) {
+      const st = await pollArchiveJob(deps.fetch, env, job.target);
+      if (st.status !== "pending") {
+        await env.DB.prepare("UPDATE anchors SET status = ?, target = ?, error = ?, confirmed_at = ? WHERE id = ?").bind(st.status, st.target, st.error, st.status === "confirmed" ? now : null, job.id).run();
+        if (st.status === "confirmed") report.confirmed++; else report.failed++;
+      }
+    }
+  }
   return report;
 }
 
@@ -295,19 +318,19 @@ export async function listAnchors(env: Env, sinceId: number | undefined) {
   return {
     contract: "1f916.anchors.v1",
     what_this_is:
-      "The newest checkpoint of each log, offered every five minutes to the targets listed under `targets`: three OpenTimestamps calendars (the Bitcoin blockchain), the Base blockchain when an anchoring wallet is configured, and the Internet Archive at most once every 55 minutes. Every attempt, made or refused, is a row here with its status and error. Checkpoints from before the first anchoring pass were never offered.",
+      "The newest checkpoint of each log, offered every five minutes to the targets listed under `targets`: three OpenTimestamps calendars (the Bitcoin blockchain), the Base blockchain when an anchoring wallet is configured, and the Internet Archive at most once every 55 minutes: one capture of GET /api/checkpoint, the page that carries both heads, recorded as an anchor of the identity log's head only. Every attempt, made or refused, is a row here with its status and error. Checkpoints from before the first anchoring pass were never offered.",
     what_an_anchor_proves:
       "A confirmed anchor proves that the exact checkpoint text existed by that time and has not changed since. A pending OpenTimestamps row is the calendar's promise until its Bitcoin transaction confirms; a pending Base row is a transaction not yet seen in a block; a failed row proves only that the attempt was made and refused. No anchor says anything about whether what the checkpoint covers is true.",
     targets: {
       ots_calendars: OTS_CALENDARS,
       base: Boolean(env.ANCHOR_BASE_KEY),
-      archive: env.ARCHIVE_ORG_ACCESS && env.ARCHIVE_ORG_SECRET ? "authenticated, at most once every 55 minutes" : "anonymous, at most once every 55 minutes; refusals are recorded as failed rows",
+      archive: (env.ARCHIVE_ORG_ACCESS && env.ARCHIVE_ORG_SECRET ? "authenticated, at most once every 55 minutes" : "anonymous, at most once every 55 minutes; refusals are recorded as failed rows") + "; one capture of GET /api/checkpoint per attempt, recorded against the identity log's head, never the ledger's",
     },
     anchored_text: "the checkpoint's signed payload, byte for byte: 1f916.checkpoint.v1:<log>:<tree_size>:<root>:<created_at>. GET /api/anchors/<id>.txt serves it.",
     how_to_verify: {
       ots: "GET /api/anchors/<id>.txt as payload.txt and /api/anchors/<id>.ots as payload.txt.ots, then `ots verify payload.txt.ots` with the standard OpenTimestamps client (opentimestamps.org). A fresh proof is pending until the calendar's Bitcoin transaction confirms; `ots upgrade payload.txt.ots` fetches the completed proof from the calendar. The registry serves the pending file it received and never edits it.",
       base: "target is the Base transaction hash. Read the transaction's input data on any Base node or explorer and decode it as UTF-8: it is the payload text. The sender is the anchoring wallet, a dedicated pocket-change key that is not the treasury.",
-      archive: "target is the Wayback Machine capture of GET /api/checkpoint at that time, or the job status URL while the capture is being made.",
+      archive: "target is the Wayback Machine capture URL of GET /api/checkpoint once the capture is confirmed. An authenticated capture starts as a job status URL with status pending; a later pass asks the archive how the job went and rewrites the row to the capture URL (confirmed) or records the archive's error (failed).",
     },
     latest_checkpoints: latest.map((c) => ({ checkpoint_id: c.id, log: c.log, tree_size: c.tree_size, root: c.root, payload: payloadOf(c), anchors: latestAnchors.filter((a) => a.checkpoint_id === c.id).map(({ checkpoint_id: _c, ...rest }) => rest) })),
     anchors: page.map((r) => ({

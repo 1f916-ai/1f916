@@ -11,6 +11,9 @@
 //   - stop filtering archive attempts to identity_events: two archive rows, red.
 //   - serve `proof` for a non-ots row: the base .ots download returns bytes
 //     instead of null, red.
+//   - LIMIT 2 -> LIMIT 200 on the confirmation query: three pending rows
+//     confirm in one pass instead of two, red.
+//   - skip the archive job UPDATE: the job row stays pending, red.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -118,6 +121,53 @@ test("Base rows confirm on a later pass, and a reverted receipt is recorded as f
   const bad = await anchorCheckpoints(k2, T0 + 120_000, deps({ confirm: "failed" }));
   assert.equal(bad.failed, 2);
   assert.deepEqual((f2.db.prepare("SELECT DISTINCT status FROM anchors WHERE kind = 'base'").all() as { status: string }[]).map((x) => x.status), ["failed"]);
+});
+
+test("Base confirmations are capped at two per pass, so a backlog drains over passes", async () => {
+  const { env, db } = fixture();
+  const withKey = { ...env, ANCHOR_BASE_KEY: "0x" + "11".repeat(32) };
+  await anchorCheckpoints(withKey, T0, deps({ archive: "anon-500" }));
+  db.exec(`INSERT INTO checkpoints (id, log, tree_size, root, sig, created_at) VALUES (12, 'identity_events', 6, '${ROOT_B}', 'sigC', ${T0 + 5_000})`);
+  await anchorCheckpoints(withKey, T0 + 10_000, deps());
+  assert.equal((db.prepare("SELECT COUNT(*) AS n FROM anchors WHERE kind = 'base' AND status = 'pending'").get() as { n: number }).n, 3, "three pending Base rows");
+  const first = await anchorCheckpoints(withKey, T0 + 120_000, deps({ confirm: "confirmed" }));
+  assert.equal(first.confirmed, 2, "exactly two receipts asked for per pass");
+  assert.equal((db.prepare("SELECT COUNT(*) AS n FROM anchors WHERE kind = 'base' AND status = 'pending'").get() as { n: number }).n, 1);
+  const second = await anchorCheckpoints(withKey, T0 + 130_000, deps({ confirm: "confirmed" }));
+  assert.equal(second.confirmed, 1);
+  assert.equal((db.prepare("SELECT COUNT(*) AS n FROM anchors WHERE kind = 'base' AND status = 'pending'").get() as { n: number }).n, 0);
+});
+
+test("an authenticated archive job is polled on later passes: success rewrites the row to the capture URL, an archive error is recorded", async () => {
+  const keys = { ARCHIVE_ORG_ACCESS: "ak", ARCHIVE_ORG_SECRET: "sk" };
+  const { env, db } = fixture();
+  const withKeys = { ...env, ...keys };
+  await anchorCheckpoints(withKeys, T0, deps());
+  const jobStatus = (body: object) => {
+    const d = deps();
+    const inner = d.fetch;
+    d.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("https://web.archive.org/save/status/")) { d.calls.push(`GET ${url}`); return new Response(JSON.stringify(body), { status: 200 }); }
+      return inner(input, init);
+    }) as typeof fetch;
+    return d;
+  };
+  const still = await anchorCheckpoints(withKeys, T0 + 300_000, jobStatus({ status: "pending" }));
+  assert.equal(still.confirmed + still.failed, 0);
+  assert.equal((db.prepare("SELECT status FROM anchors WHERE kind = 'archive'").get() as { status: string }).status, "pending");
+  const done = await anchorCheckpoints(withKeys, T0 + 600_000, jobStatus({ status: "success", timestamp: "20260925010203", original_url: "https://1f916.ai/api/checkpoint" }));
+  assert.equal(done.confirmed, 1);
+  const row = db.prepare("SELECT status, target, confirmed_at FROM anchors WHERE kind = 'archive'").get() as { status: string; target: string; confirmed_at: number };
+  assert.deepEqual({ ...row }, { status: "confirmed", target: "https://web.archive.org/web/20260925010203/https://1f916.ai/api/checkpoint", confirmed_at: T0 + 600_000 });
+  // A second fixture whose job errors.
+  const f2 = fixture();
+  const k2 = { ...f2.env, ...keys };
+  await anchorCheckpoints(k2, T0, deps());
+  const bad = await anchorCheckpoints(k2, T0 + 300_000, jobStatus({ status: "error", message: "blocked by robots" }));
+  assert.equal(bad.failed, 1);
+  const r2 = f2.db.prepare("SELECT status, error FROM anchors WHERE kind = 'archive'").get() as { status: string; error: string };
+  assert.deepEqual({ ...r2 }, { status: "failed", error: "blocked by robots" });
 });
 
 test("a calendar outage is one failed row with the error text; the other calendars still record", async () => {
