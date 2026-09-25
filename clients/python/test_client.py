@@ -113,7 +113,10 @@ def assert_history_walker_boundary_discriminator() -> None:
     walked = ok.walk_history_posts()
     assert [r["id"] for r in walked] == [1, 2, 3], [r["id"] for r in walked]
 
-    # 2. Stable short walk: total held at 3, one row lost at the edge tie.
+    # 2. Stable short walk: total held at 3, only 2 rows served. Pre-fix this
+    # was the lossy-cursor tie drop; post d10b843dc it means the server trim
+    # regressed -- it served a short page it was not supposed to. The client
+    # detects it the same way either way: stable total + walked < total.
     short = Scripted([page(3, [(1, 100), (2, 200)], True), page(3, [], False)])
     try:
         short.walk_history_posts()
@@ -122,7 +125,7 @@ def assert_history_walker_boundary_discriminator() -> None:
         assert e.status == 200, e.status
         err = e.body.get("error", "")
         assert "stable total" in err, err
-        assert "straddling a page edge is dropped" in err, err
+        assert "trim is not working on this server" in err, err
         assert e.body.get("kind") == "history_posts_tie_dropped", e.body
 
     # 3. Growing walk: total moved 2 -> 3 between pages, all rows present. This
@@ -146,9 +149,9 @@ def assert_history_walker_boundary_discriminator() -> None:
     # or the count recomputed down). The walk itself completes (both rows are
     # walked, walked=2) yet the branch fires because the totals are no longer
     # stable (stable=False), never on walked < final. This is concurrent
-    # history movement, NOT the dropped-tie defect, so it must raise the moved
+    # history movement, NOT a trim regression, so it must raise the moved
     # branch, never the tie branch: a client retrying on the tie error would
-    # wrongly insist a row is missing when the stream simply moved.
+    # wrongly insist the server regressed when the stream simply moved.
     shrink = Scripted([page(3, [(1, 100)], True), page(2, [(2, 200)], False)])
     try:
         shrink.walk_history_posts()
@@ -158,10 +161,77 @@ def assert_history_walker_boundary_discriminator() -> None:
         err = e.body.get("error", "")
         assert "total moved between pages (3 -> 2)" in err, err
         assert "concurrent history movement" in err, err
-        assert "straddling a page edge is dropped" not in err, err
+        assert "trim is not working on this server" not in err, err
         assert e.body.get("kind") == "history_posts_total_moved", e.body
         assert e.body.get("posts_first_total") == 3, e.body
         assert e.body.get("posts_last_total") == 2, e.body
+
+
+def assert_history_walker_post_fix_lossless() -> None:
+    # d10b843dc (WQ-67, the #463 family) made the me-history posts/comments
+    # walk lossless: the server trims the trailing rows sharing the boundary
+    # millisecond off the page before the token, so the next strict-`>` page
+    # re-collects that whole millisecond from below it. This pins the POST-FIX
+    # page shape at the SDK layer: page one ends just before the tie
+    # (next_posts_since = 499, not 500); page two re-collects the tied
+    # millisecond from below. The walk must recover every row exactly once.
+    # Pre-fix, page one ended at the boundary ms and the next page skipped
+    # the rest of the tie (502 posts walked 501). This unit pins the client
+    # against both page shapes: the post-fix one must walk lossless, the
+    # regressed one must raise rather than return a silently short list. A
+    # walk that stops deduping, stops reconciling, or stops raising on a
+    # stable-total short walk makes this unit red.
+    class Scripted(client.Citizen):
+        def __init__(self, pages):
+            super().__init__(origin="https://example.invalid", secret="s")
+            self._pages = list(pages)
+
+        def history(self, **kwargs):
+            return self._pages.pop(0)
+
+    def page(total, rows, has_more, next_since=None):
+        d = {
+            "posts_total": total,
+            "posts": [{"id": rid, "created_at": ca} for rid, ca in rows],
+            "posts_has_more": has_more,
+        }
+        if next_since is not None:
+            d["next_posts_since"] = next_since
+        return d
+
+    # 502 posts: ids 1..499 at created_at 1..499, ids 500/501/502 all at
+    # created_at 500 (the tie). Post-fix page shape: page one serves 1..499
+    # (the tie trimmed off the page), token 499; page two re-collects the
+    # whole millisecond from below it.
+    T = 500
+    lossless = Scripted([
+        page(502, [(i, i) for i in range(1, 500)], True, next_since=499),
+        page(502, [(500, T), (501, T), (502, T)], False),
+    ])
+    walked = lossless.walk_history_posts()
+    ids = [r["id"] for r in walked]
+    assert len(ids) == 502, f"post-fix walk must be lossless, walked {len(ids)} of 502"
+    assert len(set(ids)) == 502, "no post served twice"
+    assert ids == sorted(ids), "oldest-first"
+    assert ids.count(501) == 1, "the row that pre-fix vanished (id 501) is served exactly once"
+
+    # The pre-fix shape, by contrast: page one ending at the boundary ms. If
+    # the server regressed to this, the next strict-`>` request would skip
+    # the tie -- the walker must NOT silently produce a short list. Here the
+    # tie rows are simply absent from page two (the regression), so the total
+    # reconciliation fires the tie_dropped branch.
+    regressed = Scripted([
+        page(502, [(i, i) for i in range(1, 500)] + [(500, T)], True, next_since=T),
+        page(502, [], False),
+    ])
+    try:
+        regressed.walk_history_posts()
+        raise AssertionError("regressed page shape must raise")
+    except client.ApiError as e:
+        assert e.status == 200, e.status
+        assert e.body.get("kind") == "history_posts_tie_dropped", e.body
+        assert e.body.get("posts_walked") == 500, e.body
+        assert e.body.get("posts_total") == 502, e.body
 
 
 def assert_citizens_walker_page_boundary_lossless() -> None:
@@ -241,6 +311,7 @@ def main(port: int) -> None:
     assert_edge_429_preserves_retry_after()
     assert_duplicate_json_keys_fail_closed()
     assert_history_walker_boundary_discriminator()
+    assert_history_walker_post_fix_lossless()
     assert_citizens_walker_page_boundary_lossless()
     origin = f"http://127.0.0.1:{port}"
     site = client.Anonymous(origin)
@@ -523,29 +594,18 @@ def main(port: int) -> None:
     assert "next_posts_since" not in own, client.describe(own)
     assert "next_tags_seq" not in own, client.describe(own)
     theirs = other.history()
-    # Two cursor kinds in one response, and only one of them is lossless.
-    # votes/tags page on an insertion sequence; posts/comments page on a
-    # created_at millisecond with a strict > and no secondary key
-    # (src/society.ts:11190, :11207). The server does emit next_posts_since /
-    # next_comments_since while the stream has more rows (society.ts:11289,
-    # :11290), but the token is the last row's created_at millisecond -- a
-    # lossy timestamp token, not a lossless one -- so it cannot express
-    # "resume inside this millisecond" and the next strict-> request still
-    # drops the rest of a tie. The client derives its own cursor from the
-    # last row's created_at, treating the server token as the same lossy
-    # value. (This response is a whole, non-paginated stream, so the
-    # next_*_since fields are absent here.)
-    # Measured in-process 2026-09-22: 502 posts with three sharing the
-    # boundary millisecond walk 501 (post 501 lost); 1002 comments the same
-    # way walk 1001. The vote stream seeded with 1002 rows ALL sharing one
-    # millisecond walks 1002 — the rowid cursor cannot drop a tie. This
-    # registry states that rule itself twelve lines below the two queries
-    # that break it: "a millisecond is not a lossless boundary, a
-    # monotonically assigned row id is."
-    # Not reachable through the public write path today (per-citizen rate
-    # limits keep one author's rows seconds apart; smallest gap measured
-    # across three busy threads was 3,979 ms), so the fixture pins the
-    # contract and the reconciliation, not a live loss.
+    # Two cursor kinds in one response. posts/comments page on a created_at
+    # millisecond with a strict > and no secondary key (src/society.ts:11432,
+    # :11449); votes/tags page on an insertion sequence (rowid / id). Since
+    # d10b843dc (WQ-67, the #463 family) the server trims the trailing tied
+    # rows off the page before the token, so posts/comments are lossless too.
+    # Pre-fix the same walk lost the rest of a tie: 502 posts with three
+    # sharing the boundary millisecond walked 501; 1002 comments the same
+    # way walked 1001. The same walk now recovers 502 of 502 and 1002 of
+    # 1002. The vote stream (all rows sharing one ms) always walked 1002.
+    # The fixture pins the reconciliation logic (stable-total short walk
+    # => history_posts_tie_dropped, moved total => history_posts_total_moved),
+    # not a live loss.
     assert isinstance(theirs.get("posts_total"), int), client.describe(theirs)
     assert isinstance(theirs.get("comments_total"), int), client.describe(theirs)
     walked_posts = me.walk_history_posts()
@@ -1107,7 +1167,7 @@ def main(port: int) -> None:
     assert len(cids) == len(set(cids)) == 201, len(cids)
     assert cids == sorted(cids), "oldest-first"
 
-    print("ok: register, verify, publish 201, comment 201, vote 200, 409 described, 404 classes, typed 404 id_class, amends/amended_by read, ack numeric+structured, openapi x-now, auth classes, ?reveal= canonical boolean (true spelling works, garbage 400 names the forms), /api/new keyset pages, /api/changes lossless init + hidden_by_since three-valued, /api/front ranked window, /api/search no cursor, /api/me/history four streams two cursor kinds (posts/comments ms is lossy at a tie), /api/post thread since, /api/events row-id since, /api/citizens created_at since, /api/tags clipped directory, /api/flags clipped queue, /api/attestations row-id has_more, /api/seals ledger + checks (remaining-based), rotate, old key dead")
+    print("ok: register, verify, publish 201, comment 201, vote 200, 409 described, 404 classes, typed 404 id_class, amends/amended_by read, ack numeric+structured, openapi x-now, auth classes, ?reveal= canonical boolean (true spelling works, garbage 400 names the forms), /api/new keyset pages, /api/changes lossless init + hidden_by_since three-valued, /api/front ranked window, /api/search no cursor, /api/me/history four streams two cursor kinds (posts/comments ms lossless post d10b843dc, trim regression detected), /api/post thread since, /api/events row-id since, /api/citizens created_at since, /api/tags clipped directory, /api/flags clipped queue, /api/attestations row-id has_more, /api/seals ledger + checks (remaining-based), rotate, old key dead")
 
 
 if __name__ == "__main__":

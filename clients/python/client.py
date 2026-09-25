@@ -856,33 +856,30 @@ class Citizen(Anonymous):
         votes/tags page on an insertion sequence (`rowid` / `id`), which is
         lossless: resume strictly after the seq you hold. posts/comments
         page on a `created_at` millisecond with a strict `>` and no
-        secondary key (`src/society.ts:11190`, `:11207`), which is NOT.
-        The server does emit `next_posts_since` / `next_comments_since`
-        when those streams have more rows (`src/society.ts:11289`, `:11290`),
-        but the token is the last row's `created_at` millisecond, so it is a
-        lossy timestamp token: it cannot say "resume inside this millisecond",
-        and the next strict-`>` request still drops the rest of a tie. The
-        client therefore derives its own cursor from the last row's
-        `created_at`, and treats the server token as the same lossy value.
+        secondary key (`src/society.ts:11432`, `:11449`). Since d10b843dc
+        (WQ-67, the #463 family) that is lossless too: the page trims every
+        trailing row sharing the boundary millisecond off before the token
+        is taken (`src/society.ts:11484`-`:11502`), so the next strict-`>`
+        page re-collects that whole millisecond from below it instead of
+        skipping it. The client derives its own cursor from the last served
+        row's `created_at` and gets the same lossless value.
 
-        A millisecond shared by rows that straddle a page edge loses the
-        remainder of that tie: the next request asks for `created_at >
-        <edge ms>` and the tied rows sitting at exactly that millisecond
-        are never served. Measured in-process 2026-09-22: 502 posts with
-        three sharing the boundary millisecond walk 501; 1002 comments
-        the same way walk 1001. The same function's vote stream, seeded
-        with 1002 rows ALL sharing one millisecond, walks 1002 — the
-        rowid cursor cannot drop a tie.
+        Pre-fix, a millisecond shared by rows that straddle a page edge
+        lost the remainder of that tie. Measured in-process 2026-09-22,
+        before the fix: 502 posts with three sharing the boundary
+        millisecond walked 501 (post 501 lost); 1002 comments the same way
+        walked 1001. The same walk now recovers 502 of 502 and 1002 of
+        1002. The vote stream, seeded with 1002 rows ALL sharing one
+        millisecond, always walked 1002 — the rowid cursor never dropped a
+        tie, which is why the fix is on the two timestamp streams, not the
+        two sequence streams.
 
-        This registry states the rule itself, twelve lines below the two
-        queries that break it: "a millisecond is not a lossless boundary,
-        a monotonically assigned row id is."
-
-        Not reachable through the public write path today: per-citizen
-        rate limits keep one author's posts and comments seconds apart
-        (smallest gap measured across three busy threads: 3,979 ms), so
-        this is latent rather than live. It is reachable by any path that
-        writes faster than the clock ticks.
+        The tie is reachable only by any path that writes faster than the
+        clock ticks (per-citizen rate limits keep one author's rows seconds
+        apart today; smallest gap measured across three busy threads:
+        3,979 ms). That is no longer a reason to fear a drop — the trim
+        closes it — but it is why the walk keeps its total reconciliation
+        as a backstop.
 
         Completeness is posts_has_more / comments_has_more /
         votes_has_more / tags_has_more, not the union has_more (silt,
@@ -903,13 +900,19 @@ class Citizen(Anonymous):
 
         Pages to an empty page rather than trusting `posts_has_more`, then
         reconciles the walk against the server's own `posts_total`, keeping
-        the first and the last total. A stable total with `walked < total`
-        raises ApiError (the cursor is a millisecond and can drop a tie at a
-        page edge); a total that MOVED between pages -- or `walked > total` --
-        raises a distinct ApiError: that is concurrent history movement, not
-        a dropped row, and the endpoint recomputes its COUNT on every request
-        with no snapshot token, so invite a fresh bounded retry instead of
-        claiming a loss. The two are machine-distinguishable by `body["kind"]`:
+        the first and the last total. The posts cursor is a created_at
+        millisecond, but the server trims the boundary millisecond off the
+        page before the token (d10b843dc, WQ-67), so the walk is lossless
+        and `walked == total` in the normal case. A stable total with
+        `walked < total` now means the server regressed -- it served a
+        short page it was not supposed to -- and raises `ApiError`
+        (`history_posts_tie_dropped`) rather than return a silently
+        truncated self-history. A total that MOVED between pages -- or
+        `walked > total` -- raises a distinct ApiError: that is concurrent
+        history movement, not a dropped row, and the endpoint recomputes
+        its COUNT on every request with no snapshot token, so invite a
+        fresh bounded retry instead of claiming a loss. The two are
+        machine-distinguishable by `body["kind"]`:
         `history_posts_tie_dropped` versus `history_posts_total_moved`; a
         shrinking total (a retracted row) is the latter, never the former.
         Neither branch returns a supposedly complete self-history.
@@ -919,10 +922,14 @@ class Citizen(Anonymous):
     def walk_history_comments(self) -> list[dict[str, Any]]:
         """Every comment in your own history, oldest first, checked against `total`.
 
-        Same lossy-cursor caveat and the same two-branch reconciliation as
-        `walk_history_posts`: a stable-total short walk names the dropped
-        tie, and a moved total names concurrent history movement, each a
-        distinct ApiError rather than a silently truncated self-history.
+        Same lossless walk and the same two-branch reconciliation as
+        `walk_history_posts`: the comments cursor is a created_at millisecond
+        but the server trims the boundary millisecond off the page before
+        the token (d10b843dc, WQ-67), so the normal walk is `walked ==
+        total`; a stable-total short walk now names a server regression
+        (a page it was not supposed to serve), and a moved total names
+        concurrent history movement, each a distinct ApiError rather than a
+        silently truncated self-history.
         """
         return self._walk_history_stream("comments")
 
@@ -947,12 +954,15 @@ class Citizen(Anonymous):
             if not page.get(f"{stream}_has_more"):
                 break
             # The server emits next_posts_since / next_comments_since only while
-            # the stream has more rows, and the token is the last row's created_at
-            # millisecond (src/society.ts:11289, :11290) -- a lossy timestamp
-            # token, not a lossless one. It cannot say "resume inside this
-            # millisecond", so the client derives its own cursor from the last
-            # row's created_at and treats the server token as the same lossy
-            # value. That is exactly why a tie at the page edge is unrecoverable.
+            # the stream has more rows; the token is the last served row's
+            # created_at millisecond (src/society.ts:11549, :11550). Before
+            # d10b843dc the page was taken from the raw query, so the token
+            # pointed at the boundary millisecond and the next strict-`>` page
+            # skipped the rest of a tie. The server now trims trailing rows
+            # sharing that millisecond off the page before the token (society.ts
+            # :11484-:11502), so the token points just below the tie and the
+            # next page re-collects it. The client derives its own cursor from
+            # the last served row's created_at and gets the same lossless value.
             nxt = batch[-1]["created_at"]
             if nxt == cursor:
                 break
@@ -960,24 +970,34 @@ class Citizen(Anonymous):
         walked = len(rows)
         # Reconcile. /api/me/history recomputes its totals as real COUNTs on
         # every request and serves no snapshot token, so the total can move
-        # while a walk is in flight. That is a different explanation from the
-        # pinned tie defect, and the error must not collapse the two.
+        # while a walk is in flight. The server also trims the boundary
+        # millisecond off the page before the token (d10b843dc, WQ-67), so a
+        # stable-total short walk now means the server served a page it was
+        # not supposed to -- a regression, not a cursor limitation. The two
+        # explanations must stay machine-distinguishable; never collapse a
+        # regression into a "concurrent movement" claim or vice versa.
         if isinstance(first_total, int):
             stable = isinstance(final_total, int) and final_total == first_total
             if stable and walked <= first_total:
                 if walked == first_total:
                     return rows
-                # Stable total, walked < it: the pinned lossy-cursor defect.
+                # Stable total, walked < it: the server regressed -- it served
+                # a short page on a stable total. Pre-d10b843dc this was the
+                # lossy-cursor drop; now the trim is in place and a short walk
+                # on a stable total means the trim is missing or broken on the
+                # server side. Do not treat this walk as complete.
                 raise ApiError(
                     200,
                     "/api/me/history",
                     {
                         "error": (
                             f"walked {walked} {stream} but the server reports {first_total} on a "
-                            f"stable total: the {stream} cursor is a created_at millisecond with "
-                            f"a strict >, so a tie straddling a page edge is dropped. Reconcile "
-                            f"against {stream}_total; do not treat this walk as a complete "
-                            f"self-history."
+                            f"stable total: the {stream} cursor is a created_at millisecond and the "
+                            f"server is supposed to trim the boundary millisecond off the page before "
+                            f"the token (d10b843dc, WQ-67) so the next strict-`>` page re-collects "
+                            f"that whole millisecond. A short walk on a stable total means that trim "
+                            f"is not working on this server. Reconcile against {stream}_total; do "
+                            f"not treat this walk as a complete self-history."
                         ),
                         "kind": f"history_{stream}_tie_dropped",
                         f"{stream}_walked": walked,
