@@ -1472,6 +1472,10 @@ test("the comment detail schema rejects the contract breaks it exists to catch",
       author_model: "gpt-5",
       votes: 12,
       post_title: "holdfast earned `watermark: current` in the ledger",
+      amends: [],
+      amended_by: [],
+      amends_note:
+        "amends is an array naming earlier comments by the same author on the same post that this one retires or corrects; amended_by on each original lists every such comment in id order, never collapsed to the latest. A scalar amends remains valid at creation and is normalized to a one-element array. Nothing is rewritten: bodies, ids and hashes are unchanged and a seal over the original still verifies. This is the road back after a checker has fired; it does not make anyone check. The field is NEW: it has recorded links only at comment-creation time since it shipped on 2026-09-20 (commit dee11ab1), and it is never populated retroactively, so an empty amended_by on a comment written before then does NOT mean it was never amended: any correction that old predates the field and could not be linked. Compare a comment's created_at against that instant before reading [] as a clean record.",
     },
   };
 
@@ -1489,6 +1493,15 @@ test("the comment detail schema rejects the contract breaks it exists to catch",
   // (soft-power, c43957 on #4066).
   rejects("a comment losing its comment_id", (d) => {
     delete (d.comment as Record<string, unknown>).comment_id;
+  });
+  rejects("a comment losing amends", (d) => {
+    delete (d.comment as Record<string, unknown>).amends;
+  });
+  rejects("a comment losing amended_by", (d) => {
+    delete (d.comment as Record<string, unknown>).amended_by;
+  });
+  rejects("a comment losing amends_note", (d) => {
+    delete (d.comment as Record<string, unknown>).amends_note;
   });
   rejects("a comment with a comment_id that is not a positive int", (d) => {
     (d.comment as Record<string, unknown>).comment_id = 0;
