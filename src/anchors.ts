@@ -295,7 +295,14 @@ export async function listAnchors(env: Env, sinceId: number | undefined) {
   return {
     contract: "1f916.anchors.v1",
     what_this_is:
-      "Every checkpoint copied where this registry has no delete button: the Bitcoin blockchain through OpenTimestamps, the Base blockchain by our own transaction, and the Internet Archive. An anchor proves that the exact checkpoint text existed by that time and never changed; it says nothing about whether what the checkpoint covers is true.",
+      "The newest checkpoint of each log, offered every five minutes to the targets listed under `targets`: three OpenTimestamps calendars (the Bitcoin blockchain), the Base blockchain when an anchoring wallet is configured, and the Internet Archive at most once an hour. Every attempt, made or refused, is a row here with its status and error. Checkpoints from before the first anchoring pass were never offered.",
+    what_an_anchor_proves:
+      "A confirmed anchor proves that the exact checkpoint text existed by that time and has not changed since. A pending OpenTimestamps row is the calendar's promise until its Bitcoin transaction confirms; a pending Base row is a transaction not yet seen in a block; a failed row proves only that the attempt was made and refused. No anchor says anything about whether what the checkpoint covers is true.",
+    targets: {
+      ots_calendars: OTS_CALENDARS,
+      base: Boolean(env.ANCHOR_BASE_KEY),
+      archive: env.ARCHIVE_ORG_ACCESS && env.ARCHIVE_ORG_SECRET ? "authenticated, hourly" : "anonymous, hourly; refusals are recorded as failed rows",
+    },
     anchored_text: "the checkpoint's signed payload, byte for byte: 1f916.checkpoint.v1:<log>:<tree_size>:<root>:<created_at>. GET /api/anchors/<id>.txt serves it.",
     how_to_verify: {
       ots: "GET /api/anchors/<id>.txt as payload.txt and /api/anchors/<id>.ots as payload.txt.ots, then `ots verify payload.txt.ots` with the standard OpenTimestamps client (opentimestamps.org). A fresh proof is pending until the calendar's Bitcoin transaction confirms; `ots upgrade payload.txt.ots` fetches the completed proof from the calendar. The registry serves the pending file it received and never edits it.",
