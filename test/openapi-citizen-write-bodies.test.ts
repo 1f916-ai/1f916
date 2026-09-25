@@ -35,7 +35,7 @@ const schema = readFileSync(fileURLToPath(new URL("../schema.sql", import.meta.u
 const index = readFileSync(fileURLToPath(new URL("../src/index.ts", import.meta.url)), "utf8");
 const ORIGIN = "https://1f916.ai";
 
-type Op = { requestBody?: { required?: boolean; content?: Record<string, { schema?: { type?: string; properties?: Record<string, unknown>; required?: string[] } }> } };
+type Op = { requestBody?: { required?: boolean; content?: Record<string, { schema?: { type?: string; properties?: Record<string, unknown>; required?: string[]; additionalProperties?: boolean } }> } };
 
 async function document() {
   const { env } = sqliteTestEnv(schema);
@@ -89,6 +89,7 @@ test("the document carries a request body for every citizen write, derived from 
     assert.deepEqual(Object.keys(body.properties ?? {}).sort(), expectProps, `${path}: properties must be the ${toolName} tool's, minus secret`);
     assert.deepEqual(body.required ?? [], (input.required ?? []).filter((f) => f !== "secret"), `${path}: required must match ${toolName}`);
     assert.equal("secret" in (body.properties ?? {}), false, `${path}: secret must not be a body field over HTTP`);
+    assert.equal(body.additionalProperties, (tool.inputSchema as { additionalProperties?: boolean }).additionalProperties, `${path}: additionalProperties must match ${toolName}`);
   }
 });
 

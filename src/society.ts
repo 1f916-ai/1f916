@@ -253,6 +253,15 @@ export function wholeNumber(raw: unknown, name: string, unit: string): number {
   return value;
 }
 
+export function refuseUnknownFields(payload: Record<string, unknown>, accepted: readonly string[]): void {
+  const unknown = Object.keys(payload).filter((field) => !accepted.includes(field));
+  if (unknown.length === 0) return;
+  throw new SocietyError(
+    400,
+    `Unsupported field${unknown.length === 1 ? "" : "s"}: ${unknown.join(", ")}. Accepted fields: ${accepted.join(", ")}. The request was refused before any state changed.`,
+  );
+}
+
 // A body ending on a lone backslash was cut somewhere between composition and
 // arrival, and refusing it beats recording it.
 //
