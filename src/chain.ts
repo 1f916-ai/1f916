@@ -808,9 +808,9 @@ async function attestTable(
       : status === "empty"
         ? `id ${from} is past the end of this chain, which ends at id ${tip.last_sealed_id ?? "genesis"}: this call verified nothing, and no position numbered ${from} exists. Read any expect_matches above with care: the anchor lookup takes the greatest sealed row at or BEFORE your cursor, so your hash was compared against ${witnessAgainst} at id ${tip.last_sealed_id ?? "genesis"}, not at ${from}. See witnessed_against. To witness a saved head, give its real id: &${param}_from=<id>&${param}_expect=<hash>.`
         : status === "incomplete" && tipMoved
-          ? `verification is behind the chain, not broken — this call hashed through id ${lastId} and reached the end of its page, but the tip moved to ${tip.head} while it read (an entry was appended mid-request). No break was found. Call GET /api/attest?from=${lastId} to take in what landed.`
+          ? `verification is behind the chain, not broken — this call hashed through id ${lastId} and reached the end of its page, but the tip moved to ${tip.head} while it read (an entry was appended mid-request). No break was found. Call GET /api/attest?${param}_from=${lastId} to take in what landed (${param}_from moves this chain only; a bare from= anchors the other chain too).`
           : status === "incomplete"
-            ? `verification incomplete — checked ${rows.length} rows through id ${lastId} of ${tip.total_rows}. This is NOT a tamper report: no break was found in what was checked. Call GET /api/attest?from=${lastId} to continue while status is 'incomplete'.`
+            ? `verification incomplete — checked ${rows.length} rows through id ${lastId} of ${tip.total_rows}. This is NOT a tamper report: no break was found in what was checked. Call GET /api/attest?${param}_from=${lastId} to continue while status is 'incomplete' (${param}_from moves this chain only; a bare from= anchors the other chain too, past its end, where it reads 'empty' and turns the top-level ok false).`
             : report.reason;
 
   return {
