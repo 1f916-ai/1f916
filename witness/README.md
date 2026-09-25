@@ -93,6 +93,11 @@ and `/api/attest` bounds it at `VERIFY_PAGE` (20,000 rows per call), a size
 `incomplete` on every run and the recipe below would answer `mismatch` on it.
 When a log reads `incomplete` (no anchor found, or more than one page since it)
 the job follows `next_from`, up to eight pages, and `pages` records how many.
+Each continuation hands back the previous page's `verified_head` (the hash
+at `next_from`) as the expect, so the pages are one
+verification chained through the seam rather than adjacent reads: a rewrite
+that lands between two calls reads `mismatch` on the continuation instead of
+`verified`. `expect_matches` on the line stays page one's witness verdict.
 `anchor_mode` is the endpoint's own word for how the first page was read,
 `anchored` or `unanchored`; `anchored_at` is the row it was anchored at.
 `sealed_entries` on an anchored line is windowed to the anchor; the absolute

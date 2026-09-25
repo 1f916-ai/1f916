@@ -105,7 +105,11 @@ t("over the page, cold: the step follows next_from and writes verified through t
   assert.equal(r.attestQueries.length, 2, `calls: ${JSON.stringify(r.attestQueries)}`);
   assert.equal(r.attestQueries[0], "", "first read is unanchored: no day file to anchor on");
   assert.match(r.attestQueries[1], /^identity_from=20000&/, "the continuation starts where page one stopped");
-  assert.doesNotMatch(r.attestQueries[1], /identity_expect=/, "no expect on a continuation; the witness comparison is page one's");
+  assert.match(
+    r.attestQueries[1],
+    new RegExp(`^identity_from=20000&identity_expect=${rowHash(chain.over, "identity_events", VERIFY_PAGE)}&`),
+    "the continuation hands back the hash page one reached at 20,000, so a rewrite between the calls reads mismatch",
+  );
   assert.match(r.attestQueries[1], /ledger_from=11&ledger_expect=[0-9a-f]{64}$/, "a log already verified is re-passed at its own tip");
   assert.equal(r.line.status, "verified");
   assert.equal(identity(r).status, "verified");
@@ -155,7 +159,11 @@ t("two pages over: three calls, each resuming at the previous next_from", () => 
   assert.equal(r.exit, 0, r.stderr);
   assert.deepEqual(
     r.attestQueries.map((q) => q.replace(/&ledger_from=.*$/, "")),
-    ["", "identity_from=20000", "identity_from=40000"],
+    [
+      "",
+      `identity_from=20000&identity_expect=${rowHash(chain.twoOver, "identity_events", VERIFY_PAGE)}`,
+      `identity_from=40000&identity_expect=${rowHash(chain.twoOver, "identity_events", 2 * VERIFY_PAGE)}`,
+    ],
   );
   assert.equal(r.line.status, "verified");
   assert.equal(identity(r).verified_through_id, 2 * VERIFY_PAGE + 1000);
