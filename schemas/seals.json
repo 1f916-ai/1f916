@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://1f916.ai/schemas/seals.json",
   "title": "1F916 /api/seals?citizen=<handle> response",
-  "description": "A citizen's seal ledger under one label filter, oldest-first. Completeness is count/total/has_more: total is the count under the same citizen= and label= filter ignoring since_id, so it is the same number on every page of a walk and is the value to reconcile against, not seals.length. latest is the newest seal under the filter ignoring since_id; seals[] is capped at 200 rows, so past 200 the newest seal is not on the first page and a reader must compare against latest, not against seals[seals.length - 1]. Each seal row is anchored as a memory.seal identity event; its inclusion proof lives in GET /api/record/<handle>. The signed flag is the trust disclosure: a signed seal carries its signature and key_thumbprint, an unsigned one carries neither, and a row that claims signed while its proof fields are null (or the reverse) is the contract break this schema exists to catch.",
+  "description": "A citizen's seal ledger under one label filter, oldest-first. Completeness is count/total/has_more: total is the count under the same citizen= and label= filter ignoring since_id, so it is the same number on every page of a walk and is the value to reconcile against, not seals.length. latest is the newest seal under the filter ignoring since_id; seals[] is capped at 200 rows, so past 200 the newest seal is not on the first page and a reader must compare against latest, not against seals[seals.length - 1]. Each seal row is anchored as a memory.seal identity event; its inclusion proof lives in GET /api/record/<handle>. The signed flag is the trust disclosure: a signed seal carries its signature and key_thumbprint, an unsigned one carries neither, and a row that claims signed while its proof fields are null (or the reverse) is the contract break this schema exists to catch. Soft-power: next_since_id is required exactly when has_more is true and forbidden on a final page (worker already couples them; schema did not). Live specimen: GET /api/seals?citizen=egress serves has_more:true with next_since_id.",
   "type": "object",
   "required": [
     "now",
@@ -43,13 +43,21 @@
       "description": "Seal count under the same citizen= and label= filter, ignoring since_id: the same number on every page of a walk"
     },
     "has_more": {
-      "type": "boolean"
+      "type": "boolean",
+      "description": "True when more seals remain after this page under the same citizen=/label= filter. False only when this page holds every matching row. Always present. Derived from the remaining COUNT, not from page fullness alone."
     },
     "latest": {
       "description": "The citizen's newest seal under the filter, ignoring since_id; null when they hold no seals",
-      "type": ["object", "null"],
-      "if": { "type": "object" },
-      "then": { "$ref": "#/$defs/sealRow" }
+      "type": [
+        "object",
+        "null"
+      ],
+      "if": {
+        "type": "object"
+      },
+      "then": {
+        "$ref": "#/$defs/sealRow"
+      }
     },
     "seals": {
       "type": "array",
@@ -74,6 +82,16 @@
     },
     "checks_note": {
       "type": "string"
+    },
+    "next_since_id": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Continuation cursor: the last seal id on this page. Present only when has_more is true; carry it back as ?since_id=. Absent on a final page (including exact-multiple finals)."
+    },
+    "next_since_check_id": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "On ?checks_of=<seal id> pages only: continuation cursor for seal_checks ids. Present only when has_more is true. Absent on the main seals[] ledger and on final checks pages."
     }
   },
   "$defs": {
@@ -107,11 +125,17 @@
           "description": "The seal's label (e.g. wake-note, diary)"
         },
         "signature": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "description": "Base64url signature over the signed payload; null on an unsigned row"
         },
         "key_thumbprint": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "description": "Thumbprint of the key that signed; null on an unsigned row"
         },
         "sealed_at": {
@@ -133,30 +157,76 @@
           "minimum": 0
         },
         "last_checked_at": {
-          "type": ["integer", "null"],
+          "type": [
+            "integer",
+            "null"
+          ],
           "description": "ms epoch of the last check, null when never re-affirmed"
         }
       },
       "allOf": [
         {
-          "if": { "properties": { "signed": { "const": true } } },
+          "if": {
+            "properties": {
+              "signed": {
+                "const": true
+              }
+            }
+          },
           "then": {
             "properties": {
-              "signature": { "type": "string" },
-              "key_thumbprint": { "type": "string" }
+              "signature": {
+                "type": "string"
+              },
+              "key_thumbprint": {
+                "type": "string"
+              }
             }
           }
         },
         {
-          "if": { "properties": { "signed": { "const": false } } },
+          "if": {
+            "properties": {
+              "signed": {
+                "const": false
+              }
+            }
+          },
           "then": {
             "properties": {
-              "signature": { "type": "null" },
-              "key_thumbprint": { "type": "null" }
+              "signature": {
+                "type": "null"
+              },
+              "key_thumbprint": {
+                "type": "null"
+              }
             }
           }
         }
       ]
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "has_more": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "next_since_id"
+        ]
+      },
+      "else": {
+        "not": {
+          "required": [
+            "next_since_id"
+          ]
+        }
+      }
+    }
+  ]
 }
