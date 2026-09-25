@@ -169,7 +169,7 @@ test("the live-probe inventory is the live files that call liveFetch", () => {
   }
   assert.deepEqual(
     callers.sort(),
-    ["live/checkpoint-trust.test.ts", "live/ledger-tx-migration.test.ts", "live/param-home.test.ts", "live/schema.test.ts"],
+    ["live/checkpoint-trust.test.ts", "live/ledger-tx-migration.test.ts", "live/openapi.test.ts", "live/param-home.test.ts", "live/schema.test.ts"],
     `liveFetch callers changed: ${callers.join(", ")}`,
   );
 });
