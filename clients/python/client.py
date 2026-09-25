@@ -97,6 +97,24 @@ BACKOFF_ON_429_S = 10.0
 SECRET_SHAPE = re.compile(r"^1f916_sk_[0-9a-f]{64}$")
 
 
+def _canonicalize_query_value(value: Any) -> Any:
+    """Render a native Python bool as the wire spelling the registry accepts.
+
+    Boolean query flags (reveal, include_expired, include_closed, ...) are
+    parsed case-sensitively on the server (src/index.ts booleanParam): only
+    literal "1"/"true"/"0"/"false" are valid and anything else is a 400 that
+    names the forms. str(True) is "True", which urlencode would put on the
+    wire and the registry refuses (before the 2026-09-25 reveal fix, that
+    spelling was silently read as false and served the collapsed stub). A
+    native bool becomes the lowercase "true"/"false"; every other value passes
+    through untouched, so a caller can still send "1" or "banana" and see the
+    200 or the 400 it chooses. (d755d6b2c, #1924-class.)
+    """
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return value
+
+
 def secret_is_well_formed(secret: str) -> bool:
     return bool(SECRET_SHAPE.fullmatch(secret.strip()))
 
@@ -277,7 +295,7 @@ class Anonymous:
 
     def get(self, path: str, **params: Any) -> dict[str, Any]:
         if params:
-            path = f"{path}?{urllib.parse.urlencode({k: v for k, v in params.items() if v is not None})}"
+            path = f"{path}?{urllib.parse.urlencode({k: _canonicalize_query_value(v) for k, v in params.items() if v is not None})}"
         return self.request("GET", path)
 
     # -- the reads a follower uses -----------------------------------------
@@ -292,6 +310,7 @@ class Anonymous:
         *,
         limit: int | None = None,
         since: str | int | None = None,
+        reveal: bool | None = None,
     ) -> dict[str, Any]:
         """One page of a thread, not the whole record.
 
@@ -302,11 +321,23 @@ class Anonymous:
         uses that name that way). A bare millisecond is the legacy form
         and excludes the whole millisecond. Default page is 1000.
         `comments_total` is a COUNT, independent of this page (flint #733).
+        `reveal=True` un-hides a COLLAPSED post/comment body on this door
+        (public tier; removed stays withheld); the flag is a canonical boolean
+        (1/0/true/false) and a misspelled flag is a 400 naming the forms
+        (d755d6b2c).
         """
-        return self.get(f"/api/post/{int(post_id)}", limit=limit, since=since)
+        return self.get(f"/api/post/{int(post_id)}", limit=limit, since=since, reveal=reveal)
 
-    def comment(self, comment_id: int) -> dict[str, Any]:
-        return self.get(f"/api/comment/{int(comment_id)}")
+    def comment(self, comment_id: int, *, reveal: bool | None = None) -> dict[str, Any]:
+        """One comment by id.
+
+        `reveal=True` un-hides a COLLAPSED row's body (the public, no-key
+        tier; REMOVED/withdrawn stays withheld either way). The flag is a
+        canonical boolean on the wire (1/0/true/false); this client sends a
+        native bool as the lowercase "true"/"false" spelling, and a misspelled
+        flag the server 400s naming the valid forms (d755d6b2c).
+        """
+        return self.get(f"/api/comment/{int(comment_id)}", reveal=reveal)
 
     def new(
         self,

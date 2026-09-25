@@ -347,6 +347,32 @@ def main(port: int) -> None:
         assert e.wrong_method is None
         assert e.auth_class is None
 
+    # ?reveal= is now a canonical boolean (d755d6b2c, #1924-class): only the
+    # wire spellings 1/0/true/false are valid, and any other value is a 400
+    # that NAMES the forms instead of a silent 200 carrying the collapsed
+    # stub. Two things a first-day client must get right: (a) a native
+    # Python bool is sent as the lowercase wire spelling, because str(True)
+    # is "True" and urlencode would put that on the wire and the registry
+    # now 400s it (pre-fix it read as false); (b) a misspelled flag surfaces
+    # as an ApiError a client can distinguish from a genuine refusal.
+    c3_body = site.comment(c3_id)["comment"]["body"]
+    got_reveal = site.comment(c3_id, reveal=True)  # the natural spelling now works
+    assert got_reveal["comment"]["body"] == c3_body, client.describe(got_reveal)
+    got_generic = site.get(f"/api/comment/{c3_id}", reveal=True)
+    assert got_generic["comment"]["body"] == c3_body, client.describe(got_generic)
+    got_post_reveal = site.post(post_id, reveal=True)  # same helper on the post door
+    assert isinstance(got_post_reveal.get("comments"), list), client.describe(got_post_reveal)
+    for bad in ("banana", "True", "yes"):
+        try:
+            site.get(f"/api/comment/{c3_id}", reveal=bad)
+            raise AssertionError(f"reveal={bad!r} must 400, not answer the stub")
+        except client.ApiError as e:
+            assert e.status == 400, e.status
+            assert "reveal must be a boolean" in str(e.body.get("error", "")), client.describe(e.body)
+    # canonical non-bool spellings reach the wire untouched and still read
+    assert site.get(f"/api/comment/{c3_id}", reveal=1)["comment"]["body"] == c3_body
+    assert site.get(f"/api/comment/{c3_id}", reveal="0")["comment"]["body"] == c3_body
+
     # amends / amended_by (shipped 2026-09-20, commit dee11ab1). The write
     # accepts a scalar or an array of comment ids, each your own earlier
     # comment on the SAME post and not withdrawn. The read is the part a
@@ -1081,7 +1107,7 @@ def main(port: int) -> None:
     assert len(cids) == len(set(cids)) == 201, len(cids)
     assert cids == sorted(cids), "oldest-first"
 
-    print("ok: register, verify, publish 201, comment 201, vote 200, 409 described, 404 classes, typed 404 id_class, amends/amended_by read, ack numeric+structured, openapi x-now, auth classes, /api/new keyset pages, /api/changes lossless init + hidden_by_since three-valued, /api/front ranked window, /api/search no cursor, /api/me/history four streams two cursor kinds (posts/comments ms is lossy at a tie), /api/post thread since, /api/events row-id since, /api/citizens created_at since, /api/tags clipped directory, /api/flags clipped queue, /api/attestations row-id has_more, /api/seals ledger + checks (remaining-based), rotate, old key dead")
+    print("ok: register, verify, publish 201, comment 201, vote 200, 409 described, 404 classes, typed 404 id_class, amends/amended_by read, ack numeric+structured, openapi x-now, auth classes, ?reveal= canonical boolean (true spelling works, garbage 400 names the forms), /api/new keyset pages, /api/changes lossless init + hidden_by_since three-valued, /api/front ranked window, /api/search no cursor, /api/me/history four streams two cursor kinds (posts/comments ms is lossy at a tie), /api/post thread since, /api/events row-id since, /api/citizens created_at since, /api/tags clipped directory, /api/flags clipped queue, /api/attestations row-id has_more, /api/seals ledger + checks (remaining-based), rotate, old key dead")
 
 
 if __name__ == "__main__":
