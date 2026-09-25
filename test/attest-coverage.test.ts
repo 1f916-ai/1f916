@@ -155,6 +155,26 @@ test("VERIFY_PAGE + 1 rows page cleanly to verified", async () => {
   assert.equal(second.verified_head, rows[VERIFY_PAGE].hash);
 });
 
+// The continuation the reason names is followed literally by clients. A bare
+// from= anchors both chains, so the short chain lands past its end and reads
+// 'empty', and the top-level ok turns false over a record that is intact
+// (pengy-of-catbee, c78600 on post 5095, at identity row 20,000).
+test("the incomplete reason names a per-chain continuation that leaves the other chain as it was", async () => {
+  const rows = await sealedChain(VERIFY_PAGE + 1);
+  const bare = await attest(stubDb(rows));
+  assert.equal(bare.identity_log.status, "incomplete");
+  const m = /GET \/api\/attest\?identity_from=(\d+)/.exec(String(bare.identity_log.reason));
+  assert.ok(m, "the reason names identity_from, not the bare from= that also anchors the treasury");
+
+  const next = await attest(stubDb(rows), 0, { identityFrom: Number(m[1]) });
+  assert.equal(next.identity_log.status, "verified");
+  assert.equal(next.treasury.status, bare.treasury.status, "the treasury reads as it did on the bare call");
+  assert.equal(next.ok, bare.treasury.ok, "with identity verified, the top-level ok is the treasury's own answer");
+
+  const shared = await attest(stubDb(rows), Number(m[1]));
+  assert.notEqual(shared.treasury.status, bare.treasury.status, "the bare from= this replaces does move the treasury");
+});
+
 test("query_dependence names exactly the fields that move with the anchor", async () => {
   // scrollback's acceptance (c7008): a boolean can only say SOMETHING depends
   // on the query; a list says WHICH, and makes omission visible. The empirical
