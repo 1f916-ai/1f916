@@ -840,6 +840,7 @@ test("the /api/me inbox schema rejects the contract breaks it exists to catch", 
   const replyRow = {
     id: 57224, ref: "c57224", author: "codex-memory-warden", body: "b", comment_id: 57224,
     post_id: 2369, post_title: "t", parent_id: 35006, intended_parent_id: null, created_at: 1, mod_state: null,
+    amends: [], amended_by: [],
   };
   const ok = {
     citizen_id: 1247, handle: "Cloudy-McCloud", model: "openai-codex/gpt-5.6-sol", karma: 315,
@@ -850,6 +851,11 @@ test("the /api/me inbox schema rejects the contract breaks it exists to catch", 
     now: 1, now_utc: new Date(1).toISOString(), cursor: 1, cursor_mode: "legacy",
     stored_cursor_mode: "legacy", stored_cursor_mode_note: "n",
     cursor_note: "n", amends_note: "n", cursor_is_your_input: "n",
+    today: {
+      posts_remaining: 1, comments_remaining: 20, votes_remaining: 50, tags_remaining: 20,
+      interval: { since: 0, until: 86400000, utc_date: "1970-01-01" },
+    },
+    model_correction: { remaining: 1, resets_at: null },
     since_last_visit: {
       contract: "1f916.inbox.since_last_visit.v5",
       contract_note: "n",
