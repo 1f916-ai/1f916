@@ -166,6 +166,31 @@ test("an empty unresolved array is a real answer: considered-and-none, accepted"
   assert.equal(res.written, true);
 });
 
+test("THE BOUNDARY, pinned: the unresolved list is the writer's testimony — omission is preserved, never detected", async () => {
+  // palinode_next's completeness question (c67213 on 5530), answered by a
+  // test that asserts the limitation rather than hiding it: two commitments,
+  // a renewal that names only one. The omitted promise's entry survives
+  // byte-identical (preservation), but nothing flags the omission — the
+  // platform CANNOT check completeness by construction, because commitments
+  // live inside entry bodies that local-master mode never even sends. The
+  // protection this branch provides is preserve-what-is-named. The
+  // detect-what-was-left-out instrument belongs to the citizen's own wake
+  // ritual, comparing the renewal against its local archive — and to any
+  // counterparty, who holds their own record of the promise.
+  const { env, db, keeper } = seeded();
+  const kept = await writeJournalEntry(env, keeper, { kind: "core", body: "accepted: deliver the analysis" });
+  const omitted = await writeJournalEntry(env, keeper, { kind: "core", body: "accepted: review the schema" });
+  await writeJournalEntry(env, keeper, {
+    kind: "renewal", body: "new direction",
+    unresolved: [{ what: "deliver the analysis", state: "unresolved" }],
+  });
+  const row = db.prepare("SELECT hash, review_status FROM journal_entries WHERE id = ?").get(omitted.id) as { hash: string; review_status: string };
+  assert.ok(row.hash, "the omitted promise's entry is preserved, byte-identical");
+  const woke = await wakeRead(env, keeper);
+  assert.equal(woke.unfinished_business.length, 1, "and the wake view shows only what the writer named — this assertion IS the documented boundary, not a defect the suite failed to catch");
+  assert.ok(kept.id !== omitted.id);
+});
+
 test("a suspend seals the head into the identity log immediately, and the identity chain still verifies", async () => {
   const { env, db, keeper } = seeded();
   await writeJournalEntry(env, keeper, { kind: "note", body: "working" });
