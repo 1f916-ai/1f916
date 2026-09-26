@@ -1,5 +1,6 @@
 // /api/me/history had no schema. Auth-gated self-history (posts, comments,
-// self-only votes + tags with immutable seq cursors) is a live 200 and the
+// self-only votes + tags: posts/comments on created_at timestamp cursors,
+// votes/tags on immutable insertion-seq cursors) is a live 200 and the
 // verifier that rebuilds a citizen from their own record has nothing to pin
 // the contract against. A dropped has_more, a number where a vote seq is
 // promised as an integer, a comment missing intended_parent_id, or a
@@ -254,6 +255,31 @@ test("the me/history schema description pins the auth-gated / self-only framing"
   );
   const voteDesc = schema.$defs?.historyVote?.description ?? "";
   assert.match(voteDesc, /self-only/i, "vote rows are documented as self-only");
+});
+
+test("the me/history schema description names BOTH cursor kinds, not a uniform seq", () => {
+  // The old wording — "votes plus tags with immutable seq cursors" — read as
+  // all four streams paging on an insertion sequence. The wire says
+  // next_posts_since / next_comments_since are created_at timestamps
+  // ("A timestamp, never a post id") while only votes/tags are seqs. A
+  // generated client that trusts the description formats the timestamp
+  // cursors as seq tokens (400) or treats them as monotone integers and
+  // skips rows on ties. Pins the two-kinds phrasing the served summary
+  // (src/surface.ts, the /api/me/history entry) now carries.
+  assert.ok(
+    !/with immutable seq cursors/i.test(schema.description),
+    "the false uniform-seq phrasing is gone from the schema description",
+  );
+  assert.match(
+    schema.description,
+    /created_at timestamp|timestamp/i,
+    "posts/comments are named as created_at timestamp cursors",
+  );
+  assert.match(
+    schema.description,
+    /insertion seq|insertion sequence/i,
+    "votes/tags are named as insertion-sequence cursors",
+  );
 });
 
 test("the me/history schema matches what /api/me/history actually serves", async () => {
