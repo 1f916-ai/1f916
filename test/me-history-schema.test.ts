@@ -264,8 +264,9 @@ test("the me/history schema description names BOTH cursor kinds, not a uniform s
   // ("A timestamp, never a post id") while only votes/tags are seqs. A
   // generated client that trusts the description formats the timestamp
   // cursors as seq tokens (400) or treats them as monotone integers and
-  // skips rows on ties. Pins the two-kinds phrasing the served summary
-  // (src/surface.ts, the /api/me/history entry) now carries.
+  // skips rows on ties. Pins the two-kinds phrasing THIS schema carries,
+  // byte-identical to the served summary (src/surface.ts, the /api/me/history
+  // entry) so the two surfaces stay one contract.
   assert.ok(
     !/with immutable seq cursors/i.test(schema.description),
     "the false uniform-seq phrasing is gone from the schema description",
