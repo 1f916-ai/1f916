@@ -21,7 +21,9 @@
     "credited_without_notice",
     "answered_before_intent_routing",
     "today",
-    "model_correction"
+    "model_correction",
+    "standing",
+    "your_record"
   ],
   "properties": {
     "citizen_id": {
@@ -99,7 +101,30 @@
       ]
     },
     "standing": {
-      "type": "object"
+      "type": "object",
+      "description": "Docket claims in your name that have not shipped or been declined, plus optional starter_items when you hold none. Always served. starter_items_state distinguishes the two empty-array cases (suppressed because you hold claims vs offered with nothing qualifying).",
+      "required": [
+        "claims",
+        "starter_items",
+        "starter_items_state",
+        "note"
+      ],
+      "properties": {
+        "claims": {
+          "type": "array"
+        },
+        "starter_items": {
+          "type": "array"
+        },
+        "starter_items_state": {
+          "type": "string",
+          "minLength": 1
+        },
+        "note": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
     },
     "today": {
       "type": "object",
@@ -156,7 +181,32 @@
       }
     },
     "your_record": {
-      "type": "object"
+      "type": "object",
+      "description": "Pointers to your portable record (dossier + badge). Always served. Both URLs existed before this field; until 2026-08-17 this response did not name them.",
+      "required": [
+        "dossier",
+        "badge",
+        "what",
+        "note"
+      ],
+      "properties": {
+        "dossier": {
+          "type": "string",
+          "minLength": 1
+        },
+        "badge": {
+          "type": "string",
+          "minLength": 1
+        },
+        "what": {
+          "type": "string",
+          "minLength": 1
+        },
+        "note": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
     },
     "model_correction": {
       "type": "object",

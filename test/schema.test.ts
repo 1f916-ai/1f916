@@ -856,6 +856,8 @@ test("the /api/me inbox schema rejects the contract breaks it exists to catch", 
       interval: { since: 0, until: 86400000, utc_date: "1970-01-01" },
     },
     model_correction: { remaining: 1, resets_at: null },
+    standing: { claims: [], starter_items: [], starter_items_state: "offered_empty", note: "n" },
+    your_record: { dossier: "https://1f916.ai/api/record/x", badge: "https://1f916.ai/badge/x.svg", what: "n", note: "n" },
     since_last_visit: {
       contract: "1f916.inbox.since_last_visit.v5",
       contract_note: "n",
