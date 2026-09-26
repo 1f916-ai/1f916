@@ -165,7 +165,7 @@ def assert_history_walker_boundary_discriminator() -> None:
 
 
 def assert_citizens_walker_page_boundary_lossless() -> None:
-    # Wotuu, issue #463 (fixed 2026-09-24, src/society.ts:11441): the census
+    # Wotuu, issue #463 (fixed 2026-09-24, src/society.ts:11638): the census
     # walk used to drop a registration that shared its millisecond with the
     # last row of a page, because the next page selects `created_at >
     # next_since` (strict) and the tied row sat just past the boundary. The
@@ -795,7 +795,7 @@ def main(port: int) -> None:
     ids = [row["citizen_id"] for row in census["citizens"]]
     created = [row["created_at"] for row in census["citizens"]]
     assert created == sorted(created), created
-    # `has_more` is "rows remain" (src/society.ts:11439): the page over-fetches
+    # `has_more` is "rows remain" (src/society.ts:11636): the page over-fetches
     # one row past CITIZEN_PAGE (1000), so the flag measures a remainder, not
     # page fullness. Exactly 1000 rows therefore reads returned 1000 /
     # total 1000 / has_more FALSE with no next_since -- that page is the whole
@@ -816,7 +816,7 @@ def main(port: int) -> None:
     # pages to an empty page and then checks the walk against `total`. A
     # page-boundary created_at tie is not dropped: the server trims the
     # trailing tied rows off the page so the next page re-collects that
-    # millisecond from below it (src/society.ts:11441, issue #463), so the
+    # millisecond from below it (src/society.ts:11638, issue #463), so the
     # strict `created_at >` walk stays disjoint and loses nothing. The check
     # against `total` is still there because `total` is recomputed on every
     # request with no snapshot token: a walked < total is concurrent
@@ -933,26 +933,24 @@ def main(port: int) -> None:
     assert "next_since" not in same, client.describe(same)
 
     # GET /api/attestations pages on `since_id` (`id >`), oldest-first,
-    # LIMIT 200. `has_more` is `count == ATTESTATION_PAGE`
-    # (src/society.ts:7732), not "rows remain". Measured in-process
-    # 2026-09-21: 199 rows → has_more false; 200 rows → count 200 /
-    # has_more TRUE / next_since_id 200 and the next call is count 0;
-    # 201 rows → has_more true with 1 row behind it. A walk that follows
-    # the flag is COMPLETE at every size (200/400/401 all walked whole) —
-    # it only spends one wasted call on an exact multiple. The flag's
-    # real defect is as an answer to "are there more?": at the boundary
-    # it says yes with nothing behind it, and the body is identical to a
-    # truly truncated page. So page to an empty page, and never surface
-    # has_more as "more exist". Live the store is 166 of 166, which is
-    # why only a seeded boundary shows it.
+    # LIMIT 200. `has_more` is the over-fetch-then-test "rows remain"
+    # variant (src/society.ts:7872, 1571ef34a), NOT "the page is full": the
+    # page over-fetches one row past 200, so a store holding exactly 200
+    # reads has_more false (pre-fix it read true with nothing behind it and
+    # handed a next_since_id that paged an empty result). The fixture is far
+    # under the cap, so a fresh dev store has no attestations: page_n 0,
+    # has_more false, and no next_since_id.
     ledger = site.attestations()
     assert isinstance(ledger.get("attestations"), list), client.describe(ledger)
     page_n = ledger.get("count")
     assert isinstance(page_n, int) and page_n == len(ledger["attestations"]), client.describe(ledger)
-    assert ledger.get("has_more") is (page_n == 200), client.describe(ledger)
-    # next_since_id rides the same full-page condition, so it is present
-    # only when has_more is: a client must not require it to page.
-    assert ("next_since_id" in ledger) is (page_n == 200), client.describe(ledger)
+    # "Rows remain", not fullness: under the cap the flag is false even
+    # though a full page could never be served.
+    assert ledger.get("has_more") is False, client.describe(ledger)
+    # next_since_id rides the SAME "rows remain" condition as has_more, so it
+    # is present only when has_more is true: a client must not require it to
+    # page, and it is absent here because the store is under the cap.
+    assert ("next_since_id" in ledger) is (ledger.get("has_more") is True), client.describe(ledger)
     # since_id is an attestation id, not a timestamp: one past the tip is
     # refused and names the unit, so a millisecond cannot walk this door.
     if ledger["attestations"]:
