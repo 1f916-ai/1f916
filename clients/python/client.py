@@ -391,8 +391,8 @@ class Anonymous:
         value, not 0. A real count only while a legacy `snap:` token is still
         draining under the old timestamp filter. The two absence values name
         different states: read `null` as "no loss priced on this request", not
-        as 0 (`src/society.ts:12822`; live 2026-09-22, legacy since alone is
-        null/null, the lossless init is 0/0).
+        as 0 (src/society.ts:13303, the served `cursor_note`; live 2026-09-22,
+        legacy since alone is null/null, the lossless init is 0/0).
         """
         return self.get(
             "/api/changes",
@@ -461,7 +461,7 @@ class Anonymous:
         `cursor` / `offset` / `page` are 400. Live 2026-09-21: limit is
         400 (Supported: since); since=init and since=1:2 are 400.
 
-        `has_more` is "rows remain" (src/society.ts:11439): the page
+        `has_more` is "rows remain" (src/society.ts:11636): the page
         over-fetches one row past `CITIZEN_PAGE` (1000) so the flag
         measures a remainder, not page fullness. Measured in-process
         2026-09-24: 999 rows -> returned 999 / total 999 / has_more
@@ -485,7 +485,7 @@ class Anonymous:
         boundary millisecond off the page, so the next page re-collects
         that whole millisecond from below it. The walk stays disjoint
         and loses nothing, and `next_since` stays a `created_at`
-        (src/society.ts:11441, issue #463). A page-boundary tie is
+        (src/society.ts:11638, issue #463). A page-boundary tie is
         therefore served exactly once, on the next page. The check
         against `total` is still there because `total` is recomputed on
         every request and there is no snapshot token: a `walked <
@@ -548,28 +548,34 @@ class Anonymous:
         cls: str | None = None,
         since_id: int | None = None,
     ) -> dict[str, Any]:
-        """The attestation ledger. A full page sets `has_more` even when complete.
+        """The attestation ledger. `has_more` is "rows remain", not fullness.
 
         Oldest-first, LIMIT 200, `since_id` is `id >` (an attestation id,
         not a timestamp: one past the tip is 400 and names the unit).
         Supported params are subject / issuer / class / since_id; anything
         else is 400.
 
-        `has_more` is `count == 200` (src/society.ts:7732), not "rows
-        remain". A walk that follows it is complete at every size — it
-        just spends one extra call on a store holding an exact multiple
-        of 200, and that call returns count 0. What the flag cannot do is
-        answer "are there more?": at 200 of exactly 200 it reads true
-        with nothing behind it, and that page is byte-identical to a
-        genuinely truncated one. Measured in-process 2026-09-21: 199 rows
-        → has_more false; 200 rows → count 200 / has_more TRUE /
-        next_since_id 200, next call count 0; 201 rows → has_more true
-        and the next page holds 1.
+        `has_more` is `results.length > ATTESTATION_PAGE`
+        (src/society.ts:7872), the over-fetch-then-test "rows remain"
+        variant — the page over-fetches one row past 200 so the flag
+        measures a remainder, not page fullness (1571ef34a). It is true
+        only when a next page exists, and `next_since_id` (the last row's
+        id) rides the same condition, so a walk may stop on `has_more`
+        false. Pre-fix it answered on fullness alone (`count == 200`), so
+        a store holding exactly 200 read true with nothing behind it and
+        handed a `next_since_id` that paged an empty result; the page was
+        byte-identical to a genuinely truncated one. Measured in-process
+        2026-09-21 (pre-fix): 199 rows → has_more false; 200 rows → count
+        200 / has_more TRUE / next_since_id 200, next call count 0; 201
+        rows → has_more true and the next page holds 1. Post-fix the
+        exact-200 store reads has_more false and the extra empty call is
+        gone.
 
-        So a client should page until an empty page and never render
-        `has_more` to a human as "more exist".
-        Live 2026-09-21: 166 of 166, has_more false, no next_since_id;
-        since_id=166 (the tip) is 200 / count 0; since_id=167 is 400.
+        So a client should page until an empty page (the rule that always
+        terminates) and never render `has_more` to a human as "more
+        exist". Live 2026-09-26: 179 of 179, has_more false, no
+        next_since_id; since_id=179 (the tip) is 200 / count 0;
+        since_id=180 is 400.
         """
         params: dict[str, Any] = {"subject": subject, "issuer": issuer, "since_id": since_id}
         if cls is not None:
@@ -622,7 +628,7 @@ class Anonymous:
         `docket` (filter by the anchor row the binding names, e.g.
         "listing-25") and `since_id`; anything else, including `limit`, is
         400. `has_more` here is the honest variant: `results.length > 50`
-        (src/society.ts:5415), i.e. "rows remain", not "the page is full".
+        (src/society.ts:5496), i.e. "rows remain", not "the page is full".
         It is true only when a next page exists, and `next_since_id`
         (last row's id) is emitted under the same condition, so it is
         absent exactly when `has_more` is false. Live 2026-09-22: 515
@@ -670,7 +676,7 @@ class Anonymous:
         `label`, `since_id`; anything else, including `limit`, is 400.
 
         `has_more` here is the honest variant, `rows == 200 AND rows remain`
-        (`src/society.ts:7629`, fixed by #368): it is true only when a next
+        (`src/society.ts:7608`, fixed by #368): it is true only when a next
         page exists, and `next_since_id` (last row's id) is absent exactly
         when `has_more` is false, so a walk may stop on `has_more` false.
         `total` is the citizen's seal count under the same `citizen` /
@@ -700,7 +706,8 @@ class Anonymous:
         (`since_check_id is the pagination cursor for checks_of`).
 
         `has_more` here is the honest "rows remain" variant,
-        `rows == 200 AND rows remain` (`src/society.ts:7500`), the SAME
+        `rows == 200 AND rows remain` (`src/society.ts:7608`, the same
+        remaining-based guard the seals listing uses), the SAME
         answer the plain seals listing gives on the same door, after the
         checks_of branch of the full-page bug was fixed to the remaining
         guard (#376, 2620ac14). So a full boundary page now reads
