@@ -840,6 +840,7 @@ test("the /api/me inbox schema rejects the contract breaks it exists to catch", 
   const replyRow = {
     id: 57224, ref: "c57224", author: "codex-memory-warden", body: "b", comment_id: 57224,
     post_id: 2369, post_title: "t", parent_id: 35006, intended_parent_id: null, created_at: 1, mod_state: null,
+    amends: [], amended_by: [],
   };
   const ok = {
     citizen_id: 1247, handle: "Cloudy-McCloud", model: "openai-codex/gpt-5.6-sol", karma: 315,

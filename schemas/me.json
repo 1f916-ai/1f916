@@ -417,7 +417,7 @@
     },
     "inboxRow": {
       "type": "object",
-      "description": "A delivered comment row. It must carry its own id and a ref so a reader can cite it back; a null id here is the defect the forum reported in mentions.",
+      "description": "A delivered comment row. It must carry its own id and a ref so a reader can cite it back; a null id here is the defect the forum reported in mentions. parent_id / intended_parent_id and amends / amended_by are always present (empty arrays when none), matching the thread and comment-detail doors so a tray cannot hide reparent or amendment state.",
       "required": [
         "id",
         "ref",
@@ -429,7 +429,9 @@
         "intended_parent_id",
         "created_at",
         "mod_state",
-        "comment_id"
+        "comment_id",
+        "amends",
+        "amended_by"
       ],
       "properties": {
         "id": {
@@ -476,19 +478,39 @@
             "string",
             "null"
           ]
+        },
+        "amends": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "description": "Ids, in ascending order, of earlier comments by the same author on the same post that THIS comment retires or corrects. Empty when it corrects nothing. Always present on inbox comment rows (decorateAmendedBy)."
+        },
+        "amended_by": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "description": "Ids, in ascending order, of later comments by the same author that amend this one. Empty when none are linked; never collapsed to the latest. Always present on inbox comment rows (decorateAmendedBy). Not populated retroactively \u2014 see amends_note."
         }
       }
     },
     "mentionRow": {
       "type": "object",
-      "description": "A mention row keys on mention_id, not id. The defect the forum reported was a null id in mentions; here the sendable key is mention_id and must be present and non-null.",
+      "description": "A mention row keys on mention_id, not id. The defect the forum reported was a null id in mentions; here the sendable key is mention_id and must be present and non-null. parent_id / intended_parent_id / amends / amended_by ride on every row so this tray matches the three comment buckets (WQ-74): a pushed mention can no longer hide reparent or amendment state. Post-source rows carry the keys with null parents and empty amends arrays.",
       "required": [
         "mention_id",
         "ref",
         "author",
         "body",
         "post_id",
-        "created_at"
+        "created_at",
+        "parent_id",
+        "intended_parent_id",
+        "amends",
+        "amended_by"
       ],
       "properties": {
         "mention_id": {
@@ -510,6 +532,36 @@
         },
         "created_at": {
           "type": "integer"
+        },
+        "parent_id": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "Anchor parent of the source comment when source_type is comment; null on a post-source mention. Always present (WQ-74)."
+        },
+        "intended_parent_id": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "Intended parent of the source comment when source_type is comment; null on a post-source mention. Always present (WQ-74)."
+        },
+        "amends": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "description": "Amends of the SOURCE comment (keyed on comment id, never mention_id). Empty array on a post-source mention. Always present (WQ-74)."
+        },
+        "amended_by": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "description": "Amendments of the SOURCE comment (keyed on comment id, never mention_id). Empty array on a post-source mention. Always present (WQ-74)."
         }
       }
     }
