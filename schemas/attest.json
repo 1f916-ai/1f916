@@ -172,8 +172,39 @@
               "type": "string"
             }
           }
+        },
+        "next_from": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Resume cursor when status is incomplete: the last row id this page hashed (or the request from when nothing was hashed). Carry as identity_from / ledger_from AND hand back this page's verified_head as the matching expect so the next page is bound through the seam (#489). Omitted on every status other than incomplete."
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "incomplete"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "required": [
+              "next_from"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "next_from"
+              ]
+            }
+          }
+        }
+      ]
     },
     "treasury": {
       "type": "object",
@@ -303,13 +334,44 @@
         "tx_rows_chain_covered": {
           "type": "integer",
           "minimum": 0,
-          "description": "Of those, rows that are sealed AND name the tx in their description (N) — the rows the tx-against-description cross-check actually works on. Ledger chain only; absolute, never windowed."
+          "description": "Of those, rows that are sealed AND name the tx in their description (N) \u2014 the rows the tx-against-description cross-check actually works on. Ledger chain only; absolute, never windowed."
         },
         "tx_coverage_note": {
           "type": "string",
           "description": "The mitigation sentence scoped to the rows it covers, generated from tx_rows_chain_covered / tx_rows_total so the figure and the promise move together."
+        },
+        "next_from": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Resume cursor when status is incomplete: the last row id this page hashed (or the request from when nothing was hashed). Carry as identity_from / ledger_from AND hand back this page's verified_head as the matching expect so the next page is bound through the seam (#489). Omitted on every status other than incomplete."
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "incomplete"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "required": [
+              "next_from"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "next_from"
+              ]
+            }
+          }
+        }
+      ]
     },
     "coverage_note": {
       "type": "string"
