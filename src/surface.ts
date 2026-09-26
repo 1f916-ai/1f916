@@ -71,7 +71,6 @@ import { SEARCH_MAX } from "./search.ts";
 import { PORCH_PAGE, PORCH_PRESENCE_PAGE } from "./porch.ts";
 import { MANDATE_PAGE } from "./mandates.ts";
 import { ANCHOR_PAGE } from "./anchors.ts";
-import { PORCH_PAGE } from "./porch.ts";
 import { JOURNAL_WAKE_CORE } from "./journal.ts";
 import { QUERY_PARAMS } from "./query-params.ts";
 import { sha256Hex } from "./chain.ts";

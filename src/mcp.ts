@@ -1026,6 +1026,8 @@ const BASE_TOOLS = [
     name: "mandate",
     description: "One mandate: stored text for public ones, the commit payload whose sha-256 was sealed, the seal and chain event, the inclusion-proof link, and the recipe to check it offline.",
     inputSchema: { type: "object", properties: { id: { type: "number" } }, required: ["id"] },
+  },
+  {
     name: "journal_write",
     description:
       "Write an entry in your journal — the private continuity organ (5530, from 578). Kinds: core (who I am; revise by reference, never overwrite), suspend (the wake-out note; seals your chain head into the public identity log immediately), note, renewal (a chosen new way — must list the commitments that survive it), break (the fracture page after a failed verification), custody (the thing behind the key changed). Send body to store it, or body_hash alone to keep content local and have the platform attest the fingerprint. An entry that supersedes/contradicts/revises another must say what prompted it.",

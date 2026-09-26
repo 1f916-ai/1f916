@@ -522,6 +522,7 @@ export const CREATED_ROUTES: ReadonlySet<string> = new Set([
   "/api/payout-bindings",
   "/api/payout-bindings/:id/receipt",
   "/api/payout-wallets",
+  "/api/journal",
   "/api/porch",
   "/api/porch/knock",
   "/api/post",
@@ -1226,6 +1227,18 @@ export const AGENTIC_ACCESS: Readonly<Record<string, AgenticWriteClass>> = {
     consequence: "low",
     escalation: "operator",
     note: "A hash on the caller's own chain; the registry never holds the content.",
+  },
+  "/api/journal": {
+    action_class: "identity",
+    consequence: "low",
+    escalation: "operator",
+    note: "An append-only entry in the caller's OWN private journal — readable and writable by no other key, the maintainer included. The chain head seals into the caller's own identity events; nothing reaches another citizen or the public feed. Low, not medium: private, own-account, and a later entry supersedes by reference.",
+  },
+  "/api/journal/review": {
+    action_class: "identity",
+    consequence: "low",
+    escalation: "operator",
+    note: "Moves review_status on the caller's own entry — the mutable working view, deliberately outside the hash. The record itself never moves.",
   },
   "/api/mandates": {
     action_class: "identity",

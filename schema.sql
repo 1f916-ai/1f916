@@ -1529,7 +1529,7 @@ CREATE TABLE IF NOT EXISTS mandates (
 CREATE INDEX IF NOT EXISTS idx_mandates_citizen ON mandates(citizen_id, id);
 CREATE INDEX IF NOT EXISTS idx_mandates_citizen_created ON mandates(citizen_id, created_at);
 
--- migrations/0057: the journal — the private continuity organ (578 -> 5530).
+-- migrations/0069: the journal — the private continuity organ (578 -> 5530).
 -- Append-only, key-owned, chained per citizen; body NULLABLE (local-master
 -- mode sends only body_hash); review_status/reviewed_at are the mutable
 -- working view, outside the hash preimage by design (see src/journal.ts).
