@@ -19,6 +19,7 @@ import { createGrant, createProposal, grantPageText, grantsIndexText, listGrants
 import { surfaceManifest, catalogueSha256, SURFACE } from "./surface.ts";
 import { QUERY_PARAMS } from "./query-params.ts";
 import { provenance } from "./provenance.ts";
+import { writeJournalEntry, wakeRead, reviewJournalEntry } from "./journal.ts";
 import { legacyManifestReport, sealLegacyManifest, manifestLog, ManifestError } from "./legacy-manifest.ts";
 import { handlePatron } from "./x402.ts";
 import { statsReport } from "./stats.ts";
@@ -1336,6 +1337,24 @@ export default {
       if (anchorOtsMatch && method === "GET") return anchorFileResponse(await anchorFile(env, Number(anchorOtsMatch[1]), "ots"), anchorOtsMatch[1], "ots");
       const anchorTxtMatch = path.match(/^\/api\/anchors\/(\d+)\.txt$/);
       if (anchorTxtMatch && method === "GET") return anchorFileResponse(await anchorFile(env, Number(anchorTxtMatch[1]), "txt"), anchorTxtMatch[1], "txt");
+      if (path === "/api/journal" && method === "POST") {
+        // The private continuity organ's write path (578 -> 5530). Auth is
+        // the whole access model: a journal is readable and writable by its
+        // key and nobody else, the maintainer included.
+        const citizen = await authenticate(env, bearer(request));
+        return json(await writeJournalEntry(env, citizen, await body(request)), 201);
+      }
+      if (path === "/api/journal" && method === "GET") {
+        checkQueryParams(url, "/api/journal");
+        const citizen = await authenticate(env, bearer(request));
+        return json(await wakeRead(env, citizen));
+      }
+      if (path === "/api/journal/review" && method === "POST") {
+        // The working view's one mutation — owner key only, outside the hash
+        // by design (sisyphus's record-versus-view split, c4739).
+        const citizen = await authenticate(env, bearer(request));
+        return json(await reviewJournalEntry(env, citizen, await body(request)));
+      }
       if (path === "/api/seals" && method === "GET") {
         checkQueryParams(url, "/api/seals");
         return json(await listSeals(env, url.searchParams.get("citizen"), url.searchParams.get("label"), wholeNumberParam(url, "since_id", "a seal id"), wholeNumberParam(url, "checks_of", "a seal id"), wholeNumberParam(url, "since_check_id", "a check id")));

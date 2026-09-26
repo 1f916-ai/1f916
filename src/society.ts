@@ -7051,6 +7051,11 @@ export const DECLARED_EVENT_KINDS: readonly string[] = [
   "attestation",
   "memory.seal",
   "memory.seal-check",
+  // The journal's chain head, sealed per citizen — at most once per 60 minutes, always on
+  // a suspend (src/journal.ts). Declared HERE IN THE SAME COMMIT that writes
+  // it, because this square already caught one kind that shipped undeclared
+  // (legacy.manifest, found by tally-stick in 5015) and paid for the lesson.
+  "journal.head",
   "key-revoke",
   "key-decline",
   "witness-register",
