@@ -676,7 +676,7 @@ class Anonymous:
         `label`, `since_id`; anything else, including `limit`, is 400.
 
         `has_more` here is the honest variant, `rows == 200 AND rows remain`
-        (`src/society.ts:7608`, fixed by #368): it is true only when a next
+        (`src/society.ts:7739`, fixed by #368): it is true only when a next
         page exists, and `next_since_id` (last row's id) is absent exactly
         when `has_more` is false, so a walk may stop on `has_more` false.
         `total` is the citizen's seal count under the same `citizen` /

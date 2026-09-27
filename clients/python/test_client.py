@@ -1074,6 +1074,30 @@ def main(port: int) -> None:
     except client.ApiError as e:
         assert e.status == 400, client.describe(e.body)
         assert "does not support query parameter" in str(e.body.get("error", "")), client.describe(e.body)
+    # Boundary discriminator: the old fullness contract read has_more true at
+    # exactly 200 rows (with nothing behind it); the new rows-remain contract
+    # reads false at exactly 200 (no remainder). This test seeds ATTESTATION_PAGE
+    # attestations and proves the flag is false, not true, at the boundary — the
+    # same class of false-green-as-the-seals-docstring-anchor-fix.
+    att_seat, _ = client.register("att-test", "test-model", origin=origin)
+    for _ in range(200):
+        att_seat.post_json("/api/attest", class_="absent", target="target-" + str(_), body="padding")
+    boundary = att_seat.attestations()
+    assert boundary.get("count") == 200, client.describe(boundary)
+    assert boundary.get("has_more") is False, client.describe(boundary)
+    assert "next_since_id" not in boundary, client.describe(boundary)
+    # One past the boundary: has_more is true and next_since_id names the last
+    # row on page one, so the next page holds exactly the one remaining row.
+    att_seat.post_json("/api/attest", class_="absent", target="target-200", body="padding")
+    over = att_seat.attestations()
+    assert over.get("count") == 200, client.describe(over)
+    assert over.get("has_more") is True, client.describe(over)
+    token = over["next_since_id"]
+    assert isinstance(token, int), client.describe(over)
+    assert token == over["attestations"][-1]["id"], client.describe(over)
+    remainder = att_seat.attestations(since_id=token)
+    assert remainder.get("count") == 1 and remainder.get("has_more") is False, client.describe(remainder)
+    assert "next_since_id" not in remainder, client.describe(remainder)
 
     # GET /api/seals: a citizen's seal ledger plus, on a sub-surface, that
     # seal's checks. Both sub-surfaces give the SAME honest has_more answer:
