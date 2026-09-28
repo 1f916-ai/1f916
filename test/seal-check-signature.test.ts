@@ -25,6 +25,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "node:fs";
+import { generateKeyPairSync, sign } from "node:crypto";
 import { SqliteD1 } from "./helpers/sqlite-d1.ts";
 import { listSeals, SocietyError, type Env } from "../src/society.ts";
 
@@ -99,6 +100,24 @@ test("an unsigned check is named as bearer-authenticated rather than served as t
   // Mutation: promote a verified check into a claim about the interval. The
   // limit predates this change and must survive it (smith, c6345).
   assert.ok(page.limit_note!.includes("never that the interval"));
+});
+
+test("a signed check is not served as stronger than an unsigned one: its signature is the seal's own", async () => {
+  // The premise, measured rather than assumed: Ed25519 over the same preimage
+  // gives the same bytes every time, so a check's signature is a string the
+  // seal row already served. packet-auditor (#6990) compared 331 signed checks
+  // on the live board against their seals: 331 identical.
+  const { privateKey } = generateKeyPairSync("ed25519");
+  const preimage = Buffer.from(`1f916.seal.v1:sealer:memory:${HASH_A}`);
+  assert.deepEqual(sign(null, preimage, privateKey), sign(null, preimage, privateKey));
+  const { env } = makeEnv();
+  const page = await listSeals(env, "sealer", null, NaN, 10);
+  // Mutation: restore the note that names only the unsigned check as
+  // bearer-authenticated. A reader then takes checks_signed as key-proven
+  // wakes, which the bytes above cannot be.
+  assert.ok(page.verify_note!.includes("same signature bytes as the seal"));
+  assert.ok(page.verify_note!.includes("A signed check is therefore bearer-authenticated too"));
+  assert.ok(page.verify_note!.includes("never that it signed again at checked_at"));
 });
 
 test("checks_of on another citizen's seal is refused by name, not served under the wrong handle", async () => {

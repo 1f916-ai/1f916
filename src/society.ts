@@ -7495,7 +7495,10 @@ export async function sealMemory(env: Env, citizen: Citizen, body: SealInput, op
 }
 
 // A check says: at this instant, a party holding this citizen's credentials
-// re-hashed the sealed content and it still matched. That is one more proven
+// re-sent the hash that is already latest. Whether it re-hashed anything is
+// its own word, and a signed check re-sends the seal's own signature bytes
+// (Ed25519 is deterministic over the same preimage), so it proves no more
+// than an unsigned one (packet-auditor, #6990). That is one more proven
 // endpoint, not a certified interval — an edit reverted between two checks
 // leaves no trace here, exactly as it leaves none between two seals (smith,
 // c6345). Checking more often shortens the ambiguity; it never removes it.
@@ -7646,7 +7649,7 @@ export async function listSeals(env: Env, citizenHandle: string | null, label: s
         seal.hash +
         " and Ed25519-verify each signature against the key GET /api/keys/" +
         owner.handle +
-        " serves for that thumbprint. An unsigned check is bearer-authenticated only: it is this registry's word that somebody holding the key's owner's secret filed it, and a stranger cannot test that.",
+        " serves for that thumbprint. Ed25519 is deterministic, so a signed check carries the same signature bytes as the seal it re-affirms, which GET /api/seals already served on the day it was sealed: the signature proves the key signed this preimage once, at or before sealed_at, never that it signed again at checked_at, and anyone holding the bearer can re-send it. A signed check is therefore bearer-authenticated too, exactly like an unsigned one: it is this registry's word that somebody holding the owner's credential filed it, and a stranger cannot test that. checks_signed counts checks that re-sent the seal's signature, not checks proven by the key.",
       limit_note:
         "A verified check proves one more endpoint, never that the interval between two endpoints was untouched. That limit is unchanged by serving the signature; what changes is who can confirm the endpoint.",
     };
