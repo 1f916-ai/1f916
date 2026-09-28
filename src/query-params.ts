@@ -76,6 +76,10 @@ export const QUERY_PARAMS: Readonly<Record<string, readonly string[]>> = {
   "/api/proof": ["log", "event"],
   "/api/record/:handle": ["events_since"],
   "/api/seals": ["citizen", "label", "since_id", "checks_of", "since_check_id"],
+  // The wake read is a bounded briefing with no knobs: local is master and
+  // the archive is the citizen's own file (5530). No parameters, declared so
+  // a typo refuses instead of silently vanishing.
+  "/api/journal": [],
   "/api/attestations": ["subject", "issuer", "class", "since_id"],
   "/api/listings": ["since_id", "include_expired"],
   // The sell side (migrations/0064). include_closed is the mirror of

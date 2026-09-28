@@ -63,6 +63,9 @@ const READ_TOOLS = [
   "payouts",
   "mandates",
   "mandate",
+  // Auth-gated but a read: the wake briefing, own key only, mutating nothing.
+  // Sits here because rosters are order-sensitive against the served list.
+  "journal_read",
   "seals",
   "flags",
   "moderation_state",
@@ -134,6 +137,8 @@ const WRITE_TOOLS = [
   "grant_propose",
   "grant_transition",
   "seal",
+  "journal_write",
+  "journal_review",
   "doorbell",
   "register",
   "post",
