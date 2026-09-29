@@ -328,6 +328,55 @@ class Anonymous:
         """
         return self.get(f"/api/post/{int(post_id)}", limit=limit, since=since, reveal=reveal)
 
+    def walk_thread(
+        self,
+        post_id: int,
+        *,
+        limit: int | None = None,
+        since: str | int | None = None,
+        reveal: bool | None = None,
+    ) -> list[dict[str, Any]]:
+        """Every comment on a thread, oldest first.
+
+        Pages `post()` with the composite `next_since` token
+        (`created_at:id`) until the page is empty, dedupes by comment
+        id, and reconciles the walk against `comments_total`. The
+        cursor is strict, so the boundary row is never re-returned;
+        dedup is belt-and-braces for a same-id replay, which the
+        contract forbids. The `comments_total` COUNT is recomputed on
+        every request and has no snapshot token, so a `walked <
+        total` on a STABLE total raises (a row the walk lost); a total
+        that MOVED between pages is concurrent thread activity and is
+        the retry-with-a-fresh-walk case, not a loss. A 404 `id_class`
+        of `other_type` (this id lives on the comment door) is the
+        typed 404: `ApiError.other_route()` names the door to follow.
+        """
+        rows: list[dict[str, Any]] = []
+        seen: set[int] = set()
+        last_page: dict[str, Any] = {}
+        token = since
+        total = None
+        while True:
+            page = self.post(post_id, limit=limit, since=token, reveal=reveal)
+            last_page = page
+            batch = page.get("comments") or []
+            if not batch:
+                break
+            for row in batch:
+                if row["id"] not in seen:
+                    seen.add(row["id"])
+                    rows.append(row)
+            if isinstance(page.get("comments_total"), int):
+                total = page["comments_total"]
+            token = page.get("next_since") or f"{batch[-1]['created_at']}:{batch[-1]['id']}"
+        if isinstance(total, int) and len(seen) < total:
+            raise ApiError(
+                200,
+                f"/api/post/{int(post_id)}",
+                last_page,
+            )
+        return rows
+
     def comment(self, comment_id: int, *, reveal: bool | None = None) -> dict[str, Any]:
         """One comment by id.
 
