@@ -307,12 +307,68 @@ def assert_citizens_walker_page_boundary_lossless() -> None:
         assert e.status == 200, e.status
 
 
+def assert_thread_walker_composite_cursor() -> None:
+    # /api/post/:id walks with `since` as a `created_at:id` composite
+    # (next_since), not a bare row id. Page size 3 here so the boundary is
+    # visible; production is 1000. The strict cursor never re-serves the
+    # boundary row, so dedup by comment id is the belt-and-braces guard. A
+    # STABLE comments_total with walked < total raises (a lost row); a total
+    # that MOVED between pages is concurrent activity and also raises --
+    # either way the walk never returns a silently short list.
+    class Scripted(client.Anonymous):
+        def __init__(self, pages):
+            super().__init__(origin="https://example.invalid")
+            self._pages = list(pages)
+
+        def post(self, post_id, *, limit=None, since=None, reveal=None):
+            return self._pages.pop(0)
+
+    def page(total, rows, has_more, next_since=None):
+        d = {
+            "comments_total": total,
+            "comments_returned": len(rows),
+            "has_more": has_more,
+            "comments": [{"id": cid, "created_at": ca, "author": f"c{cid}"} for cid, ca in rows],
+        }
+        if next_since is not None:
+            d["next_since"] = next_since
+        return d
+
+    # 1. Clean walk, 5 comments, boundary between ids 3 and 4. The walker
+    # stops on an empty page, not on has_more false (the boundary-page trap
+    # every other walker in this file is named for).
+    clean = Scripted([
+        page(5, [(1, 100), (2, 200), (3, 300)], True, next_since="300:3"),
+        page(5, [(4, 400), (5, 500)], False),
+        page(5, [], False),
+    ])
+    walked = clean.walk_thread(42)
+    ids = [r["id"] for r in walked]
+    assert ids == [1, 2, 3, 4, 5], ids
+    assert len(ids) == len(set(ids)), "the walk must stay disjoint, not re-serve"
+
+    # 2. A total that moves 5 -> 7 while only 5 rows are ever served: the
+    # walk pages to an empty page, finds walked (5) < total (7), and raises
+    # rather than return a silently short list.
+    moved = Scripted([
+        page(5, [(1, 100), (2, 200)], True, next_since="200:2"),
+        page(7, [(3, 300)], True, next_since="300:3"),
+        page(7, [], False),
+    ])
+    try:
+        moved.walk_thread(42)
+        raise AssertionError("moving-total thread walk must raise")
+    except client.ApiError as e:
+        assert e.status == 200, e.status
+
+
 def main(port: int) -> None:
     assert_edge_429_preserves_retry_after()
     assert_duplicate_json_keys_fail_closed()
     assert_history_walker_boundary_discriminator()
     assert_history_walker_post_fix_lossless()
     assert_citizens_walker_page_boundary_lossless()
+    assert_thread_walker_composite_cursor()
     origin = f"http://127.0.0.1:{port}"
     site = client.Anonymous(origin)
 
@@ -570,6 +626,17 @@ def main(port: int) -> None:
         assert e.status == 400, e.status
         assert "created_at" not in str(e)
         assert "comment id" not in str(e)
+
+    # walk_thread pages the composite next_since until empty and reconciles
+    # against comments_total (no snapshot token: the COUNT is recomputed per
+    # request). Three specimen comments on this fixture; the walk is
+    # disjoint, oldest first, and lands exactly on the total.
+    walked = site.walk_thread(post_id)
+    walked_ids = [row["id"] for row in walked]
+    assert len(walked_ids) == len(set(walked_ids)), "no comment twice"
+    assert len(walked_ids) == total, (len(walked_ids), total)
+    assert [row["created_at"] for row in walked] == sorted(row["created_at"] for row in walked)
+    assert set(walked_ids) == {row["id"] for row in whole["comments"]}, "walk must cover the thread"
 
     # Rule 9: auth class from what we sent + status, never the error sentence.
     # Live 2026-09-21: all four refusals are {error, now, now_utc}; no auth_class
