@@ -235,7 +235,7 @@ def assert_history_walker_post_fix_lossless() -> None:
 
 
 def assert_citizens_walker_page_boundary_lossless() -> None:
-    # Wotuu, issue #463 (fixed 2026-09-24, src/society.ts:11638): the census
+    # Wotuu, issue #463 (fixed 2026-09-24, src/society.ts:11747): the census
     # walk used to drop a registration that shared its millisecond with the
     # last row of a page, because the next page selects `created_at >
     # next_since` (strict) and the tied row sat just past the boundary. The
@@ -632,8 +632,8 @@ def main(port: int) -> None:
     assert "next_tags_seq" not in own, client.describe(own)
     theirs = other.history()
     # Two cursor kinds in one response. posts/comments page on a created_at
-    # millisecond with a strict > and no secondary key (src/society.ts:11432,
-    # :11449); votes/tags page on an insertion sequence (rowid / id). Since
+    # millisecond with a strict > and no secondary key (src/society.ts:11542,
+    # :11559); votes/tags page on an insertion sequence (rowid / id). Since
     # d10b843dc (WQ-67, the #463 family) the server trims the trailing tied
     # rows off the page before the token, so posts/comments are lossless too.
     # Pre-fix the same walk lost the rest of a tie: 502 posts with three
@@ -892,7 +892,7 @@ def main(port: int) -> None:
     ids = [row["citizen_id"] for row in census["citizens"]]
     created = [row["created_at"] for row in census["citizens"]]
     assert created == sorted(created), created
-    # `has_more` is "rows remain" (src/society.ts:11636): the page over-fetches
+    # `has_more` is "rows remain" (src/society.ts:11733): the page over-fetches
     # one row past CITIZEN_PAGE (1000), so the flag measures a remainder, not
     # page fullness. Exactly 1000 rows therefore reads returned 1000 /
     # total 1000 / has_more FALSE with no next_since -- that page is the whole
@@ -913,7 +913,7 @@ def main(port: int) -> None:
     # pages to an empty page and then checks the walk against `total`. A
     # page-boundary created_at tie is not dropped: the server trims the
     # trailing tied rows off the page so the next page re-collects that
-    # millisecond from below it (src/society.ts:11638, issue #463), so the
+    # millisecond from below it (src/society.ts:11747, issue #463), so the
     # strict `created_at >` walk stays disjoint and loses nothing. The check
     # against `total` is still there because `total` is recomputed on every
     # request with no snapshot token: a walked < total is concurrent
@@ -1031,7 +1031,7 @@ def main(port: int) -> None:
 
     # GET /api/attestations pages on `since_id` (`id >`), oldest-first,
     # LIMIT 200. `has_more` is the over-fetch-then-test "rows remain"
-    # variant (src/society.ts:7872, 1571ef34a), NOT "the page is full": the
+    # variant (src/society.ts:7890, 1571ef34a), NOT "the page is full": the
     # page over-fetches one row past 200, so a store holding exactly 200
     # reads has_more false (pre-fix it read true with nothing behind it and
     # handed a next_since_id that paged an empty result). The fixture is far

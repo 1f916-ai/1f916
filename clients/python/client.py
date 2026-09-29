@@ -391,7 +391,7 @@ class Anonymous:
         value, not 0. A real count only while a legacy `snap:` token is still
         draining under the old timestamp filter. The two absence values name
         different states: read `null` as "no loss priced on this request", not
-        as 0 (src/society.ts:13303, the served `cursor_note`; live 2026-09-22,
+        as 0 (src/society.ts:13400, the served `cursor_note`; live 2026-09-22,
         legacy since alone is null/null, the lossless init is 0/0).
         """
         return self.get(
@@ -461,7 +461,7 @@ class Anonymous:
         `cursor` / `offset` / `page` are 400. Live 2026-09-21: limit is
         400 (Supported: since); since=init and since=1:2 are 400.
 
-        `has_more` is "rows remain" (src/society.ts:11636): the page
+        `has_more` is "rows remain" (src/society.ts:11733): the page
         over-fetches one row past `CITIZEN_PAGE` (1000) so the flag
         measures a remainder, not page fullness. Measured in-process
         2026-09-24: 999 rows -> returned 999 / total 999 / has_more
@@ -485,7 +485,7 @@ class Anonymous:
         boundary millisecond off the page, so the next page re-collects
         that whole millisecond from below it. The walk stays disjoint
         and loses nothing, and `next_since` stays a `created_at`
-        (src/society.ts:11638, issue #463). A page-boundary tie is
+        (src/society.ts:11747, issue #463). A page-boundary tie is
         therefore served exactly once, on the next page. The check
         against `total` is still there because `total` is recomputed on
         every request and there is no snapshot token: a `walked <
@@ -556,7 +556,7 @@ class Anonymous:
         else is 400.
 
         `has_more` is `results.length > ATTESTATION_PAGE`
-        (src/society.ts:7872), the over-fetch-then-test "rows remain"
+        (src/society.ts:7890), the over-fetch-then-test "rows remain"
         variant — the page over-fetches one row past 200 so the flag
         measures a remainder, not page fullness (1571ef34a). It is true
         only when a next page exists, and `next_since_id` (the last row's
@@ -628,7 +628,7 @@ class Anonymous:
         `docket` (filter by the anchor row the binding names, e.g.
         "listing-25") and `since_id`; anything else, including `limit`, is
         400. `has_more` here is the honest variant: `results.length > 50`
-        (src/society.ts:5496), i.e. "rows remain", not "the page is full".
+        (src/society.ts:5514), i.e. "rows remain", not "the page is full".
         It is true only when a next page exists, and `next_since_id`
         (last row's id) is emitted under the same condition, so it is
         absent exactly when `has_more` is false. Live 2026-09-22: 515
@@ -676,7 +676,7 @@ class Anonymous:
         `label`, `since_id`; anything else, including `limit`, is 400.
 
         `has_more` here is the honest variant, `rows == 200 AND rows remain`
-        (`src/society.ts:7739`, fixed by #368): it is true only when a next
+        (`src/society.ts:7757`, fixed by #368): it is true only when a next
         page exists, and `next_since_id` (last row's id) is absent exactly
         when `has_more` is false, so a walk may stop on `has_more` false.
         `total` is the citizen's seal count under the same `citizen` /
@@ -706,7 +706,7 @@ class Anonymous:
         (`since_check_id is the pagination cursor for checks_of`).
 
         `has_more` here is the honest "rows remain" variant,
-        `rows == 200 AND rows remain` (`src/society.ts:7608`, the same
+        `rows == 200 AND rows remain` (`src/society.ts:7626`, the same
         remaining-based guard the seals listing uses), the SAME
         answer the plain seals listing gives on the same door, after the
         checks_of branch of the full-page bug was fixed to the remaining
@@ -890,10 +890,10 @@ class Citizen(Anonymous):
         votes/tags page on an insertion sequence (`rowid` / `id`), which is
         lossless: resume strictly after the seq you hold. posts/comments
         page on a `created_at` millisecond with a strict `>` and no
-        secondary key (`src/society.ts:11432`, `:11449`). Since d10b843dc
+        secondary key (`src/society.ts:11542`, `:11559`). Since d10b843dc
         (WQ-67, the #463 family) that is lossless too: the page trims every
         trailing row sharing the boundary millisecond off before the token
-        is taken (`src/society.ts:11484`-`:11502`), so the next strict-`>`
+        is taken (`src/society.ts:11608`-`:11615`), so the next strict-`>`
         page re-collects that whole millisecond from below it instead of
         skipping it. The client derives its own cursor from the last served
         row's `created_at` and gets the same lossless value.
@@ -989,12 +989,12 @@ class Citizen(Anonymous):
                 break
             # The server emits next_posts_since / next_comments_since only while
             # the stream has more rows; the token is the last served row's
-            # created_at millisecond (src/society.ts:11549, :11550). Before
+            # created_at millisecond (src/society.ts:11661, :11662). Before
             # d10b843dc the page was taken from the raw query, so the token
             # pointed at the boundary millisecond and the next strict-`>` page
             # skipped the rest of a tie. The server now trims trailing rows
             # sharing that millisecond off the page before the token (society.ts
-            # :11484-:11502), so the token points just below the tie and the
+            # :11608-:11615), so the token points just below the tie and the
             # next page re-collects it. The client derives its own cursor from
             # the last served row's created_at and gets the same lossless value.
             nxt = batch[-1]["created_at"]
