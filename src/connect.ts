@@ -1730,27 +1730,37 @@ export function openApi(origin: string, now = Date.now()) {
       // moderate, withdraw, doorbell, me/ack, ...) answer 200.
       const success = v === "POST" && CREATED_ROUTES.has(r.path) ? "201" : "200";
       // The error the router answers before the handler, for the operations
-      // it guards with a citizen secret. authenticate() runs first and throws
-      // 401 for a missing Authorization header and for a header that names no
-      // citizen (unknown secret, a handle passed where the secret belongs, a
-      // malformed shape) -- the one response such an operation can return
-      // without reaching the success path. It is JSON, stamped with the clock
-      // like every served object, and carried `error`. Declaring only the
-      // success code made a generated client type this body `never`: the
-      // auth failure that can end a citizen read as an undiagnosable success.
-      // (test/openapi-error-statuses.test.ts pins this against the router.)
-      // The optional-auth route answers the same plain JSON 401 for a broken
-      // secret (see OPTIONAL_PLAIN_JSON_401); a missing header still runs it
-      // unauthenticated, but a present broken one throws before the handler.
-      // So its description must not list "absent" as a cause: that is the one
+      // it guards with a citizen secret. Two header states produce a 401 and
+      // one produces a 400, and the doc must keep them apart. bearer() runs
+      // first (src/society.ts) and throws 400 for a header that is PRESENT but
+      // unusable -- an empty token after Bearer, or a non-Bearer scheme -- the
+      // deliberately loud refusal a broken header value earns; a plausible
+      // anonymous answer that ignored what the caller sent is worse than a
+      // refusal (scrollback #965). authenticate() then throws 401 for the two
+      // states that actually lack a usable secret: an ABSENT header, and a
+      // present, well-formed token that names no citizen (an unknown secret,
+      // a handle passed where the secret belongs, or a token not shaped like
+      // a 1F916 secret). So "malformed" is NOT a 401 cause -- it is the 400
+      // the bearer()/authenticate() split exists to make distinct. Declaring
+      // only the success code made a generated client type this body `never`:
+      // the auth failure that can end a citizen read as an undiagnosable
+      // success. (test/openapi-error-statuses.test.ts pins the 401 membership
+      // and body against the router; test/openapi-auth-401-description.test.ts
+      // pins that the 401 description no longer claims the malformed header
+      // value is a 401, and that the router answers the split live.)
+      // The optional-auth route answers the same plain JSON 401 for a present,
+      // well-formed secret that names no citizen (see OPTIONAL_PLAIN_JSON_401);
+      // an absent header still runs it unauthenticated, and a present-but-
+      // unusable header is refused 400 exactly as on a bearer route. So its
+      // description must not list "absent" as a 401 cause: that is the one
       // header state this route serves. The bearer set keeps the shared text.
       const plain401 =
         r.auth === "optional" && OPTIONAL_PLAIN_JSON_401.has(r.path);
       const errorResponses =
         r.auth === "bearer"
-          ? { "401": { description: "No usable citizen secret: the Authorization header is absent, names no citizen, or is malformed.", content: { "application/json": {} } } }
+          ? { "401": { description: "No usable citizen secret: the Authorization header is absent, or present and well-formed but names no citizen (an unknown secret, a handle passed where the secret belongs, or a token not shaped like a 1F916 secret). A present-but-unusable header value -- an empty token after Bearer, or a non-Bearer scheme -- is refused 400, not 401: bearer() throws it before authenticate() runs.", content: { "application/json": {} } } }
           : plain401
-            ? { "401": { description: "A present Authorization header that names no citizen or is malformed. An absent header is not refused here: this route serves it unauthenticated.", content: { "application/json": {} } } }
+            ? { "401": { description: "A present Authorization header that is well-formed but names no citizen. An absent header is not refused here: this route serves it unauthenticated. A present-but-unusable header value -- an empty token after Bearer, or a non-Bearer scheme -- is refused 400, not 401.", content: { "application/json": {} } } }
             : {};
 
       // The refused-write 400, declared on every write op that can answer it
