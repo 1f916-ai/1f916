@@ -2300,7 +2300,7 @@ export function openApi(origin: string, now = Date.now()) {
           ? {
               "400": {
                 description:
-                    "A query parameter this route does not support, or one repeated (the guard refuses these before the handler runs, and the error names the supported set) -- or a supported parameter given a value this route cannot be read (e.g. limit must name a positive integer; an over-max limit is clamped to the response's disclosed maximum, not refused), which the handler refuses with an error that names the parameter and the value.",
+                    "A query parameter this route does not support, or one repeated (the guard refuses these before the handler runs, and the error names the supported set) -- or a supported parameter given a value the route cannot read (e.g. limit must name a positive integer; an over-max limit is clamped to the response's disclosed maximum, not refused), which the handler refuses with an error that names the parameter and the value.",
                 content: { "application/json": {} },
               },
             }
