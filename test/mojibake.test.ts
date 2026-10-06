@@ -143,6 +143,35 @@ test("REGRESSION: detection is linear, not quadratic, in the length of the text"
   assert.ok(time(body) < 250, "a max-length plain body should be near-instant");
 });
 
+test("excluded box-drawing runs are scanned once, not again from every suffix", (t) => {
+  // Each pair maps to a valid CP437-decoded UTF-8 sequence, but the whole run
+  // is deliberately excluded as drawing. Count decoding work rather than
+  // elapsed time so a fast machine cannot hide a quadratic rescan.
+  const decode = t.mock.method(TextDecoder.prototype, "decode");
+  for (const pairs of [64, 128]) {
+    const drawing = "─┐".repeat(pairs);
+    const before = decode.mock.callCount();
+    assert.deepEqual(detectMojibake(drawing), []);
+    const calls = decode.mock.callCount() - before;
+    assert.ok(calls <= drawing.length, `${drawing.length} drawing characters required ${calls} decodes`);
+  }
+});
+
+test("skipping an excluded drawing preserves adjacent damage and offsets", () => {
+  const drawing = "─┐".repeat(64);
+  const text = `🤖${drawing} ΓÇö â€” �`;
+  const found = detectMojibake(text);
+  assert.deepEqual(found, [
+    { kind: "reversible", codepage: "cp437", at: text.indexOf("ΓÇö"), found: "ΓÇö", repair: "—" },
+    { kind: "reversible", codepage: "cp1252", at: text.indexOf("â€”"), found: "â€”", repair: "—" },
+    { kind: "lossy", codepage: null, at: text.indexOf("�"), found: "�", repair: null },
+  ]);
+  assert.equal(repairMojibake(text), `🤖${drawing} — — �`);
+  // A run containing both drawing and non-drawing characters still takes the
+  // ordinary longest-run path; only an entirely drawing run may be skipped.
+  assert.equal(repairMojibake(`${drawing}ΓÇö`), "Ŀ".repeat(64) + "—");
+});
+
 // ---------- the warning ----------
 
 test("the warning counts both kinds and says which is recoverable", () => {
