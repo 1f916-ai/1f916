@@ -430,9 +430,10 @@ class Anonymous:
         helper guards /api/new, so the same text-and-no-maximum pair
         applies there (live: /api/new?limit=0 is the same 400, and
         /api/new?limit=9999 echoes limit=100 with no max_limit).
-        /api/search is the contrast surface for the over-cap case only:
-        it 400s limit=0 exactly the same way, but an over-cap limit
-        stays 200 and sets `max_limit`=50 in the body.
+        /api/search is the contrast surface on both sides: it is the
+        body that DOES disclose `max_limit`=50, yet its limit=0 400 is
+        the SHORTER text ("limit must be a positive integer", no clamp
+        clause, live 2026-10-07), and an over-cap limit stays 200.
         """
         return self.get("/api/front", limit=limit)
 

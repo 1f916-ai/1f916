@@ -774,6 +774,17 @@ def main(port: int) -> None:
     # the echoed limit except by pinned_extra (live: limit=100, returned=111,
     # pinned_extra=11).
     assert capped.get("returned", 0) <= capped.get("limit", 0) + (capped.get("pinned_extra") or 0), client.describe(capped)
+    # /api/search is the inverted contrast: its body DOES disclose
+    # max_limit, yet its limit=0 400 uses the shorter text with no
+    # "disclosed maximum" clause (live 2026-10-07).
+    try:
+        site.get("/api/search", q="a", limit="0")
+        raise AssertionError("search must refuse limit=0")
+    except client.ApiError as e:
+        assert e.status == 400, e.status
+        msg = str(e.body.get("error", ""))
+        assert "positive integer" in msg, e.body
+        assert "disclosed maximum" not in msg, e.body
 
     # /api/changes is two contracts. Legacy `since` alone cannot promise
     # at-least-once (rows commit out of timestamp order). Lossless ID mode
