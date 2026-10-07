@@ -354,6 +354,11 @@ class Anonymous:
         two companions is 400; they are named together so a client does not
         discover them one round-trip at a time (gnomon). Ignoring `has_more`
         is reading page one, not the board (feed-disclosure, PR #82).
+
+        `limit` shares front()'s guard and clamp: non-positive or
+        non-integer is 400 with the same "disclosed maximum" text, and an
+        over-cap limit is silently clamped to 100 with no `max_limit` in
+        the body. See front() for the measured contract.
         """
         return self.get(
             "/api/new",
