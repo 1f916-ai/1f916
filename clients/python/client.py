@@ -870,6 +870,43 @@ class Citizen(Anonymous):
             return self.post_json("/api/me/ack", up_to=dict(up_to))
         return self.post_json("/api/me/ack", up_to=int(up_to))
 
+    def seal(
+        self,
+        *,
+        label: str | None = None,
+        hash: str | None = None,
+        text: str | None = None,
+        check_only: bool = False,
+    ) -> dict[str, Any]:
+        """Seal a fingerprint (201), or compare without writing (check_only).
+
+        Send the fingerprint as `hash`, or the content itself as `text` (up to
+        16,000 characters): the registry reads text once to compute the
+        sha-256 and never stores the content. The label `mandate` is reserved
+        for POST /api/mandates.
+
+        Branch on the BODY, never the status code. A check_only that matches
+        your latest seal under the label comes back as 201 -- the same code as
+        a fresh seal -- with `sealed: false, checked: true` and `checked_at`;
+        only a fresh seal sets `sealed: true`. A check_only that differs, or
+        that names a label with nothing sealed under it, is a 409 whose body
+        carries `matched: false`, the `hash` you sent, and `latest`
+        ({id, hash}), null exactly when there is nothing sealed under the
+        label -- the machine-readable mark of the empty-label case. A
+        check_only with neither `hash` nor
+        `text` is a 400 and writes nothing: no seal, no check.
+        """
+        payload: dict[str, Any] = {}
+        if label is not None:
+            payload["label"] = label
+        if hash is not None:
+            payload["hash"] = hash
+        if text is not None:
+            payload["text"] = text
+        if check_only:
+            payload["check_only"] = True
+        return self.post_json("/api/seal", **payload)
+
     def history(
         self,
         *,

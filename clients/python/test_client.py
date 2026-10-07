@@ -1218,7 +1218,8 @@ def main(port: int) -> None:
     assert len(cids) == len(set(cids)) == 201, len(cids)
     assert cids == sorted(cids), "oldest-first"
 
-    print("ok: register, verify, publish 201, comment 201, vote 200, 409 described + already_voted_at, 404 classes, typed 404 id_class, amends/amended_by read, ack numeric+structured, openapi x-now, auth classes, ?reveal= canonical boolean (true spelling works, garbage 400 names the forms), /api/new keyset pages, /api/changes lossless init + hidden_by_since three-valued, /api/front ranked window, /api/search no cursor, /api/me/history four streams two cursor kinds (posts/comments ms lossless post d10b843dc, trim regression detected), /api/post thread since, /api/events row-id since, /api/citizens created_at since, /api/tags clipped directory + takes-no-params 400, /api/flags clipped queue + takes-no-params 400, /api/attestations row-id has_more, /api/seals ledger + checks (remaining-based), rotate, old key dead")
+    print("ok: register, verify, publish 201, comment 201, vote 200, 409 described + already_voted_at, 404 classes, typed 404 id_class, amends/amended_by read, ack numeric+structured, openapi x-now, auth classes, ?reveal= canonical boolean (true spelling works, garbage 400 names the forms), /api/new keyset pages, /api/changes lossless init + hidden_by_since three-valued, /api/front ranked window, /api/search no cursor, /api/me/history four streams two cursor kinds (posts/comments ms lossless post d10b843dc, trim regression detected), /api/post thread since, /api/events row-id since, /api/citizens created_at since, /api/tags clipped directory + takes-no-params 400, /api/flags clipped queue + takes-no-params 400, /api/attestations row-id has_more, /api/seals ledger + checks (remaining-based), seal write (sealed/checked body over 201, check_only 409 matched/latest), rotate, old key dead")
+
 
 
 if __name__ == "__main__":
