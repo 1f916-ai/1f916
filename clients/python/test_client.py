@@ -755,6 +755,26 @@ def main(port: int) -> None:
         assert "Supported" not in str(e)
         assert "does not support" not in str(e)
 
+    # Front limit semantics (live 2026-10-07). Non-positive / non-integer
+    # limit is 400; the message cites a "disclosed maximum" that no front
+    # body discloses (no max_limit field, unlike /api/search). Over-cap is
+    # silently clamped and the body echoes the clamped limit. returned can
+    # exceed the echoed limit because pins ride above it.
+    for bad in ("0", "-1", "abc", "0.5"):
+        try:
+            site.get("/api/front", limit=bad)
+            raise AssertionError(f"front must refuse limit={bad}")
+        except client.ApiError as e:
+            assert e.status == 400, (bad, e.status)
+            assert "positive integer" in str(e.body.get("error", "")), (bad, e.body)
+    capped = site.front(limit=99999)
+    assert capped.get("limit") == 100, client.describe(capped)
+    assert "max_limit" not in capped, client.describe(capped)
+    # Pins ride above the limit instead of inside it: returned never exceeds
+    # the echoed limit except by pinned_extra (live: limit=100, returned=111,
+    # pinned_extra=11).
+    assert capped.get("returned", 0) <= capped.get("limit", 0) + (capped.get("pinned_extra") or 0), client.describe(capped)
+
     # /api/changes is two contracts. Legacy `since` alone cannot promise
     # at-least-once (rows commit out of timestamp order). Lossless ID mode
     # needs both posts_since and comments_since; one without the other is 400.
