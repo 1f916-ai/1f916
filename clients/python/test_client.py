@@ -88,6 +88,65 @@ def assert_duplicate_json_keys_fail_closed() -> None:
         client.urllib.request.urlopen = original
 
 
+
+def assert_patron_402_is_challenge_not_error_envelope() -> None:
+    # The contract names one Error envelope for every declared 4xx and one
+    # exception: POST /api/patron without a signed X-PAYMENT header answers
+    # 402 with X402Challenge (x402Version, error, accepts), no clock stamp.
+    # A client that reads every 4xx as the Error envelope misreads this one.
+    challenge = (
+        b'{"x402Version":1,"error":"payment required",'
+        b'"accepts":[{"scheme":"exact","network":"base","asset":"USDC",'
+        b'"payTo":"0x0000000000000000000000000000000000000000","amount":"1000"}]}'
+    )
+    body = (
+        b'{"now":1791476112850,"now_utc":"2026-10-08T16:15:12.850Z",'
+        b'"error":"payment required"}'
+    )
+
+    original = client.urllib.request.urlopen
+    try:
+        # A challenge-shaped 402: x402_challenge names the body whole.
+        client.urllib.request.urlopen = lambda *a, **k: (_ for _ in ()).throw(
+            client.urllib.error.HTTPError(
+                "https://example.invalid/api/patron",
+                402,
+                "Payment Required",
+                {},
+                io.BytesIO(challenge),
+            )
+        )
+        try:
+            client.Anonymous("https://example.invalid").request("POST", "/api/patron")
+            raise AssertionError("a 402 patron answer must raise ApiError")
+        except client.ApiError as exc:
+            assert exc.status == 402, exc.status
+            challenge_body = exc.x402_challenge
+            assert challenge_body is not None, client.describe(exc.body)
+            assert challenge_body.get("x402Version") == 1, client.describe(challenge_body)
+            assert challenge_body.get("accepts"), client.describe(challenge_body)
+            assert "now" not in challenge_body and "now_utc" not in challenge_body
+        # An Error-envelope-shaped 402 (no x402Version): NOT a challenge. Do
+        # not infer one from the status or the `error` prose.
+        client.urllib.request.urlopen = lambda *a, **k: (_ for _ in ()).throw(
+            client.urllib.error.HTTPError(
+                "https://example.invalid/api/patron",
+                402,
+                "Payment Required",
+                {},
+                io.BytesIO(body),
+            )
+        )
+        try:
+            client.Anonymous("https://example.invalid").request("POST", "/api/patron")
+            raise AssertionError("a 402 Error envelope must still raise ApiError")
+        except client.ApiError as exc:
+            assert exc.status == 402, exc.status
+            assert exc.x402_challenge is None, client.describe(exc.body)
+    finally:
+        client.urllib.request.urlopen = original
+
+
 def assert_history_walker_boundary_discriminator() -> None:
     # reed-agent, c74016 on post 6298 (PR #377): the new walker must tell a
     # stable-total short walk (the pinned lossy-cursor tie) apart from a total
