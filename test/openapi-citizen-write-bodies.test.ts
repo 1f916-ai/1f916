@@ -71,6 +71,7 @@ const READS_WHOLE_BODY: Readonly<Record<string, { files: string[]; fields: strin
   "/api/keys/decline": { files: ["society.ts"], fields: ["reason"] },
   "/api/attestations": { files: ["society.ts", "attestations.ts"], fields: ["class", "subject", "claim", "evidence", "signature", "target_attestation_id", "withdraw_when"] },
   "/api/mandates/batch": { files: ["mandates.ts"], fields: ["records"] },
+  "/api/mandates/:id/outcome": { files: ["mandates.ts"], fields: ["outcome", "outcome_hash"] },
   "/api/mandates": { files: ["mandates.ts"], fields: ["instruction", "instruction_hash", "action", "action_hash", "outcome", "outcome_hash", "public", "envelope", "label", "subject", "signature"] },
   "/api/journal": { files: ["journal.ts"], fields: ["kind", "body_hash", "body_locked", "ref_id", "relation", "prompted_by", "unresolved", "anchor"] },
   "/api/journal/review": { files: ["journal.ts"], fields: ["entry_id", "status"] },
@@ -122,7 +123,9 @@ test("the whole-body handlers read exactly the fields the document publishes", a
   // set and its readers rather than looking for b.<field> in the router.
   const doc = await document();
   for (const [path, { files, fields }] of Object.entries(READS_WHOLE_BODY)) {
-    const props = Object.keys(doc.paths[path].post.requestBody!.content!["application/json"].schema!.properties ?? {});
+    // SURFACE paths use :param; the document publishes them as {param}.
+    const docPath = path.replace(/:(\w+)/g, "{$1}");
+    const props = Object.keys(doc.paths[docPath].post.requestBody!.content!["application/json"].schema!.properties ?? {});
     assert.deepEqual(props.sort(), [...fields].sort(), `${path}: review the field set when extending a whole-body handler`);
     const source = files.map((f) => readFileSync(fileURLToPath(new URL(`../src/${f}`, import.meta.url)), "utf8")).join("\n");
     for (const prop of props) assert.ok(source.includes(`body.${prop}`), `${path}: ${files.join(", ")} never reads body.${prop}`);
@@ -166,6 +169,20 @@ test("mandates/batch publishes its records body", async () => {
   const items = (body.properties?.records as { items?: { type?: string } })?.items;
   assert.equal(items?.type, "object", "each record is one mandate, shaped as POST /api/mandates takes one");
   assert.equal("secret" in (body.properties ?? {}), false);
+});
+test("mandates/:id/outcome publishes its outcome-or-hash body", async () => {
+  const doc = await document();
+  const op = doc.paths["/api/mandates/{id}/outcome"].post;
+  const body = op.requestBody?.content?.["application/json"]?.schema;
+  assert.ok(body, "POST /api/mandates/{id}/outcome publishes no request body, so a generated client types it requestBody?: never and cannot add an outcome without a cast");
+  assert.equal(op.requestBody?.required, true);
+  assert.deepEqual(Object.keys(body.properties ?? {}).sort(), ["outcome", "outcome_hash"]);
+  assert.deepEqual(body.required ?? [], [], "the id is the path parameter; the body needs outcome or outcome_hash, not both required");
+  assert.equal("secret" in (body.properties ?? {}), false);
+  const tool = TOOLS.find((t) => t.name === "record_outcome")!;
+  const { id, secret, ...rest } = (tool.inputSchema as { properties: Record<string, unknown> }).properties;
+  assert.deepEqual(body.properties, rest, "one source for the HTTP body and MCP arguments, minus the id the path carries and the credential HTTP never takes");
+  assert.deepEqual((body as { anyOf?: { required: string[] }[] }).anyOf, [{ required: ["outcome"] }, { required: ["outcome_hash"] }], "the handler refuses a body with neither: the outcome fingerprint is what gets sealed");
 });
 test("register keeps its hand-written body and is unchanged", async () => {
   const doc = await document();
