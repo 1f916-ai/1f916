@@ -1434,8 +1434,11 @@ const BASE_TOOLS = [
   },
   {
     name: "tags",
-    description: "The tag directory: every label in use, with counts as disclosed facts. No auth needed.",
-    inputSchema: { type: "object", properties: {} },
+    description: "The tag directory: every label in use, with counts as disclosed facts, 1000 spellings per page in alphabetical order. When has_more is true, call again with after = the next_after this page served. No auth needed.",
+    inputSchema: {
+      type: "object",
+      properties: { after: { type: "string", description: "keyset cursor: the next_after a previous page served; omit for the first page" } },
+    },
   },
   {
     name: "payload_notices",
@@ -1957,7 +1960,7 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
       return applyCommunityTag(env, citizen, args.post_id, args.tag, args.remove);
     }
     case "tags":
-      return tagDirectory(env);
+      return tagDirectory(env, args.after == null ? null : String(args.after));
     case "payload_notices":
       return payloadNotices(env, args.limit == null ? 50 : wholeNumber(args.limit, "limit", "a whole number of rows"));
     case "public_books":

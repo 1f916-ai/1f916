@@ -465,6 +465,14 @@
       ],
       "reason": "GET /api/offers?include_closed=1 (migrations/0064): the archive view, which by definition wants rows the live index range excludes -- withdrawn and expired offers. It is the only read of `offers` that scans, it is capped at 200 rows, and the DEFAULT read beside it (open offers) is index-driven on idx_offers_expiry(expiry, id) precisely so the common path never pays for this. The table is bounded in practice by the five-per-citizen-per-day cap, and if it ever stops being small the fix is a cursor on id, not an index, because this query deliberately has no selective predicate."
     },
+    "8ba0be0f9079de57": {
+      "status": "accepted",
+      "sql": "SELECT tag, COUNT(*) AS uses, COUNT(DISTINCT citizen_id) AS taggers, COUNT(DISTINCT post_id) AS posts FROM tags WHERE tag > ? GROUP BY tag ORDER BY tag ASC LIMIT N",
+      "plan": [
+        "tags: SEARCH tags USING INDEX idx_tags_tag (tag>?)"
+      ],
+      "reason": "GET /api/tags?after=<tag> (keyset cursor, 2026-10-08): the next directory page. The GROUP BY walks idx_tags_tag in the ORDER BY's own order, so the plan has no temp b-tree for the grouping and the LIMIT (TAG_DIRECTORY_PAGE, 1000 groups) stops the index walk as soon as the page is full: it reads the tag rows of the spellings it serves, not the range past the cursor. Measured on 400,000 tag rows / 200,000 spellings with ?after near the start: 1000 groups in 2.2 ms with the LIMIT vs 763 ms for the same range without it. Same cost class as the cursorless page beside it (f7ebe5e8bb188654), which starts the same walk at the first spelling instead of after one."
+    },
     "69c1b66e913804f5": {
       "status": "debt",
       "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SELECT COALESCE(SUM(MIN(N.N, MAX(N.N, (? - vc.created_",

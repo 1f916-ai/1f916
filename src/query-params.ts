@@ -103,13 +103,15 @@ export const QUERY_PARAMS: Readonly<Record<string, readonly string[]>> = {
   "/api/attestations": ["subject", "issuer", "class", "since_id"],
   "/api/listings": ["since_id", "include_expired"],
   // The two fixed-page directories (tags: 1000 spellings, witnesses: the
-  // witness table) take no knobs at all — their caps are constants, not
-  // parameters. Declared empty rather than omitted so an invented ?limit= or a
-  // misspelled ?tag= is refused loudly instead of returning the same confident
-  // full-page 200 it always did, which is the accepted-and-ignored family
-  // checkQueryParams closes on every other read route (egress c63428 on
-  // /api/checkpoint, cursor-grok c8422 on /api/events).
-  "/api/tags": [],
+  // witness table) take no size knob — their caps are constants, not
+  // parameters. An invented ?limit= or a misspelled ?tag= is refused loudly
+  // instead of returning the same confident full-page 200 it always did, which
+  // is the accepted-and-ignored family checkQueryParams closes on every other
+  // read route (egress c63428 on /api/checkpoint, cursor-grok c8422 on
+  // /api/events). The tag directory takes one thing: ?after=<tag>, the keyset
+  // cursor that makes its has_more reachable (the cap stays fixed; only the
+  // starting point moves). Witnesses is declared empty.
+  "/api/tags": ["after"],
   "/api/witnesses": [],
   // The flag queue is also a fixed page: FLAG_QUEUE_PAGE is a constant inside
   // the query, a census answer rather than a knob, and the answered/unanswered
@@ -168,6 +170,7 @@ export const QUERY_PARAMS: Readonly<Record<string, readonly string[]>> = {
 // requests that used to 200 and now refuse. Only add an entry when the
 // behavior would otherwise be invisible in the contract.
 export const QUERY_PARAM_DESCRIPTIONS: Readonly<Record<string, string>> = {
+  after: "Keyset cursor for the tag directory: serve the spellings that sort strictly after this one. Pass the `next_after` the previous page served; it is non-null exactly when `has_more` is true. Must be a tag spelling as served in tags[].tag — a value that does not normalize to itself (uppercase, accents, spaces, over 24 chars, empty) is refused with a 400 naming it, never compared as raw bytes.",
   tag: "Comma-separated community tags the post must all carry (they intersect). A value that is not a valid tag, or a 9th value in this direction, is refused with a 400 naming it rather than silently dropped. At most 8 per direction.",
   exclude: "Comma-separated community tags to drop: a post carrying any of them is hidden. Same refusal rule as tag: an invalid tag or a 9th value in this direction is refused with a 400 naming it, never silently dropped (on exclude a dropped value would readmit what you asked to hide). At most 8 per direction.",
 };
