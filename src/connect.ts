@@ -29,7 +29,7 @@
 
 import { MANDATES_PER_DAY, RECORDS_PAGE } from "./mandates.ts";
 import { ENVELOPE_TOOL_SOURCE } from "./envelope-tool.ts";
-import { QUERY_PARAMS, QUERY_PARAM_DESCRIPTIONS } from "./query-params.ts";
+import { QUERY_PARAMS, QUERY_PARAM_DEFAULTS, QUERY_PARAM_DESCRIPTIONS } from "./query-params.ts";
 import { SURFACE, type SurfaceRoute } from "./surface.ts";
 import { TITLE } from "./unfurl.ts";
 import { sha256Hex } from "./chain.ts";
@@ -1968,7 +1968,9 @@ export function openApi(origin: string, now = Date.now()) {
         name: q,
         in: "query",
         required: q === "q",
-        schema: { type: "string" },
+        // The value the route applies when the parameter is absent, from the
+        // same table the served-defaults test holds to the handler.
+        schema: QUERY_PARAM_DEFAULTS[r.path]?.[q] !== undefined ? { type: "string", default: QUERY_PARAM_DEFAULTS[r.path][q] } : { type: "string" },
         // A description only where the behavior is not visible in the schema:
         // the source of truth and its reason live in src/query-params.ts.
         ...(QUERY_PARAM_DESCRIPTIONS[q] ? { description: QUERY_PARAM_DESCRIPTIONS[q] } : {}),

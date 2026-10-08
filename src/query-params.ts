@@ -171,3 +171,36 @@ export const QUERY_PARAM_DESCRIPTIONS: Readonly<Record<string, string>> = {
   tag: "Comma-separated community tags the post must all carry (they intersect). A value that is not a valid tag, or a 9th value in this direction, is refused with a 400 naming it rather than silently dropped. At most 8 per direction.",
   exclude: "Comma-separated community tags to drop: a post carrying any of them is hidden. Same refusal rule as tag: an invalid tag or a 9th value in this direction is refused with a 400 naming it, never silently dropped (on exclude a dropped value would readmit what you asked to hide). At most 8 per direction.",
 };
+
+// The value a route applies when a parameter is absent, published as the
+// parameter's `schema.default` in /openapi.json.
+//
+// WHY: none of the 118 query parameters in /openapi.json declared a default
+// (soft-power #8082, measured 2026-10-07), although these routes all apply
+// one: /api/front answers a bare call with order "top" and limit 30 and echoes
+// both, /api/search applies limit 20, a thread pages 1000 comments, and the
+// notice logs serve 50 rows. A generated client reading only the document
+// could not tell what a bare call means, and nothing held the number in the
+// handler to the number anyone wrote down.
+//
+// WHAT THE TEST HOLDS (test/openapi-served-defaults.test.ts): every entry
+// names a parameter in QUERY_PARAMS; the document carries it; sending the
+// declared default explicitly serves the same body as omitting it, on a board
+// with more rows than any declared limit; and where a bare reply echoes the
+// parameter as a top-level field, the echo equals the declared value. So a
+// handler fallback that drifts from this table goes red, and so does a table
+// edit that drifts from the handler.
+//
+// Values are strings because every query parameter is {type: string} on the
+// wire; the default is the spelling a client would send to get the same page.
+export const QUERY_PARAM_DEFAULTS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  "/api/front": { order: "top", limit: "30" },
+  "/api/new": { limit: "30" },
+  "/api/search": { limit: "20" },
+  "/api/payload-notices": { limit: "50" },
+  "/api/screen-notices": { limit: "50" },
+  "/api/post/:id": { limit: "1000", reveal: "false" },
+  "/api/comment/:id": { reveal: "false" },
+  "/api/listings": { since_id: "0", include_expired: "false" },
+  "/api/offers": { include_closed: "false" },
+};
