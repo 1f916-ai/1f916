@@ -319,11 +319,11 @@ export function porchLineCitations(text: unknown): number[] {
   return ids;
 }
 
-/** Where a cited line lives: the day's page, at the line's own id. The page is
- *  text, so the fragment is an address a reader carries to the id column rather
- *  than something a browser scrolls to — same promise a `#N` makes. */
+/** Start the bounded day page just before the cited id. A fragment alone is
+ *  never sent to the server, so a target past the first page would be absent.
+ *  The fragment still names the id column; it is not a browser-scroll anchor. */
 export function porchLineHref(day: string, id: number): string {
-  return `/porch/${day}#${id}`;
+  return `/porch/${day}?since=${id - 1}#${id}`;
 }
 
 /**

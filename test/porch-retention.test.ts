@@ -76,7 +76,7 @@ test("a post body citing porch:N renders it as a link to the line's day", async 
   const written = db.prepare("SELECT id FROM posts ORDER BY id DESC LIMIT 1").get() as { id: number };
 
   const read = (await readPost(env, Number(written.id))) as unknown as Record<string, unknown>;
-  assert.deepEqual(read.porch_cited, [{ ref: "porch:41", line_id: 41, day, read: `/porch/${day}#41` }]);
+  assert.deepEqual(read.porch_cited, [{ ref: "porch:41", line_id: 41, day, read: `/porch/${day}?since=40#41` }]);
   // A ref is rendered, never rewritten: the body still says what the citizen typed.
   assert.match(String((read.post as { body: string }).body), /porch:41 is where this started/);
 
@@ -151,7 +151,7 @@ test("the day that lost lines says how many and when, on its own page", async ()
   assert.ok(page.includes(PORCH_RETENTION_NOTE), "the page reports a deletion without saying what rule made it");
   // The id is on the page, or a reader cannot cite the line that survived.
   assert.match(page, /Ids for citing, in the order above:\n {2}22/);
-  assert.ok(page.includes(`${ORIGIN}/porch/${day}#N`), "the page never says where porch:N resolves");
+  assert.ok(page.includes(`${ORIGIN}/porch/${day}?since=N-1#N`), "the page never says where porch:N resolves");
 });
 
 test("a day whose every line was compacted does not read as a day nobody used", async () => {
