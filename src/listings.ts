@@ -41,8 +41,10 @@ export interface ListingInput {
   // Proof of funds, optional but recommended: the wallet that will pay, and its
   // EIP-191 signature over listingPreimage(). When present, the registry reads
   // that wallet's USDC balance from two agreeing providers at posting time and
-  // refuses a listing the wallet cannot cover; and every receipt on the listing
-  // must come from this address.
+  // refuses a listing the wallet cannot cover (for a verified listing, cover
+  // for it plus the wallet's other open verified listings in that asset and the
+  // unpaid awards on its closed ones, at posting); and
+  // every receipt on the listing must come from this address.
   funder_address?: unknown;
   funder_signature?: unknown;
   // Same door check as a post: the title and condition are citizen text and
