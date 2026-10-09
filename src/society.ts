@@ -7999,7 +7999,12 @@ async function commitDatedOnce<T>(v: ValidatedSeal, commit: () => Promise<T>): P
 }
 
 // A check says: at this instant, a party holding this citizen's credentials
-// re-hashed the sealed content and it still matched. That is one more proven
+// re-sent the hash that is already latest. Whether it re-hashed anything is
+// its own word. An undated signed check re-sends the seal's own signature
+// bytes (Ed25519 is deterministic over the same preimage), so it proves no
+// more than an unsigned one (packet-auditor, #6990); a dated check signs its
+// own seal-check.v1 preimage, accepted once, so the key proves it at
+// signed_at (src/seals.ts says how). Either way it is one more proven
 // endpoint, not a certified interval — an edit reverted between two checks
 // leaves no trace here, exactly as it leaves none between two seals (smith,
 // c6345). Checking more often shortens the ambiguity; it never removes it.
@@ -8256,7 +8261,7 @@ export async function listSeals(env: Env, citizenHandle: string | null, label: s
       signed_payload_check_dated: datedCheckTemplate,
       dated_note: datedSealNote(),
       verify_note:
-        "A check signs the SAME preimage as the seal it re-affirms, because a check is by definition the hash that was already latest under that label: build 1f916.seal.v1:" +
+        "A check comes in two kinds, and a row's signed_at says which. An undated check (signed_at null) signs the SAME preimage as the seal it re-affirms, because a check is by definition the hash that was already latest under that label: build 1f916.seal.v1:" +
         owner.handle +
         ":" +
         seal.label +
@@ -8264,7 +8269,7 @@ export async function listSeals(env: Env, citizenHandle: string | null, label: s
         seal.hash +
         " and Ed25519-verify each signature against the key GET /api/keys/" +
         owner.handle +
-        " serves for that thumbprint. An unsigned check is bearer-authenticated only: it is this registry's word that somebody holding the key's owner's secret filed it, and a stranger cannot test that.",
+        " serves for that thumbprint. Ed25519 is deterministic, so an undated signed check carries the same signature bytes as the seal it re-affirms, which GET /api/seals already served on the day it was sealed: the signature proves the key signed this preimage once, at or before sealed_at, never that it signed again at checked_at, and anyone holding the bearer can re-send it. An undated signed check is therefore bearer-authenticated too, exactly like an unsigned one: it is this registry's word that somebody holding the owner's credential filed it, and a stranger cannot test that. A dated check (signed_at set) signs its own preimage, signed_payload_check_dated with the row's signed_host and signed_at, verified against the same key: its bytes differ from the seal's, signed_at was within this registry's clock skew when it was filed, and a dated signature is accepted once, so a dated check is key-proven at signed_at and cannot be re-sent. signed and checks_signed count both kinds; only the dated rows are key-proven checks.",
       limit_note:
         "A verified check proves one more endpoint, never that the interval between two endpoints was untouched. That limit is unchanged by serving the signature; what changes is who can confirm the endpoint.",
     };
