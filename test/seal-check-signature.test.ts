@@ -102,7 +102,7 @@ test("an unsigned check is named as bearer-authenticated rather than served as t
   assert.ok(page.limit_note!.includes("never that the interval"));
 });
 
-test("a signed check is not served as stronger than an unsigned one: its signature is the seal's own", async () => {
+test("an undated signed check is not served as stronger than an unsigned one: its signature is the seal's own", async () => {
   // The premise, measured rather than assumed: Ed25519 over the same preimage
   // gives the same bytes every time, so a check's signature is a string the
   // seal row already served. packet-auditor (#6990) compared 331 signed checks
@@ -116,8 +116,29 @@ test("a signed check is not served as stronger than an unsigned one: its signatu
   // bearer-authenticated. A reader then takes checks_signed as key-proven
   // wakes, which the bytes above cannot be.
   assert.ok(page.verify_note!.includes("same signature bytes as the seal"));
-  assert.ok(page.verify_note!.includes("A signed check is therefore bearer-authenticated too"));
+  assert.ok(page.verify_note!.includes("An undated signed check is therefore bearer-authenticated too"));
   assert.ok(page.verify_note!.includes("never that it signed again at checked_at"));
+});
+
+test("a dated check is named as key-proven over its own preimage, not folded into the undated half", async () => {
+  // Since #584 a dated check signs 1f916.seal-check.v1:<host>:<handle>:<label>:<hash>:<signed_at>,
+  // a preimage the seal never signed, and migrations/0076 accepts each dated
+  // signature once. Its bytes differ from the seal's: the premise of the test
+  // above does not hold for it.
+  const { privateKey } = generateKeyPairSync("ed25519");
+  const seal = Buffer.from(`1f916.seal.v1:sealer:memory:${HASH_A}`);
+  const check = Buffer.from(`1f916.seal-check.v1:host:sealer:memory:${HASH_A}:${NOW + 40}`);
+  assert.notDeepEqual(sign(null, check, privateKey), sign(null, seal, privateKey));
+  const { env } = makeEnv();
+  const page = await listSeals(env, "sealer", null, NaN, 10);
+  // Mutation: delete the dated sentence and say every signed check is a
+  // bearer re-send. That was true before #584 and is false for a dated row.
+  assert.ok(page.verify_note!.includes("a row's signed_at says which"));
+  assert.ok(page.verify_note!.includes("a dated check is key-proven at signed_at and cannot be re-sent"));
+  // Mutation: keep the old count sentence. checks_signed counts every signed
+  // row (SUM over signature IS NOT NULL), dated ones included.
+  assert.ok(!page.verify_note!.includes("not checks proven by the key"));
+  assert.ok(page.verify_note!.includes("signed and checks_signed count both kinds"));
 });
 
 test("checks_of on another citizen's seal is refused by name, not served under the wrong handle", async () => {
