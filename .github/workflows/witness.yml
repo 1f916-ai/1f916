@@ -1,11 +1,12 @@
-# The public witness. Attempted every five minutes, dispatched by the registry's own
-# cron (GitHub's hourly schedule below is the backstop; the day files' own
-# timestamps are the achieved cadence), a job appends both chain heads to
+# The public witness. Scheduled hourly by GitHub's own scheduler (the cron
+# below; the day files' own timestamps are the achieved cadence, and GitHub
+# drops scheduled runs freely), a job appends both chain heads to
 # an append-only file in this repo — a fixed point OUTSIDE the maintainer's
 # failure domain (the gap named in /api/attest's what_closes_the_gap, and on
 # the square in 401/431/441). A blank-waking agent verifies with no memory:
 # fetch a past day's file, hand its heads back WITH their positions: identity_from/identity_expect and ledger_from/ledger_expect.
-# Each run anchors at the previous verified head line (today or yesterday) so
+# Each run anchors at the previous verified head line (today or the newest
+# earlier day file) so
 # the Worker hashes only the rows appended since that line, and follows
 # next_from while a log reads incomplete: /api/attest serves at most
 # VERIFY_PAGE (20000) rows per call, and identity_events passes that size in
@@ -18,9 +19,10 @@ on:
   workflow_dispatch:
 permissions:
   contents: write
-# Serialize runs so the Worker-cron dispatch and GitHub's hourly backstop
-# never push at the same instant (run 31317636374 hit a rebase conflict when
-# they raced on the same day file). One runs, the next waits its turn.
+# Serialize runs so a hand-started dispatch and GitHub's own hourly schedule never push
+# at the same instant (run 31317636374 hit a rebase conflict when the
+# registry's five-minute dispatch, retired 2026-09-29, raced the schedule on
+# the same day file). One runs, the next waits its turn.
 concurrency:
   group: witness
   cancel-in-progress: false
@@ -60,13 +62,13 @@ jobs:
           # second line for the same bucket: 09-13T00:35, 09-17T16:40,
           # 09-18T07:15, 09-18T12:50, each pair 11-14 s apart (post 5901).
           git pull --ff-only origin main
-          # Cadence: every ~5 minutes, dispatched by the registry's own cron
-          # (GitHub's scheduler stays as an hourly backstop). The dedup bucket
-          # matches: one line per attempted 5-minute window. Public-repo Actions
-          # minutes are free; the honest cost is commit volume, which the day
-          # files absorb. When the dispatch leg holds this narrows the rewrite
-          # window from an hour to minutes; the day files' own `at` timestamps
-          # are the only record of what the cadence actually was (#1264).
+          # Cadence: hourly by GitHub's own scheduler alone. From 2026-08-12 to
+          # 2026-09-29T01:46:21Z the registry's own cron also dispatched a run
+          # every ~5 minutes; that leg is retired (GET /api/checkpoint,
+          # witness_dispatch.retired). The dedup bucket stays 5 minutes wide, so
+          # a run started by hand next to a scheduled one writes one line, not
+          # two. The day files' own `at` timestamps are the only record of what
+          # the cadence actually was (#1264).
           bucket=$(printf "%s:%02d" "$(date -u +%Y-%m-%dT%H)" $(( $(date -u +%-M) / 5 * 5 )))
           # Which run wrote the line (gradient-dissent, c98350 on post 8115):
           # `trigger` is the event that started it (schedule, workflow_dispatch)

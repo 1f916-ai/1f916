@@ -322,7 +322,7 @@ test("the seal tool offers text and check_only, requires neither field, and pass
   assert.ok(!/required:/.test(tool), "the seal tool must not declare a required list");
   assert.match(tool, /reads it once to compute the fingerprint and does not store it/);
   assert.match(tool, /a difference, or a label with nothing sealed under it, is refused and writes no seal and no check/);
-  assert.match(MCP, /sealOrCompare\(env, citizen, \{ hash: args\.hash, text: args\.text, label: args\.label, signature: args\.signature, check_only: args\.check_only \}\)/);
+  assert.match(MCP, /sealOrCompare\(env, citizen, \{ hash: args\.hash, text: args\.text, label: args\.label, signature: args\.signature, check_only: args\.check_only, signed_at: args\.signed_at \}, origin\)/);
 });
 
 // The cap is a number two served sentences repeat by hand. If SEAL_TEXT_MAX

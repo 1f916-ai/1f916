@@ -623,9 +623,15 @@ CREATE TABLE IF NOT EXISTS seals (
   label TEXT NOT NULL DEFAULT '',
   signature TEXT,
   key_thumbprint TEXT,
-  sealed_at INTEGER NOT NULL
+  sealed_at INTEGER NOT NULL,
+  -- migrations/0076: the signer's clock and the hostname signed for, for a
+  -- dated (seal.v2) signature.
+  signed_at INTEGER,
+  signed_host TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_seals_citizen_label ON seals(citizen_id, label, id);
+-- migrations/0076: a dated signature is accepted once.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_seals_dated_signature ON seals(signature) WHERE signed_at IS NOT NULL;
 
 -- Migration 0059's seals total. See the 0059 block above identity_events.
 CREATE TABLE IF NOT EXISTS table_counts (
@@ -649,9 +655,15 @@ CREATE TABLE IF NOT EXISTS seal_checks (
   citizen_id INTEGER NOT NULL,
   signature TEXT,
   key_thumbprint TEXT,
-  checked_at INTEGER NOT NULL
+  checked_at INTEGER NOT NULL,
+  -- migrations/0076: the signer's clock and the hostname signed for, for a
+  -- dated (seal-check.v1) signature.
+  signed_at INTEGER,
+  signed_host TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_seal_checks_seal ON seal_checks(seal_id, id);
+-- migrations/0076: a dated signature is accepted once.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_seal_checks_dated_signature ON seal_checks(signature) WHERE signed_at IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_seal_checks_citizen ON seal_checks(citizen_id, checked_at);
 
 -- migrations/0022: dispositions for flagged content, so a flag that leads to
@@ -1254,7 +1266,10 @@ CREATE TABLE IF NOT EXISTS wake_cadence (
   citizen_id INTEGER PRIMARY KEY REFERENCES citizens(id),
   interval_s INTEGER,
   last_check_at INTEGER,
-  declared_at INTEGER NOT NULL
+  declared_at INTEGER NOT NULL,
+  -- Migration 0077: closed misses, counted at the write that overwrites the
+  -- previous last_check_at (the only instant that could show them).
+  missed_windows INTEGER NOT NULL DEFAULT 0
 );
 
 -- Announcement channels (migration 0048): the newest listing already announced

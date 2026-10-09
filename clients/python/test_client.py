@@ -57,6 +57,51 @@ def assert_edge_429_preserves_retry_after() -> None:
         client.urllib.request.urlopen = original
 
 
+def assert_registry_429_is_api_error() -> None:
+    # The registry's own 429 (a spent daily cap) is the JSON envelope, and it
+    # is not a pause: it must reach the caller as ApiError with the body, so
+    # `error` can be read, never as RateLimited's "back off 10s".
+    original = client.urllib.request.urlopen
+    spent = client.urllib.error.HTTPError(
+        "https://example.invalid/api/vote",
+        429,
+        "Too Many Requests",
+        {"Content-Type": "application/json"},
+        io.BytesIO(b'{"error":"Daily vote limit reached (50).","now":1,"now_utc":"1970-01-01T00:00:00.001Z"}'),
+    )
+    client.urllib.request.urlopen = lambda *args, **kwargs: (_ for _ in ()).throw(spent)
+    try:
+        try:
+            client.Anonymous("https://example.invalid").get("/api/vote")
+            raise AssertionError("registry 429 must raise ApiError")
+        except client.RateLimited:
+            raise AssertionError("registry JSON 429 was read as the edge's pause")
+        except client.ApiError as exc:
+            assert exc.status == 429, exc.status
+            assert exc.body.get("error") == "Daily vote limit reached (50).", exc.body
+    finally:
+        client.urllib.request.urlopen = original
+
+    # A 429 whose body is JSON but not an object is not the registry's
+    # envelope: it stays the edge's pause.
+    odd = client.urllib.error.HTTPError(
+        "https://example.invalid/api/pulse",
+        429,
+        "Too Many Requests",
+        {"Retry-After": "5"},
+        io.BytesIO(b'"slow down"'),
+    )
+    client.urllib.request.urlopen = lambda *args, **kwargs: (_ for _ in ()).throw(odd)
+    try:
+        try:
+            client.Anonymous("https://example.invalid").get("/api/pulse")
+            raise AssertionError("non-object 429 must raise RateLimited")
+        except client.RateLimited as exc:
+            assert exc.retry_after_s == 5.0, exc.retry_after_s
+    finally:
+        client.urllib.request.urlopen = original
+
+
 def assert_duplicate_json_keys_fail_closed() -> None:
     class FakeResponse:
         status = 200
@@ -309,6 +354,7 @@ def assert_citizens_walker_page_boundary_lossless() -> None:
 
 def main(port: int) -> None:
     assert_edge_429_preserves_retry_after()
+    assert_registry_429_is_api_error()
     assert_duplicate_json_keys_fail_closed()
     assert_history_walker_boundary_discriminator()
     assert_history_walker_post_fix_lossless()

@@ -164,7 +164,7 @@ test("liveness is opt-in: no row for the undeclared, a bucket and an hourly writ
   const before = await citizenRecord(env, "me");
   // within_declared is null here: a 300s (5min) declaration is below the 3h
   // honest threshold, so only the coarse last_check bucket is served (WQ-80).
-  assert.deepEqual({ ...before.wake, note: undefined }, { declared_interval_s: 300, last_check: "never", within_declared: null, note: undefined });
+  assert.deepEqual({ ...before.wake, note: undefined, missed_windows_note: undefined }, { declared_interval_s: 300, last_check: "never", within_declared: null, missed_windows: null, note: undefined, missed_windows_note: undefined });
   assert.ok(!("last_check_at" in (before.wake as object)), "no timestamp is served, only the bucket");
   // The note scopes the subject: last_check is read-recency, not a caught-up /
   // drained-inbox signal, so a stranger cannot read "within_2h" as "current"
