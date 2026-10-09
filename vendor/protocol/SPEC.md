@@ -309,7 +309,7 @@ verifier MUST NOT emit any verdict above `unanchored` for an unanchored
 run, MUST accept a caller-supplied registry key and witness key, and MUST
 state on every signature line whose key it used.
 
-Five verdicts:
+The verdicts:
 
 - `witnessed` — inclusion and consistency proofs hold AND a countersignature
   from a PINNED independent witness covers the checkpoint.
@@ -326,6 +326,12 @@ Five verdicts:
   because the verdict string and the exit status are the two things callers
   quote and branch on, and collapsing either one hides the distinction where
   it is actually consumed.
+- `witnessed-followed`, `consistent-unwitnessed-followed`,
+  `witness-unusable-followed` — as the verdict without the suffix, except
+  that some signature was checked with a registry key newer than the pinned
+  one, reached only through rotation statements (section 8b).
+- `retired-signer` — a pinned run whose dossier is signed by a registry key
+  since retired (section 8b).
 - `unanchored` — the math holds but every key came from the files under
   test. This verdict makes no claim about authenticity at all.
 - `diverged` — any proof fails, a key does not match a pin, or a witnessed
@@ -368,6 +374,126 @@ it must be able to fail:
 4. **Self-grading without privilege.** The registry's own record is verified
    by the same public verifier, from the same public surface, with no special
    access. If it can't fail, it's not a protocol.
+
+## 8b. Registry key epochs
+
+A registry may change the key it signs heads, dossiers and doorbell rings
+with. Each key is an **epoch**, numbered from 0. The registry serves its keys
+as `registry_key_history` beside every head it serves (`GET /api/checkpoint`,
+the proof and consistency answers, the dossier). Each entry gives `epoch`,
+`public_key`, `activated_at` and `retired_at`. `epoch`, `activated_at` and
+`retired_at` are JSON integers (the times in milliseconds), the last entry's
+`retired_at` is `null`, and no key appears twice. Every epoch after 0 also
+carries a `rotation`:
+
+```
+1f916.registry-rotate.v1:<epoch>:<old_public_key>:<new_public_key>:<at>:<final_heads>
+<final_heads> = <log>=<tree_size>=<root>[,<log>=<tree_size>=<root>...]
+```
+
+`<at>` is the new epoch's `activated_at` and the old epoch's `retired_at`.
+`<final_heads>` names, for every log, the newest head that existed when the
+old key was retired, in increasing order of log name; the same heads are
+served as `rotation.final_heads`, a list of `{log, tree_size, root}`. The
+statement is signed by the old key (`old_sig`) and by the new one
+(`new_sig`). Every head names the epoch that signed it in `key_epoch`. A
+dossier names its signing epoch in `registry_sig.key_epoch` and its
+checkpoint's epoch in `checkpoint_key_epoch`.
+
+A conformant verifier (normative):
+
+- MUST accept the history only as a chain: consecutive epochs, no key twice,
+  each statement exactly the one its neighbours imply, both signatures
+  verifying, and every number an integer, with the last entry's `retired_at`
+  null. The type check is not pedantry: the statement text cannot carry a
+  number's type, so a history whose times are strings keeps both signatures
+  valid while a string `retired_at` stops anything from ever being "after"
+  the retirement. A key change the old key did not sign is not a rotation.
+- MUST check each head with the key of the head's own `key_epoch`; a head
+  that names none takes the one epoch whose window `[activated_at,
+  retired_at)` holds its `created_at`. It MUST refuse a head dated outside
+  that window.
+- **MUST refuse a head of a retired epoch that goes past that epoch's final
+  head for its log**: a `tree_size` larger than the committed one, or the
+  committed `tree_size` with another root. A head of a retired epoch BELOW
+  the committed size counts only with a consistency proof from it to the
+  final head (the registry serves one beside an inclusion proof answered
+  under such a head, as `final_consistency`; `GET /api/checkpoint/consistency`
+  gives one for any saved head). This is the rule that binds a
+  holder of the retired key. A head's `created_at` is its signer's own word,
+  so someone who took the old key can date a head just before the
+  retirement and pass every date rule. The final heads are the new key's
+  word as well, so that holder cannot sign a head of any log past them.
+- With a pinned registry key, MUST require the pinned key to be one of the
+  keys in the chain. A run that verified a signature with a key NEWER than
+  the pinned one, reachable only by following rotation statements, MUST NOT
+  report the same verdict as a run anchored by a direct pin, whatever the
+  witness grade: the reference verifier appends `-followed` to the verdict
+  (`consistent-unwitnessed-followed` and `witnessed-followed` exit 5,
+  `witness-unusable-followed` exits 3). A witness vouches for a log's heads,
+  not for which key is the registry's.
+- MUST NOT report a dossier signed by a retired epoch as anchored. With a
+  pin given, the reference verifier reports `retired-signer`, exit status 6:
+  the dossier counts only if it was saved before the retirement, which the
+  file cannot show, and its keys, bindings and model are covered by no proof.
+- A file that carries no history, checked against a history from another
+  file (a checkpoint saved before a rotation, with `--key-history`), MUST
+  name a key that is in that history.
+
+Why a distinct verdict rather than a flag that turns following on: the
+documented command pins the published key, and after a rotation it would
+otherwise fail for every reader until each one learned the flag, which
+teaches them to add it without reading. A distinct verdict and exit status
+keep the command working while making the weaker anchor visible in the two
+things callers quote and branch on.
+
+**What holds, for a verifier pinned to a key that is not retired** (the
+registry's current key, or any key after it). Someone who obtains a retired
+key after its rotation cannot make that verifier accept any head of the
+retired key that is not part of the history both keys committed to: nothing
+past the final heads, no other root at a committed size, and nothing below
+them that is not consistent with them (a size-0 head must carry the empty
+tree's root). Whatever date they write. So they cannot prove a fabricated
+event into any log under that key.
+
+**What a verifier pinned to a retired key cannot detect.** Pinned to a key
+that has since been retired, a verifier trusts whatever history it is handed
+that contains that key. A holder of the retired key can hand it a history
+cut back to end at that key, unretired, with heads and fabricated events of
+any size signed by it, and nothing in the files shows that a rotation ever
+happened. The verdict is then the plain one. This is why, after a rotation,
+the registry publishes the NEW key where the old one was published, and
+tells readers to pin that one: a reader still pinned to the old key is
+exposed to a thief of it. Only a channel the registry does not control (the
+current key on the project site and in this repository, a witness's newer
+countersignatures) shows the rotation.
+
+**What does not hold in any case.** A rotation statement proves only that
+whoever held the old key signed it. It covers a planned key change, not a
+leak: someone who stole the old key BEFORE any rotation can sign a rotation
+to a key of their own, with final heads of their choosing. After a suspected
+leak, pin the new key from a channel the registry does not control, as for
+a first pin.
+
+The reference witness (`witness.mjs`) applies the same rules to the heads it
+countersigns, and more that its state makes possible: it records, for every
+log, the epoch of the last head it countersigned, and refuses a later head of
+that log under an older epoch or with no epoch at all; and every retired key
+in a history that chains to its pinned key (however the key was pinned, and
+whether or not it follows the rotation) is written into its own state file,
+apart from the pin, after which any response offering one of those keys as
+the active one is refused. It does not follow a key change by default. A change that chains
+back to its pinned key is recorded as `registry-key-rotation-not-followed`,
+with the statements, and nothing is countersigned until the operator re-pins
+or turns following on (`--follow-registry-rotation on`, or
+`"follow_registry_rotation": true` in its `registry-key.json`). Lines it
+countersigns after following carry `followed_from`, the key it followed
+from.
+
+A client that reads only `registry_public_key` sees the active key. Heads
+signed by an earlier epoch (a quiet log's last head, the head an old
+inclusion proof is answered against, the checkpoint in a dossier served soon
+after a rotation) do not verify under it. Such a client needs the history.
 
 ## 9. Governance profile
 

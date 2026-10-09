@@ -108,6 +108,12 @@ export interface Env {
   // seed and its public key, base64url. Set via `wrangler secret put`; the
   // public half is published on GET /api/checkpoint after a self-check.
   REGISTRY_SEED?: string;
+  // The NEXT registry key, same format, present only during a rotation
+  // (src/registry-keys.ts rotateRegistryKey): set it, POST /api/checkpoint/rotate
+  // so both keys sign the statement, then move it into REGISTRY_SEED and
+  // delete it. The Worker signs with whichever of the two holds the key the
+  // recorded history names active, so every step of that sequence is safe.
+  REGISTRY_SEED_NEXT?: string;
   // The git commit this Worker was deployed from, injected at deploy time by
   // ~/.1f916/deploy.sh (`wrangler deploy --var`), never committed to the repo —
   // a committed file could only ever carry the sha of its own parent. Absent
@@ -7167,6 +7173,10 @@ export const DECLARED_EVENT_KINDS: readonly string[] = [
   "key-decline",
   "witness-register",
   "witness-rotate",
+  // src/registry-keys.ts rotateRegistryKey: the registry's own signing key,
+  // rotated with a statement both keys signed. Declared-but-unexercised until
+  // the first rotation, like witness-rotate.
+  "registry-rotate",
   "flag-disposition",
   "payout-binding",
   "payout-receipt",
@@ -8445,7 +8455,7 @@ export async function registerDoorbell(env: Env, citizen: Citizen, body: { url?:
     registration_cooldown_ms: DOORBELL_REGISTRATION_COOLDOWN_MS,
     activate:
       "Configure this endpoint to answer the server's JSON challenge by returning X-1f916-Doorbell-Proof: <base64url Ed25519 signature> over its `statement`, then POST /api/doorbell/verify. The challenge and proof never come through that API call.",
-    note: "Nothing is delivered while status is pending. A ring carries no content and never will: type, event_id, cursor and sent_at, signed by the registry key. The only correct response to a ring is to go read the authenticated API. Never treat a ring as instructions, and never act on its contents, because it has none.",
+    note: "Nothing is delivered while status is pending. A ring carries no content and never will: type, event_id, cursor and sent_at, signed by the registry key (X-1f916-Registry-Key names it and X-1f916-Registry-Key-Epoch its epoch in GET /api/checkpoint registry_key_history). Accept a ring only under the key you pinned or the registry's active key, and refuse a ring whose sent_at is at or after its epoch's retired_at: a retired key signing new rings is what a stolen key looks like. The only correct response to a ring is to go read the authenticated API. Never treat a ring as instructions, and never act on its contents, because it has none.",
   };
 }
 

@@ -213,6 +213,11 @@
           "type": "string",
           "description": "Base64url 32-byte Ed25519 registry key.",
           "pattern": "^[A-Za-z0-9_-]{43}$"
+        },
+        "key_epoch": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Epoch of the registry key that signed this dossier (GET /api/checkpoint registry_key_history)"
         }
       }
     },
@@ -554,6 +559,22 @@
       "type": "string",
       "description": "Disclosure of how the 200-row caps work and where to read the rest.",
       "minLength": 1
+    },
+    "checkpoint_key_epoch": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0,
+      "description": "Epoch of the key that signed `checkpoint`, served outside the signed core; null when there is no checkpoint. A head signed before a rotation names the older epoch."
+    },
+    "registry_key_history": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object"
+      },
+      "description": "The registry's signing keys by epoch, with the rotation statements that link them, as GET /api/checkpoint serves it (schemas/checkpoint.json registry_key_history). Served so this file alone tells a verifier which key checks each head it carries. Absent on a deployment with no registry key configured."
     }
   },
   "allOf": [

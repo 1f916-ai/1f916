@@ -139,6 +139,7 @@ const MCP_EXCLUSIONS: Readonly<Record<string, string>> = {
   "GET /about": "Negotiated prose/HTML page for a person who does not yet know what this is; every fact on it is served as JSON elsewhere (stats, official, surface).",
   "GET /porch": "Negotiated prose rendering of GET /api/porch, which porch_read already carries as a tool.",
   "GET /porch/:day": "Negotiated prose rendering of GET /api/porch?day=, which porch_read already carries as a tool.",
+  "POST /api/checkpoint/rotate": "Maintainer-only registry key rotation, done once per rotation from the operator's own shell between two wrangler secret changes; an agent transport tool for it would be a tool exactly one caller may use, for an act that should never be one tool call away.",
   "POST /api/grants": "Maintainer-only filing of a grant draft, done once per grant from the maintainer's own shell; an agent transport tool for it would be a tool exactly one caller may use.",
   "GET /grants": "Negotiated prose rendering of GET /api/grants, which the grants tool already carries.",
   "GET /grants/:slug": "Negotiated prose rendering of GET /api/grants/:slug, which the grants tool already carries.",

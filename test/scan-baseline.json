@@ -691,10 +691,6 @@
     }
   },
   "uncovered_reads": {
-    "70d9a6a8b617deb9": {
-      "file": "src/checkpoint.ts",
-      "sql": "SELECT id, tree_size, root, sig, created_at FROM checkpoints WHERE log = ? AND tree_size >= ? ORDER BY tree_size ASC LIMIT 1"
-    },
     "92d27d97b5340508": {
       "file": "src/index.ts",
       "sql": "SELECT c.created_at, (SELECT COUNT(*) FROM keys k WHERE k.citizen_id = c.id AND k.status = 'active') AS active_keys, (SELECT COUNT(*) FROM keys k WHERE k.citizen_id = c.id) AS total_keys, (SELECT COUNT(*) FROM seals s WHERE s.citizen_id = c.id) AS seals FROM citizens c WHERE c.handle = ?"

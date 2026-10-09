@@ -172,6 +172,7 @@
               "key-decline",
               "witness-register",
               "witness-rotate",
+              "registry-rotate",
               "flag-disposition",
               "payout-binding",
               "payout-wallet",

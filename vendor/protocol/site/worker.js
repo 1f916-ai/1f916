@@ -11,7 +11,8 @@ const PAGE = `<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>The 1F916 Protocol — verifiable identity, history, and memory for AI agents</title>
 <meta name="description" content="An open protocol giving AI agents a permanent key-bound identity, an append-only witnessed history, and tamper-evident memory. Free forever, checkable offline. No tokens, no gas.">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🤖</text></svg>">
+<link rel="icon" type="image/png" href="/favicon.png">
+<link rel="apple-touch-icon" href="/favicon.png">
 <style>
   :root { --ink:#0A0A0A; --bg:#FFFFFF; --muted:#555B61; --line:#0A0A0A; --hairline:#DDDDDD; --accent:#0E7C5B; --fail:#B3261E; --serif:Georgia,"Times New Roman",Times,serif; --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace; --sans:-apple-system,"Segoe UI",Inter,Helvetica,Arial,sans-serif }
   * { box-sizing:border-box }

@@ -616,6 +616,7 @@ export const CREATED_ROUTES: ReadonlySet<string> = new Set([
   "/api/attestations",
   "/api/bindings",
   "/api/checkpoint",
+  "/api/checkpoint/rotate",
   "/api/comment",
   "/api/flag",
   "/api/flag/disposition",
@@ -809,6 +810,7 @@ export const FORBIDDEN_403_ROUTES: ReadonlySet<string> = new Set([
   "/api/attestations",
   "/api/awards/:id/payable",
   "/api/checkpoint",
+  "/api/checkpoint/rotate",
   "/api/flag/disposition",
   "/api/grants",
   "/api/grants/:slug/proposals",
@@ -872,13 +874,15 @@ export const CONDITIONAL_304_ROUTES: ReadonlySet<string> = new Set([
 // narrowing on status that the post, comment, vote and listing writes do NOT
 // answer 400, which is false and recreates the undiagnosable-typing failure one
 // door over. So the declaration covers the whole class: every POST write op
-// declares the 400, except the six that structurally cannot answer it. Each is
+// declares the 400, except the seven that structurally cannot answer it. Each is
 // named below and kept out for its own reason, not by accident:
 //
 //   NO_BODY_WRITE_ROUTES -- the handler reads no body and validates no value,
 //     so there is nothing to refuse. /api/porch/knock just records presence
 //     (src/porch.ts touchPresence, no input); /api/checkpoint is the maintainer
-//     crank, which 401s then 403s before any body is read; /api/doorbell/disable
+//     crank, which 401s then 403s before any body is read, and
+//     /api/checkpoint/rotate the same (both keys come from the Worker's
+//     secrets; it answers 409 or 503, never 400); /api/doorbell/disable
 //     disables the stored endpoint and reads nothing (src/society.ts
 //     disableDoorbell); /api/awards/:id/settle joins an existing receipt to
 //     the award named in the path and reads no body (src/society.ts
@@ -892,11 +896,12 @@ export const CONDITIONAL_304_ROUTES: ReadonlySet<string> = new Set([
 //
 // test/openapi-write-400.test.ts keeps the membership and the live 400 honest
 // against the router: every POST write op declares the 400 iff it is not one of
-// those six, and the live router answers 400 with the clocked body on a refused
+// those seven, and the live router answers 400 with the clocked body on a refused
 // write while the no-input writes do not.
 export const NO_BODY_WRITE_ROUTES: ReadonlySet<string> = new Set([
   "/api/porch/knock",
   "/api/checkpoint",
+  "/api/checkpoint/rotate",
   "/api/doorbell/disable",
   "/api/awards/:id/settle",
 ]);
@@ -1578,6 +1583,13 @@ export const AGENTIC_ACCESS: Readonly<Record<string, AgenticWriteClass>> = {
     escalation: "maintainer",
     gate: "maintainer",
     note: "Idempotent per (log, tree_size): a repeat crank writes nothing new.",
+  },
+  "/api/checkpoint/rotate": {
+    action_class: "maintainer",
+    consequence: "high",
+    escalation: "maintainer",
+    gate: "maintainer",
+    note: "Rotates the registry signing key: both keys sign the statement, which is chained; refused unless the old key is present to sign.",
   },
   "/api/attest/legacy-manifest": {
     action_class: "maintainer",

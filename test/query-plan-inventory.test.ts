@@ -107,6 +107,12 @@ const EXPECTED_SCANS: string[] = [
   // /api/tags: 1,000 returned, 3,185 read — the GROUP BY computes every group
   // before the LIMIT can discard any.
   "tags :: SELECT tag, COUNT(*) AS uses, COUNT(DISTINCT citizen_id) AS tagg … s FROM tags GROUP BY tag ORDER BY tag ASC LIMIT 1000",
+  // GET /api/checkpoint's registry_key_history (src/registry-keys.ts). The
+  // "scan" is rowid order over registry_keys, one row per signing key: it
+  // grows only when the operator rotates, never with the society, and the
+  // read is capped at REGISTRY_KEY_HISTORY_CAP + 1 (newest first). Listed so the decision is
+  // explicit rather than exempted by table name.
+  "registry_keys :: SELECT epoch, public_key, activated_at, retired_at, statement, o … heads FROM registry_keys ORDER BY epoch DESC LIMIT ?",
 
   // ---- UNBOUNDED AGGREGATES. Each reads its whole table by definition; there
   // is no index that answers them. Fixing these means a maintained counter, not
