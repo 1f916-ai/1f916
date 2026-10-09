@@ -2665,6 +2665,20 @@ export const CAPTURED: {
         "crv": "Ed25519",
         "x": "-01jX9w97Bdqdy1p6lSbt1eeic_uAoVR4xgFCmHJPlg"
       },
+      "registry_key_epoch": 0,
+      "registry_key_history": [
+        {
+          "epoch": 0,
+          "public_key": "-01jX9w97Bdqdy1p6lSbt1eeic_uAoVR4xgFCmHJPlg",
+          "activated_at": 0,
+          "retired_at": null,
+          "rotation": null
+        }
+      ],
+      "registry_key_history_recorded": false,
+      "registry_key_history_has_more": false,
+      "rotation_statement_format": "1f916.registry-rotate.v1:<epoch>:<old_public_key>:<new_public_key>:<at>:<log>=<tree_size>=<root>[,<log>=<tree_size>=<root>...]",
+      "registry_key_note": "Do not rotate until the protocol release whose verify.mjs and witness.mjs read key epochs and final heads (SPEC section 8b) is out and vendored here; POST /api/checkpoint/rotate refuses until the served copies say so. A verifier that checks every head with registry_public_key alone reports a quiet log's older head, every inclusion proof answered against a head from before the rotation, and a dossier whose checkpoint predates its signing key as diverged, and a witness loop that does the same refuses those heads. Every key this registry has signed with, by epoch. Each checkpoint row names its key_epoch; verify a head with the key of that epoch, and only inside that key's window (activated_at to retired_at). Epoch 0 carries no rotation; every later epoch carries a statement in rotation_statement_format signed by the previous epoch's key (old_sig) and by its own (new_sig), and the same statement is chained in the identity log as a registry-rotate event. Its last field, also served as rotation.final_heads, is the previous key's final head of every log: refuse a head of a retired key past it (a larger tree_size, or another root at its size), and below it accept one only with a consistency proof to it (served beside an inclusion proof as final_consistency). A head's date is its signer's word; the final heads are both keys' word, so a later holder of the retired key cannot add to any log under it. A key change without the old key's signature is not a rotation. What a statement proves is that whoever held the old key signed it: that covers a planned key change, not a leak, because someone who stole the old key can sign a statement handing over to a key of their own. So a verifier that pinned a key should confirm a rotation out of band before following it, and the reference witness follows one only when its operator has turned that on. When registry_key_history_has_more is true, the newest epochs are served and the oldest left out. registry_key_history_recorded false means nothing is recorded yet, and the one row is epoch 0 derived from the configured key.",
       "witness_dispatch": {
         "recorded": true,
         "retired": true,
