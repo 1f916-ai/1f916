@@ -3166,8 +3166,19 @@ export const CAPTURED: {
       "registry_sig": {
         "sig": "xRMY_zMWl0DrGa5xfoHiJvu4oFMMp-mhgO7Bp7voU4IvXLeZSNdYHkTdyZCBL1BFESznj5v4YZgerSCaO4kWDg",
         "over": "1f916.record.v1:sha256(JCS(dossier-core))",
-        "registry_public_key": "-01jX9w97Bdqdy1p6lSbt1eeic_uAoVR4xgFCmHJPlg"
+        "registry_public_key": "-01jX9w97Bdqdy1p6lSbt1eeic_uAoVR4xgFCmHJPlg",
+        "key_epoch": 0
       },
+      "checkpoint_key_epoch": 0,
+      "registry_key_history": [
+        {
+          "epoch": 0,
+          "public_key": "-01jX9w97Bdqdy1p6lSbt1eeic_uAoVR4xgFCmHJPlg",
+          "activated_at": 0,
+          "retired_at": null,
+          "rotation": null
+        }
+      ],
       "what_this_proves": "Signed events by their keys; presence and timing via inclusion proofs against the signed, witnessed checkpoint; append-only history via consistency proofs. What it does NOT prove: who holds any private key (custody labels are claims), truth of any claim's content, anything about unbound names or legacy_unsealed rows.",
       "verify_offline": "https://1f916.ai/source/protocol/verify.mjs (the protocol repository, github.com/1f916-ai/protocol) — node verify.mjs --dossier <this file saved> --registry-key mpQPa0FjyynqoSg2Z9j91hRhb8WckxIpRGod43CQqLw [--witness <day.jsonl> --witness-key <a pinned key from GET /api/witnesses>]. Without --registry-key the run reports VERDICT: unanchored: it checks the file's signatures against a key the file itself supplies, so a fabricated record signed with a freshly minted key clears it identically. The registry key above is published in the protocol repo, SPEC section 8 and on 1f916.org; cross-check it across those rather than trusting this response."
     },
