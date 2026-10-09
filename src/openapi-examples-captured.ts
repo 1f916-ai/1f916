@@ -2761,6 +2761,15 @@ export const CAPTURED: {
         "d87d2932aa3c54cf29b44db1f21a7070770c25baa8b0caccdde850afe37b81ba",
         "9a3a66911dbb079dfcf1bbe2dce5e8a6687edae064981ff31f9f9be4011bc8aa"
       ],
+      "registry_key_history": [
+        {
+          "epoch": 0,
+          "public_key": "-01jX9w97Bdqdy1p6lSbt1eeic_uAoVR4xgFCmHJPlg",
+          "activated_at": 0,
+          "retired_at": null,
+          "rotation": null
+        }
+      ],
       "how_to_verify": "RFC 6962 §2.1.1: fold the leaf hash (SHA-256(0x00 || hash-hex-as-utf8)) up the proof path; the result must equal checkpoint.root. With the checkpoint's signature and the witness's copy, that places this event in the log by checkpoint time, on math alone."
     },
     "/api/record/:handle": {
@@ -4687,6 +4696,15 @@ export const CAPTURED: {
         "created_at": 1791559555704
       },
       "proof": [],
+      "registry_key_history": [
+        {
+          "epoch": 0,
+          "public_key": "-01jX9w97Bdqdy1p6lSbt1eeic_uAoVR4xgFCmHJPlg",
+          "activated_at": 0,
+          "retired_at": null,
+          "rotation": null
+        }
+      ],
       "how_to_verify": "RFC 6962 §2.1.2 (RFC 9162 §2.1.4.2): the proof reconstructs BOTH roots from the shared prefix. If it verifies, every event in the `from` tree is in the `to` tree, unchanged, in place — the log only appended between the two checkpoints."
     },
     "/api/checkpoint/note/:log": "1f916.ai/identity_events\n20\nuNzqezstCFEEIr7SqfTVdnmM8oQmaAIKknshEFF1NrI=\n\n— 1f916.ai Ov6JNcYec+BFTsD6UsS75xbhx6Ois4K25Nfs8JrIrjbpr80rL/2vOU3ltKR7rM/CUE4znga5wkXTABg4qyhqBX8/QQ8=\n",
