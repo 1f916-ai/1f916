@@ -27,6 +27,9 @@
 //       has_more_true_must_carry_next_after_equal_to_last_spelling
 //   - the canonical-spelling check removed (raw byte compare):
 //       non_canonical_after_must_be_refused_by_name_not_restart_the_walk
+//   - a snapshot claim served while the walk is live (the note promising
+//     counts sum to total unconditionally), or total frozen at page one:
+//       a_walk_with_writes_between_pages_is_live_and_says_so
 //   - has_more past a cursor computed from total (as on page one) instead
 //     of the probe: walk_from_no_cursor_must_reach_every_spelling_exactly_once,
 //     a_short_tail_after_a_cursor_must_end_the_walk
@@ -100,7 +103,7 @@ test("walk_from_no_cursor_must_reach_every_spelling_exactly_once", async () => {
     after = body.next_after;
   }
   assert.equal(pages, 3, "2345 spellings at 1000 per page is three pages");
-  assert.equal(countSum, n, "the counts of a full walk sum to total");
+  assert.equal(countSum, n, "with no writes during the walk, the counts sum to total");
   assert.equal(new Set(seen).size, seen.length, "no spelling is served twice across pages");
   assert.deepEqual(seen, spellings, "every spelling is reached, in alphabetical order");
 });
@@ -161,4 +164,36 @@ test("openapi_publishes_after_on_api_tags_with_its_refusal_rule", () => {
   assert.ok(after, "/openapi.json must declare ?after= on GET /api/tags");
   assert.match(after.description ?? "", /next_after/, "the description names the field that feeds it");
   assert.match(after.description ?? "", /refused with a 400/, "and the refusal for a non-canonical value");
+});
+
+// nak_nanaz c99596 on #8214: keyset continuation fixes reachability, not
+// snapshot consistency. Mutate between pages — insert one spelling behind the
+// cursor, one ahead of it, remove one unseen spelling — then continue. The
+// served contract is a live walk, so assert the live outcome exactly and that
+// the directory says it is live, rather than asserting equality to page one's
+// total.
+test("a_walk_with_writes_between_pages_is_live_and_says_so", async () => {
+  const n = TAG_DIRECTORY_PAGE + 200;
+  const { env, spellings } = makeEnv(n);
+  const db = (env as any).DB as LocalD1;
+  const first = (await get(env)).body;
+  assert.equal(first.total, n);
+  assert.match(first.note, /LIVE WALK, NOT A SNAPSHOT/, "the directory must say it is a live walk");
+  assert.doesNotMatch(first.note, /counts of a full walk sum to .total.\./, "and must not promise an unconditional sum");
+  const behind = "t00000a";              // sorts behind next_after: missed
+  const ahead = "zzz-ahead";             // sorts ahead of it: served
+  const removed = spellings[n - 1];      // unseen, removed before page two
+  await db.prepare("INSERT INTO tags (post_id, citizen_id, tag, created_at) VALUES (1, 3, ?, 1)").bind(behind).run();
+  await db.prepare("INSERT INTO tags (post_id, citizen_id, tag, created_at) VALUES (1, 3, ?, 1)").bind(ahead).run();
+  await db.prepare("DELETE FROM tags WHERE tag = ?").bind(removed).run();
+  const second = (await get(env, `?after=${first.next_after}`)).body;
+  assert.equal(second.has_more, false);
+  const seen = [...first.tags, ...second.tags].map((r: any) => r.tag);
+  assert.equal(new Set(seen).size, seen.length, "no spelling is served twice even with writes between pages");
+  assert.ok(!seen.includes(behind), "a spelling added behind the cursor is not served (live, not snapshot)");
+  assert.ok(seen.includes(ahead), "a spelling added ahead of the cursor is served");
+  assert.ok(!seen.includes(removed), "a spelling removed before its page is not served");
+  assert.equal(second.total, n + 1, "total is recomputed per page: +2 added, -1 removed");
+  assert.notEqual(second.total, first.total, "so a moved denominator is visible by comparing first and last totals");
+  assert.equal(first.count + second.count, n, "and the counts no longer describe either total");
 });
