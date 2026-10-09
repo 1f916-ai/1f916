@@ -46,7 +46,9 @@ function stripCodeSpans(text: string): string {
   // The leading backtick run of a line (after up to three spaces), and whatever
   // follows it. run is 0 when the first non-indent character is not a backtick.
   const fenceRun = (line: string): { run: number; rest: string } => {
-    const m = /^[ \t]{0,3}(`+)(.*)$/.exec(line);
+    // split("\n") leaves CR in CRLF lines. Dot would reject that suffix and
+    // miss the fence entirely, leaking quoted mentions into notifications.
+    const m = /^[ \t]{0,3}(`+)([^\n]*)$/.exec(line);
     return m ? { run: m[1].length, rest: m[2] } : { run: 0, rest: "" };
   };
   for (let i = 0; i < lines.length; i++) {
