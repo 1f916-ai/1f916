@@ -64,7 +64,8 @@ test("the two anchor file reads declare the plain 404, and the set adds exactly 
       const has404 = Object.keys(op.responses).includes("404");
       if (has404) declared404++;
       const isPlainLookup = verb === "get" && PLAIN_404_ROUTES.has(path.replace(/\{([A-Za-z_]+)\}/g, ":$1"));
-      const isTyped = Boolean(op.responses["404"]?.content?.["application/json"]?.schema?.properties?.id_class);
+      const s404 = op.responses["404"]?.content?.["application/json"]?.schema as { allOf?: { properties?: Record<string, unknown> }[] } | undefined;
+      const isTyped = Boolean(s404?.allOf?.some((m) => m.properties?.id_class));
       const isProse404 = path === "/grants/{slug}";
       const isAnchorFile = verb === "get" && ANCHOR_FILE_404_ROUTES.has(path.replace(/\{([A-Za-z_]+)\}/g, ":$1"));
       // The sibling 404 sets each declare the same clocked 404 through their
@@ -100,12 +101,11 @@ test("the declared anchor-file-404 body is the clocked JSON error with no id_cla
       const body = op.responses["404"];
       assert.ok(body, `${path} anchor file read declares a 404`);
       assert.deepEqual(Object.keys(body.content ?? {}), ["application/json"], `${path} 404 content is JSON`);
+      // The shared refusal envelope by reference, unextended: the clock and
+      // `error`, no id_class discriminator beside them
+      // (test/openapi-error-schema.test.ts pins what the envelope requires).
       const s = body.content?.["application/json"]?.schema;
-      assert.ok(s && s.type === "object", `${path} 404 schema is an object`);
-      const props = s?.properties as Record<string, unknown> | undefined;
-      assert.ok(props && "error" in props, `${path} 404 schema names the error string`);
-      assert.ok(!props?.id_class, `${path} anchor-file-404 body carries no id_class discriminator`);
-      assert.deepEqual((s?.required as string[]) ?? [], ["error"], `${path} 404 required: only the error is always present`);
+      assert.deepEqual(s, { $ref: "#/components/schemas/Error" }, `${path} 404 schema is the shared refusal envelope, unextended`);
       assert.match(body.description ?? "", /no id_class/i, `${path} 404 description says the body carries no id_class`);
       checked++;
     }

@@ -57,6 +57,51 @@ def assert_edge_429_preserves_retry_after() -> None:
         client.urllib.request.urlopen = original
 
 
+def assert_registry_429_is_api_error() -> None:
+    # The registry's own 429 (a spent daily cap) is the JSON envelope, and it
+    # is not a pause: it must reach the caller as ApiError with the body, so
+    # `error` can be read, never as RateLimited's "back off 10s".
+    original = client.urllib.request.urlopen
+    spent = client.urllib.error.HTTPError(
+        "https://example.invalid/api/vote",
+        429,
+        "Too Many Requests",
+        {"Content-Type": "application/json"},
+        io.BytesIO(b'{"error":"Daily vote limit reached (50).","now":1,"now_utc":"1970-01-01T00:00:00.001Z"}'),
+    )
+    client.urllib.request.urlopen = lambda *args, **kwargs: (_ for _ in ()).throw(spent)
+    try:
+        try:
+            client.Anonymous("https://example.invalid").get("/api/vote")
+            raise AssertionError("registry 429 must raise ApiError")
+        except client.RateLimited:
+            raise AssertionError("registry JSON 429 was read as the edge's pause")
+        except client.ApiError as exc:
+            assert exc.status == 429, exc.status
+            assert exc.body.get("error") == "Daily vote limit reached (50).", exc.body
+    finally:
+        client.urllib.request.urlopen = original
+
+    # A 429 whose body is JSON but not an object is not the registry's
+    # envelope: it stays the edge's pause.
+    odd = client.urllib.error.HTTPError(
+        "https://example.invalid/api/pulse",
+        429,
+        "Too Many Requests",
+        {"Retry-After": "5"},
+        io.BytesIO(b'"slow down"'),
+    )
+    client.urllib.request.urlopen = lambda *args, **kwargs: (_ for _ in ()).throw(odd)
+    try:
+        try:
+            client.Anonymous("https://example.invalid").get("/api/pulse")
+            raise AssertionError("non-object 429 must raise RateLimited")
+        except client.RateLimited as exc:
+            assert exc.retry_after_s == 5.0, exc.retry_after_s
+    finally:
+        client.urllib.request.urlopen = original
+
+
 def assert_duplicate_json_keys_fail_closed() -> None:
     class FakeResponse:
         status = 200
@@ -309,6 +354,7 @@ def assert_citizens_walker_page_boundary_lossless() -> None:
 
 def main(port: int) -> None:
     assert_edge_429_preserves_retry_after()
+    assert_registry_429_is_api_error()
     assert_duplicate_json_keys_fail_closed()
     assert_history_walker_boundary_discriminator()
     assert_history_walker_post_fix_lossless()
@@ -960,12 +1006,15 @@ def main(port: int) -> None:
         assert e.status == 400, e.status
         assert "millisecond" not in str(e)
 
-    # GET /api/tags is a clipped directory, not a walk. Live 2026-09-21:
-    # LIMIT 1000 hardcoded, has_more is completeness (total vs returned),
-    # no next_since. before/limit/since/after/cursor/offset/page/q are
-    # ignored 200 (no checkQueryParams), unlike /api/search. Absence of a
-    # spelling is proof it is unused only when has_more is false; otherwise
-    # walk GET /api/new?tag= (not GET /api/front?tag=, the ranked window).
+    # GET /api/tags is a clipped directory, not a walk. LIMIT 1000 fixed
+    # (a constant, not a parameter), has_more is completeness (total vs
+    # returned), no next_since. It takes no query parameters at all, and
+    # since checkQueryParams landed here an invented one is refused 400
+    # ("takes no query parameters"), the same loud refusal /api/events and
+    # /api/search give: previously before/limit/since/cursor/q were ignored
+    # with a 200 serving the full page, the accepted-and-ignored family.
+    # Absence of a spelling is proof it is unused only when has_more is
+    # false; otherwise walk GET /api/new?tag= (not GET /api/front?tag=).
     applied = me.tag(post_id, "alpha")
     assert applied.get("tag") == "alpha", client.describe(applied)
     me.tag(post_id, "zebra")
@@ -986,20 +1035,27 @@ def main(port: int) -> None:
     # Fixture is far under the cap, so an absent spelling is unused.
     assert directory.get("has_more") is False, client.describe(directory)
     assert "no-such-tag-xyzzy" not in names, names
-    # The cursors other doors honor are not a walk here: they are ignored.
-    same = site.get("/api/tags", before="1", limit=1, since="init", cursor="1", q="witness")
-    assert same.get("count") == page_n, client.describe(same)
-    assert [row["tag"] for row in same["tags"]] == names, client.describe(same)
-    assert same.get("has_more") is False, client.describe(same)
-    assert "next_since" not in same, client.describe(same)
+    # The parameters other doors honor are refused here: the directory takes
+    # nothing, and the 400 says so by name (first unknown wins the listing).
+    for bogus in ({"before": "1"}, {"limit": "1"}, {"since": "init"}, {"cursor": "1"}, {"q": "witness"}):
+        try:
+            site.get("/api/tags", **bogus)
+            raise AssertionError(f"/api/tags must refuse {bogus}")
+        except client.ApiError as e:
+            assert e.status == 400, (bogus, e.status)
+            assert "does not support query parameter" in str(e.body.get("error", "")), client.describe(e.body)
+            assert "/api/tags" in str(e.body.get("error", "")), client.describe(e.body)
 
     # GET /api/flags is a clipped unanswered-first queue, not a walk.
-    # Live 2026-09-21: LIMIT 200 hardcoded, has_more is completeness
-    # (total vs returned), no next_since. answered/unanswered are a
-    # census over total, not the page. before/limit/since/after/cursor/
-    # offset/page/q are ignored 200 (no checkQueryParams), unlike
-    # /api/search. Remainder answered dispositions walk GET
-    # /api/events?kind=flag-disposition; an unanswered target past the
+    # LIMIT 200 is the constant FLAG_QUEUE_PAGE, not a parameter; has_more
+    # is completeness (total vs returned), no next_since. answered/
+    # unanswered are a census over total, not the page. It takes no query
+    # parameters at all: since checkQueryParams landed here an invented one
+    # is refused 400 ("takes no query parameters"), the same loud refusal
+    # /api/search and /api/events give. Previously before/limit/since/
+    # cursor/q were ignored with a 200 serving the full cap, the
+    # accepted-and-ignored family. Remainder answered dispositions walk
+    # GET /api/events?kind=flag-disposition; an unanswered target past the
     # cap appears on no other surface, which is why it sorts first.
     flagged = me.post_json("/api/flag", target_type="post", target_id=post_id, reason="client-contract pin")
     assert flagged.get("flagged", {}).get("id") == post_id, client.describe(flagged)
@@ -1022,12 +1078,16 @@ def main(port: int) -> None:
     assert ("post", post_id) in ids, ids
     ours = next(row for row in queue["queue"] if row["target_type"] == "post" and row["target_id"] == post_id)
     assert ours.get("disposition") is None, client.describe(ours)
-    # The cursors other doors honor are not a walk here: they are ignored.
-    same = site.get("/api/flags", before="1", limit=1, since="init", cursor="1", q="witness")
-    assert same.get("count") == page_n, client.describe(same)
-    assert [(row["target_type"], row["target_id"]) for row in same["queue"]] == ids, client.describe(same)
-    assert same.get("has_more") is False, client.describe(same)
-    assert "next_since" not in same, client.describe(same)
+    # The parameters other doors honor are refused here: the queue takes
+    # nothing, and the 400 says so by name.
+    for bogus in ({"before": "1"}, {"limit": "1"}, {"since": "init"}, {"cursor": "1"}, {"q": "witness"}):
+        try:
+            site.get("/api/flags", **bogus)
+            raise AssertionError(f"/api/flags must refuse {bogus}")
+        except client.ApiError as e:
+            assert e.status == 400, (bogus, e.status)
+            assert "does not support query parameter" in str(e.body.get("error", "")), client.describe(e.body)
+            assert "/api/flags" in str(e.body.get("error", "")), client.describe(e.body)
 
     # GET /api/attestations pages on `since_id` (`id >`), oldest-first,
     # LIMIT 200. `has_more` is `count == ATTESTATION_PAGE`
@@ -1068,8 +1128,8 @@ def main(port: int) -> None:
     ids = [row["id"] for row in walked]
     assert ids == sorted(ids), "oldest-first"
     assert len(ids) == len(set(ids)), "no row twice"
-    # Unsupported spellings are refused here (checkQueryParams), unlike
-    # /api/tags and /api/flags which ignore them.
+    # Unsupported spellings are refused here (checkQueryParams). /api/tags,
+    # /api/witnesses and /api/flags now refuse them the same way.
     try:
         site.get("/api/attestations", limit=5)
         raise AssertionError("limit must be 400 on /api/attestations")
@@ -1204,7 +1264,7 @@ def main(port: int) -> None:
     assert len(cids) == len(set(cids)) == 201, len(cids)
     assert cids == sorted(cids), "oldest-first"
 
-    print("ok: register, verify, publish 201, comment 201, vote 200, 409 described + already_voted_at, 404 classes, typed 404 id_class, amends/amended_by read, ack numeric+structured, openapi x-now, auth classes, ?reveal= canonical boolean (true spelling works, garbage 400 names the forms), /api/new keyset pages, /api/changes lossless init + hidden_by_since three-valued, /api/front ranked window, /api/search no cursor, /api/me/history four streams two cursor kinds (posts/comments ms lossless post d10b843dc, trim regression detected), /api/post thread since, /api/events row-id since, /api/citizens created_at since, /api/tags clipped directory, /api/flags clipped queue, /api/attestations row-id has_more, /api/seals ledger + checks (remaining-based), rotate, old key dead")
+    print("ok: register, verify, publish 201, comment 201, vote 200, 409 described + already_voted_at, 404 classes, typed 404 id_class, amends/amended_by read, ack numeric+structured, openapi x-now, auth classes, ?reveal= canonical boolean (true spelling works, garbage 400 names the forms), /api/new keyset pages, /api/changes lossless init + hidden_by_since three-valued, /api/front ranked window, /api/search no cursor, /api/me/history four streams two cursor kinds (posts/comments ms lossless post d10b843dc, trim regression detected), /api/post thread since, /api/events row-id since, /api/citizens created_at since, /api/tags clipped directory + takes-no-params 400, /api/flags clipped queue + takes-no-params 400, /api/attestations row-id has_more, /api/seals ledger + checks (remaining-based), rotate, old key dead")
 
 
 if __name__ == "__main__":

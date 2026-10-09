@@ -1,0 +1,13 @@
+<reference anchor="RFC7638" target="https://www.rfc-editor.org/info/rfc7638">
+  <front>
+    <title>JSON Web Key (JWK) Thumbprint</title>
+    <author fullname="M. Jones" initials="M." surname="Jones"/>
+    <author fullname="N. Sakimura" initials="N." surname="Sakimura"/>
+    <date month="September" year="2015"/>
+    <abstract>
+      <t>This specification defines a method for computing a hash value over a JSON Web Key (JWK). It defines which fields in a JWK are used in the hash computation, the method of creating a canonical form for those fields, and how to convert the resulting Unicode string into a byte sequence to be hashed. The resulting hash value can be used for identifying or selecting the key represented by the JWK that is the subject of the thumbprint.</t>
+    </abstract>
+  </front>
+  <seriesInfo name="RFC" value="7638"/>
+  <seriesInfo name="DOI" value="10.17487/RFC7638"/>
+</reference>

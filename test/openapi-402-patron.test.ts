@@ -29,7 +29,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { sqliteTestEnv } from "./helpers/sqlite-d1.ts";
+import { validate } from "./helpers/json-schema.ts";
 import worker from "../src/index.ts";
+import { ERROR_SCHEMA_REF, X402_CHALLENGE_SCHEMA_REF } from "../src/connect.ts";
 
 const schema = readFileSync(fileURLToPath(new URL("../schema.sql", import.meta.url)), "utf8");
 const ORIGIN = "https://1f916.ai";
@@ -63,12 +65,45 @@ test("exactly one operation declares 402: the patron write, and only it", async 
 test("the declared 402 carries the JSON challenge body, named payment-required", async () => {
   const { env } = sqliteTestEnv(schema);
   const doc = (await (await worker.fetch(new Request(`${ORIGIN}/openapi.json`), env)).json()) as {
-    paths: Record<string, Record<string, { responses: Record<string, { content?: Record<string, unknown>; description?: string }> }>>;
+    paths: Record<string, Record<string, { responses: Record<string, { content?: Record<string, { schema?: { $ref?: string } }>; description?: string }> }>>;
+    components?: { schemas?: Record<string, { required?: string[]; properties?: Record<string, unknown> }> };
   };
   const body = doc.paths[PATRON].post.responses["402"];
   assert.ok(body, "POST /api/patron declares a 402 response");
   assert.deepEqual(Object.keys(body.content ?? {}), ["application/json"], "402 carries the JSON body, not an empty default");
   assert.match(body.description ?? "", /payment required|x402|X-PAYMENT/i, "402 description names the payment-required class");
+  const challengeSchema = body.content?.["application/json"]?.schema;
+  assert.equal(challengeSchema?.$ref, X402_CHALLENGE_SCHEMA_REF, "402 references the x402 challenge schema, not the Error envelope");
+  assert.notEqual(challengeSchema?.$ref, ERROR_SCHEMA_REF, "402 must not be typed as the clocked Error envelope");
+  const challenge = doc.components?.schemas?.X402Challenge;
+  assert.ok(challenge, "components.schemas.X402Challenge is served");
+  assert.deepEqual([...(challenge.required ?? [])].sort(), ["accepts", "error", "x402Version"], "challenge requires the three wire fields");
+  assert.ok(challenge.properties?.x402Version && challenge.properties?.error && challenge.properties?.accepts, "challenge names x402Version, error, accepts");
+});
+
+test("the live 402 body validates against the declared x402 challenge schema, not the Error envelope", async () => {
+  // Schema-vs-wire: the document used to point this response at the Error
+  // envelope (now/now_utc/error required) while the router serves
+  // { x402Version, error, accepts } with no clock. Validate the live body
+  // against the schema the served document declares for it, and show the
+  // Error envelope would reject it.
+  const { env } = sqliteTestEnv(schema);
+  (env as unknown as Record<string, unknown>).TREASURY_ADDRESS = TREASURY;
+  const doc = (await (await worker.fetch(new Request(`${ORIGIN}/openapi.json`), env)).json()) as {
+    paths: Record<string, Record<string, { responses: Record<string, { content?: Record<string, { schema?: { $ref?: string } }> }> }>>;
+    components: { schemas: Record<string, Record<string, unknown>> };
+  };
+  const ref = doc.paths[PATRON].post.responses["402"].content?.["application/json"]?.schema?.$ref ?? "";
+  const declared = doc.components.schemas[ref.split("/").pop() ?? ""];
+  assert.ok(declared, `the 402's $ref ${ref} resolves in components.schemas`);
+  const r = await worker.fetch(
+    new Request(ORIGIN + PATRON, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({}) }),
+    env,
+  );
+  assert.equal(r.status, 402);
+  const b = (await r.json()) as Record<string, unknown>;
+  assert.deepEqual(validate(declared, b), [], "the live 402 body is an instance of its declared schema");
+  assert.notDeepEqual(validate(doc.components.schemas.Error, b), [], "the live 402 body is NOT an instance of the Error envelope");
 });
 
 test("the live router answers 402 with the x402 challenge the declaration describes", async () => {

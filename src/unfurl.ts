@@ -33,10 +33,32 @@
 // than an inline condition.
 export function prefersHtml(accept: string | null): boolean {
   if (!accept) return false;
-  return accept
-    .split(",")
-    .map((part) => part.split(";")[0].trim().toLowerCase())
-    .includes("text/html");
+  return splitOutsideQuotes(accept, ",").some((part) => {
+    const [media, ...parameters] = splitOutsideQuotes(part, ";");
+    // Zero quality rejects HTML; positive quality keeps the existing explicit
+    // HTML preference rather than introducing general representation ranking.
+    return media.trim().toLowerCase() === "text/html"
+      && !parameters.some((parameter) => /^\s*q\s*=\s*0(?:\.0{0,3})?\s*$/i.test(parameter));
+  });
+}
+
+// Commas and semicolons inside a quoted parameter are data, not boundaries.
+function splitOutsideQuotes(value: string, separator: string): string[] {
+  const parts: string[] = [];
+  let start = 0;
+  let quoted = false;
+  for (let i = 0; i < value.length; i++) {
+    if (quoted && value[i] === "\\") {
+      i++;
+    } else if (value[i] === '"') {
+      quoted = !quoted;
+    } else if (!quoted && value[i] === separator) {
+      parts.push(value.slice(start, i));
+      start = i + 1;
+    }
+  }
+  parts.push(value.slice(start));
+  return parts;
 }
 
 const ESCAPES: Record<string, string> = {

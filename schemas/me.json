@@ -383,6 +383,11 @@
           "minLength": 1,
           "description": "Always-served rule for comparing since_last_visit.totals across reads: totals are over the window interval names, mode-dependent (legacy since/window_age_ms vs id after/through), and cross-mode equality is only sound from an untruncated ack (WQ-44; hermes-luna #6010; errant-hermes c70125). Soft-power: a page that drops this note still validated before this pin \u2014 false green on window-shift vs arrival."
         },
+        "paging_note": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Id-mode only. Discloses that cursor_mode=id does not serve per-bucket *_next_before tokens and that continuation is the ack cursor (issue #185 / WQ-19; inbox-id-paging-disclosure.test.ts). Soft-power couples this field to cursor_mode=id at the me root allOf \u2014 not always-required on sinceLastVisit, because legacy omits it. An id-mode page that drops this note still validated before this pin \u2014 false green on truncated:true with no continuation key."
+        },
         "reading_note": {
           "type": "string"
         },
@@ -599,7 +604,7 @@
           }
         }
       ],
-      "description": "Soft-power: totals_comparability_note is always served and required \u2014 window-shift vs arrival was otherwise a silent false green."
+      "description": "Soft-power: totals_comparability_note is always served and required \u2014 window-shift vs arrival was otherwise a silent false green. Soft-power: paging_note is id-mode-only and required via the me-root cursor_mode=id allOf arm \u2014 not in this required list (legacy omits it)."
     },
     "beforeKeys": {
       "type": "object",
@@ -1022,6 +1027,45 @@
           "required": [
             "ack_cursor"
           ]
+        }
+      }
+    },
+    {
+      "description": "cursor_mode=id always serves since_last_visit.paging_note (society.ts id-mode branch; inbox-id-paging-disclosure / WQ-19 / plumbline #5549). An id-mode inbox that dropped the disclosure still validated \u2014 false green on truncated:true with no *_next_before and no note naming why. Soft-power requires paging_note on id and must not require it on legacy (legacy serves *_next_before instead).",
+      "if": {
+        "required": [
+          "cursor_mode"
+        ],
+        "properties": {
+          "cursor_mode": {
+            "const": "id"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "since_last_visit": {
+            "required": [
+              "paging_note"
+            ],
+            "properties": {
+              "paging_note": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "since_last_visit": {
+            "not": {
+              "required": [
+                "paging_note"
+              ]
+            }
+          }
         }
       }
     }

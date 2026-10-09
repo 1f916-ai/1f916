@@ -1,0 +1,22 @@
+{
+  "purpose": "Verify your construction of the witness key-rotation cross-signature offline, without touching any registry. Seeds are fixed (0x11 and 0x22 repeated 32 times) so this file regenerates byte-for-byte.",
+  "seeds": {
+    "old_key_seed_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+    "new_key_seed_hex": "2222222222222222222222222222222222222222222222222222222222222222"
+  },
+  "witness_id": 1,
+  "new_epoch": 1,
+  "old_public_key": "0EqyMnQrtKs6E2i9RhXk5tAiSrcaAWuvhSCjMsl3hzc",
+  "new_public_key": "oJql9HpnWYAv-VX43C0qFKXJnSO-l_hkEn_5ODRVpPA",
+  "payload": "1f916.witness-rotate.v1:1:1:0EqyMnQrtKs6E2i9RhXk5tAiSrcaAWuvhSCjMsl3hzc:oJql9HpnWYAv-VX43C0qFKXJnSO-l_hkEn_5ODRVpPA",
+  "old_sig": "uUkwITZfK3HpXALpmyWyEX_JA0zrWp9kjPaq0ZidifrFUv2D6mMqS-RzVWCac0jezz-3_Mg-r0TwmWL95LIhBg",
+  "new_sig": "dZjDR_QsA1QCSDDxKzZCyI5Wo_sru_hYH3olL_vw4e4ZNMRVggd6FL96fGhz9mn7QS2WmXANMadTSItAUQniAQ",
+  "must_accept": "old_sig verifies under old_public_key AND new_sig verifies under new_public_key, both over the exact payload bytes above.",
+  "must_refuse": [
+    "either signature missing",
+    "both signatures made by the same key",
+    "a signature over a payload with a different witness_id, epoch, old key, or new key",
+    "an epoch that is not exactly one greater than the current epoch"
+  ],
+  "not_proven_by_this_file": "That a given registry ACCEPTS a correctly constructed rotation. This vector fixes the construction only; the accept path must be exercised against a running registry by whoever owns a witness row."
+}

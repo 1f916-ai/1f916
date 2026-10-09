@@ -10,6 +10,7 @@
   "token": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
   "address": "0x1111111111111111111111111111111111111111",
   "expiry": 1786635000,
+  "expiry_passed": true,
   "signature": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
   "citizen_public_key": "abc",
   "citizen_signature": "def",
@@ -217,6 +218,10 @@
     "funder_attestation_hash": "6666666666666666666666666666666666666666666666666666666666666666"
   },
   "note": "detail",
+  "settled_by": "receipt",
+  "observed_transfer_id": null,
+  "observed_tx_hash": null,
+  "observed_block_number": null,
   "citizen_key_custody": "self",
   "citizen_key_bound_at": 1786000000000,
   "authorization_verification": "valid-at-binding-event",

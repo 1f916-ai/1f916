@@ -42,14 +42,39 @@ export const UNRESOLVED_MENTIONS_NOTE =
 function stripCodeSpans(text: string): string {
   const lines = text.split("\n");
   let inFence = false;
+  let fenceLen = 0;
+  // The leading backtick run of a line (after up to three spaces), and whatever
+  // follows it. run is 0 when the first non-indent character is not a backtick.
+  const fenceRun = (line: string): { run: number; rest: string } => {
+    const m = /^[ \t]{0,3}(`+)(.*)$/.exec(line);
+    return m ? { run: m[1].length, rest: m[2] } : { run: 0, rest: "" };
+  };
   for (let i = 0; i < lines.length; i++) {
-    if (/^[ \t]{0,3}```/.test(lines[i])) {
-      lines[i] = " ".repeat(lines[i].length);
-      inFence = !inFence;
-    } else if (inFence) {
-      lines[i] = " ".repeat(lines[i].length);
+    const { run, rest } = fenceRun(lines[i]);
+    if (!inFence) {
+      if (run >= 3) {
+        // An opening fence. Remember its run length: a line with a SHORTER run
+        // does not close it, so a three-backtick line inside a four-backtick
+        // block stays content and the real closer after it is honoured. Without
+        // this the parity flipped and the handle quoted inside the block was
+        // read as a mention while the one addressed after it was suppressed
+        // (Cloudy-McCloud, c99388).
+        inFence = true;
+        fenceLen = run;
+        lines[i] = " ".repeat(lines[i].length);
+      } else {
+        lines[i] = lines[i].replace(/`[^`\n]*`/g, (s) => " ".repeat(s.length));
+      }
     } else {
-      lines[i] = lines[i].replace(/`[^`\n]*`/g, (s) => " ".repeat(s.length));
+      // Inside a fence every line is suppressed, whatever its backtick count.
+      lines[i] = " ".repeat(lines[i].length);
+      // Close only on a bare closer: a run at least as long as the opener with
+      // nothing but whitespace after it. A ```-with-trailing-text line (e.g. a
+      // nested opener) is content, not a closer.
+      if (run >= fenceLen && rest.trim() === "") {
+        inFence = false;
+        fenceLen = 0;
+      }
     }
   }
   return lines.join("\n");

@@ -10,7 +10,7 @@
 // and recreates the undiagnosable-typing failure one door over.
 //
 // The fix therefore covers the whole class: every POST write op declares the
-// 400, except the seven that structurally cannot answer it, each named in
+// 400, except the eight that structurally cannot answer it, each named in
 // src/connect.ts (NO_BODY_WRITE_ROUTES, MCP_ROUTES) and kept out for its own
 // reason:
 //
@@ -19,7 +19,7 @@
 //     value, so there is nothing to refuse. settle takes only the path award
 //     id and answers 404, 403 or 409 (src/society.ts
 //     settleAwardFromExistingReceipt).
-//   /mcp, /mcp/read -- the JSON-RPC transport: a 400 there carries a JSON-RPC
+//   /mcp, /mcp/read, /mcp/protocol -- the JSON-RPC transport: a 400 there carries a JSON-RPC
 //     error envelope (rpcError, code -32600), not the society clocked body, the
 //     same reason the /mcp 401 was kept out of the society-body 401 declaration.
 //     Those two doors ALSO declare the transport 400/401 beside their success
@@ -32,7 +32,7 @@
 //     its 400 is the same JSON-RPC envelope class as the MCP doors'.
 //
 // This file keeps the declaration honest against the router in-process: every
-// POST write op declares the 400 iff it is not one of those seven, the body is
+// POST write op declares the 400 iff it is not one of those eight, the body is
 // the clocked JSON error object, and the live router actually answers 400 with
 // that body on a refused write while the no-input writes do not.
 
@@ -59,13 +59,13 @@ function postWriteOps(): Set<string> {
   return set;
 }
 
-test("the no-body, MCP and A2A exception sets are the seven expected routes", () => {
+test("the no-body, MCP and A2A exception sets are the eight expected routes", () => {
   assert.deepEqual(
     [...NO_BODY_WRITE_ROUTES].sort(),
     ["/api/awards/:id/settle", "/api/checkpoint", "/api/doorbell/disable", "/api/porch/knock"],
     "the no-body write set drifted",
   );
-  assert.deepEqual([...MCP_ROUTES].sort(), ["/mcp", "/mcp/read"], "the MCP set drifted");
+  assert.deepEqual([...MCP_ROUTES].sort(), ["/mcp", "/mcp/protocol", "/mcp/read"], "the MCP set drifted");
   assert.deepEqual([...A2A_ROUTES], ["/api/a2a"], "the A2A set drifted");
   // The sets are disjoint: a route is kept out for one reason, not two.
   for (const p of NO_BODY_WRITE_ROUTES) assert.ok(!MCP_ROUTES.has(p) && !A2A_ROUTES.has(p), `${p} is in two exception sets`);
@@ -77,7 +77,7 @@ test("every exception route is a declared POST route", () => {
   for (const p of [...NO_BODY_WRITE_ROUTES, ...MCP_ROUTES, ...A2A_ROUTES]) assert.ok(posts.has(p), `${p} is an exception but SURFACE has no POST row for it`);
 });
 
-test("every POST write op declares 400 exactly when it is not one of the seven exceptions", async () => {
+test("every POST write op declares 400 exactly when it is not one of the eight exceptions", async () => {
   const { env } = sqliteTestEnv(schema);
   const doc = (await (await worker.fetch(new Request(`${ORIGIN}/openapi.json`), env)).json()) as {
     paths: Record<string, Record<string, { responses: Record<string, unknown> }>>;
@@ -96,7 +96,7 @@ test("every POST write op declares 400 exactly when it is not one of the seven e
       // load-bearing: the old "(:$1)" produced (:id) and matched nothing.
       const template = path.replace(/\{([A-Za-z_]+)\}/g, ":$1");
       const has400 = Object.keys(op.responses).includes("400");
-      const isMcpDoor = template === "/mcp" || template === "/mcp/read";
+      const isMcpDoor = template === "/mcp" || template === "/mcp/read" || template === "/mcp/protocol";
       const shouldBe = !NO_BODY_WRITE_ROUTES.has(template) && !MCP_ROUTES.has(template) && !A2A_ROUTES.has(template);
       if (isMcpDoor) {
         // The MCP door declares a 400, but it is the JSON-RPC transport
@@ -127,14 +127,14 @@ test("every POST write op declares 400 exactly when it is not one of the seven e
     }
   }
   // Every POST op is checked, and the count that declares is the total minus
-  // the no-body writes (which cannot refuse input) minus the two MCP doors
+  // the no-body writes (which cannot refuse input) minus the three MCP doors
   // (whose 400 is the transport envelope, not the clocked body) -- so the
   // membership is held in both directions, and each carve-out is counted.
   assert.ok(checked >= 40, `only ${checked} POST ops found; the POST-op scan has drifted`);
-  assert.equal(mcpChecked, MCP_ROUTES.size, "the two MCP doors were checked and carved out");
+  assert.equal(mcpChecked, MCP_ROUTES.size, "the three MCP doors were checked and carved out");
   assert.equal(noBodyChecked, NO_BODY_WRITE_ROUTES.size, "the no-body writes were checked and carved out");
   assert.equal(a2aChecked, A2A_ROUTES.size, "the A2A door was checked and carved out");
-  assert.equal(declares, checked - noBodyChecked - mcpChecked - a2aChecked, "the declared clocked-400 set is the POST set minus the no-body writes, the two MCP doors and the A2A door");
+  assert.equal(declares, checked - noBodyChecked - mcpChecked - a2aChecked, "the declared clocked-400 set is the POST set minus the no-body writes, the three MCP doors and the A2A door");
 });
 
 test("the declared 400 carries the clocked JSON error body, not an empty default", async () => {

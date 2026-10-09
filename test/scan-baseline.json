@@ -436,11 +436,11 @@
         "listings: SCAN l"
       ]
     },
-    "7a23806b156504c8": {
+    "7f344d559e7899b1": {
       "status": "debt",
-      "sql": "SELECT listing_id, COUNT(*) AS n FROM listing_submissions GROUP BY listing_id",
+      "sql": "SELECT s.listing_id, COUNT(*) AS n, SUM(CASE WHEN c.created_at < l.created_at AND s.citizen_id <> l.citizen_id AND s.created_at < l.expiry * N - MIN(? * N, (l.expiry * N - l.created_at) / N.N) THEN N ELSE N END) AS n_scored, GROUP_CONCAT(CASE WHEN c.created_at < l.created_at AND s.citizen_id <> l.ci",
       "plan": [
-        "listing_submissions: SCAN listing_submissions USING COVERING INDEX idx_listing_submissions_listing"
+        "listing_submissions: SCAN s USING INDEX idx_listing_submissions_listing"
       ]
     },
     "c2261508947a6e3c": {
@@ -493,32 +493,32 @@
         "posts: SCAN p USING INDEX idx_posts_created_id"
       ]
     },
-    "c59706b09613315f": {
+    "e0f1f5ae7d29f855": {
       "status": "debt",
       "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SELECT COALESCE(SUM(MIN(N.N, MAX(N.N, (? - vc.created_",
       "plan": [
-        "posts: SEARCH p USING INTEGER PRIMARY KEY (rowid<?)"
+        "posts: SEARCH p USING INDEX idx_posts_created_id (created_at<?)"
       ]
     },
-    "2e285f2d3ebc6355": {
+    "1469f7b59b7b36a1": {
       "status": "debt",
       "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SELECT COALESCE(SUM(MIN(N.N, MAX(N.N, (? - vc.created_",
       "plan": [
-        "posts: SEARCH p USING INTEGER PRIMARY KEY (rowid<?)"
+        "posts: SEARCH p USING INDEX idx_posts_created_id (created_at<?)"
       ]
     },
-    "01f2e1f9ad6cb702": {
+    "b19c6689c85c1d87": {
       "status": "debt",
       "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SELECT COALESCE(SUM(MIN(N.N, MAX(N.N, (? - vc.created_",
       "plan": [
-        "posts: SEARCH p USING INTEGER PRIMARY KEY (rowid<?)"
+        "posts: SEARCH p USING INDEX idx_posts_created_id (created_at<?)"
       ]
     },
-    "3f7d9aff875178f3": {
+    "1741619d0dd3813c": {
       "status": "debt",
       "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SELECT COALESCE(SUM(MIN(N.N, MAX(N.N, (? - vc.created_",
       "plan": [
-        "posts: SCAN p USING INDEX idx_posts_created_id"
+        "posts: SEARCH p USING INDEX idx_posts_created_id (created_at<?)"
       ]
     },
     "a3c55367d8036680": {
@@ -681,13 +681,16 @@
       "plan": [
         "witnesses: SCAN w"
       ]
+    },
+    "50d307a8815feb15": {
+      "status": "debt",
+      "sql": "SELECT hash FROM identity_events WHERE hash IS NOT NULL ORDER BY id ASC",
+      "plan": [
+        "identity_events: SCAN identity_events"
+      ]
     }
   },
   "uncovered_reads": {
-    "5536dd5aa7ed6e82": {
-      "file": "src/bindings.ts",
-      "sql": "SELECT COUNT(*) AS n FROM bindings WHERE citizen_id = ?"
-    },
     "70d9a6a8b617deb9": {
       "file": "src/checkpoint.ts",
       "sql": "SELECT id, tree_size, root, sig, created_at FROM checkpoints WHERE log = ? AND tree_size >= ? ORDER BY tree_size ASC LIMIT 1"
@@ -696,37 +699,13 @@
       "file": "src/index.ts",
       "sql": "SELECT c.created_at, (SELECT COUNT(*) FROM keys k WHERE k.citizen_id = c.id AND k.status = 'active') AS active_keys, (SELECT COUNT(*) FROM keys k WHERE k.citizen_id = c.id) AS total_keys, (SELECT COUNT(*) FROM seals s WHERE s.citizen_id = c.id) AS seals FROM citizens c WHERE c.handle = ?"
     },
-    "a80fa010cb49339d": {
-      "file": "src/index.ts",
-      "sql": "SELECT MAX(id) AS id FROM listings WHERE withdrawn_at IS NULL"
-    },
-    "670ceb2af79551f7": {
-      "file": "src/record.ts",
-      "sql": "SELECT hash FROM identity_events WHERE hash IS NOT NULL ORDER BY id ASC"
-    },
     "79e9f4db1e67e5a1": {
       "file": "src/society.ts",
-      "sql": "SELECT ${…}, i.handle AS issuer, s.handle AS subject FROM attestations a JOIN citizens i ON i.id = a.issuer_id JOIN citizens s ON s.id = a.subject_id WHERE a.target_attestation_id = ? ORDER BY a.id ASC"
-    },
-    "64aec8bce46b06b8": {
-      "file": "src/society.ts",
-      "sql": "SELECT b.id, b.citizen_id, b.domain, b.checked_at, c.handle FROM bindings b JOIN citizens c ON c.id = b.citizen_id WHERE b.status = 'verified' AND b.checked_at < ? ORDER BY b.checked_at ASC LIMIT ?"
-    },
-    "394244a49218be45": {
-      "file": "src/society.ts",
-      "sql": "SELECT citizen_id FROM bindings WHERE domain = ?"
+      "sql": "SELECT ${\u2026}, i.handle AS issuer, s.handle AS subject FROM attestations a JOIN citizens i ON i.id = a.issuer_id JOIN citizens s ON s.id = a.subject_id WHERE a.target_attestation_id = ? ORDER BY a.id ASC"
     },
     "d36a1c7cf4bc1a03": {
       "file": "src/society.ts",
       "sql": "SELECT COUNT(*) AS n FROM payout_receipts pr JOIN payout_bindings pb ON pb.id = pr.binding_id WHERE pb.docket_id = ?"
-    },
-    "c1a9ee959ca48668": {
-      "file": "src/society.ts",
-      "sql": "SELECT COUNT(*) AS n FROM seal_checks WHERE citizen_id = ? AND checked_at >= ?"
-    },
-    "129e0e7988a59c06": {
-      "file": "src/society.ts",
-      "sql": "SELECT COUNT(*) AS n FROM witnesses WHERE citizen_id = ?"
     },
     "35ddf48e37a79d4e": {
       "file": "src/society.ts",
@@ -735,10 +714,6 @@
     "d9986808055a69c7": {
       "file": "src/society.ts",
       "sql": "SELECT id FROM ledger WHERE id = ?"
-    },
-    "bbc0a3b6f4333eb2": {
-      "file": "src/society.ts",
-      "sql": "SELECT id, citizen_id, public_key, epoch FROM witnesses WHERE url = ?"
     },
     "dc3966a3193140c8": {
       "file": "src/society.ts",

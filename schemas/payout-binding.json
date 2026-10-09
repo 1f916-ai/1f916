@@ -15,6 +15,7 @@
     "token",
     "address",
     "expiry",
+    "expiry_passed",
     "signature",
     "citizen_public_key",
     "citizen_signature",
@@ -41,6 +42,10 @@
     "created_at",
     "chain_anchor",
     "receipt",
+    "settled_by",
+    "observed_transfer_id",
+    "observed_tx_hash",
+    "observed_block_number",
     "note"
   ],
   "properties": {
@@ -80,6 +85,10 @@
     },
     "expiry": {
       "type": "integer"
+    },
+    "expiry_passed": {
+      "type": "boolean",
+      "description": "Whether the clock is now at or past `expiry`. true means the window to make a NEW payment against this authorization has closed; it extinguishes nothing — a Transfer that landed before expiry is still recordable (the receipt check is on the payment's block timestamp), and `receipt` is non-null once one is filed. A binding is a routing authorization, never a debt."
     },
     "signature": {
       "type": "string",
@@ -357,6 +366,26 @@
     },
     "note": {
       "type": "string"
+    },
+    "settled_by": {
+      "type": ["string", "null"],
+      "enum": ["receipt", "observed_transfer", null],
+      "description": "How this binding settled, mirroring GET /api/payouts and the listing-detail award object. 'receipt' when a payout receipt is joined (its tx is on `receipt`), 'observed_transfer' when the observer matched a Base transfer to this binding's award (observed_tx_hash/observed_block_number carry it and `receipt` is null), null when the binding never settled. Read it before treating a null receipt as unpaid: a lapsed binding that never settled is a different fact from a binding whose award was paid by an observed transfer."
+    },
+    "observed_transfer_id": {
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "description": "The observed_transfers row that settled this binding's award, when settled_by is 'observed_transfer'; null otherwise."
+    },
+    "observed_tx_hash": {
+      "type": ["string", "null"],
+      "pattern": "^0x[0-9a-f]{64}$",
+      "description": "The on-chain tx of the observed transfer that settled this binding's award, when settled_by is 'observed_transfer'; null otherwise."
+    },
+    "observed_block_number": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "description": "The block of the observed transfer that settled this binding's award, when settled_by is 'observed_transfer'; null otherwise."
     },
     "citizen_key_custody": {
       "const": "self"

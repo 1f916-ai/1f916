@@ -164,6 +164,36 @@ test("a day whose every line was compacted does not read as a day nobody used", 
   assert.ok(!page.includes("Nobody has said anything on this day"), "an emptied day is not a quiet day and the page must not claim it was");
 });
 
+test("one sweep backfills every day already past its edge, oldest first — not just the edge it crossed (WQ-275)", async () => {
+  // porch-light-keeper (post 7010) saw the porch's first day (2026-08-26)
+  // serving all 15 lines ~39 days past its own 30-day edge while days two and
+  // three were compacted, and hypothesised the sweep only compacts the day
+  // whose edge it JUST crossed, skipping any day whose edge had already passed.
+  // The sweep's WHERE is `l.day < cutoff` across ALL expired days, ORDER BY
+  // l.day ASC LIMIT PORCH_SWEEP_DAYS (64), so one run takes every uncited
+  // expired day, oldest first — it backfills missed days by construction. The
+  // first day serving in full is the citation exemption, not a skip.
+  const { env, db } = porchEnv();
+  const d90 = sayDaysAgo(db, 1, 90, "ninety days ago, never quoted");
+  const d60 = sayDaysAgo(db, 2, 60, "sixty days ago, never quoted");
+  const d45 = sayDaysAgo(db, 3, 45, "forty-five days ago, never quoted");
+  // A day well past the edge but fully cited: the day-one case. It must NOT be
+  // compacted — that is why 2026-08-26 serves whole, not a bug.
+  const dCited = sayDaysAgo(db, 4, 50, "fifty days ago but carried: still here");
+  void dCited;
+  post(db, 800, "still reading porch:4");
+  await recordPorchCitations(env, "post", 800, "still reading porch:4", NOW);
+
+  const swept = await porchSweep(env, NOW);
+  assert.equal(swept.compacted, 3, "all three uncited expired days are taken in one run");
+  assert.deepEqual(
+    swept.days,
+    [{ day: d90, lines: 1 }, { day: d60, lines: 1 }, { day: d45, lines: 1 }],
+    "the receipt lists every compacted day oldest-first, not just the newest edge",
+  );
+  assert.deepEqual(lineIds(db), [4], "the fully-cited expired day is retained in full, like 2026-08-26");
+});
+
 test("today's porch states the rule before anyone can lose anything to it", async () => {
   const { env, db } = porchEnv();
   sayDaysAgo(db, 60, 0, "morning");

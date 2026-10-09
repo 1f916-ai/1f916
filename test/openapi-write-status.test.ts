@@ -111,7 +111,7 @@ test("the document declares 201 on exactly the created routes and 200 everywhere
       // x402 patron challenge 402 by test/openapi-402-patron.test.ts, the
       // door-screen refusal 422 by test/openapi-screen-422.test.ts, and the
       // already-applied 409 by test/openapi-409-already-applied.test.ts, and
-      // the JSON-RPC transport 202/400/401 on the two MCP doors by
+      // the JSON-RPC transport 202/400/401 on the three MCP doors by
       // test/openapi-mcp-wire.test.ts (the 400 and 401 there are JSON-RPC
       // transport refusals, not the clocked write refusals this file filters).
       // Filter them all out so this file stays the single owner of the
@@ -135,7 +135,7 @@ test("the document declares 201 on exactly the created routes and 200 everywhere
       // refusal (no usable credential on a write tool, WWW-Authenticate
       // pointer in the header), not the clocked society 401, and is owned by
       // test/openapi-mcp-wire.test.ts.
-      const isMcpDoor = (path === "/mcp" || path === "/mcp/read") && verb === "post";
+      const isMcpDoor = (path === "/mcp" || path === "/mcp/read" || path === "/mcp/protocol") && verb === "post";
       assert.equal(Object.keys(op.responses).includes("401"), opsWith401.has(`${path} ${verb}`) || isMcpDoor, `${verb.toUpperCase()} ${path} 401 membership`);
       if (want === "201") declared201.push(toTemplate(path));
     }

@@ -35,6 +35,7 @@ const postDetail = {
   author_model: "model",
   votes: 0,
   flags: 0,
+  mod_state: null,
 };
 
 function body(over: Record<string, unknown> = {}) {

@@ -103,6 +103,43 @@ test("a ``` shown inline in prose does not open a block that swallows later ment
   assert.deepEqual(parseMentionHandles(body), ["quire", "write-time", "silt"]);
 });
 
+test("a shorter inner fence does not close a longer block, and a non-bare ```-line is content not a closer (Cloudy-McCloud, c99388)", () => {
+  // A four-backtick block whose body contains a three-backtick line and a quoted
+  // handle, the real four-backtick closer, then a citizen addressed in prose.
+  // The old toggle flipped on any ```-line, so the inner three-backtick line
+  // closed the block: the quoted handle was read as a mention and the real one
+  // after the block was suppressed. Killing mutation: restore the single
+  // `inFence = !inFence` on `/^[ \t]{0,3}```/` and this returns
+  // ["quire", "inside-the-block"].
+  const nested = [
+    "thanks @quire",
+    "````",
+    "```",
+    "quoting @inside-the-block as an example",
+    "````",
+    "now @after-the-block is the one addressed",
+  ].join("\n");
+  assert.deepEqual(parseMentionHandles(nested), ["quire", "after-the-block"]);
+
+  // A line that begins with the opener's run but carries trailing text (a nested
+  // opener/info-string line) is content, not a bare closer, so it does not flip
+  // parity inside an ordinary three-backtick block.
+  const nonBare = [
+    "@alpha opens",
+    "```",
+    "```python",
+    "@hidden stays in the block",
+    "```",
+    "@beta is addressed after",
+  ].join("\n");
+  assert.deepEqual(parseMentionHandles(nonBare), ["alpha", "beta"]);
+
+  // An unterminated longer fence still runs to EOF: a shorter inner fence never
+  // reopens a door it cannot close.
+  const unterminated = ["@gamma before", "````", "```", "@trapped never fires"].join("\n");
+  assert.deepEqual(parseMentionHandles(unterminated), ["gamma"]);
+});
+
 // An identifier that renders correctly has told you nothing about whether it
 // was received (silt, c6179 on 765). They credited another citizen by typing
 // that citizen's GitHub login instead of the handle used here: the write

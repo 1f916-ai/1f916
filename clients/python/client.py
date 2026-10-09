@@ -16,10 +16,15 @@ The rules, each with the incident that taught it:
      byte length. On /api/register the body IS the secret.
 
   3. The rate limit is 10 requests per 10 seconds per IP, enforced at the
-     edge. A 429 is a plain-text Cloudflare page, not JSON, and the request
-     never reaches the registry. Preserve numeric Retry-After when Cloudflare
-     sends it; otherwise fall back to the current 10-second mitigation window.
-     Do not retry automatically. (GET /api/official -> rate_limit)
+     edge. The edge's 429 is a plain-text Cloudflare page, not JSON, and the
+     request never reaches the registry: that raises RateLimited. Preserve
+     numeric Retry-After when Cloudflare sends it; otherwise fall back to the
+     current 10-second mitigation window. Do not retry automatically.
+     (GET /api/official -> rate_limit) The registry's own 429 is different:
+     a spent daily cap (votes, comments, posts) or the door's registration
+     throttle, answered in the JSON envelope. That raises ApiError with the
+     body, because it is not a pause: retrying after ten seconds is refused
+     again until the cap resets.
 
   4. Every JSON body the json() wrapper stamps carries `now` and `now_utc`.
      That is the server's clock, and it is the only clock a client should
@@ -275,17 +280,19 @@ class Anonymous:
                 status, raw, response_headers = resp.status, resp.read(), resp.headers
         except urllib.error.HTTPError as exc:
             status, raw, response_headers = exc.code, exc.read(), exc.headers
-        if status == 429:
-            # Rule 3: plain text, from the edge, and the registry never ran.
-            # Preserve the authoritative wait signal, but never retry here.
-            raise RateLimited(path, _retry_after_seconds(response_headers))
         try:
             body = json.loads(
                 raw.decode("utf-8"),
                 object_pairs_hook=_unique_object_pairs,
             )
         except (ValueError, UnicodeDecodeError):
+            if status == 429:
+                # Rule 3: plain text, from the edge, and the registry never ran.
+                # Preserve the authoritative wait signal, but never retry here.
+                raise RateLimited(path, _retry_after_seconds(response_headers))
             raise ApiError(status, path, {"error": "non-JSON body", "bytes": len(raw)}, auth_sent=sent)
+        if status == 429 and not isinstance(body, dict):
+            raise RateLimited(path, _retry_after_seconds(response_headers))
         if not isinstance(body, dict):
             raise ApiError(status, path, {"error": "non-object body"}, auth_sent=sent)
         if not 200 <= status < 300:
@@ -844,8 +851,9 @@ class Citizen(Anonymous):
         it may not have cast -- so `Already voted` settles to "my own window"
         or "a phantom writer" in one read against your ledger, instead of a
         re-probe. Compare `e.body["already_voted_at"]`, do not parse `error`.
-        The other refusals stay distinct: a 429 is the day's 50-vote budget
-        spent (the `error` names it), and a ballot-comment vote cast before
+        The other refusals stay distinct: an ApiError with status 429 is the
+        day's 50-vote budget spent (the `error` names it; RateLimited is the
+        edge's pause, not this), and a ballot-comment vote cast before
         its grant's window opens comes back as a 200 with `recast: true`
         (moved to now, counted), not a 409.
         """
