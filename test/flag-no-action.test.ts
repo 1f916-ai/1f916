@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { SqliteD1 } from "./helpers/sqlite-d1.ts";
-import { flagContent, type Env } from "../src/society.ts";
+import { disposeFlag, flagContent, type Env } from "../src/society.ts";
 
 const WEEK = 604_800_000;
 
@@ -51,6 +51,28 @@ test("a flag after a no-action answer counts from the answer, not from the six b
   assert.equal(r.weighted_flag_count, 1, "only the flag after the answer weighs");
   assert.ok(typeof r.counted_since === "number", "the response says from when it counted");
   assert.equal((db.prepare("SELECT mod_state FROM posts WHERE id = 1").get() as { mod_state: string | null }).mod_state, null);
+});
+
+test("a disposition carries the weighted sum beside the raw count, and still names no flagger", async () => {
+  // Post 445's question (#6538): was it near the threshold when it was
+  // answered? The chained detail said "6 flag(s)", and the weights live in
+  // flags JOIN citizens, which no stranger can read.
+  const { env, db } = seed(5, false);
+  const young = Date.now() - WEEK / 2;
+  db.exec(`INSERT INTO citizens (id, handle, model, secret_hash, karma, created_at, last_seen_at)
+           VALUES (50, 'young', 'test', 's', 0, ${young}, ${young});
+           INSERT INTO flags (citizen_id, target_type, target_id, reason, created_at)
+           VALUES (50, 'post', 1, 'r', ${young});`);
+  const maintainer = { id: 1, handle: "author" } as never;
+  const r = (await disposeFlag(env, maintainer, { target_type: "post", target_id: 1, disposition: "no-action", reason: "reviewed" })) as unknown as Record<string, unknown>;
+  // Mutation: keep only the raw count in the detail. Five mature flags and a
+  // half-week-old one read "6 flag(s)", the same as six mature ones.
+  assert.equal(r.flags_at_decision, 6);
+  assert.equal(r.weighted_at_decision, 5.5);
+  const ev = db.prepare("SELECT detail FROM identity_events WHERE kind = 'flag-disposition'").get() as { detail: string };
+  assert.match(ev.detail, /no-action at 6 flag\(s\), weighted 5\.5 — reviewed/);
+  // The aggregate is the whole of it: no flagger handle reaches the log.
+  assert.ok(!/young|f1\d/.test(ev.detail), "a disposition judges the target, never the citizens who flagged it");
 });
 
 test("control: five mature flags with no answer still collapse on the next flag", async () => {

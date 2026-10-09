@@ -7000,19 +7000,21 @@ export async function disposeFlag(
   // disagreed.
   const exists = await env.DB.prepare(`SELECT id FROM ${FLAG_TABLES[targetType]} WHERE id = ?`).bind(targetId).first();
   if (!exists) throw new SocietyError(404, `${targetType} ${targetId} does not exist`);
-  const flags = await env.DB.prepare("SELECT COUNT(*) AS n FROM flags WHERE target_type = ? AND target_id = ?")
-    .bind(targetType, targetId)
-    .first<{ n: number }>();
-  if ((flags?.n ?? 0) === 0) throw new SocietyError(400, "nothing has been flagged here, so there is nothing to answer");
-
   const now = Date.now();
+  // The weighted sum rides in the chained detail beside the raw count: an
+  // aggregate over the flags, with no flagger and no per-flag age in it, which
+  // is what makes it servable on a public log.
+  const tally = await weightedFlagTally(env, targetType, targetId, now);
+  const flags = { n: tally.count };
+  if (flags.n === 0) throw new SocietyError(400, "nothing has been flagged here, so there is nothing to answer");
+
   const stateStmt = env.DB.prepare(
     "INSERT INTO flag_dispositions (target_type, target_id, disposition, reason, decided_by, flags_at_decision, decided_at) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id",
   ).bind(targetType, targetId, disposition, reason, citizen.id, flags?.n ?? 0, now);
   const done = await commitWithIdentityEvent<{ id: number }>(
     env,
     stateStmt,
-    { citizen_id: citizen.id, kind: "flag-disposition", detail: `${targetType} ${targetId}: ${disposition} at ${flags?.n ?? 0} flag(s) — ${reason.slice(0, 1000)}` },
+    { citizen_id: citizen.id, kind: "flag-disposition", detail: `${targetType} ${targetId}: ${disposition} at ${flags.n} flag(s), weighted ${tally.weighted} — ${reason.slice(0, 1000)}` },
     "flag-disposition chain head moved four times running; refusing to answer a flag without its anchor",
   );
   return {
@@ -7020,7 +7022,8 @@ export async function disposeFlag(
     id: done.state?.id ?? null,
     target: { type: targetType, id: targetId },
     disposition,
-    flags_at_decision: flags?.n ?? 0,
+    flags_at_decision: flags.n,
+    weighted_at_decision: tally.weighted,
     chained: done.hash,
     decided_at: now,
     note: "Recorded against the target, never against the citizens who flagged it. A disposition is a use of judgement, so it is a chained event like every other use of power here, and it can be argued with in the open.",
@@ -7996,7 +7999,12 @@ async function commitDatedOnce<T>(v: ValidatedSeal, commit: () => Promise<T>): P
 }
 
 // A check says: at this instant, a party holding this citizen's credentials
-// re-hashed the sealed content and it still matched. That is one more proven
+// re-sent the hash that is already latest. Whether it re-hashed anything is
+// its own word. An undated signed check re-sends the seal's own signature
+// bytes (Ed25519 is deterministic over the same preimage), so it proves no
+// more than an unsigned one (packet-auditor, #6990); a dated check signs its
+// own seal-check.v1 preimage, accepted once, so the key proves it at
+// signed_at (src/seals.ts says how). Either way it is one more proven
 // endpoint, not a certified interval — an edit reverted between two checks
 // leaves no trace here, exactly as it leaves none between two seals (smith,
 // c6345). Checking more often shortens the ambiguity; it never removes it.
@@ -8253,7 +8261,7 @@ export async function listSeals(env: Env, citizenHandle: string | null, label: s
       signed_payload_check_dated: datedCheckTemplate,
       dated_note: datedSealNote(),
       verify_note:
-        "A check signs the SAME preimage as the seal it re-affirms, because a check is by definition the hash that was already latest under that label: build 1f916.seal.v1:" +
+        "A check comes in two kinds, and a row's signed_at says which. An undated check (signed_at null) signs the SAME preimage as the seal it re-affirms, because a check is by definition the hash that was already latest under that label: build 1f916.seal.v1:" +
         owner.handle +
         ":" +
         seal.label +
@@ -8261,7 +8269,7 @@ export async function listSeals(env: Env, citizenHandle: string | null, label: s
         seal.hash +
         " and Ed25519-verify each signature against the key GET /api/keys/" +
         owner.handle +
-        " serves for that thumbprint. An unsigned check is bearer-authenticated only: it is this registry's word that somebody holding the key's owner's secret filed it, and a stranger cannot test that.",
+        " serves for that thumbprint. Ed25519 is deterministic, so an undated signed check carries the same signature bytes as the seal it re-affirms, which GET /api/seals already served on the day it was sealed: the signature proves the key signed this preimage once, at or before sealed_at, never that it signed again at checked_at, and anyone holding the bearer can re-send it. An undated signed check is therefore bearer-authenticated too, exactly like an unsigned one: it is this registry's word that somebody holding the owner's credential filed it, and a stranger cannot test that. A dated check (signed_at set) signs its own preimage, signed_payload_check_dated with the row's signed_host and signed_at, verified against the same key: its bytes differ from the seal's, signed_at was within this registry's clock skew when it was filed, and a dated signature is accepted once, so a dated check is key-proven at signed_at and cannot be re-sent. signed and checks_signed count both kinds; only the dated rows are key-proven checks.",
       limit_note:
         "A verified check proves one more endpoint, never that the interval between two endpoints was untouched. That limit is unchanged by serving the signature; what changes is who can confirm the endpoint.",
     };
@@ -9166,6 +9174,31 @@ export const FLAG_REASON_MAX = 200;
 // class it exists to prevent. Found by the pre-publication auditor, 2026-08-17.
 export const FLAG_DISPOSITION_REASON_MAX = 800;
 
+// The community's tally on one target: every flag, and the weighted sum of the
+// flags newer than the latest no-action answer, each at its flagger's tenure at
+// `now`. One copy, because the collapse and the disposition that answers it must
+// print the same number: the disposition event used to carry only the raw count,
+// so whether a reviewed target had been anywhere near the threshold could be
+// computed only from flags JOIN citizens, which no stranger can read (#6538).
+async function weightedFlagTally(env: Env, type: string, id: number, now: number) {
+  const answered = await env.DB.prepare(
+    `SELECT MAX(decided_at) AS at FROM flag_dispositions
+      WHERE target_type = ? AND target_id = ? AND disposition = 'no-action'`,
+  )
+    .bind(type, id)
+    .first<{ at: number | null }>();
+  const countedSince = answered?.at ?? 0;
+  const tally = (await env.DB.prepare(
+    `SELECT COUNT(*) AS count,
+            COALESCE(SUM(CASE WHEN f.created_at > ? THEN MIN(1.0, MAX(${FLAG_MIN_WEIGHT}, (? - c.created_at) / ${FLAG_FULL_WEIGHT_MS}.0)) ELSE 0 END), 0) AS weighted
+       FROM flags f JOIN citizens c ON c.id = f.citizen_id
+      WHERE f.target_type = ? AND f.target_id = ?`,
+  )
+    .bind(countedSince, now, type, id)
+    .first<{ count: number; weighted: number }>()) ?? { count: 1, weighted: 0 };
+  return { count: tally.count, weighted: Math.round(tally.weighted * 100) / 100, countedSince };
+}
+
 export async function flagContent(env: Env, citizen: Citizen, targetType: unknown, targetId: unknown, reason: unknown) {
   const type = FLAGGABLE.includes(targetType as FlagTarget) ? (targetType as FlagTarget) : null;
   if (!type)
@@ -9248,23 +9281,7 @@ export async function flagContent(env: Env, citizen: Citizen, targetType: unknow
   // toward the threshold; the raw count stays whole. Without this, posts 445
   // and 658 (six flags, no-action 2026-08-13) sat at weighted 6.0 and the next
   // flag from anyone would collapse two reviewed posts.
-  const answered = await env.DB.prepare(
-    `SELECT MAX(decided_at) AS at FROM flag_dispositions
-      WHERE target_type = ? AND target_id = ? AND disposition = 'no-action'`,
-  )
-    .bind(type, id)
-    .first<{ at: number | null }>();
-  const countedSince = answered?.at ?? 0;
-  const tally = (await env.DB.prepare(
-    `SELECT COUNT(*) AS count,
-            COALESCE(SUM(CASE WHEN f.created_at > ? THEN MIN(1.0, MAX(${FLAG_MIN_WEIGHT}, (? - c.created_at) / ${FLAG_FULL_WEIGHT_MS}.0)) ELSE 0 END), 0) AS weighted
-       FROM flags f JOIN citizens c ON c.id = f.citizen_id
-      WHERE f.target_type = ? AND f.target_id = ?`,
-  )
-    .bind(countedSince, Date.now(), type, id)
-    .first<{ count: number; weighted: number }>()) ?? { count: 1, weighted: 0 };
-  const count = tally.count;
-  const weighted = Math.round(tally.weighted * 100) / 100;
+  const { count, weighted, countedSince } = await weightedFlagTally(env, type, id, Date.now());
 
   let collapsed = false;
   if (COLLAPSIBLE.includes(type) && weighted >= FLAG_COLLAPSE_THRESHOLD && exists.mod_state == null) {
