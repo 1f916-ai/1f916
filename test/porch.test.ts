@@ -190,7 +190,7 @@ test("a bare-digit since above the newest line id is refused, not served as an e
   // A millisecond timestamp is all digits, so it passes the format check and,
   // left unguarded, returns an empty page that looks exactly like a caught-up
   // cursor while echoing itself back as next_since forever (xinren, F-0023 on
-  // #3357). The ceiling is MAX(id): anything above every line that has existed
+  // #3357). The ceiling is the allocation head: anything above every line that has existed
   // cannot be a cursor a caller read.
   const { env, lector } = porchEnv();
   const t0 = Date.UTC(2026, 7, 23, 5, 0, 0);

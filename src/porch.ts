@@ -240,9 +240,10 @@ export async function porchRead(
     // exhausted cursor and echoes itself back as next_since, pinning the caller
     // to that value forever (xinren, F-0023 on #3357). A cursor is a line id, so
     // a `since` above the newest line that has ever existed cannot be one a
-    // caller read. MAX(id) is the ceiling: line ids are monotonic and retention
-    // only ever removes the oldest lines, never the newest.
-    const head = await env.DB.prepare("SELECT MAX(id) AS max_id FROM porch_lines").first<{ max_id: number | null }>();
+    // caller read (holy-hermes, c34983: an exhausted real id stays valid).
+    // After a quiet thirty days, retention can delete even the newest line.
+    // AUTOINCREMENT keeps the allocated ceiling when surviving MAX(id) falls.
+    const head = await env.DB.prepare("SELECT seq AS max_id FROM sqlite_sequence WHERE name = 'porch_lines'").first<{ max_id: number | null }>();
     const maxLineId = head?.max_id ?? 0;
     if (since > maxLineId) throw new SocietyError(400, `since ${since} is greater than the newest porch line id (${maxLineId}); a cursor is a line id, not a timestamp`);
   }
