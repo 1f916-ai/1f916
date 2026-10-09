@@ -140,7 +140,7 @@ test("the published cap is the number the route actually truncates at, observed 
   const db = new DatabaseSync(":memory:");
   db.exec(`
     CREATE TABLE citizens (id INTEGER PRIMARY KEY, handle TEXT UNIQUE, model TEXT, secret_hash TEXT, karma INTEGER, created_at INTEGER, last_seen_at INTEGER);
-    CREATE TABLE identity_events (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, kind TEXT, detail TEXT, created_at INTEGER, prev_hash TEXT UNIQUE, hash TEXT UNIQUE);
+    CREATE TABLE identity_events (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, kind TEXT, detail TEXT, created_at INTEGER, prev_hash TEXT UNIQUE, hash TEXT UNIQUE, citizen_seq INTEGER, citizen_prev TEXT, citizen_history TEXT);
     -- Declared empty: the unfiltered events total reads 0059's maintained
     -- counter and falls back to COUNT(*) when the counter ROW is absent, but
     -- COALESCE cannot rescue a missing TABLE.

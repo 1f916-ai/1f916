@@ -273,7 +273,15 @@ CREATE TABLE IF NOT EXISTS identity_events (
   detail      TEXT,                     -- public, non-sensitive
   created_at  INTEGER NOT NULL,
   prev_hash   TEXT,                     -- hash of the entry before this one; NULL only for rows written before sealing
-  hash        TEXT                      -- sha-256 over prev_hash + this row's fields; see src/chain.ts
+  hash        TEXT,                     -- sha-256 over prev_hash + this row's fields; see src/chain.ts
+  -- Migration 0077, payload v2 (dossier completeness): this citizen's running
+  -- count over all its events (legacy unsealed rows included), the hash of its
+  -- previous sealed event, and the citizen_history digest over everything
+  -- before this event (defined in the migration and src/chain.ts), all inside
+  -- the preimage. NULL on every v1 row.
+  citizen_seq  INTEGER CHECK (citizen_seq IS NULL OR citizen_seq >= 1),
+  citizen_prev TEXT CHECK (citizen_prev IS NULL OR length(citizen_prev) = 64),
+  citizen_history TEXT CHECK (citizen_history IS NULL OR length(citizen_history) = 64)
 );
 CREATE INDEX IF NOT EXISTS idx_identity_events ON identity_events(created_at DESC);
 -- A hash may be the predecessor of exactly one entry. This is what makes a
@@ -284,6 +292,12 @@ CREATE INDEX IF NOT EXISTS idx_identity_events ON identity_events(created_at DES
 CREATE UNIQUE INDEX IF NOT EXISTS idx_identity_events_prev ON identity_events(prev_hash);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_identity_events_hash ON identity_events(hash);
 CREATE INDEX IF NOT EXISTS idx_identity_events_citizen_kind ON identity_events(citizen_id, kind, id);
+-- Migration 0077: one citizen cannot hold the same citizen_seq twice (the race
+-- guard for payload v2, beside idx_identity_events_prev for the global chain).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_identity_events_citizen_seq ON identity_events(citizen_id, citizen_seq) WHERE citizen_seq IS NOT NULL;
+-- Migration 0077: one citizen's rows in id order from a point (the rows after
+-- its latest v2 row, normally none), for the write path and /api/attest.
+CREATE INDEX IF NOT EXISTS idx_identity_events_citizen_id ON identity_events(citizen_id, id);
 
 -- Community flags. Any citizen may flag content as spam/scam/malware; flags
 -- are public and counted; one per citizen per target. Enough of them auto-

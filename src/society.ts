@@ -2,7 +2,7 @@
 import { WITNESS_CADENCE, WITNESS_STANDING } from "./witness-cadence.ts";
 import { listingClockPreview, type ListingClockQuery } from "./listing-clock-preview.ts";
 
-import { WITNESS_COUNTERSIGNATURE_NOTE, WITNESS_COUNTERSIGNATURE_PAYLOAD_FORMAT, appendChained, appendChainedStmt, attest, chainRecipe, isChainRaceViolation, sha256Hex, type ChainGuard, type WitnessParams } from "./chain.ts";
+import { WITNESS_COUNTERSIGNATURE_NOTE, WITNESS_COUNTERSIGNATURE_PAYLOAD_FORMAT, appendChained, appendChainedStmt, attest, chainRecipe, isChainRaceViolation, readWithLinkColumns, servedChainRow, sha256Hex, type ChainGuard, type WitnessParams } from "./chain.ts";
 import { conductLedger } from "./conduct.ts";
 import { MENTION_LIMITS, UNRESOLVED_MENTIONS_NOTE, prepareMentionWrite } from "./mentions.ts";
 import { mojibakeWarning } from "./mojibake.ts";
@@ -140,6 +140,18 @@ export interface Env {
   BUILD_COMMIT?: string;
   BUILD_TREE?: string;
   BUILD_DEPLOYED_AT?: string;
+  // "on" lets a citizen's next identity event start chain payload v2 (the
+  // per-citizen citizen_seq/citizen_prev/citizen_history link that makes a dossier provably
+  // complete; src/chain.ts). Unset or anything else: new citizens stay on v1,
+  // because checkers written to the v1 how_to_verify recipe recompute v1 only.
+  // A plain var, the maintainer's switch; citizens already on v2 stay on v2
+  // either way. ROLLBACK HAZARD: once any citizen is on v2, a Worker that
+  // predates v2 (a `wrangler rollback`, or old and new versions side by side
+  // during a gradual deploy) writes v1 rows for them. The chain still verifies
+  // (each row's own hash holds). The citizen's next v2 event commits to such
+  // a row (counts, links and folds it); until one exists, /api/attest lists
+  // it under completeness_lost and their dossier reads undetermined.
+  CHAIN_CITIZEN_SEQ?: string;
   // Read-only zone-analytics token for GET /api/stats — Analytics:Read and
   // NOTHING else, set via `wrangler secret put CF_ANALYTICS_TOKEN`. The
   // deploy credential must never enter this Worker: it merges outside PRs,
@@ -2619,7 +2631,9 @@ export async function commitWithIdentityEvent<T>(
   companions: D1PreparedStatement[] = [],
 ): Promise<{ state: T | null; changed: number; hash: string }> {
   for (let attempt = 0; attempt < 4; attempt++) {
-    const log = await appendChainedStmt(env.DB, "identity_events", { ...event, created_at: Date.now() }, guard);
+    const log = await appendChainedStmt(env.DB, "identity_events", { ...event, created_at: Date.now() }, guard, {
+      citizenSeq: env.CHAIN_CITIZEN_SEQ === "on",
+    });
     try {
       const stmts = stateStmt ? [stateStmt, ...companions, log.stmt] : [...companions, log.stmt];
       const [first] = await env.DB.batch<T>(stmts);
@@ -12193,11 +12207,13 @@ export async function identityLog(env: Env, kind: string | null = null, sinceId:
         `since ${anchor} is greater than the newest event id (${maxEventId}); a cursor is a row id from this log, not a timestamp`,
       );
     }
-    const stmt = env.DB.prepare(
-      `SELECT e.id, e.citizen_id, e.kind, e.detail, e.created_at, e.prev_hash, e.hash, c.handle AS citizen
+    // readWithLinkColumns: before migration 0077 this serves v1 rows only.
+    const stmt = (linkCols: string) =>
+      env.DB.prepare(
+        `SELECT e.id, e.citizen_id, e.kind, e.detail, e.created_at, e.prev_hash, e.hash${linkCols}, c.handle AS citizen
            FROM identity_events e JOIN citizens c ON c.id = e.citizen_id
            WHERE e.id > ?${clean ? " AND e.kind = ?" : ""}${citizenScope ? " AND e.citizen_id = ?" : ""} ORDER BY e.id ASC LIMIT ${IDENTITY_LOG_PAGE + 1}`,
-    ).bind(anchor, ...(clean ? [clean] : []), ...(citizenScope ? [citizenBind] : []));
+      ).bind(anchor, ...(clean ? [clean] : []), ...(citizenScope ? [citizenBind] : []));
     // Over-fetch one row past the page so the flag knows. It answered on
     // fullness (`events.length === IDENTITY_LOG_PAGE`) until here, so a log
     // holding exactly IDENTITY_LOG_PAGE matching rows reported `has_more: true`
@@ -12205,7 +12221,7 @@ export async function identityLog(env: Env, kind: string | null = null, sinceId:
     // truncated, on the one route whose note tells verifiers to follow
     // next_since while has_more. Same class as seals ?checks_of= (2620ac14),
     // attestations (1571ef34) and the seals listing (#368).
-    const { results: fetched } = await stmt.all<{ id: number; kind: string }>();
+    const fetched = (await readWithLinkColumns((linkCols) => stmt(linkCols).all<{ id: number; kind: string }>(), "e.")).results.map(servedChainRow);
     const has_more = fetched.length > IDENTITY_LOG_PAGE;
     const events = fetched.slice(0, IDENTITY_LOG_PAGE);
     return {
@@ -12229,14 +12245,18 @@ export async function identityLog(env: Env, kind: string | null = null, sinceId:
   // log can only be checked against itself, which is the exact gap tare (#156)
   // named. With them present, a citizen recomputes any row's hash from public
   // data and never has to take attest's word for it.
-  const cols = `e.id, e.citizen_id, e.kind, e.detail, e.created_at, e.prev_hash, e.hash, c.handle AS citizen`;
+  // Plus the payload v2 link (citizen_seq, citizen_prev) on rows that have it;
+  // servedChainRow drops the two NULLs from v1 rows so those stay byte-identical.
+  // readWithLinkColumns: before migration 0077 this serves v1 rows only.
+  const cols = (linkCols: string) => `e.id, e.citizen_id, e.kind, e.detail, e.created_at, e.prev_hash, e.hash${linkCols}, c.handle AS citizen`;
   const defaultWhere = [...(clean ? ["e.kind = ?"] : []), ...(citizenScope ? ["e.citizen_id = ?"] : [])];
-  const stmt = env.DB.prepare(
-    `SELECT ${cols}
+  const stmt = (linkCols: string) =>
+    env.DB.prepare(
+      `SELECT ${cols(linkCols)}
          FROM identity_events e JOIN citizens c ON c.id = e.citizen_id
          ${defaultWhere.length ? `WHERE ${defaultWhere.join(" AND ")}` : ""} ORDER BY e.created_at DESC LIMIT ${IDENTITY_LOG_PAGE}`,
-  ).bind(...(clean ? [clean] : []), ...(citizenScope ? [citizenBind] : []));
-  const { results: events } = await stmt.all();
+    ).bind(...(clean ? [clean] : []), ...(citizenScope ? [citizenBind] : []));
+  const events = (await readWithLinkColumns((linkCols) => stmt(linkCols).all<Record<string, unknown>>(), "e.")).results.map(servedChainRow);
   const kindTotals = await kindTotalsMap(env, citizenId);
   return {
     ...kindAgreement(kindTotals, events as { kind: string }[], clean, kind, citizenScope, total > events.length),

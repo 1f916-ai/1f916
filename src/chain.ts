@@ -53,6 +53,44 @@ export const PAYLOAD: Record<ChainedTable, readonly string[]> = {
   ledger: ["entry_date", "description", "amount_cents", "created_at"],
 };
 
+// Payload v2 (identity_events only): the citizen's own running count over ALL
+// its events (legacy unsealed rows included), the hash of its previous sealed
+// event, and a running digest over all its earlier events, appended to the v1
+// fields. PAYLOAD above is untouched; v2 is a second, separate contract.
+//
+// Why: a dossier (GET /api/record/:handle) proves each event it holds was in
+// the log and never that it holds all of them. The global prev_hash chain does
+// not help a dossier reader, whose events are not global neighbours, so
+// leaving out a moderation or key-revoke event verified offline exactly like a
+// whole record. With these fields hashed in, a missing event is a missing
+// number, a broken link, or a history digest that does not recompute (docket
+// content-sealing).
+//
+// citizen_history is what makes the citizen's events BEFORE their first v2
+// event part of the commitment. A count and a link to the last of them are not
+// enough: any earlier one could be dropped and the count refilled (a made-up
+// legacy row, or a real event served twice). The digest, defined precisely:
+//   H0 = sha256hex("citizen-history:" + U), U = the number of the citizen's
+//        legacy unsealed rows (all of which precede sealing), in decimal;
+//   then for each of the citizen's sealed rows in id order:
+//        H = sha256hex(H + "\n" + that row's hash).
+// A v2 row's citizen_history is H over the citizen's rows BEFORE it, every
+// one of them: v1 rows written after the switch by a Worker that predates v2
+// included (they also count toward citizen_seq, and the last of them is
+// citizen_prev). A writer carries the fold from the citizen's latest v2 row
+// (its citizen_history folded with its hash, then with any rows after it), so
+// it never rereads the whole history. Unsealed rows enter only as a count: their contents
+// were never hashed and stay the registry's word.
+export const CITIZEN_LINK_FIELDS = ["citizen_seq", "citizen_prev", "citizen_history"] as const;
+
+export async function citizenHistoryStart(unsealed: number): Promise<string> {
+  return sha256Hex(`citizen-history:${unsealed}`);
+}
+
+export async function citizenHistoryNext(history: string, hash: string): Promise<string> {
+  return sha256Hex(`${history}\n${hash}`);
+}
+
 /**
  * The published instructions for checking this chain by hand, GENERATED from
  * the field list above rather than written next to it.
@@ -82,6 +120,18 @@ export function chainRecipe(table: ChainedTable): string {
   return (
     `Recompute sha256(prev_hash + '\\n' + JSON.stringify([${fields}])) and it must equal hash. ` +
     withheld +
+    // Generated from the v2 field list for the same reason the v1 list is.
+    (table === "identity_events"
+      ? `PAYLOAD V2: a row that carries a non-null citizen_seq is payload v2, and its array is ` +
+        `[${PAYLOAD_VERSIONS[CITIZEN_PAYLOAD_VERSION].fields(table).join(", ")}] instead; every other row is v1 as above. ` +
+        `Choose per row from the row's own fields: a v2 row recomputed as v1, or the reverse, fails its hash, so the version is not yours to pick. ` +
+        `citizen_seq counts ALL of that citizen's rows, legacy unsealed rows included (1 for its first), and citizen_prev is the hash of that citizen's previous sealed row ` +
+        `(64 zeroes for its first); once a citizen has a v2 row every later row of theirs is v2, numbered without gaps, each citizen_prev ` +
+        `equal to the hash before it. citizen_history is a running digest over everything before the row: H0 = sha256hex("citizen-history:" + U) ` +
+        `with U the citizen's legacy unsealed rows in decimal, then H = sha256hex(H + '\\n' + hash) for each of the citizen's sealed rows in id order; ` +
+        `every earlier sealed row counts and folds, v1 rows written after the switch included (the next v2 row's citizen_seq counts them and its citizen_prev is the last of them). ` +
+        `That is what lets one citizen's dossier prove it is complete, not only that each event is real. `
+      : "") +
     `The payload is a JSON array rather than the fields joined by a separator, so a value containing the ` +
     `separator cannot impersonate two fields. ` +
     // The same ambiguity the payload recipes carried, and this one is not
@@ -155,11 +205,13 @@ export async function sha256Hex(text: string): Promise<string> {
 // and v1 is frozen: its bytes are what they were when the first row was sealed
 // and they stay that way permanently, as a verifier branch that never moves.
 //
-// Nothing but v1 is registered here, deliberately. This change is a NO-OP and
-// is provable as one against test/fixtures/chain-payload-v1.json, which holds
-// real sealed rows read from the live chain. If an edit ever makes that fixture
-// fail, the edit has broken every hash ever written and the fixture is what
-// noticed. It is not a file to update until a test passes.
+// v1 is still proven unchanged against test/fixtures/chain-payload-v1.json,
+// which holds real sealed rows read from the live chain. If an edit ever makes
+// that fixture fail, the edit has broken every hash ever written and the
+// fixture is what noticed. It is not a file to update until a test passes.
+// v2 (identity_events only, the per-citizen link) was ADDED beside it, not
+// written over it: every v1 row verifies under v1 exactly as before, and a
+// row's version is read off the row (rowPayloadVersion).
 //
 // Adding a version is deliberately separate from adding a field: retrofitting a
 // version tag onto the existing preimage would rename every commitment already
@@ -175,9 +227,68 @@ export const PAYLOAD_VERSIONS: Readonly<Record<number, PayloadVersion>> = {
     preimage: (table, prevHash, row) =>
       prevHash + "\n" + JSON.stringify(PAYLOAD[table].map((field) => row[field] ?? null)),
   },
+  2: {
+    fields: v2Fields,
+    preimage: (table, prevHash, row) => prevHash + "\n" + JSON.stringify(v2Fields(table).map((field) => row[field] ?? null)),
+  },
 };
 
+// v2 is defined for identity_events only: the ledger has no citizen to count.
+// Its array has six elements where v1's has four, so no v1 preimage can equal
+// a v2 preimage and the version is bound into the hashed bytes without a tag.
+function v2Fields(table: ChainedTable): readonly string[] {
+  if (table !== "identity_events") {
+    throw new Error(`chain payload version 2 is defined only for identity_events, not ${table}`);
+  }
+  return [...PAYLOAD.identity_events, ...CITIZEN_LINK_FIELDS];
+}
+
+// The default for entryHash and for every ledger row. It stays 1: v2 is not a
+// replacement for v1 but a second shape an identity row may take, and which
+// one a row has is read off the row (rowPayloadVersion), never assumed.
 export const CURRENT_PAYLOAD_VERSION = 1;
+export const CITIZEN_PAYLOAD_VERSION = 2;
+
+// A row's version is a fact about the row: an identity row carrying a
+// citizen_seq is v2, anything else is v1. There is no stored version column to
+// disagree with the data, and none is needed: the fields decide which preimage
+// is recomputed, and the hash binds them, so stripping citizen_seq off a v2 row
+// (or adding one to a v1 row) makes the row fail its own hash.
+export function rowPayloadVersion(table: ChainedTable, row: ChainRow): number {
+  return table === "identity_events" && row.citizen_seq != null ? CITIZEN_PAYLOAD_VERSION : 1;
+}
+
+// A chained row as served: the v2 link fields only where the row has them. A
+// v1 row keeps exactly the keys it was served with before v2 existed, so a
+// response over v1 rows is byte-identical and nothing already reading it (the
+// signed dossier core among them) sees a new key.
+export function servedChainRow<T extends Record<string, unknown>>(row: T): T {
+  if (row.citizen_seq != null || !("citizen_seq" in row || "citizen_prev" in row || "citizen_history" in row)) return row;
+  const { citizen_seq: _seq, citizen_prev: _prev, citizen_history: _hist, ...rest } = row;
+  return rest as T;
+}
+
+// The error a database raises for a read that names a v2 link column
+// before migration 0077 has run. Narrow on purpose: any other missing column is
+// a real defect and must not be swallowed as "not migrated yet".
+export function isMissingLinkColumn(e: unknown): boolean {
+  return /no such column: (\w+\.)?citizen_(seq|prev|history)\b/i.test(String(e));
+}
+
+// A read that serves the v2 link columns, tolerant of a deployment whose code
+// is ahead of migration 0077: `read` gets the column list to splice in
+// (", e.citizen_seq, e.citizen_prev, e.citizen_history" with alias "e."), and on "no such column"
+// it is retried once with an empty list. Without the columns no row can be v2,
+// so the v1 read is the whole truth, and a dossier or the events log must not
+// answer 500 over a logging column. Anything else is a real failure.
+export async function readWithLinkColumns<T>(read: (linkCols: string) => Promise<T>, alias = ""): Promise<T> {
+  try {
+    return await read(`, ${alias}citizen_seq, ${alias}citizen_prev, ${alias}citizen_history`);
+  } catch (e) {
+    if (!isMissingLinkColumn(e)) throw e;
+    return read("");
+  }
+}
 
 // FAILS CLOSED. An unknown version is refused, never quietly served by the
 // current one: a verifier that downgrades answers "verified" for a row whose
@@ -213,6 +324,17 @@ export interface ChainReport {
   head: string;
   broken_at?: number;
   reason?: string;
+  /**
+   * Payload v2, per citizen: v1 rows written for a citizen already on v2 that
+   * no later v2 row (in the rows checked) commits to yet. Each row's own hash
+   * still holds, so the CHAIN is not broken by one. The citizen's next v2 row
+   * counts, links and folds it, after which leaving it out of a dossier shows
+   * like any other omission; until then it carries no number, so leaving it
+   * out could not be seen. The known way to produce one is running a Worker
+   * that predates v2 (a rollback, or a gradual deploy) after a citizen
+   * switched. Present only when non-empty.
+   */
+  completeness_lost?: Array<{ citizen_id: unknown; event_id: unknown }>;
 }
 
 // The pure half — an array in, a verdict out. Kept free of the database so
@@ -222,15 +344,54 @@ export interface ChainReport {
 // ended on and the first row here must point at it. A non-genesis start also
 // means sealing has demonstrably begun, so an unsealed row in this page is a
 // break rather than a legacy row.
+//
+// `citizenSeed` carries payload v2's per-citizen state across the page
+// boundary: for each citizen, where its chain stood just before this page
+// (citizenStateBefore reads it). Without it a resumed page can only check the
+// links between rows it sees, and a citizen's first row on the page goes
+// unchecked; with it, that row's number and link are checked like any other.
+export interface CitizenChainState {
+  /** Hash of the citizen's last sealed row before this point. */
+  hash: string;
+  /** Its citizen_seq, or null when that row is v1. */
+  seq: number | null;
+  /** How many rows (sealed or legacy unsealed) the citizen has up to this point, when known. */
+  count: number | null;
+  /** The citizen_history digest over the citizen's rows up to this point (what the next v2 row must carry), when known. */
+  history: string | null;
+}
+
 export async function verifyRows(
   table: ChainedTable,
   rows: ChainRow[],
   startPrev: string = GENESIS,
+  citizenSeed?: ReadonlyMap<unknown, CitizenChainState>,
 ): Promise<ChainReport> {
   let prev = startPrev;
   let sealed = 0;
   let unsealed = 0;
   let sealingHasBegun = startPrev !== GENESIS;
+  // Per-citizen state for payload v2. From genesis the count of a citizen's
+  // rows (unsealed legacy rows included) is known, so the first v2 row must
+  // carry count + 1. On a
+  // resumed page it is known only for citizens in citizenSeed; for the rest
+  // only links between rows seen here are checked. Bounded by the number of
+  // citizens in the page.
+  const countKnown = startPrev === GENESIS;
+  const citizens = new Map<unknown, CitizenChainState>(citizenSeed ?? []);
+  // v1 rows after a citizen's v2 rows that no later v2 row has committed to
+  // yet, per citizen; a later v2 row that checks out clears its citizen's.
+  const pendingLost = new Map<unknown, Array<{ citizen_id: unknown; event_id: unknown }>>();
+  const lostList = () => [...pendingLost.values()].flat();
+  const broken = (id: number | undefined, reason: string): ChainReport => ({
+    ok: false,
+    sealed_entries: sealed,
+    unsealed_entries: unsealed,
+    head: prev,
+    broken_at: id,
+    reason,
+    ...(lostList().length ? { completeness_lost: lostList() } : {}),
+  });
 
   for (const row of rows) {
     // Bound to a local: narrowing on a mutable property does not survive the
@@ -251,6 +412,20 @@ export async function verifyRows(
         };
       }
       unsealed++;
+      if (table === "identity_events" && row.citizen_id != null) {
+        // Counted toward the citizen's first citizen_seq like any other row;
+        // no hash, so the link it leaves is still the last sealed one.
+        // Unsealed rows precede all sealing, so the citizen has no sealed row
+        // yet and its history is still H0 over the unsealed count.
+        const st = citizens.get(row.citizen_id);
+        const count = st ? (st.count !== null ? st.count + 1 : null) : countKnown ? 1 : null;
+        citizens.set(row.citizen_id, {
+          hash: st?.hash ?? GENESIS,
+          seq: st?.seq ?? null,
+          count,
+          history: count !== null ? await citizenHistoryStart(count) : null,
+        });
+      }
       continue;
     }
     sealingHasBegun = true;
@@ -264,7 +439,8 @@ export async function verifyRows(
         reason: "entry does not point at the previous entry — a row was removed, reordered, or spliced in",
       };
     }
-    if ((await entryHash(table, prev, row)) !== hash) {
+    const version = rowPayloadVersion(table, row);
+    if ((await entryHash(table, prev, row, version)) !== hash) {
       return {
         ok: false,
         sealed_entries: sealed,
@@ -274,11 +450,343 @@ export async function verifyRows(
         reason: "entry contents do not match its own hash — the row was edited after it was written",
       };
     }
+    if (table === "identity_events") {
+      // The per-citizen half of v2. Only v2 rows can fail it, so a chain with
+      // no v2 row verifies exactly as it did before v2 existed.
+      const st = citizens.get(row.citizen_id);
+      const historyBefore = st ? st.history : countKnown ? await citizenHistoryStart(0) : null;
+      if (version === CITIZEN_PAYLOAD_VERSION) {
+        const seq = Number(row.citizen_seq);
+        const expected = st ? (st.seq !== null ? st.seq + 1 : st.count !== null ? st.count + 1 : null) : countKnown ? 1 : null;
+        if (expected !== null && seq !== expected) {
+          return broken(
+            row.id,
+            `citizen_seq ${seq} is not ${expected}, the next number for citizen ${row.citizen_id} — one of that citizen's events was removed, reordered, or spliced in`,
+          );
+        }
+        const expectedPrev = st ? st.hash : countKnown ? GENESIS : null;
+        if (expectedPrev !== null && row.citizen_prev !== expectedPrev) {
+          return broken(row.id, `citizen_prev does not point at citizen ${row.citizen_id}'s previous event — one of that citizen's events was removed or reordered`);
+        }
+        if (historyBefore !== null && row.citizen_history !== historyBefore) {
+          return broken(
+            row.id,
+            `citizen_history does not match the digest of citizen ${row.citizen_id}'s earlier events — one of them was removed, changed, or added`,
+          );
+        }
+        // This row commits to every earlier row of the citizen, so any v1 row
+        // written after the citizen's previous v2 row is no longer lost.
+        pendingLost.delete(row.citizen_id);
+      } else if (st && st.seq !== null) {
+        // A v1 row for a citizen already on v2 (a Worker that predates v2).
+        // Not a chain break: the row hashes and links like any other. It takes
+        // the next number and is folded into the history, as the writer does
+        // (citizenLinkAfter), so the next v2 row commits to it; until one
+        // does, it is listed under completeness_lost.
+        const list = pendingLost.get(row.citizen_id) ?? [];
+        list.push({ citizen_id: row.citizen_id, event_id: row.id });
+        pendingLost.set(row.citizen_id, list);
+        citizens.set(row.citizen_id, {
+          hash,
+          seq: st.seq + 1,
+          count: st.count !== null ? st.count + 1 : null,
+          history: st.history !== null ? await citizenHistoryNext(st.history, hash) : null,
+        });
+        prev = hash;
+        sealed++;
+        continue;
+      }
+      // Unknown history (a resumed page, no seed): a v2 row's own
+      // citizen_history is the basis, so later rows on the page still link.
+      const basis = historyBefore ?? (version === CITIZEN_PAYLOAD_VERSION ? String(row.citizen_history) : null);
+      citizens.set(row.citizen_id, {
+        hash,
+        seq: version === CITIZEN_PAYLOAD_VERSION ? Number(row.citizen_seq) : null,
+        count: st ? (st.count !== null ? st.count + 1 : null) : countKnown ? 1 : null,
+        history: basis !== null ? await citizenHistoryNext(basis, hash) : null,
+      });
+    }
     prev = hash;
     sealed++;
   }
 
-  return { ok: true, sealed_entries: sealed, unsealed_entries: unsealed, head: prev };
+  const lost = lostList();
+  return { ok: true, sealed_entries: sealed, unsealed_entries: unsealed, head: prev, ...(lost.length ? { completeness_lost: lost } : {}) };
+}
+
+export interface CitizenHead {
+  seq: number;
+  hash: string;
+  event_id?: number;
+}
+
+export interface CitizenCompleteness {
+  /**
+   * true: complete as of the given checkpoint, as far as this check reaches
+   * (see below). false: something is missing or does not check out (gaps,
+   * problems). null: undetermined, because the input cannot decide it: a page
+   * that is not the last, a window that does not start at the citizen's
+   * beginning, no events_total or no checkpoint to count against, a citizen
+   * with no v2 events (presence only), or a sealed event without an inclusion
+   * proof (proof not an array, or leaf_index not a non-negative integer).
+   * null is never a pass.
+   *
+   * ok: true holds only TOGETHER with verify.mjs's inclusion-proof pass on the
+   * same file: this check sees that every sealed event carries a proof, not
+   * that each proof verifies against the signed checkpoint. A made-up event
+   * with a self-consistent hash is stopped by the proof, not by this check.
+   */
+  ok: boolean | null;
+  first_v2_seq: number | null;
+  /** The highest seq up to which every number is present and linked, or null. */
+  checked_through_seq: number | null;
+  /** Missing citizen_seq ranges, inclusive. Below first_v2_seq a range is a COUNT of missing earlier events, not which ones. */
+  gaps: Array<{ from: number; to: number }>;
+  /** events_total minus the events held, when the whole record was passed and it holds fewer; else 0. */
+  missing_events: number;
+  /** Ids of sealed events held without a usable inclusion proof: not yet checkpointed, or not real. */
+  unproven_events: unknown[];
+  /**
+   * Ids of v1 events after the citizen's switch to v2 (written by a Worker
+   * that predates v2) with no v2 event after them yet. A later v2 event
+   * commits to such an event; these, at the tail, are committed by nothing,
+   * so ok is null while any remain.
+   */
+  uncommitted_events: unknown[];
+  problems: string[];
+  /**
+   * True when the events passed are not the whole record (the dossier said
+   * events_has_more): nothing past the last event held was checked, so ok is
+   * null, not a gap. Join every page (follow next_events_since) and check the
+   * joined list.
+   */
+  more_pages: boolean;
+  /** The checkpoint a true verdict is relative to, as given. */
+  as_of: { tree_size: number; created_at: number } | null;
+  note: string;
+}
+
+// The dossier reader's check, and the reference for verify.mjs: given one
+// citizen's events as GET /api/record/:handle serves them (id order, no
+// citizen_id on each row, each with its leaf_index and proof), the dossier's
+// SIGNED events_total and checkpoint, and the served citizen_head, is
+// anything missing?
+//
+// It recomputes every sealed event's hash under the version the event itself
+// declares, then walks the v2 fields. A missing number is a gap; a present
+// number whose citizen_prev is not the previous event's hash, or whose
+// citizen_history is not the digest of everything held before it, is a
+// problem. citizen_seq counts ALL of the citizen's events, legacy unsealed
+// rows included, and citizen_history (defined at CITIZEN_LINK_FIELDS) folds
+// every earlier sealed hash in id order over a start that commits to the
+// number of unsealed rows. So the first v2 event commits to the exact set of
+// events before it, not only to their count and the last of them: dropping an
+// earlier event and refilling the count with a made-up legacy row or a real
+// event served twice changes the digest.
+//
+// THE TAIL. Numbers alone cannot show that the newest events were left out.
+// citizen_head cannot settle it either: it rides outside the signed core, and
+// its proof shows the event is in the log, not that it is the latest. What
+// settles it is events_total, inside the registry-signed core: with every page
+// joined from the start, the events held must number exactly events_total (the
+// LAST page's: an append between page reads raises it, which can fail an
+// honest join, never pass a short one), and the last citizen_seq must equal
+// it. Dropping a tail event then takes a signed, false events_total. That lie
+// is provable for an omitted event at or below the dossier's
+// checkpoint.tree_size (its inclusion proof against that signed checkpoint,
+// beside the signed dossier that does not count it). For events newer than
+// the checkpoint a short total reads like events written after the read, and
+// the registry chooses which checkpoint to serve: so a true verdict is
+// "complete as of checkpoint tree_size N, created_at T", and the reader should
+// compare that checkpoint's freshness with the independent witness files.
+//
+// Also refused: ids that do not strictly increase, a repeated hash or
+// leaf_index among sealed events (one real event served twice), an unsealed
+// event after a sealed one, and, when opts.sealedFromId is given (GET
+// /api/attest's sealed_from_id), an unsealed event at or above it. Legacy
+// unsealed rows enter the commitment only as a count: their contents were
+// never hashed and are the registry's word.
+//
+// Paging: a page that is not the last (opts.hasMore, the dossier's
+// events_has_more) answers ok: null with more_pages: true. A window that does
+// not start at the beginning (fromStart: false) can show gaps but never prove
+// completeness: ok null at best.
+export async function verifyCitizenEvents(
+  citizenId: number,
+  events: ReadonlyArray<Record<string, unknown>>,
+  head: CitizenHead | null,
+  opts: {
+    fromStart?: boolean;
+    hasMore?: boolean;
+    eventsTotal?: number;
+    checkpoint?: { tree_size: number; created_at: number } | null;
+    sealedFromId?: number;
+  } = {},
+): Promise<CitizenCompleteness> {
+  const fromStart = opts.fromStart !== false;
+  const morePages = opts.hasMore === true;
+  const wholeRecord = fromStart && !morePages;
+  const cp =
+    opts.checkpoint && Number.isInteger(opts.checkpoint.tree_size) && opts.checkpoint.tree_size >= 0
+      ? { tree_size: opts.checkpoint.tree_size, created_at: opts.checkpoint.created_at }
+      : null;
+  const gaps: Array<{ from: number; to: number }> = [];
+  const problems: string[] = [];
+  const unproven: unknown[] = [];
+  const seenHashes = new Set<string>();
+  const seenLeaves = new Set<number>();
+  let unsealedBefore = 0;
+  let before = 0; // events of any kind before the first v2 event
+  let lastSealedHash = GENESIS;
+  let history: string | null = fromStart ? await citizenHistoryStart(0) : null;
+  let seenSealed = false;
+  let prevId: number | null = null;
+  let firstSeq: number | null = null;
+  let last: { seq: number; hash: string } | null = null; // the citizen's position, v1 events after the switch included
+  let lastV2: { seq: number; hash: string } | null = null;
+  const uncommitted: unknown[] = [];
+  let contiguousThrough: number | null = null;
+
+  for (const e of events) {
+    const id = Number(e.id);
+    if (!Number.isFinite(id)) problems.push(`an event with no usable id (${String(e.id)})`);
+    else if (prevId !== null && !(id > prevId)) problems.push(`event ${e.id}: ids must strictly increase (previous ${prevId}); a repeated or reordered event`);
+    if (Number.isFinite(id)) prevId = id;
+    const hash = e.hash;
+    if (typeof hash !== "string") {
+      // Legacy unsealed: predates sealing, so it can only come before every
+      // sealed event; it counts toward citizen_seq and citizen_history's start.
+      if (seenSealed) problems.push(`event ${e.id}: an unsealed event after a sealed one; sealing never stops once begun`);
+      if (typeof opts.sealedFromId === "number" && id >= opts.sealedFromId) {
+        problems.push(`event ${e.id}: unsealed, but at or above the chain's sealed_from_id ${opts.sealedFromId}`);
+      }
+      if (firstSeq === null) {
+        before++;
+        unsealedBefore++;
+        if (history !== null) history = await citizenHistoryStart(unsealedBefore);
+      }
+      continue;
+    }
+    seenSealed = true;
+    if (seenHashes.has(hash)) problems.push(`event ${e.id}: its hash appears twice in this dossier; one real event served twice`);
+    seenHashes.add(hash);
+    const leaf = e.leaf_index;
+    const proven = Array.isArray(e.proof) && Number.isInteger(leaf) && (leaf as number) >= 0;
+    if (!proven) unproven.push(e.id);
+    else {
+      if (seenLeaves.has(leaf as number)) problems.push(`event ${e.id}: leaf_index ${leaf} appears twice in this dossier`);
+      seenLeaves.add(leaf as number);
+      if (cp && (leaf as number) >= cp.tree_size) problems.push(`event ${e.id}: leaf_index ${leaf} is outside the checkpoint (tree_size ${cp.tree_size})`);
+    }
+    const row: ChainRow = { ...e, citizen_id: citizenId };
+    const version = rowPayloadVersion("identity_events", row);
+    if ((await entryHash("identity_events", String(e.prev_hash), row, version)) !== hash) {
+      problems.push(`event ${e.id}: contents do not match its hash`);
+    }
+    if (version !== CITIZEN_PAYLOAD_VERSION) {
+      if (firstSeq !== null && last) {
+        // A v1 event after the switch (a Worker that predates v2 wrote it).
+        // It takes the next number and is folded into the history, as the
+        // writer does (citizenLinkAfter), so the next v2 event commits to it.
+        if (contiguousThrough === last.seq) contiguousThrough = last.seq + 1;
+        last = { seq: last.seq + 1, hash };
+        if (history !== null) history = await citizenHistoryNext(history, hash);
+        uncommitted.push(e.id);
+      } else if (firstSeq === null) {
+        before++;
+        lastSealedHash = hash;
+        if (history !== null) history = await citizenHistoryNext(history, hash);
+      }
+      continue;
+    }
+    const seq = Number(e.citizen_seq);
+    if (history !== null && e.citizen_history !== history) {
+      problems.push(`event ${e.id}: citizen_history is not the digest of the events held before it; an earlier event was left out, added, or changed`);
+    }
+    // A window not from the start takes its first v2 event's digest as given.
+    history = await citizenHistoryNext(history ?? String(e.citizen_history), hash);
+    if (firstSeq === null) {
+      firstSeq = seq;
+      if (fromStart) {
+        if (before < seq - 1) gaps.push({ from: before + 1, to: seq - 1 });
+        else if (before > seq - 1) problems.push(`event ${e.id}: citizen_seq ${seq} commits to ${seq - 1} earlier events but the dossier holds ${before}`);
+        else if (e.citizen_prev !== lastSealedHash) problems.push(`event ${e.id}: citizen_prev does not point at the citizen's previous sealed event`);
+        if (before === seq - 1) contiguousThrough = seq;
+      } else {
+        contiguousThrough = seq;
+      }
+    } else if (last) {
+      if (seq <= last.seq) {
+        problems.push(`event ${e.id}: citizen_seq ${seq} does not increase (previous ${last.seq})`);
+        continue;
+      }
+      if (seq > last.seq + 1) {
+        gaps.push({ from: last.seq + 1, to: seq - 1 });
+      } else {
+        if (e.citizen_prev !== last.hash) problems.push(`event ${e.id}: citizen_prev does not point at citizen_seq ${last.seq}`);
+        if (contiguousThrough === last.seq) contiguousThrough = seq;
+      }
+    }
+    last = { seq, hash };
+    lastV2 = { seq, hash };
+    uncommitted.length = 0; // this event commits to every event before it
+  }
+
+  // The count against the signed core: the only check that sees a dropped tail.
+  let missing = 0;
+  const counted = wholeRecord && typeof opts.eventsTotal === "number";
+  if (counted) {
+    const total = opts.eventsTotal as number;
+    if (events.length < total) {
+      missing = total - events.length;
+      problems.push(`the dossier holds ${events.length} events but its signed events_total is ${total}: ${missing} left out`);
+    } else if (events.length > total) {
+      problems.push(`the dossier holds ${events.length} events but its signed events_total is only ${total}`);
+    }
+    if (last && last.seq !== total) {
+      problems.push(`the last citizen_seq is ${last.seq} but the signed events_total is ${total}; once every event is v2-numbered they must be equal`);
+    }
+  }
+
+  // citizen_head: outside the signed core, so it can only add findings, never
+  // supply the proof of the tail (the count above does that).
+  if (head && lastV2 && lastV2.seq > head.seq) {
+    problems.push(`the dossier holds citizen_seq ${lastV2.seq}, past citizen_head ${head.seq}: the head is stale`);
+  } else if (wholeRecord && head) {
+    if (!lastV2 || lastV2.seq < head.seq) {
+      gaps.push({ from: lastV2 ? lastV2.seq + 1 : (firstSeq ?? 1), to: head.seq });
+    } else if (lastV2.hash !== head.hash) {
+      problems.push(`citizen_head names seq ${head.seq} with a hash that is not the dossier's event at that number`);
+    }
+  } else if (wholeRecord && lastV2 && !head) {
+    problems.push("the dossier holds v2 events but no citizen_head");
+  }
+
+  const failed = gaps.length > 0 || problems.length > 0;
+  const ok: boolean | null = failed ? false : !counted || !cp || firstSeq === null || unproven.length > 0 || uncommitted.length > 0 ? null : true;
+  let note: string;
+  if (failed) note = "incomplete or inconsistent: see gaps (missing numbers), missing_events (events the signed events_total counts that are not here) and problems";
+  else if (morePages) note = `undetermined: more pages. Everything held here checks out${contiguousThrough !== null ? ` (contiguous through citizen_seq ${contiguousThrough})` : ""}; join every page (next_events_since) and check the joined list against the last page's events_total`;
+  else if (!fromStart) note = "undetermined: this window does not start at the citizen's first event, so no count can prove it complete; it shows no gap";
+  else if (!counted) note = "undetermined: pass the dossier's signed events_total; without it a dropped tail cannot be told from a short record";
+  else if (firstSeq === null) note = `undetermined: no v2 events, so the dossier proves presence, not completeness. The count matches its signed events_total (${events.length})`;
+  else if (!cp) note = "undetermined: pass the dossier's checkpoint (tree_size, created_at); a verdict is only ever complete as of a checkpoint";
+  else if (unproven.length > 0) note = `undetermined: ${unproven.length} sealed event(s) carry no usable inclusion proof (ids ${unproven.join(", ")})${unproven.includes(events[events.length - 1]?.id) ? ", the newest among them" : ""}. An unproven event could be made up with a self-consistent hash; read the dossier again after the next checkpoint`;
+  else if (uncommitted.length > 0) note = `undetermined: the newest event(s) (ids ${uncommitted.join(", ")}) are v1 events written after the switch to v2 by a Worker that predates it, and no v2 event after them commits to them yet; read the dossier again after the citizen's next event`;
+  else note = `complete as of checkpoint tree_size ${cp.tree_size}, created_at ${cp.created_at}, given two things this check does not do itself: verify.mjs's inclusion-proof pass on the same file, and the global chain verifying under the v2 rules (verifyRows over GET /api/events from genesis; a registry that wrote a citizen's first v2 event with a number, link or history skipping an earlier event is caught only by that walk). All ${events.length} events the signed events_total counts are here, each sealed one carries a proof, every citizen_seq from ${firstSeq} to ${last!.seq} is present and linked, and citizen_history commits to every earlier sealed event. Legacy unsealed events are committed only by their count: their contents were never hashed and are the registry's word. Compare that checkpoint's freshness with the witness files`;
+  return {
+    ok,
+    first_v2_seq: firstSeq,
+    checked_through_seq: firstSeq === null ? null : contiguousThrough,
+    gaps,
+    missing_events: missing,
+    unproven_events: unproven,
+    uncommitted_events: [...uncommitted],
+    problems,
+    more_pages: morePages,
+    as_of: ok === true ? cp : null,
+    note,
+  };
 }
 
 // Append one row, sealed to the current head.
@@ -323,34 +831,160 @@ function isUniqueViolation(e: unknown): boolean {
 }
 
 // SQLite names the offending columns: "UNIQUE constraint failed: ledger.prev_hash".
-// Only the two chain columns mean "the head moved"; everything else is a
-// permanent duplicate. Unknown/garbled messages are treated as permanent,
+// Only the chain columns mean "the head moved" (prev_hash/hash for the global
+// chain, citizen_seq for one citizen's v2 link: "UNIQUE constraint failed:
+// identity_events.citizen_id, identity_events.citizen_seq"); everything else is
+// a permanent duplicate. Unknown/garbled messages are treated as permanent,
 // because retrying a write that already succeeded is the dangerous direction.
 export function isChainRaceViolation(e: unknown): boolean {
   const msg = String(e);
-  return /\b\w+\.(prev_hash|hash)\b/.test(msg) || /idx_\w+_(prev|hash)\b/.test(msg);
+  return /\b\w+\.(prev_hash|hash|citizen_seq)\b/.test(msg) || /idx_\w+_(prev|hash|citizen_seq)\b/.test(msg);
+}
+
+// Whether new identity rows may START a citizen on payload v2. Off by default:
+// a v2 row hashes seven fields where a checker following the v1 how_to_verify
+// recipe recomputes four, so such a checker reports a v2 row as tampered until
+// it learns rowPayloadVersion. The offline verify.mjs --dossier is unaffected
+// (it checks the core signature and each event hash's inclusion proof, never
+// recomputing an event hash), but it also does not check completeness until it
+// learns verifyCitizenEvents, which is when turning this on starts to buy
+// anything. Turning it on is the maintainer's call (env CHAIN_CITIZEN_SEQ=on).
+// Once a citizen HAS a v2 row, their later rows are v2 whatever this says (see
+// citizenLink); a Worker that predates v2 is the one thing that can still
+// write them a v1 row (see CHAIN_CITIZEN_SEQ in src/society.ts).
+export interface AppendOptions {
+  citizenSeq?: boolean;
+}
+
+// The next (citizen_seq, citizen_prev) for an identity row, or null for v1.
+//
+// Must be read AFTER the global head, in the same attempt: any row committed
+// after our global read would have taken our prev_hash, so the insert loses on
+// idx_identity_events_prev and the attempt re-reads both. The unique index on
+// (citizen_id, citizen_seq) is the second guard, for a number read stale.
+//
+// The ratchet: a citizen whose latest v2 row exists stays on v2 even with the
+// switch off. A v1 row after a v2 row can still exist (a Worker that predates
+// v2, after a rollback or during a gradual deploy). It carries no number of its
+// own, so the next v2 row commits to it: that row's number counts it, its
+// citizen_prev is it, and its citizen_history folds it. Leaving it out of a
+// dossier then shows like any other omission; only such a row with no v2 row
+// after it yet is uncommitted, and verifyRows reports that one under
+// completeness_lost. The first v2 row counts ALL the
+// citizen's earlier rows, legacy unsealed ones included, so its number commits
+// to how many events of any kind came before it: a dossier that holds fewer is
+// short, and one padded with an unsealed row in place of a dropped event is
+// long by exactly that row. A stranger holding the log can check the count.
+async function citizenLink(
+  db: D1Database,
+  row: ChainRow,
+  opts: AppendOptions,
+): Promise<{ citizen_seq: number; citizen_prev: string; citizen_history: string } | null> {
+  const citizenId = row.citizen_id;
+  if (citizenId == null) return null;
+  let last: { id: number; citizen_seq: number; hash: string; citizen_history: string } | null;
+  try {
+    last = await db
+      .prepare(
+        "SELECT id, citizen_seq, hash, citizen_history FROM identity_events WHERE citizen_id = ? AND citizen_seq IS NOT NULL ORDER BY citizen_seq DESC LIMIT 1",
+      )
+      .bind(citizenId)
+      .first<{ id: number; citizen_seq: number; hash: string; citizen_history: string }>();
+  } catch (e) {
+    // Code deployed before migration 0077: no column, so no citizen can be on
+    // v2 yet. Write v1 rather than fail the identity act the row records (a
+    // failed key rotation here would be a citizen locked out by a logging
+    // column). Anything else is a real failure.
+    if (isMissingLinkColumn(e)) return null;
+    throw e;
+  }
+  if (last) {
+    // Rows of this citizen after its latest v2 row: normally none, one seek
+    // through idx_identity_events_citizen_id. Any found are v1 rows an older
+    // Worker wrote, and this row commits to them.
+    const { results: after } = await db
+      .prepare("SELECT hash FROM identity_events WHERE citizen_id = ? AND id > ? ORDER BY id ASC")
+      .bind(citizenId, last.id)
+      .all<{ hash: string | null }>();
+    return citizenLinkAfter(last, after.map((r) => r.hash));
+  }
+  if (!opts.citizenSeq) return null;
+  // The switch: once per citizen, every earlier row of theirs in id order,
+  // for the count, the last sealed hash, and the history digest.
+  const { results: prior } = await db
+    .prepare("SELECT hash FROM identity_events WHERE citizen_id = ? ORDER BY id ASC")
+    .bind(citizenId)
+    .all<{ hash: string | null }>();
+  return citizenSwitchLink(prior.map((r) => r.hash));
+}
+
+// The next v2 link after a citizen's latest v2 row, given the hashes of any
+// rows of theirs written after it (v1 rows from a Worker that predates v2), in
+// id order: each counts toward citizen_seq, the last becomes citizen_prev, and
+// citizen_history folds through them, exactly as for rows before the switch.
+export async function citizenLinkAfter(
+  last: { citizen_seq: number; hash: string; citizen_history: string },
+  laterHashes: ReadonlyArray<string | null>,
+): Promise<{ citizen_seq: number; citizen_prev: string; citizen_history: string }> {
+  let history = await citizenHistoryNext(last.citizen_history, last.hash);
+  let prev = last.hash;
+  let seq = Number(last.citizen_seq) + 1;
+  for (const h of laterHashes) {
+    seq++;
+    if (typeof h !== "string") continue; // cannot happen after sealing began; counted, not folded
+    history = await citizenHistoryNext(history, h);
+    prev = h;
+  }
+  return { citizen_seq: seq, citizen_prev: prev, citizen_history: history };
+}
+
+// The first v2 link for a citizen whose earlier rows' hashes (null for a
+// legacy unsealed row) are given in id order: citizen_seq counts them all,
+// citizen_prev is the last sealed one, citizen_history folds them as defined
+// at CITIZEN_LINK_FIELDS.
+export async function citizenSwitchLink(
+  hashes: ReadonlyArray<string | null>,
+): Promise<{ citizen_seq: number; citizen_prev: string; citizen_history: string }> {
+  const sealedHashes = hashes.filter((h): h is string => typeof h === "string");
+  let history = await citizenHistoryStart(hashes.length - sealedHashes.length);
+  for (const h of sealedHashes) history = await citizenHistoryNext(history, h);
+  return {
+    citizen_seq: hashes.length + 1,
+    citizen_prev: sealedHashes[sealedHashes.length - 1] ?? GENESIS,
+    citizen_history: history,
+  };
+}
+
+// The columns and the row actually written for one attempt: v1 as before, or
+// v2 with the two link fields hashed and stored.
+async function linkedRow(db: D1Database, table: ChainedTable, row: ChainRow, opts: AppendOptions) {
+  const link = table === "identity_events" ? await citizenLink(db, row, opts) : null;
+  const full: ChainRow = link ? { ...row, ...link } : row;
+  const hashed = link ? PAYLOAD_VERSIONS[CITIZEN_PAYLOAD_VERSION].fields(table) : PAYLOAD[table];
+  return { link, full, hashed, version: link ? CITIZEN_PAYLOAD_VERSION : CURRENT_PAYLOAD_VERSION };
 }
 
 export async function appendChained(
   db: D1Database,
   table: ChainedTable,
   row: ChainRow,
-): Promise<{ prev_hash: string; hash: string }> {
-  const cols = [...PAYLOAD[table], ...(UNHASHED[table] ?? [])];
-  const placeholders = cols.map(() => "?").join(", ");
-
+  opts: AppendOptions = {},
+): Promise<{ prev_hash: string; hash: string; citizen_seq?: number; citizen_prev?: string; citizen_history?: string }> {
   for (let attempt = 0; attempt < 4; attempt++) {
     const head = await db
       .prepare(`SELECT hash FROM ${table} WHERE hash IS NOT NULL ORDER BY id DESC LIMIT 1`)
       .first<{ hash: string }>();
     const prev = head?.hash ?? GENESIS;
-    const hash = await entryHash(table, prev, row);
+    const { link, full, hashed, version } = await linkedRow(db, table, row, opts);
+    const cols = [...hashed, ...(UNHASHED[table] ?? [])];
+    const placeholders = cols.map(() => "?").join(", ");
+    const hash = await entryHash(table, prev, full, version);
     try {
       await db
         .prepare(`INSERT INTO ${table} (${cols.join(", ")}, prev_hash, hash) VALUES (${placeholders}, ?, ?)`)
-        .bind(...cols.map((field) => row[field] ?? null), prev, hash)
+        .bind(...cols.map((field) => full[field] ?? null), prev, hash)
         .run();
-      return { prev_hash: prev, hash };
+      return { prev_hash: prev, hash, ...(link ?? {}) };
     } catch (e) {
       if (!isUniqueViolation(e)) throw e;
       // Two different UNIQUE indexes can fire here and they mean OPPOSITE
@@ -394,13 +1028,15 @@ export async function appendChainedStmt(
   table: ChainedTable,
   row: ChainRow,
   guard?: ChainGuard,
-): Promise<{ stmt: D1PreparedStatement; prev_hash: string; hash: string }> {
-  const cols = PAYLOAD[table];
-  const placeholders = cols.map(() => "?").join(", ");
+  opts: AppendOptions = {},
+): Promise<{ stmt: D1PreparedStatement; prev_hash: string; hash: string; citizen_seq?: number; citizen_prev?: string; citizen_history?: string }> {
   const head = await db.prepare(`SELECT hash FROM ${table} WHERE hash IS NOT NULL ORDER BY id DESC LIMIT 1`).first<{ hash: string }>();
   const prev = head?.hash ?? GENESIS;
-  const hash = await entryHash(table, prev, row);
-  const values = [...cols.map((field) => row[field] ?? null), prev, hash];
+  // After the global head, for the reason given at citizenLink.
+  const { link, full, hashed: cols, version } = await linkedRow(db, table, row, opts);
+  const placeholders = cols.map(() => "?").join(", ");
+  const hash = await entryHash(table, prev, full, version);
+  const values = [...cols.map((field) => full[field] ?? null), prev, hash];
   // The guard decides WHETHER the row is written. It never touches WHAT is
   // hashed: the preimage is computed above, before this branch, and is
   // byte-identical on both paths. Unguarded callers keep the exact VALUES
@@ -414,7 +1050,7 @@ export async function appendChainedStmt(
     : db
         .prepare(`INSERT INTO ${table} (${cols.join(", ")}, prev_hash, hash) VALUES (${placeholders}, ?, ?)`)
         .bind(...values);
-  return { stmt, prev_hash: prev, hash };
+  return { stmt, prev_hash: prev, hash, ...(link ?? {}) };
 }
 
 // How many rows one /api/attest call will verify. A bound is necessary — a
@@ -437,11 +1073,26 @@ async function readChainPage(
   table: ChainedTable,
   fromId: number,
 ): Promise<{ rows: ChainRow[]; hasMore: boolean }> {
-  const cols = PAYLOAD[table];
-  const { results } = await db
-    .prepare(`SELECT id, ${cols.join(", ")}, prev_hash, hash FROM ${table} WHERE id > ? ORDER BY id ASC LIMIT ?`)
-    .bind(fromId, VERIFY_PAGE + 1)
-    .all<ChainRow>();
+  // Identity rows also carry the v2 link columns, NULL on every v1 row; a row
+  // is recomputed under whichever version its own fields declare.
+  const page = (cols: readonly string[]) =>
+    db
+      .prepare(`SELECT id, ${cols.join(", ")}, prev_hash, hash FROM ${table} WHERE id > ? ORDER BY id ASC LIMIT ?`)
+      .bind(fromId, VERIFY_PAGE + 1)
+      .all<ChainRow>();
+  let results: ChainRow[];
+  if (table === "identity_events") {
+    try {
+      ({ results } = await page(PAYLOAD_VERSIONS[CITIZEN_PAYLOAD_VERSION].fields(table)));
+    } catch (e) {
+      // Before migration 0077 there are no link columns and so no v2 rows:
+      // the v1 read is the whole truth, and attest must not go dark over it.
+      if (!isMissingLinkColumn(e)) throw e;
+      ({ results } = await page(PAYLOAD[table]));
+    }
+  } else {
+    ({ results } = await page(PAYLOAD[table]));
+  }
   return { rows: results.slice(0, VERIFY_PAGE), hasMore: results.length > VERIFY_PAGE };
 }
 
@@ -592,6 +1243,124 @@ export interface TableAttestation extends ChainReport {
   legacy_manifest: LegacyManifestBlock;
 }
 
+// Where each citizen on a resumed identity page stood just before it (ids <= from),
+// so verifyRows checks a citizen's first row on the page against its real
+// predecessor instead of skipping it. Two reads over the page's citizens,
+// SEED_CHUNK ids per statement, never one statement per citizen:
+//   1. every citizen's latest v2 row before the page, through the unique
+//      (citizen_id, citizen_seq) index, and any of that citizen's rows after it
+//      but still before the page (v1 rows an older Worker wrote; normally
+//      none, one range seek through idx_identity_events_citizen_id): the
+//      citizen's next row is checked against them as the writer computed it
+//      (citizenLinkAfter);
+//   2. only for citizens with no v2 row before the page but one on it (the
+//      page holds their switch to v2): every earlier row's hash in id order,
+//      for the count, the last sealed link and the citizen_history digest
+//      the first v2 row commits to (citizenSwitchLink, as the writer does).
+// A citizen absent from both keeps the old behaviour (links within the page).
+// Before migration 0077 there are no v2 rows and nothing to seed.
+//
+// COST, per resumed identity page (up to VERIFY_PAGE = 20,000 rows): two
+// statements per 90 citizens on the page for read 1 (about 54 at 2,400
+// citizens; the second returns rows only for citizens with v1 rows after
+// their latest v2 row, normally none) plus, only for citizens switching to v2 on that page, one per 90 of
+// those for read 2 (at most about 27 more, in practice a handful; it returns
+// those citizens' earlier rows, once each, as the writer read them). They are
+// separate round trips, issued concurrently (Promise.all), not one D1 batch:
+// the D1 stand-ins the existing attest tests use implement prepare but not
+// batch, and these reads need no shared snapshot (rows at or below `from` do
+// not change under an append). A first page (from = 0) reads nothing extra.
+// Ids per seeding statement, under D1's 100 bound parameters with the cursor
+// binds beside them. A short chunk is padded with its last id (IN ignores the
+// repeat), so every statement has one shape.
+const SEED_CHUNK = 90;
+
+function seedChunks(ids: number[]): number[][] {
+  const out: number[][] = [];
+  for (let i = 0; i < ids.length; i += SEED_CHUNK) {
+    const chunk = ids.slice(i, i + SEED_CHUNK);
+    while (chunk.length < SEED_CHUNK) chunk.push(chunk[chunk.length - 1]);
+    out.push(chunk);
+  }
+  return out;
+}
+const SEED_IN = `(${Array.from({ length: SEED_CHUNK }, () => "?").join(", ")})`;
+
+export async function citizenStateBefore(
+  db: D1Database,
+  rows: ChainRow[],
+  from: number,
+): Promise<Map<unknown, CitizenChainState>> {
+  const seed = new Map<unknown, CitizenChainState>();
+  const firstOnPage = new Map<number, ChainRow>();
+  const v2OnPage = new Set<number>();
+  for (const r of rows) {
+    if (r.hash == null || r.citizen_id == null) continue;
+    const c = Number(r.citizen_id);
+    if (!firstOnPage.has(c)) firstOnPage.set(c, r);
+    if (r.citizen_seq != null) v2OnPage.add(c);
+  }
+  if (firstOnPage.size === 0) return seed;
+  type Latest = { citizen_id: number; citizen_seq: number; hash: string; citizen_history: string | null };
+  let latest: Latest[];
+  try {
+    const stmts = seedChunks([...firstOnPage.keys()]).map((ids) =>
+      db
+        .prepare(
+          `SELECT c.id AS citizen_id, e.citizen_seq, e.hash, e.citizen_history FROM citizens c
+             JOIN identity_events e ON e.id = (SELECT x.id FROM identity_events x WHERE x.citizen_id = c.id AND x.citizen_seq IS NOT NULL AND x.id <= ? ORDER BY x.citizen_seq DESC LIMIT 1)
+            WHERE c.id IN ${SEED_IN}`,
+        )
+        .bind(from, ...ids),
+    );
+    latest = (await Promise.all(stmts.map((s) => s.all<Latest>()))).flatMap((r) => r.results ?? []);
+  } catch (e) {
+    if (isMissingLinkColumn(e)) return seed;
+    throw e;
+  }
+  // Only a row that really is v2 can seed a v2 state.
+  const onV2 = latest.filter((l) => l.citizen_seq != null && typeof l.hash === "string" && typeof l.citizen_history === "string");
+  const afterLatest = new Map<number, Array<string | null>>(onV2.map((l) => [Number(l.citizen_id), []]));
+  if (onV2.length) {
+    type After = { citizen_id: number; hash: string | null };
+    const stmts = seedChunks(onV2.map((l) => Number(l.citizen_id))).map((ids) =>
+      db
+        .prepare(
+          `SELECT x.citizen_id, x.hash FROM identity_events x
+            WHERE x.citizen_id IN ${SEED_IN} AND x.id <= ?
+              AND x.id > (SELECT y.id FROM identity_events y WHERE y.citizen_id = x.citizen_id AND y.citizen_seq IS NOT NULL AND y.id <= ? ORDER BY y.citizen_seq DESC LIMIT 1)
+            ORDER BY x.citizen_id, x.id`,
+        )
+        .bind(...ids, from, from),
+    );
+    for (const a of (await Promise.all(stmts.map((s) => s.all<After>()))).flatMap((r) => r.results ?? [])) {
+      afterLatest.get(Number(a.citizen_id))?.push(a.hash);
+    }
+  }
+  for (const l of onV2) {
+    const next = await citizenLinkAfter({ citizen_seq: l.citizen_seq, hash: l.hash, citizen_history: String(l.citizen_history) }, afterLatest.get(Number(l.citizen_id)) ?? []);
+    seed.set(Number(l.citizen_id), { hash: next.citizen_prev, seq: next.citizen_seq - 1, count: null, history: next.citizen_history });
+  }
+  const switching = [...v2OnPage].filter((c) => !seed.has(c));
+  if (switching.length) {
+    type Before = { citizen_id: number; hash: string | null };
+    const stmts = seedChunks(switching).map((ids) =>
+      db
+        .prepare(`SELECT citizen_id, hash FROM identity_events WHERE citizen_id IN ${SEED_IN} AND id <= ? ORDER BY citizen_id, id`)
+        .bind(...ids, from),
+    );
+    const earlier = new Map<number, Array<string | null>>(switching.map((c) => [c, []]));
+    for (const b of (await Promise.all(stmts.map((s) => s.all<Before>()))).flatMap((r) => r.results ?? [])) {
+      earlier.get(Number(b.citizen_id))?.push(b.hash);
+    }
+    for (const [c, hashes] of earlier) {
+      const link = await citizenSwitchLink(hashes);
+      seed.set(c, { hash: link.citizen_prev, seq: null, count: hashes.length, history: link.citizen_history });
+    }
+  }
+  return seed;
+}
+
 async function attestTable(
   db: D1Database,
   table: ChainedTable,
@@ -627,7 +1396,12 @@ async function attestTable(
     anchorId = a?.id ?? null;
   }
 
-  const report = await verifyRows(table, rows, anchor);
+  const report = await verifyRows(
+    table,
+    rows,
+    anchor,
+    table === "identity_events" && from > 0 ? await citizenStateBefore(db, rows, from) : undefined,
+  );
   // Absolute, never windowed: how many rows sit below sealed_from_id. The
   // note has always been describing this and the endpoint only published the
   // windowed one (sabertooth, #853).

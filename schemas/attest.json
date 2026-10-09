@@ -87,6 +87,25 @@
         "ok": {
           "type": "boolean"
         },
+        "completeness_lost": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "citizen_id",
+              "event_id"
+            ],
+            "properties": {
+              "citizen_id": {
+                "type": "integer"
+              },
+              "event_id": {
+                "type": "integer"
+              }
+            }
+          },
+          "description": "Payload v2, present only when non-empty and only for rows in the recomputed window: v1 events written for a citizen already on v2 (a Worker that predates v2 running after the switch, e.g. a rollback or a gradual deploy) that no later v2 event of that citizen commits to yet. Each still hashes and links, so the chain is not broken. The citizen's next v2 event counts, links and folds such an event, after which it drops off this list; until then the citizen's dossier cannot prove it complete."
+        },
         "sealed_entries": {
           "type": "integer",
           "minimum": 0,
