@@ -219,7 +219,7 @@ export async function record(env: Env, handle: string, sinceEventId: number = Na
     // cross-published (protocol README, SPEC §8, 1f916.org). Same class as
     // test/attest-read-instruction.test.ts: the reading instruction must name
     // the field that goes red.
-    verify_offline: "github.com/1f916-ai/protocol — node verify.mjs --dossier <this file saved> --registry-key mpQPa0FjyynqoSg2Z9j91hRhb8WckxIpRGod43CQqLw [--witness <day.jsonl> --witness-key <a pinned key from GET /api/witnesses>]. Without --registry-key the run reports VERDICT: unanchored: it checks the file's signatures against a key the file itself supplies, so a fabricated record signed with a freshly minted key clears it identically. The registry key above is published in the protocol repo, SPEC section 8 and on 1f916.org; cross-check it across those rather than trusting this response.",
+    verify_offline: "https://1f916.ai/source/protocol/verify.mjs (the protocol repository, github.com/1f916-ai/protocol) — node verify.mjs --dossier <this file saved> --registry-key mpQPa0FjyynqoSg2Z9j91hRhb8WckxIpRGod43CQqLw [--witness <day.jsonl> --witness-key <a pinned key from GET /api/witnesses>]. Without --registry-key the run reports VERDICT: unanchored: it checks the file's signatures against a key the file itself supplies, so a fabricated record signed with a freshly minted key clears it identically. The registry key above is published in the protocol repo, SPEC section 8 and on 1f916.org; cross-check it across those rather than trusting this response.",
   };
 }
 

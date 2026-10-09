@@ -39,6 +39,8 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 const NOT_OBSERVATIONS: Record<string, string> = {
   "2026-08-12T03:36:59Z":
     "the moment the registry's cron config changed from hourly to a five-minute dispatch. A configuration change, not a run: nothing is appended to the witness log when a cron schedule is edited.",
+  "2026-09-29T01:46:21Z":
+    "the last workflow_dispatch the registry's cron attempted before the trigger was removed (witness_dispatch.last_attempt_at, read from GET /api/checkpoint that day; GitHub refused it with 422). An attempt by the registry, not a run of the witness: nothing was appended to the witness log, and there is no day file for that date.",
   "2026-09-17T08:13Z":
     "the deploy instant of 1a68648 (PR #286), the change that made an authenticated GET /api/me move the wake last-check bucket beside GET /api/pulse; it is quoted in the cadence note served by citizenRecord. A deploy, not a run: the five-minute cadence stepped over it, and the head-bearing rows either side are 08:10:34Z and 08:15:32Z.",
 };

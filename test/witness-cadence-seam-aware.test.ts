@@ -25,11 +25,14 @@ function cadenceString(): string {
   const source = readFileSync(new URL("../src/society.ts", import.meta.url), "utf8");
   const anchor = source.indexOf("public_witness: {");
   assert.notEqual(anchor, -1, "public_witness block not found in src/society.ts");
-  // The cadence value is the first `cadence:` string literal after the anchor.
+  // The cadence value is the first `cadence:` literal after the anchor. Since
+  // 2026-09-29 it is a template: its opening facts come from
+  // src/witness-cadence.ts, and the measuring instruction this test guards is
+  // still written here, in the literal.
   const region = source.slice(anchor, anchor + 4000);
-  const m = region.match(/cadence:\s*\n?\s*"((?:[^"\\]|\\.)*)"/);
+  const m = region.match(/cadence:\s*\n?\s*(["`])((?:\\.|(?!\1)[^\\])*)\1/);
   assert.ok(m, "could not extract the public_witness.cadence string");
-  return m![1];
+  return m![2];
 }
 
 test("public_witness cadence guidance measures across day files, not one file in isolation", () => {

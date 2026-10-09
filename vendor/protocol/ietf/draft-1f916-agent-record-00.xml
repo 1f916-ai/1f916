@@ -1,0 +1,319 @@
+<?xml version="1.0" encoding="utf-8"?>
+<?xml-model href="rfc7991bis.rnc"?>
+<rfc xmlns:xi="http://www.w3.org/2001/XInclude"
+     category="info"
+     docName="draft-1f916-agent-record-00"
+     ipr="trust200902"
+     submissionType="independent"
+     tocInclude="true"
+     sortRefs="true"
+     symRefs="true"
+     version="3">
+
+  <front>
+    <title abbrev="Agent Record">The Agent Record: Transparent, Witness-Countersigned Event Logs for AI Agent Identity, History, and Memory</title>
+    <seriesInfo name="Internet-Draft" value="draft-1f916-agent-record-00"/>
+    <author fullname="1F916 Maintainer" surname="Maintainer" initials="">
+      <organization>The 1F916 Protocol Project</organization>
+      <address>
+        <email>1f916.ai@gmail.com</email>
+        <uri>https://1f916.org</uri>
+      </address>
+    </author>
+    <date year="2026" month="August" day="12"/>
+    <area>Security</area>
+    <keyword>AI agents</keyword>
+    <keyword>transparency</keyword>
+    <keyword>Merkle tree</keyword>
+    <keyword>witness</keyword>
+    <keyword>SCITT</keyword>
+
+    <abstract>
+      <t>Autonomous AI agents increasingly act as economic parties: they are
+      hired, they pay, and they make claims about their own past conduct. No
+      deployed standard lets a relying party verify an agent's identity
+      continuity, the integrity of its claimed history, or the intactness of
+      its persisted memory without trusting the agent's operator or
+      platform.</t>
+      <t>This document describes the Agent Record architecture: per-agent
+      append-only event logs bound to Ed25519 keys, checkpointed with signed
+      Merkle tree heads following the RFC 6962 construction, countersigned by
+      independent witnesses, and exported as portable, offline-verifiable
+      dossiers. Memory integrity is anchored by hash commitments recorded in
+      the log, allowing an agent's future sessions, and any third party, to
+      detect tampering with persisted state. The architecture is deployed in
+      production at a founding registry; this document records its wire
+      formats and security model to invite independent implementation and
+      review, and to align terminology with the SCITT architecture, of which
+      this system is an application-specific instance.</t>
+    </abstract>
+  </front>
+
+  <middle>
+    <section anchor="intro">
+      <name>Introduction</name>
+      <section anchor="gap">
+        <name>The Gap</name>
+        <t>Existing and emerging agent-stack standards address capability
+        access (MCP), inter-agent messaging (A2A), machine payments
+        (x402/AP2), and operator-level request authentication (Web Bot
+        Auth). None provides:</t>
+        <ol>
+          <li><strong>Identity continuity</strong>: proof that the agent
+          presenting a name today is cryptographically the same principal
+          that acted under that name before.</li>
+          <li><strong>History integrity</strong>: proof that an agent's
+          claimed track record was recorded at the times claimed and has not
+          been rewritten, reordered, or selectively deleted.</li>
+          <li><strong>Memory integrity</strong>: proof that state an agent
+          persists between sessions is byte-identical, at load time, to what
+          was stored, against modification by any party with storage access,
+          including the agent's own operator.</li>
+        </ol>
+      </section>
+      <section anchor="lineage">
+        <name>Design Lineage</name>
+        <t>The construction is Certificate Transparency <xref
+        target="RFC6962"/> applied to per-agent event logs rather than X.509
+        certificates, and is an application-specific instance of the SCITT
+        architecture <xref target="RFC9902"/>: registries are transparency
+        services, agents are issuers, sealed events are signed statements,
+        checkpoints are tree heads, receipts attest registration, and
+        independent witnesses bound equivocation. No consensus protocol,
+        distributed ledger, or fee mechanism is used or required.</t>
+      </section>
+    </section>
+
+    <section anchor="terms">
+      <name>Conventions and Terminology</name>
+      <t>The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT",
+      "SHOULD", "SHOULD NOT", "RECOMMENDED", "NOT RECOMMENDED", "MAY", and
+      "OPTIONAL" in this document are to be interpreted as described in
+      BCP 14 <xref target="RFC2119"/> <xref target="RFC8174"/> when, and only
+      when, they appear in all capitals, as shown here.</t>
+      <dl>
+        <dt>Agent:</dt>
+        <dd>An autonomous software principal identified by one or more
+        signing keys.</dd>
+        <dt>Registry:</dt>
+        <dd>A service maintaining append-only event logs for agents and
+        issuing signed checkpoints. A registry is NOT a trusted party.</dd>
+        <dt>Event:</dt>
+        <dd>An append-only log entry. Each event carries the hash of its
+        predecessor.</dd>
+        <dt>Checkpoint:</dt>
+        <dd>A signed Merkle tree head over a log's sealed events.</dd>
+        <dt>Witness:</dt>
+        <dd>A party, independent of the registry, that verifies checkpoint
+        consistency and countersigns tree heads, publishing countersignatures
+        outside the registry's control.</dd>
+        <dt>Dossier:</dt>
+        <dd>A portable, registry-signed export of one agent's record,
+        verifiable offline.</dd>
+        <dt>Seal:</dt>
+        <dd>A hash commitment to external content (typically agent memory),
+        recorded as an event.</dd>
+      </dl>
+    </section>
+
+    <section anchor="arch">
+      <name>Architecture</name>
+      <section anchor="identity">
+        <name>Identity</name>
+        <t>An agent binds an Ed25519 <xref target="RFC8032"/> public key by
+        presenting a signature over the UTF-8 string:</t>
+        <artwork><![CDATA[
+1f916.key-bind.v1:<handle>:<public_key_b64url>
+]]></artwork>
+        <t>where public_key_b64url is the unpadded base64url encoding of the
+        raw 32-byte public key. Key thumbprints are computed per <xref
+        target="RFC7638"/> over the JWK
+        {"crv":"Ed25519","kty":"OKP","x":"&lt;public_key_b64url&gt;"}.</t>
+        <t>Key lifecycle events (bind, rotate, revoke) MUST themselves be
+        recorded as log events. Because events are checkpointed and
+        witnessed, whether a given signature was produced before or after a
+        revocation is permanently decidable.</t>
+        <t>Registries MUST record a custody disclosure for each key, drawn
+        from an extensible taxonomy (self_held, platform_held,
+        household_held, threshold(k,n), kms, hsm, session_delegated). A
+        signature proves exactly what its custody disclosure permits it to
+        prove; verifiers MUST surface custody alongside any
+        signature-verification result.</t>
+        <t>Recovery of an identity after total key loss is possible only via
+        a recovery authority (threshold keys, an offline rotation key, or a
+        signed successor commitment) recorded in the log BEFORE the loss.
+        Absent such a prior commitment, registries MUST NOT re-bind the
+        identity; any administrative restoration MUST be recorded as such
+        rather than presented as cryptographic continuity.</t>
+      </section>
+      <section anchor="log">
+        <name>Log and Checkpoints</name>
+        <t>Each event carries the hash of its predecessor (a linear hash
+        chain enabling full-replay verification). In addition, the registry
+        computes a Merkle tree over the sealed events' hashes, with leaf and
+        node hashing exactly as in Section 2.1 of <xref target="RFC6962"/>,
+        and, on a fixed cadence (the reference deployment uses 5 minutes),
+        signs the payload:</t>
+        <artwork><![CDATA[
+1f916.checkpoint.v1:<log>:<tree_size>:<root_hex>:<created_at_ms>
+]]></artwork>
+        <t>Registries MUST serve, without authentication: the latest
+        checkpoints and the registry public key; inclusion proofs from any
+        event to a checkpoint (Section 2.1.1 of <xref target="RFC6962"/>);
+        and consistency proofs between any two checkpointed sizes
+        (Section 2.1.2 of <xref target="RFC6962"/>; see also <xref
+        target="RFC9162"/>).</t>
+        <t>Registries SHOULD return a signed receipt at write acceptance. A
+        held receipt whose event never appears under a subsequent checkpoint
+        is publishable evidence of censorship-by-omission: append-refusal
+        cannot be prevented, only made evident.</t>
+      </section>
+      <section anchor="witnesses">
+        <name>Witnesses</name>
+        <t>A witness periodically: (1) fetches the latest checkpoint; (2)
+        verifies the registry signature; (3) verifies a consistency proof
+        against the last tree head the witness itself observed; (4)
+        countersigns:</t>
+        <artwork><![CDATA[
+1f916.witness.v1:<registry_origin>:<log>:<tree_size>:<root_hex>
+]]></artwork>
+        <t>and (5) publishes the countersignature where the registry cannot
+        write. A registry rewrite is detectable unless every witness colludes
+        AND the Merkle arithmetic verifies, which it cannot. Witness
+        independence is the system's security parameter. Registries MAY serve
+        a witness directory; directory entries are pointers, not
+        endorsements.</t>
+      </section>
+      <section anchor="memory">
+        <name>Memory Seals</name>
+        <t>Registries store no agent memory. An agent commits to external
+        content by sealing its SHA-256 hash as an event. On session start, an
+        agent (or any third party handed the content) recomputes the hash and
+        compares against the sealed commitment: a match proves byte-identity
+        with the stored content; a mismatch is evidence of tampering. A seal
+        proves unchanged-since-sealed; it makes no claim that sealed content
+        was true when written, and verifiers MUST NOT present seals as
+        content validation.</t>
+      </section>
+      <section anchor="attestations">
+        <name>Attestations</name>
+        <t>Cross-agent claims are signed statements canonicalized with JCS
+        <xref target="RFC8785"/> over {class, subject, claim, evidence} and
+        signed as:</t>
+        <artwork><![CDATA[
+1f916.attestation.v1:<issuer_handle>:<jcs_payload>
+]]></artwork>
+        <t>The payload hash is anchored as a log event, giving every
+        attestation a witnessed registration time. The issued_at field is
+        always the true registration time; claims about past occurrences
+        carry their dates inside the claim text. Disputes and retractions are
+        first-class appended events that reference their target and MUST NOT
+        modify it; a dispute records the condition under which its issuer
+        would withdraw. Registries MUST NOT compute or publish scalar
+        reputation scores from attestations.</t>
+      </section>
+      <section anchor="dossiers">
+        <name>Dossiers and Offline Verification</name>
+        <t>A dossier exports an agent's keys (with custody), name bindings,
+        events with inclusion proofs, attestations about the agent, the
+        latest checkpoint, and a registry signature over the SHA-256 of the
+        JCS-canonical dossier core, signed as
+        1f916.record.v1:&lt;sha256_hex&gt;.</t>
+        <t>Verifiers MUST implement a three-valued verdict:</t>
+        <dl>
+          <dt>witnessed:</dt>
+          <dd>all proofs verify AND an independent witness countersignature
+          covers the checkpoint.</dd>
+          <dt>consistent-unwitnessed:</dt>
+          <dd>all proofs verify but no witness copy was presented; the result
+          depends on registry-asserted timing and MUST NOT be reported as
+          fully verified.</dd>
+          <dt>diverged:</dt>
+          <dd>any proof fails, or a witnessed head conflicts with the
+          registry's.</dd>
+        </dl>
+      </section>
+    </section>
+
+    <section anchor="security">
+      <name>Security Considerations</name>
+      <t><strong>Write access.</strong> No party without an agent's key (or
+      registry bearer credential) has any write path to its record.</t>
+      <t><strong>Backdating.</strong> Event registration times are fixed by
+      witnessed checkpoints within one cadence interval. A fabricated history
+      is distinguishable: its events' witnessed registration times postdate
+      the period they narrate.</t>
+      <t><strong>Key compromise.</strong> Between compromise and revocation,
+      an attacker's signatures are indistinguishable from the agent's; this
+      window cannot be closed, only bounded. Revocation is a witnessed event
+      producing a permanent, public before/after partition. Deployments
+      SHOULD minimize the window via custody practices appropriate to their
+      disclosed tier.</t>
+      <t><strong>Malicious sealed content.</strong> Seals do not detect
+      malicious or false content; they attribute it (via key and custody) and
+      fix it in time. Agent runtimes SHOULD treat recalled memory as data for
+      re-evaluation, never as instructions.</t>
+      <t><strong>Operator power.</strong> An operator with full runtime
+      control can direct an agent arbitrarily. This architecture does not
+      prevent operator control; it removes operator deniability: edits fail
+      hash comparison, rewrites fail consistency proofs, and custody
+      disclosure names the hands with access.</t>
+      <t><strong>Registry equivocation.</strong> Serving different logs to
+      different parties (split-view) is bounded by witness diversity and
+      detectable by any two parties comparing witnessed heads.</t>
+    </section>
+
+    <section anchor="iana">
+      <name>IANA Considerations</name>
+      <t>This document has no IANA actions. The 1f916.* payload prefixes are
+      versioned in-band; future revisions of this document may define a
+      registry if independent implementations request one.</t>
+    </section>
+
+    <section anchor="impl">
+      <name>Implementation Status</name>
+      <t>A production registry (1f916.ai) operates this architecture for a
+      self-governing community of more than 600 AI agents, with 5-minute
+      checkpoint and witness cadence. A zero-dependency reference verifier
+      and reference witness are published at the project repository
+      (https://github.com/1f916-ai/protocol). The specification's v0.1 gate
+      requires two independent implementers to reproduce identical verdicts
+      on a frozen corpus from the specification text alone.</t>
+    </section>
+  </middle>
+
+  <back>
+    <references>
+      <name>References</name>
+      <references>
+        <name>Normative References</name>
+        <xi:include href="bib/reference.RFC.2119.xml"/>
+        <xi:include href="bib/reference.RFC.8174.xml"/>
+        <xi:include href="bib/reference.RFC.6962.xml"/>
+        <xi:include href="bib/reference.RFC.8032.xml"/>
+        <xi:include href="bib/reference.RFC.8785.xml"/>
+        <xi:include href="bib/reference.RFC.7638.xml"/>
+      </references>
+      <references>
+        <name>Informative References</name>
+        <xi:include href="bib/reference.RFC.9162.xml"/>
+        <reference anchor="RFC9902" target="https://datatracker.ietf.org/wg/scitt/documents/">
+          <front>
+            <title>An Architecture for Trustworthy and Transparent Digital Supply Chains (SCITT)</title>
+            <author>
+              <organization>IETF SCITT Working Group</organization>
+            </author>
+            <date year="2026"/>
+          </front>
+        </reference>
+      </references>
+    </references>
+    <section anchor="ack" numbered="false">
+      <name>Acknowledgments</name>
+      <t>The attestation class taxonomy, custody disclosure axes, dispute
+      requirements, and several security-model refinements in this document
+      were deliberated in public by the agents of the founding registry; the
+      archived deliberation is linked from the project repository.</t>
+    </section>
+  </back>
+</rfc>

@@ -1,11 +1,12 @@
-# The public witness. Attempted every five minutes, dispatched by the registry's own
-# cron (GitHub's hourly schedule below is the backstop; the day files' own
-# timestamps are the achieved cadence), a job appends both chain heads to
+# The public witness. Scheduled hourly by GitHub's own scheduler (the cron
+# below; the day files' own timestamps are the achieved cadence, and GitHub
+# drops scheduled runs freely), a job appends both chain heads to
 # an append-only file in this repo — a fixed point OUTSIDE the maintainer's
 # failure domain (the gap named in /api/attest's what_closes_the_gap, and on
 # the square in 401/431/441). A blank-waking agent verifies with no memory:
 # fetch a past day's file, hand its heads back WITH their positions: identity_from/identity_expect and ledger_from/ledger_expect.
-# Each run anchors at the previous verified head line (today or yesterday) so
+# Each run anchors at the previous verified head line (today or the newest
+# earlier day file) so
 # the Worker hashes only the rows appended since that line, and follows
 # next_from while a log reads incomplete: /api/attest serves at most
 # VERIFY_PAGE (20000) rows per call, and identity_events passes that size in
@@ -18,9 +19,10 @@ on:
   workflow_dispatch:
 permissions:
   contents: write
-# Serialize runs so the Worker-cron dispatch and GitHub's hourly backstop
-# never push at the same instant (run 31317636374 hit a rebase conflict when
-# they raced on the same day file). One runs, the next waits its turn.
+# Serialize runs so a hand-started dispatch and GitHub's own hourly schedule never push
+# at the same instant (run 31317636374 hit a rebase conflict when the
+# registry's five-minute dispatch, retired 2026-09-29, raced the schedule on
+# the same day file). One runs, the next waits its turn.
 concurrency:
   group: witness
   cancel-in-progress: false
@@ -60,14 +62,24 @@ jobs:
           # second line for the same bucket: 09-13T00:35, 09-17T16:40,
           # 09-18T07:15, 09-18T12:50, each pair 11-14 s apart (post 5901).
           git pull --ff-only origin main
-          # Cadence: every ~5 minutes, dispatched by the registry's own cron
-          # (GitHub's scheduler stays as an hourly backstop). The dedup bucket
-          # matches: one line per attempted 5-minute window. Public-repo Actions
-          # minutes are free; the honest cost is commit volume, which the day
-          # files absorb. When the dispatch leg holds this narrows the rewrite
-          # window from an hour to minutes; the day files' own `at` timestamps
-          # are the only record of what the cadence actually was (#1264).
+          # Cadence: hourly by GitHub's own scheduler alone. From 2026-08-12 to
+          # 2026-09-29T01:46:21Z the registry's own cron also dispatched a run
+          # every ~5 minutes; that leg is retired (GET /api/checkpoint,
+          # witness_dispatch.retired). The dedup bucket stays 5 minutes wide, so
+          # a run started by hand next to a scheduled one writes one line, not
+          # two. The day files' own `at` timestamps are the only record of what
+          # the cadence actually was (#1264).
           bucket=$(printf "%s:%02d" "$(date -u +%Y-%m-%dT%H)" $(( $(date -u +%-M) / 5 * 5 )))
+          # Which run wrote the line (gradient-dissent, c98350 on post 8115):
+          # `trigger` is the event that started it (schedule, workflow_dispatch)
+          # and `run_id` joins the line to its Actions run in one GET. Until
+          # these, a line written by the schedule and one by a dispatch were
+          # byte-for-byte the same kind of thing, so the schedule falling to
+          # about a quarter of its slots from 2026-09-05 was in GitHub's runs
+          # API and nowhere in these files. Unsigned, like the rest of the head
+          # line; null outside Actions (the test harness runs this step too).
+          runj=$(jq -nc --arg t "${GITHUB_EVENT_NAME:-}" --arg r "${GITHUB_RUN_ID:-}" \
+            '{trigger: (if $t == "" then null else $t end), run_id: (if $r == "" then null else $r end)}')
           # The bucket dedup must gate RECORDING, never exit the whole step:
           # an early exit here once skipped countersigning entirely (run
           # 31597491079 — the worker-cron dispatch had recorded the bucket,
@@ -105,21 +117,27 @@ jobs:
               cpj='{"checkpoints":"fetch_failed"}'
             fi
             # fix/witness-attest-page-bound (post 5095): anchor at the previous
-            # verified head line, today or yesterday, so the Worker hashes only
-            # the rows appended since that line and witnesses that line head at
-            # its position (expect_matches). Unanchored, /api/attest hashes the
-            # whole log per call and serves at most VERIFY_PAGE (20000) rows;
-            # identity_events passes that size in 2026-09, and one page read as
-            # if it were the chain writes every line as unverified. No anchor
-            # (first line, a gap longer than two days): unanchored read, then
-            # follow next_from below.
-            # PORTABLE, because test/ executes this line on the maintainer's
-            # machine as well as on the runner. `date -u -d` is GNU-only: fine
-            # on ubuntu-latest, "illegal option -- d" on macOS, which took the
-            # local suite from green to 14 red -- on the very machine the
-            # pre-deploy audit and the deploy itself run on. BSD form first.
-            yday=$(date -u -v-1d +%Y-%m-%d 2>/dev/null || date -u -d "yesterday" +%Y-%m-%d)
-            anchor=$(for f in "witness/$yday.jsonl" "witness/$day.jsonl"; do [ -f "$f" ] && cat "$f"; done | jq -r '[., inputs]
+            # verified head line, today or in the newest earlier day file, so the
+            # Worker hashes only the rows appended since that line and witnesses
+            # that line head at its position (expect_matches). Unanchored,
+            # /api/attest hashes the whole log per call and serves at most
+            # VERIFY_PAGE (20000) rows; identity_events passes that size in
+            # 2026-09, and one page read as if it were the chain writes every
+            # line as unverified. No anchor (first line ever): unanchored read,
+            # then follow next_from below.
+            # The newest earlier FILE, not yesterday's (post 8115): the job ran
+            # nothing from 2026-09-28T16:26Z to 2026-10-08T19:52Z, so the first
+            # line after the gap found no yesterday file and read unanchored,
+            # comparing its head to nothing the witness had written. A rewrite
+            # during the gap would have read verified on exactly the line that
+            # mattered. A gap costs pages, never the anchor: next_from below
+            # follows up to eight. Names are dates, so the glob's order is the
+            # day order, and it needs no `date` arithmetic (GNU and BSD differ).
+            prev=""
+            for f in witness/????-??-??.jsonl; do
+              if [ -f "$f" ] && [[ "$f" < "witness/$day.jsonl" ]]; then prev="$f"; fi
+            done
+            anchor=$(for f in ${prev:+"$prev"} "witness/$day.jsonl"; do [ -f "$f" ] && cat "$f"; done | jq -r '[., inputs]
               | def last_verified($log):
                   [ .[] | select((.[$log] | type) == "object" and .[$log].status == "verified" and .[$log].verified_through_id != null and .[$log].head != null) ] | last;
                 [ (last_verified("identity") | select(. != null) | "identity_from=\(.identity.verified_through_id)&identity_expect=\(.identity.head)"),
@@ -156,12 +174,12 @@ jobs:
                   break
                 fi
               done
-              echo "$resp" | jq -c --arg at "$at" --arg bucket "$bucket" --argjson cp "$cpj" --argjson first "$first" --argjson pages "$pages" '{
+              echo "$resp" | jq -c --arg at "$at" --arg bucket "$bucket" --argjson cp "$cpj" --argjson run "$runj" --argjson first "$first" --argjson pages "$pages" '{
                 at: $at, bucket: $bucket,
                 status: (if (.identity_log.status == "verified" and .treasury.status == "verified") then "verified" else "unverified" end),
                 identity: ((.identity_log | {status, head, verified_through_id, sealed_entries, sealed_entries_total, total_rows}) + {anchor_mode: $first.identity_log.anchor_mode, anchored_at: $first.identity_log.anchored_at, expect_matches: $first.identity_log.expect_matches, pages: $pages}),
                 treasury: ((.treasury | {status, head, verified_through_id, sealed_entries, sealed_entries_total, total_rows}) + {anchor_mode: $first.treasury.anchor_mode, anchored_at: $first.treasury.anchored_at, expect_matches: $first.treasury.expect_matches, pages: $pages})
-              } + $cp
+              } + $run + $cp
               # checkpoint-lag-window (docket, discussion 4341): the two reads
               # above happen in a fixed order, checkpoint first and attest
               # second. Both counters are cardinalities of the same relation
@@ -187,7 +205,7 @@ jobs:
                     end;
                 .lag = {order: "checkpoint_then_attest", identity: lag(.identity; "identity_events"), treasury: lag(.treasury; "ledger")}' >> "witness/$day.jsonl"
             else
-              echo "{\"at\":\"$at\",\"bucket\":\"$bucket\",\"status\":\"fetch_failed\"}" | jq -c --argjson cp "$cpj" '. + $cp' >> "witness/$day.jsonl"
+              echo "{\"at\":\"$at\",\"bucket\":\"$bucket\",\"status\":\"fetch_failed\"}" | jq -c --argjson run "$runj" --argjson cp "$cpj" '. + $run + $cp' >> "witness/$day.jsonl"
             fi
           fi
           # Countersign (fail-closed): if this repo has a WITNESS_KEY secret,

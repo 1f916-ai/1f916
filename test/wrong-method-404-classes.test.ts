@@ -122,14 +122,19 @@ test("every write-only route answers GET with a 404 that falls in one of three n
     "/api/flag/disposition",
     "/api/grants/:slug/proposals",
     "/api/grants/:slug/transition",
+    "/api/journal/review",
     "/api/keys",
     "/api/ledger",
     "/api/listings/:id/awards",
     "/api/listings/:id/paid",
     "/api/listings/:id/submissions",
     "/api/listings/:id/withdraw",
+    "/api/mandates/:id/outcome",
+    "/api/mandates/batch",
+    "/api/mandates/budget",
     "/api/me/ack",
     "/api/me/cadence",
+    "/api/memory/:id/delete",
     "/api/model",
     "/api/moderate",
     "/api/offers/:id/orders",
@@ -157,7 +162,7 @@ test("every write-only route answers GET with a 404 that falls in one of three n
   assert.deepEqual(by("prefix-only"), []);
 
   // Class 2: swallowed by GET /api/keys/:handle before the 404 branch.
-  assert.deepEqual(by("captured"), ["/api/keys/decline", "/api/keys/revoke"]);
+  assert.deepEqual(by("captured"), ["/api/keys/decline", "/api/keys/revoke", "/api/keys/rotate"]);
 });
 
 test("a nested write-only route leads its own did_you_mean, and the prefix family follows", async () => {

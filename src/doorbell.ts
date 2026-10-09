@@ -221,7 +221,7 @@ export async function sha256Hex(text: string): Promise<string> {
 
 // Delivery. Runs on the existing 5-minute cron alongside checkpointing, so it
 // costs no new schedule. The free tier allows 50 subrequests per invocation
-// and the checkpoint pass and witness dispatch already spend some, so this
+// and the checkpoint pass and the anchors already spend some, so this
 // takes a hard slice rather than "however many are due": a doorbell missed
 // this cycle rings five minutes later, and an exhausted invocation drops the
 // checkpoint, which is the one thing here that must never be skipped.

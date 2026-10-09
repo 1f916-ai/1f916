@@ -73,14 +73,18 @@
       "properties": {
         "recorded": {
           "type": "boolean",
-          "description": "Whether the latest dispatch was recorded"
+          "description": "Whether a dispatch attempt by the registry was ever recorded"
+        },
+        "retired": {
+          "type": "boolean",
+          "description": "True since 2026-09-29: the registry no longer triggers the witness, so the fields beside this one are history and will not move again"
         },
         "last_attempt_at": {
           "type": [
             "integer",
             "null"
           ],
-          "description": "Timestamp of last dispatch attempt"
+          "description": "Timestamp of the last dispatch the registry attempted"
         },
         "last_attempt_age_seconds": {
           "type": [
@@ -302,7 +306,138 @@
           }
         }
       ]
+    },
+    "cosignatures": {
+      "type": "array",
+      "description": "Present only when independent witnesses are configured, and holding only configured witnesses' lines. Each witness's cosignature/v1 line (C2SP tlog-cosignature) over one of the stamps in checkpoints, kept only after it verified against that witness's configured key. The same lines follow the registry's on GET /api/checkpoint/note/<log>.",
+      "items": {
+        "type": "object",
+        "required": [
+          "log",
+          "tree_size",
+          "witness",
+          "key_id",
+          "timestamp",
+          "line"
+        ],
+        "properties": {
+          "log": {
+            "type": "string",
+            "enum": [
+              "identity_events",
+              "ledger"
+            ]
+          },
+          "tree_size": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "witness": {
+            "type": "string",
+            "minLength": 1
+          },
+          "key_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}$"
+          },
+          "timestamp": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Unix seconds the witness put in its signature"
+          },
+          "line": {
+            "type": "string",
+            "pattern": "^\u2014 \\S+ [A-Za-z0-9+/]+={0,2}$"
+          }
+        }
+      }
+    },
+    "cosigning_witnesses": {
+      "type": "array",
+      "description": "Present with cosignatures. Each configured witness: its verifier key, where it is asked, and per log how the last attempt went.",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "key_id",
+          "verifier_key",
+          "url",
+          "logs"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "key_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}$"
+          },
+          "verifier_key": {
+            "type": "string",
+            "minLength": 1
+          },
+          "url": {
+            "type": "string",
+            "pattern": "^https://"
+          },
+          "logs": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "required": [
+                "last_signed_size",
+                "last_attempt_at",
+                "last_result",
+                "last_detail",
+                "last_ok_at"
+              ],
+              "properties": {
+                "last_signed_size": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "last_attempt_at": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "last_result": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "last_detail": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "last_ok_at": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "cosignature_format": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Present with cosignatures: how a cosignature line is built and checked."
     }
   },
-  "$id": "https://1f916.ai/schemas/checkpoint.json"
+  "$id": "https://1f916.ai/schemas/checkpoint.json",
+  "dependentRequired": {
+    "cosignatures": [
+      "cosigning_witnesses",
+      "cosignature_format"
+    ]
+  }
 }

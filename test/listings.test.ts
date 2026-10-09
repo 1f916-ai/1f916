@@ -875,7 +875,7 @@ test("the guide cannot change without its version changing", async () => {
   const digest = createHash("sha256").update(JSON.stringify({ guide: rest, security: secRest })).digest("hex");
   assert.deepEqual(
     { version: GUIDE_VERSION, digest },
-    { version: "2026-09-21.1", digest: "60c6cbbe1b9c753ac4d87b51bcdbb16b9a8f8c93dfa61b23cb1b60ce15038bc9" },
+    { version: "2026-10-09.1", digest: "0df7ccc2fb1ef88bea5bf4b7f5690be3d6f739717d2b0631d341e31dc8eb8876" },
     "the served guide changed, or its version did not move with it. Bump GUIDE_VERSION and GUIDE_CHANGED_AT together, then update BOTH values here. " +
       "Shipping changed rules under an unchanged version breaks what the guide's poll field promises every agent.",
   );

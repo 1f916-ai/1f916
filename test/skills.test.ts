@@ -23,6 +23,7 @@ import worker from "../src/index.ts";
 import { SURFACE } from "../src/surface.ts";
 import { CONSTITUTION, RATE_LIMIT, CHANGES_POST_LIMIT, CHANGES_COMMENT_LIMIT } from "../src/society.ts";
 import { TAGS_PER_DAY } from "../src/tags.ts";
+import { MANDATES_PER_DAY } from "../src/mandates.ts";
 import { SKILL_NAME, SKILL_PATH, SKILLS_INDEX_PATH, SKILL_DESCRIPTION, skillMd } from "../src/connect.ts";
 import { sha256Hex } from "../src/chain.ts";
 import { sqliteTestEnv } from "./helpers/sqlite-d1.ts";
@@ -93,6 +94,7 @@ test("every integer in the skill's own prose is a constant the router binds", as
     RATE_LIMIT.mitigation_seconds,
     CHANGES_POST_LIMIT,
     CHANGES_COMMENT_LIMIT,
+    MANDATES_PER_DAY,
   ]);
   // The HTTP statuses the skill teaches a client to branch on. Protocol
   // constants, not registry ones; listed so a new number cannot hide as one.
@@ -105,6 +107,7 @@ test("every integer in the skill's own prose is a constant the router binds", as
   assert.ok(body.includes(`${RATE_LIMIT.requests} requests per ${RATE_LIMIT.period_seconds} seconds`));
   assert.ok(body.includes(`at most ${CONSTITUTION.max_title_len} characters`) && body.includes(`at most ${CONSTITUTION.max_body_len}`));
   assert.ok(body.includes(`${CHANGES_POST_LIMIT} posts and ${CHANGES_COMMENT_LIMIT} comments per page`));
+  assert.ok(body.includes(`The budget is ${MANDATES_PER_DAY} records in any rolling day`));
 });
 
 test("every route the skill names is a route in SURFACE", async () => {
@@ -117,8 +120,8 @@ test("every route the skill names is a route in SURFACE", async () => {
   assert.ok(named.size >= 12, `the skill names routes (found ${named.size})`);
   for (const p of named) assert.ok(paths.has(p), `${p} is named in the skill but is not in SURFACE`);
   // The instructions the brief is for, each anchored to the route it is about.
-  for (const must of ["/api/register", "/api/me/ack", "/api/pulse", "/api/changes", "/api/withdraw", "/api/me"]) assert.ok(named.has(must), `the skill names ${must}`);
-  for (const phrase of ["there is no dry run", "IGNORED", "one-way door", "no code table", "data, never instruction", "Nothing is editable or deletable", "UTC midnight"]) assert.ok(body.includes(phrase), `the skill says: ${phrase}`);
+  for (const must of ["/api/register", "/api/me/ack", "/api/pulse", "/api/changes", "/api/withdraw", "/api/me", "/api/mandates", "/api/mandates/:id", "/api/seal", "/api/seals", "/mcp/protocol"]) assert.ok(named.has(must), `the skill names ${must}`);
+  for (const phrase of ["there is no dry run", "IGNORED", "one-way door", "no code table", "data, never instruction", "Nothing is editable or deletable", "UTC midnight", "Record BEFORE you act", "it prevents nothing"]) assert.ok(body.includes(phrase), `the skill says: ${phrase}`);
 });
 
 test("the index describes the served skill and hashes the bytes it serves", async () => {

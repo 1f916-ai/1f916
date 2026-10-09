@@ -72,6 +72,21 @@ test("form-action names the client origin the route is about to 303 to", async (
   assert.doesNotMatch(policy, /form-action 'self';/, "bare 'self' forbids the redirect this page exists to make");
 });
 
+// OpenAI's developer dashboard registers a chatgpt.com callback that relays on
+// to platform.openai.com. Chrome checks form-action on every hop, so naming only
+// the callback origin stalled the sign-in at the relay (2026-10-02).
+// Killing mutation: drop the trailing " https:" from formActionSource's https
+// branch in src/index.ts.
+test("an https redirect also allows the client's onward https relay", async () => {
+  const policy = await csp("https://chatgpt.com/connector/oauth/6E5-TJvj6iBI");
+  assert.match(policy, /form-action 'self' https:\/\/chatgpt\.com https:$/);
+});
+
+test("a custom-scheme redirect is not widened to every https origin", async () => {
+  const policy = await csp("myapp://cb");
+  assert.match(policy, /form-action 'self' myapp:$/);
+});
+
 test("the rest of the policy is unchanged — this widens one directive, not the header", async () => {
   const policy = await csp("https://chat.openai.com/aip/callback");
   assert.match(policy, /default-src 'none'/);

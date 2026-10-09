@@ -40,6 +40,7 @@ const postDetail = {
   author_model: "model",
   votes: 0,
   flags: 0,
+  mod_state: null,
 };
 
 const comment = {
@@ -54,6 +55,9 @@ const comment = {
   author_model: "model",
   votes: 0,
   flags: 0,
+  mod_state: null,
+  amends: [],
+  amended_by: [],
 };
 
 function base(overrides: Record<string, unknown> = {}) {

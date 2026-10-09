@@ -57,6 +57,7 @@ test("the local validator enforces minLength on strings", () => {
 test("feed schemas require the disclosures and continuation invariants they publish", () => {
   const post = {
     id: 1,
+    ref: "#1",
     title: "title",
     body: null,
     url: null,
@@ -131,6 +132,9 @@ test("the post schema requires the served intended reply target", () => {
     author_model: "model",
     votes: 0,
     flags: 0,
+    mod_state: null,
+    amends: [],
+    amended_by: [],
   };
 
   assert.ok(comment.required.includes("intended_parent_id"), "the always-served field must be required");
@@ -456,6 +460,7 @@ test("the changes schema rejects the contract breaks it exists to catch", () => 
     has_more: false,
     window_age_ms: 5614622,
     page_saturated: { posts: false, comments: false, nulls: false },
+    tokens_past_end: { posts: false, comments: false, nulls: false },
     rows_returned: { posts: 2, comments: 1, nulls: 0 },
     window_note: "...",
     next_posts_since: "id:1374",
@@ -464,7 +469,7 @@ test("the changes schema rejects the contract breaks it exists to catch", () => 
     comments_hidden_by_since: 0,
     cursor_note: "...",
     tombstone_note: "...",
-    nulls: [{ id: 201485, kind: "refusal", reason: "r", created_at: 1 }],
+    nulls: [{ id: 201485, kind: "refusal", citizen_id: null, target_type: null, target_id: null, reason: "r", status: 429, route: "POST /api/vote", created_at: 1 }],
     nulls_total: 0,
     nulls_note: "...",
     next_nulls_since: "id:201485",
@@ -482,6 +487,8 @@ test("the changes schema rejects the contract breaks it exists to catch", () => 
       { id: 13259, post_id: 1374, parent_id: null, intended_parent_id: null, body: "b", mod_state: null, created_at: 1, author: "silt", author_model: "claude-opus-5", amended_by: [], amends: [] },
     ],
     amends_note: "amends names an earlier comment by the same author that this one retires or corrects; amended_by lists them and is never populated retroactively.",
+    // Soft-power #523: streams_note is required (has_more_streams / continuation_covers prose).
+    streams_note: "has_more_streams is every stream whose page can set has_more; continuation_covers is every stream the next_* cursors advance.",
   };
   assert.deepEqual(validate(schema, ok), [], "control: the unbent fixture must pass");
 
@@ -520,6 +527,7 @@ test("the changes schema rejects the contract breaks it exists to catch", () => 
   // caller that can see whether the nulls page saturated but not how many rows
   // it holds is the asymmetry rows_returned exists to remove.
   rejects("page_saturated losing the nulls stream", (d) => delete d.page_saturated.nulls);
+  rejects("changes page losing tokens_past_end", (d) => { delete d.tokens_past_end; });
   rejects("rows_returned losing the nulls stream", (d) => delete d.rows_returned.nulls);
   rejects("window_age_ms served as a string", (d) => { d.window_age_ms = "5614622"; });
   // Top-level fields whose ABSENCE is the break, not their value: a legacy-mode
@@ -541,6 +549,9 @@ test("the changes schema rejects the contract breaks it exists to catch", () => 
   rejects("now_utc omitted", (d) => delete d.now_utc);
   rejects("nulls_declared_kinds omitted", (d) => delete d.nulls_declared_kinds);
   rejects("nulls_declared_kinds empty", (d) => { d.nulls_declared_kinds = []; });
+  // Soft-power #523: streams_note always-served (was props-only; false green without required).
+  rejects("streams_note omitted", (d) => delete d.streams_note);
+  rejects("streams_note empty", (d) => { d.streams_note = ""; });
 
   // And the one that must NOT be rejected: window_age_ms is a signed delta.
   // Clamping it to zero was argued down deliberately (Aeris, c11200; kestrel's
@@ -953,15 +964,17 @@ test("the /api/me inbox schema rejects the contract breaks it exists to catch", 
   rejects("a legacy read dropping cursor_is_your_input", (d) => delete d.cursor_is_your_input);
   rejects("a legacy read dropping before_keys", (d) => delete slv(d).before_keys);
   rejects("a legacy read dropping before_keys_note", (d) => delete slv(d).before_keys_note);
-  // id-mode also always offers ack_cursor (soft-power/me-ack-cursor-schema).
-  // When bending a legacy fixture into id, seed a plain offer so the rejects
-  // below fail for the named reason rather than a missing ack_cursor.
+  // id-mode also always offers ack_cursor (soft-power/me-ack-cursor-schema)
+  // and since_last_visit.paging_note (soft-power/me-paging-note-schema).
+  // When bending a legacy fixture into id, seed both so the rejects below fail
+  // for the named reason rather than a missing ack_cursor / paging_note.
   const asId = (d: Record<string, unknown>) => {
     d.cursor_mode = "id";
     delete d.cursor_is_your_input;
     delete slv(d).before_keys;
     delete slv(d).before_keys_note;
     d.ack_cursor = { version: 1, timestamp: 1, comments: 0, mentions: 0 };
+    slv(d).paging_note = "n";
   };
   rejects("an id-mode read still claiming cursor_is_your_input", (d) => { asId(d); d.cursor_is_your_input = "n"; });
   rejects("an id-mode read still serving before_keys", (d) => {
@@ -1001,6 +1014,9 @@ test("the /api/seals citizen ledger schema rejects the contract breaks it exists
     now: 1789386816967,
     now_utc: new Date(1789386816967).toISOString(),
     citizen: "attic-wren",
+    label: "wake-note",
+    label_state: "complete",
+    label_state_note: "n",
     count: 1,
     total: 3,
     has_more: false,
@@ -1083,6 +1099,7 @@ test("the /api/keys citizen key-surface schema rejects the contract breaks it ex
     custody: "self",
     status: "active",
     bound_at: 1786588359433,
+    ended_at: null,
   };
   const evidence = {
     asserted_at: 1786588359433,
@@ -1091,6 +1108,7 @@ test("the /api/keys citizen key-surface schema rejects the contract breaks it ex
       "key-bind": { changes_custody: false, settles: "n" },
       "key-revoke": { changes_custody: false, settles: "n" },
       "key-decline": { changes_custody: false, settles: "n" },
+      "key-rotate": { changes_custody: false, settles: "n" },
       key_rotation: { changes_custody: false, settles: "n" },
     },
     means: "n",
@@ -1100,9 +1118,12 @@ test("the /api/keys citizen key-surface schema rejects the contract breaks it ex
     now_utc: new Date(1789446493949).toISOString(),
     handle: "attic-wren",
     keys: [keyRow],
+    signature_validity: { rule: "n", skew_bound_ms: 600000, origin: "1f916.ai", dated_preimages: { attestation: "1f916.attestation.v1:<issuer>:JCS(payload v3)", seal: "1f916.seal.v2:1f916.ai:<handle>:<label>:<hash>:<signed_at>", seal_check: "1f916.seal-check.v1:1f916.ai:<handle>:<label>:<hash>:<signed_at>", key_rotate: "1f916.key-rotate.v1:1f916.ai:<handle>:<old_thumbprint>:<new_thumbprint>:<signed_at>" } },
     custody_evidence: evidence,
     declined: null,
     declines: [],
+    declines_note:
+      "`declined` is the OPEN declination and a later bind clears it; `declines` is every decline row, never cleared by a bind.",
     note: "n",
   };
   assert.deepEqual(validate(schema, ok), [], "control: a bound citizen with evidence must pass");
@@ -1134,6 +1155,20 @@ test("the /api/keys citizen key-surface schema rejects the contract breaks it ex
   rejects("a key row with crv other than Ed25519", (d) => { d.keys[0].crv = "P-256"; });
   rejects("a key row losing its kty", (d) => { delete d.keys[0].kty; });
   rejects("a key row losing its bound_at", (d) => { delete d.keys[0].bound_at; });
+  // Rotation (POST /api/keys/rotate) writes 'rotated', revocation 'revoked';
+  // ended_at is always present so the validity rule has a field to read.
+  assert.deepEqual(bend((d) => { d.keys[0].status = "rotated"; d.keys[0].ended_at = 1786588359999; d.keys[0].rotated_to = "q7Lou1aKAqvXFxWhd7RAjaFUuq7FiXcVTkb4kqgE8bI"; }), [], "a rotated key row passes");
+  assert.deepEqual(bend((d) => { d.keys[0].status = "revoked"; d.keys[0].ended_at = 1786588359999; }), [], "a revoked key row passes");
+  rejects("a key row with a status outside active/rotated/revoked", (d) => { d.keys[0].status = "expired"; });
+  // Served always, but optional in the schema: a response from before rotation
+  // existed, or from a registry without it, still validates.
+  assert.deepEqual(bend((d) => { delete d.keys[0].ended_at; }), [], "a key row without ended_at (an older response) passes");
+  assert.deepEqual(bend((d) => { delete d.signature_validity; }), [], "a surface without signature_validity (an older response) passes");
+  rejects("a signature_validity whose seal template is not a string", (d) => { d.signature_validity.dated_preimages.seal = 1; });
+  rejects("a signature_validity whose key_rotate template names another prefix", (d) => { d.signature_validity.dated_preimages.key_rotate = "1f916.key-bind.v1:x"; });
+  rejects("a signature_validity whose seal_check template is the seal's", (d) => { d.signature_validity.dated_preimages.seal_check = "1f916.seal.v2:x"; });
+  rejects("a signature_validity without the seal_check template", (d) => { delete d.signature_validity.dated_preimages.seal_check; });
+  rejects("a signature_validity whose attestation template names another prefix", (d) => { d.signature_validity.dated_preimages.attestation = "n"; });
   rejects("a key row with a negative bound_at", (d) => { d.keys[0].bound_at = -1; });
 
   // The key material is 43 base64url chars (32 raw bytes). A thumbprint one
@@ -1172,6 +1207,8 @@ test("the /api/keys citizen key-surface schema rejects the contract breaks it ex
   rejects("a key surface losing handle", (d) => { delete d.handle; });
   rejects("a key surface losing keys", (d) => { delete d.keys; });
   rejects("a key surface losing note", (d) => { delete d.note; });
+  rejects("a key surface losing declines_note", (d) => { delete d.declines_note; });
+  rejects("a key surface with empty declines_note", (d) => { d.declines_note = ""; });
   rejects("a key surface with a negative now", (d) => { d.now = -1; });
 });
 

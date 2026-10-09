@@ -56,6 +56,19 @@ async function docPaths<T>(): Promise<Record<string, Record<string, T>>> {
   return doc.paths;
 }
 
+// The id_class properties of a declared 404 body, wherever the schema keeps
+// them: inline, or in the extension member of an allOf that composes the shared
+// refusal envelope (components.schemas.Error). Without the allOf branch a typed
+// 404 would read as untyped and both scans below would pass by skipping it.
+function discriminatorProps(schema: Record<string, unknown> | undefined): Record<string, { enum?: string[] }> {
+  const members = (schema?.allOf as Record<string, unknown>[] | undefined) ?? [schema];
+  for (const m of members) {
+    const props = m?.properties as Record<string, { enum?: string[] }> | undefined;
+    if (props?.id_class) return props;
+  }
+  return {};
+}
+
 test("the typed-404 operations declare the id_class 404, and only they do", async () => {
   const doc = await docPaths<SchemaOpDoc>();
   const typed = typed404Ops();
@@ -68,7 +81,7 @@ test("the typed-404 operations declare the id_class 404, and only they do", asyn
       // clocked error 404 are declared separately (test/openapi-404-plain-miss.test.ts)
       // and must not read as typed here.
       const body = op.responses["404"];
-      const props = (body?.content?.["application/json"]?.schema?.properties ?? {}) as Record<string, { enum?: string[] }>;
+      const props = discriminatorProps(body?.content?.["application/json"]?.schema);
       const isTyped = Boolean(props?.id_class?.enum);
       if (isTyped) anyTyped = true;
       const shouldBe = typed.has(`${path} ${verb}`);
@@ -92,17 +105,30 @@ test("the declared typed-404 body carries the id_class discriminator the router 
     for (const [verb, op] of Object.entries(ops)) {
       const body = op.responses["404"];
       if (!body) continue;
-      const props = (body.content?.["application/json"]?.schema?.properties ?? {}) as Record<string, { enum?: string[] }>;
-      if (!props?.id_class?.enum) continue; // the plain-404 routes: owned by test/openapi-404-plain-miss.test.ts
+      if (!discriminatorProps(body.content?.["application/json"]?.schema)?.id_class?.enum) continue; // the plain-404 routes: owned by test/openapi-404-plain-miss.test.ts
       assert.ok(typed.has(`${path} ${verb}`), `${verb.toUpperCase()} ${path} declares an id_class 404 but is not a known typed read`);
       checked++;
       assert.deepEqual(Object.keys(body.content ?? {}), ["application/json"], `${path} 404 content`);
-      const s = body.content?.["application/json"]?.schema;
-      assert.ok(s && s.type === "object", `${path} 404 schema is an object`);
+      const declared = body.content?.["application/json"]?.schema;
+      // The typed 404 is the shared refusal envelope EXTENDED, not restated:
+      // an allOf whose first member references components.schemas.Error (the
+      // clock and `error`, declared once for every 4xx -- see ERROR_SCHEMA in
+      // src/connect.ts and test/openapi-error-schema.test.ts) and whose second
+      // member states only what this 404 adds, the discriminator and its two
+      // companions. The inline schema this replaced restated `error` alone,
+      // which was the document's only description of the envelope and a
+      // third of it.
+      const members = declared?.allOf as Record<string, unknown>[] | undefined;
+      assert.ok(Array.isArray(members) && members.length === 2, `${path} 404 schema composes the envelope with allOf`);
+      assert.equal(members?.[0]?.$ref, "#/components/schemas/Error", `${path} 404 schema's first member is the shared refusal envelope`);
+      const s = members?.[1];
+      assert.ok(s && s.type === "object", `${path} 404 extension is an object`);
+      const props = s?.properties as Record<string, { enum?: string[] }> | undefined;
       assert.ok(props?.id_class?.enum, `${path} 404 schema names id_class`);
       assert.deepEqual(props?.id_class?.enum, ["absent", "other_type"], `${path} 404 id_class enum`);
       assert.ok(Array.isArray(props?.other_kind?.enum), `${path} 404 schema names other_kind`);
-      assert.deepEqual((s?.required as string[]) ?? [], ["error", "id_class"], `${path} 404 required: only the discriminator is always present`);
+      assert.equal(props?.error, undefined, `${path} 404 extension does not restate error; the envelope carries it`);
+      assert.deepEqual((s?.required as string[]) ?? [], ["id_class"], `${path} 404 required: only the discriminator is always present beyond the envelope`);
       assert.match(body.description ?? "", /id_class/, `${path} 404 description names the discriminator`);
     }
   }

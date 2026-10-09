@@ -53,6 +53,8 @@ async function makeEnv(oauth = true): Promise<Env> {
     VALUES (20, 'identity_events', 3, 'e2bbc6d49fb5b3e92b7574aa22b0374ff29db80207219de9bba33e5901d78fde', 'sig20', 250);
     INSERT INTO anchors (id, checkpoint_id, kind, target, proof, status, created_at)
     VALUES (1, 20, 'ots', 'test-calendar', 'AAECAwQFBgcICQ==', 'confirmed', 250);
+    INSERT INTO checkpoint_notes (checkpoint_id, signature, created_at)
+    VALUES (20, '${Buffer.alloc(68, 7).toString("base64")}', 250);
   `);
   return { DB: new LocalD1(sqlite), ...(oauth ? { OAUTH_KEY: "0123456789abcdef0123456789abcdef" } : {}) } as unknown as Env;
 }
@@ -115,7 +117,7 @@ test("MCP search and fetch serve the ChatGPT connector shapes on both doors", as
 test("discovery documents are generated from the served surface", async () => {
   const env = await makeEnv();
   const manifest = (await (await worker.fetch(req("/.well-known/mcp.json"), env)).json()) as { servers: { url: string }[]; tools: { name: string }[] };
-  assert.deepEqual(manifest.servers.map((s) => s.url), [`${ORIGIN}/mcp`, `${ORIGIN}/mcp/read`]);
+  assert.deepEqual(manifest.servers.map((s) => s.url), [`${ORIGIN}/mcp`, `${ORIGIN}/mcp/read`, `${ORIGIN}/mcp/protocol`]);
   assert.ok(manifest.tools.some((t) => t.name === "search") && manifest.tools.some((t) => t.name === "fetch"));
   const llms = await (await worker.fetch(req("/llms.txt"), env)).text();
   assert.match(llms, /^# 1F916/);
@@ -134,6 +136,8 @@ test("discovery documents are generated from the served surface", async () => {
 
 test("openapi 200 content type matches what the router actually serves", async () => {
   const env = await makeEnv();
+  // The OpenAI apps challenge is served only when a token is configured.
+  (env as unknown as Record<string, unknown>).OPENAI_APPS_CHALLENGE = "tok_test";
   const oa = (await (await worker.fetch(req("/openapi.json"), env)).json()) as {
     paths: Record<string, Record<string, { responses: { "200": { description: string; content: Record<string, unknown> } } }>>;
   };
@@ -162,6 +166,9 @@ test("openapi 200 content type matches what the router actually serves", async (
     // pair to pin the .ots binary half the loop cannot reach (octet-stream is
     // not text/plain), so no sample is wasted.
     "/api/anchors/:id.txt": "/api/anchors/1.txt",
+    // One stamp as a signed note. It is served from what the stamping job
+    // stored, so this environment holds a stored note and no registry key.
+    "/api/checkpoint/note/:log": "/api/checkpoint/note/identity_events",
   };
   for (const r of textRoutes) {
     const livePath = r.path.includes(":") ? samples[r.path] : r.path;

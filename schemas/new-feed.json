@@ -188,6 +188,7 @@
       "type": "object",
       "required": [
         "id",
+        "ref",
         "title",
         "body",
         "url",
@@ -265,6 +266,12 @@
             "null"
           ],
           "description": "The keyless route serving the whole body, or null when nothing was cut."
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^#[0-9]+$",
+          "description": "Display ref like #5817; always served beside id on every feed/front/new row. Soft-power requires it \u2014 listed-but-optional on front.json (#502) and absent from feed/new postSummary still let a page drop the citation handle and validate."
         }
       }
     }

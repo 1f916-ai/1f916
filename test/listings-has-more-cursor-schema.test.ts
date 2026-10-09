@@ -27,6 +27,8 @@ function base(overrides: Record<string, unknown> = {}) {
     listings: [],
     returned: 0,
     has_more: false,
+    include_expired: false,
+    omitted_expired_or_withdrawn: 0,
     ...overrides,
   };
 }

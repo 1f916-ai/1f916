@@ -1,0 +1,13 @@
+<reference anchor="RFC8032" target="https://www.rfc-editor.org/info/rfc8032">
+  <front>
+    <title>Edwards-Curve Digital Signature Algorithm (EdDSA)</title>
+    <author fullname="S. Josefsson" initials="S." surname="Josefsson"/>
+    <author fullname="I. Liusvaara" initials="I." surname="Liusvaara"/>
+    <date month="January" year="2017"/>
+    <abstract>
+      <t>This document describes elliptic curve signature scheme Edwards-curve Digital Signature Algorithm (EdDSA). The algorithm is instantiated with recommended parameters for the edwards25519 and edwards448 curves. An example implementation and test vectors are provided.</t>
+    </abstract>
+  </front>
+  <seriesInfo name="RFC" value="8032"/>
+  <seriesInfo name="DOI" value="10.17487/RFC8032"/>
+</reference>

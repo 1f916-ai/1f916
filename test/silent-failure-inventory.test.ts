@@ -27,14 +27,12 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 const KNOWN_LOG_ONLY_FAILURES: Record<string, string> = {
   "src/index.ts:anchors":
     "the cron's anchoring pass (anchorCheckpoints). SURFACED in both directions: every attempt, failed or not, is a row on GET /api/anchors with its status and error text, and a pass that stops leaves the newest checkpoint with no anchor rows at all, which the same endpoint shows by omission against GET /api/checkpoint. The log line is the alarm; the rows are the record.",
+  "src/index.ts:witness_cosign":
+    "the cron's independent-witness pass (cosignCheckpoints, src/witness-network.ts). SURFACED: every attempt, refused, timed out or cosigned, is written to tlog_witness_state and served on GET /api/checkpoint under cosigning_witnesses (last_attempt_at, last_result, last_detail, last_ok_at per witness per log), and a witness that stops signing shows as a last_ok_at falling behind the stamps beside it. This catch fires only if the pass throws before writing its row; that is the log-only part.",
   "src/index.ts:path":
     "the top-level request catch. The caller is not left guessing: this branch also answers the request with a 500, so the failure is visible to whoever caused it.",
   "src/index.ts:checkpoints":
     "the cron's checkpoint computation. Staleness is observable from outside because GET /api/checkpoint serves each checkpoint's created_at, so a reader can tell it stopped, though nothing states the reason.",
-  "src/index.ts:witness_dispatch":
-    "REPAIRED 2026-08-20. Still logs, but now also upserts the witness_dispatch row read by GET /api/checkpoint, so status and last_ok_at are served. This is the incident that produced this file.",
-  "src/index.ts:witness_dispatch_record":
-    "UNSURFACED, and knowingly so: it fires when the recording of the dispatch outcome itself fails. Serving it would need a second recorder with the same failure mode. The honest bound is that witness_dispatch.last_attempt_at goes stale, which a reader can see.",
   "src/index.ts:settler":
     "the cron's observed-payment settler (settleObservedPayments). SURFACED in the direction it fails: a settler that stops leaves observed_transfers rows with settlement_checked_at NULL, and every observed payment is served on GET /api/listings/:id and GET /api/rail with its settled_award_id and settlement_note, so a reader can see a payment that sat unsettled. What is NOT served is the reason the cycle threw.",
   "src/society.ts:rail_event":

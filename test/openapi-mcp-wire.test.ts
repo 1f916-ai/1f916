@@ -1,7 +1,7 @@
 // The two MCP doors declare the wire contract a JSON-RPC client must
 // distinguish, not only the 200.
 //
-// POST /mcp and POST /mcp/read are JSON-RPC over POST. A generated client
+// POST /mcp, POST /mcp/read and POST /mcp/protocol are JSON-RPC over POST. A generated client
 // reading /openapi.json today sees exactly one response on each door -- the
 // 200 -- so every other status the live router serves is typed `never`:
 //
@@ -32,7 +32,7 @@
 // (test/openapi-402-patron.test.ts) already fixed, on the JSON-RPC door.
 //
 // KILLING MUTATIONS:
-//  - drop 202/400/401 from the document projection for /mcp or /mcp/read;
+//  - drop 202/400/401 from the document projection for /mcp, /mcp/read or /mcp/protocol;
 //  - src/mcp.ts handleMcp: delete the `if (!msg.hasId) return new Response(null, { status: 202 })`
 //    branch (notifications fall through to -32601);
 //  - src/mcp.ts handleMcp: delete the parse-error or batch rejection
@@ -55,7 +55,7 @@ import worker from "../src/index.ts";
 
 const schema = readFileSync(fileURLToPath(new URL("../schema.sql", import.meta.url)), "utf8");
 const ORIGIN = "https://1f916.ai";
-const MCP_DOORS = ["/mcp", "/mcp/read"];
+const MCP_DOORS = ["/mcp", "/mcp/read", "/mcp/protocol"];
 
 type Resp = { description?: string; content?: Record<string, unknown> };
 type Op = { responses: Record<string, Resp> };
@@ -81,7 +81,7 @@ async function postJsonRpc(path: string, body: unknown, init?: RequestInit): Pro
   return r;
 }
 
-test("the two MCP doors declare the JSON-RPC transport statuses; 202 is theirs alone", async () => {
+test("the three MCP doors declare the JSON-RPC transport statuses; 202 is theirs alone", async () => {
   const { doc } = await openApiDoc();
   let mcpOps = 0;
   let twoHundredTwos = 0;
@@ -107,8 +107,8 @@ test("the two MCP doors declare the JSON-RPC transport statuses; 202 is theirs a
       }
     }
   }
-  assert.equal(mcpOps, 2, "POST /mcp and POST /mcp/read are both in the document");
-  assert.equal(twoHundredTwos, 2, "202 is declared exactly twice, once per MCP door");
+  assert.equal(mcpOps, 3, "POST /mcp, POST /mcp/read and POST /mcp/protocol are all in the document");
+  assert.equal(twoHundredTwos, 3, "202 is declared exactly three times, once per MCP door");
 });
 
 test("the declared 202 has no body: a notification is acknowledged, not answered", async () => {
@@ -184,6 +184,35 @@ test("the live router refuses an unsupported MCP-Protocol-Version with 400", asy
     assert.equal(b.id, 1);
     assert.equal(b.error?.code, -32600);
     assert.match(b.error?.message ?? "", /MCP-Protocol-Version/);
+  }
+});
+
+// The request Claude's "Add custom connector" check sent on 2026-10-02 (seen in
+// wrangler tail): POST, python-httpx, MCP-Protocol-Version 2025-11-25. Every door
+// answered it 400 and Claude reported the server as unreachable.
+// Killing mutation: remove "2025-11-25" from SUPPORTED_PROTOCOL_VERSIONS in
+// src/mcp.ts (the revision is then counter-offered, not granted).
+test("every door answers Claude's connector check: initialize under MCP-Protocol-Version 2025-11-25", async () => {
+  for (const path of MCP_DOORS) {
+    const r = await postJsonRpc(
+      path,
+      {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "claude-ai", version: "0.1.0" } },
+      },
+      {
+        headers: {
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+          "MCP-Protocol-Version": "2025-11-25",
+        },
+      },
+    );
+    assert.equal(r.status, 200, `${path}: Claude's connector check must not be refused at the transport`);
+    const b = (await r.json()) as { result?: { protocolVersion?: string } };
+    assert.equal(b.result?.protocolVersion, "2025-11-25", `${path}: the requested revision is spoken, so it is granted`);
   }
 });
 

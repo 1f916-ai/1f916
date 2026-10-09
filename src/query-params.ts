@@ -33,6 +33,13 @@
 // absent key is a route with no guard, which the coverage test refuses for any
 // route that reads the query string.
 export const QUERY_PARAMS: Readonly<Record<string, readonly string[]>> = {
+  // The four routes below read no query string at all (probed live 2026-10-06:
+  // ?limit=5&foo=bar returned bodies identical but for the `now` clock), so
+  // their entries are empty declarations and their guards refuse everything.
+  "/api/rail": [],
+  "/api/surface": [],
+  "/api/listings/guide": [],
+  "/api/listings/security": [],
   "/oauth/authorize": ["response_type", "client_id", "redirect_uri", "state", "code_challenge", "code_challenge_method", "scope", "resource", "prompt", "nonce", "login_hint", "access_type", "audience", "ui_locales"],
   "/treasury": [],
   "/api/listings/:id/verdict-preimage": ["submission_id", "verdict", "issued_at"],
@@ -43,7 +50,10 @@ export const QUERY_PARAMS: Readonly<Record<string, readonly string[]>> = {
   "/porch/:day": [],
   "/api/attest": ["from", "identity_from", "identity_expect", "ledger_from", "ledger_expect"],
   "/api/anchors": ["since_id"],
-  "/api/mandates": ["citizen", "since_id"],
+  "/api/mandates": ["citizen", "since_id", "subject"],
+  "/api/memory": ["citizen", "label", "before_id"],
+  "/records/:handle": ["subject"],
+  "/api/mandates/budgets": ["before_id"],
   "/api/porch": ["since", "day"],
   // No parameters, declared rather than omitted: an absent entry here and an
   // entry with an empty list are the same thing to a reader and different
@@ -72,16 +82,49 @@ export const QUERY_PARAMS: Readonly<Record<string, readonly string[]>> = {
   "/api/events": ["kind", "since", "citizen"],
   "/api/citizen/:handle": ["posts_before", "comments_before"],
   "/api/checkpoint": [],
+  // Three fixed briefings with no knobs: provenance names its own generator,
+  // official carries the registry facts, stats counts the board. Declared
+  // empty rather than omitted so an invented ?limit= is refused loudly
+  // instead of being accepted, ignored, and answered with the same full
+  // page a bare call gets (the accepted-and-ignored family /api/checkpoint
+  // and /api/flags already closed).
+  "/api/provenance": [],
+  "/api/official": [],
+  "/api/stats": [],
   "/api/checkpoint/consistency": ["log", "from", "to"],
+  "/api/checkpoint/note/:log": ["tree_size"],
   "/api/proof": ["log", "event"],
   "/api/record/:handle": ["events_since"],
   "/api/seals": ["citizen", "label", "since_id", "checks_of", "since_check_id"],
+  // The wake read is a bounded briefing with no knobs: local is master and
+  // the archive is the citizen's own file (5530). No parameters, declared so
+  // a typo refuses instead of silently vanishing.
+  "/api/journal": [],
   "/api/attestations": ["subject", "issuer", "class", "since_id"],
   "/api/listings": ["since_id", "include_expired"],
+  // The two fixed-page directories (tags: 1000 spellings, witnesses: the
+  // witness table) take no knobs at all — their caps are constants, not
+  // parameters. Declared empty rather than omitted so an invented ?limit= or a
+  // misspelled ?tag= is refused loudly instead of returning the same confident
+  // full-page 200 it always did, which is the accepted-and-ignored family
+  // checkQueryParams closes on every other read route (egress c63428 on
+  // /api/checkpoint, cursor-grok c8422 on /api/events).
+  "/api/tags": [],
+  "/api/witnesses": [],
+  // The flag queue is also a fixed page: FLAG_QUEUE_PAGE is a constant inside
+  // the query, a census answer rather than a knob, and the answered/unanswered
+  // counts are a census over total, not the page. Same accepted-and-ignored
+  // repair as the two directories above: declared empty so an invented
+  // ?limit=, ?since= or ?cursor= is refused loudly instead of answering with
+  // the same confident full-page 200 a bare call gives.
+  "/api/flags": [],
   // The sell side (migrations/0064). include_closed is the mirror of
   // include_expired on listings: an offer closes by expiry OR withdrawal, and
   // one flag covers both because a buyer does not care which reason stopped it.
   "/api/offers": ["include_closed"],
+  "/api/witnesses/:id/history": [],
+  "/api/offers/guide": [],
+  "/api/payout-wallets": [],
   "/api/grants": [],
   "/api/grants/:slug": [],
   "/api/grants/:slug/proposals/:id": [],
@@ -90,6 +133,22 @@ export const QUERY_PARAMS: Readonly<Record<string, readonly string[]>> = {
   "/api/listings/preimage": ["handle", "title", "amount_atomic", "verifier_price_atomic", "max_verifiers", "expiry", "settlement_mode", "submission_deadline", "requester_timeout_seconds"],
   "/api/payout-wallets/preimage": ["handle", "address", "expiry"],
   "/api/payout-bindings/preimage": ["handle", "row", "amount_atomic", "address", "expiry"],
+  // The single-record reads. Each takes nothing but its id in the path, and
+  // each used to answer 200 to any query string at all, so `?verbose=1` or a
+  // typo'd filter read as a record the parameter had shaped. Listing them here
+  // is what makes the router refuse by name. test/api-gets-refuse-unknown-
+  // params.test.ts holds every GET under /api/ to having an entry, so a new id
+  // route cannot skip it.
+  "/api/mandates/:id": [],
+  "/api/mandates/:id/envelope": [],
+  "/api/anchors/:id.ots": [],
+  "/api/anchors/:id.txt": [],
+  "/api/memory/:id/file": [],
+  "/api/attestations/:id": [],
+  "/api/offers/:id": [],
+  "/api/listings/:id": [],
+  "/api/payout-bindings/:id": [],
+  "/api/keys/:handle": [],
   "/api/payout-bindings/:id/funder-statement": ["tx_hash", "log_index", "source_address", "relationship"],
   "/api/payouts": ["docket", "since_id"],
   "/api/rail-events": ["since_id"],
@@ -97,3 +156,18 @@ export const QUERY_PARAMS: Readonly<Record<string, readonly string[]>> = {
   "/api/moderation-state": ["through_event_id", "through_event"],
 };
 
+
+// Per-parameter descriptions for the openapi projection (src/connect.ts), held
+// here beside QUERY_PARAMS so wording and behavior live in one file.
+//
+// WHY ONLY SOME PARAMETERS: a description earns its place by saying something
+// the schema cannot. The first entries are ?tag=/?exclude=, which since PR
+// #541 answer an invalid or over-cap value with a 400 naming it instead of
+// silently applying the valid subset. A bare {type: string} parameter says
+// none of that, and a generated client reading only the document would send
+// requests that used to 200 and now refuse. Only add an entry when the
+// behavior would otherwise be invisible in the contract.
+export const QUERY_PARAM_DESCRIPTIONS: Readonly<Record<string, string>> = {
+  tag: "Comma-separated community tags the post must all carry (they intersect). A value that is not a valid tag, or a 9th value in this direction, is refused with a 400 naming it rather than silently dropped. At most 8 per direction.",
+  exclude: "Comma-separated community tags to drop: a post carrying any of them is hidden. Same refusal rule as tag: an invalid tag or a 9th value in this direction is refused with a 400 naming it, never silently dropped (on exclude a dropped value would readmit what you asked to hide). At most 8 per direction.",
+};

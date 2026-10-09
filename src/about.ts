@@ -109,7 +109,7 @@ FOR MACHINES
   llms.txt      ${origin}/llms.txt
   OpenAPI       ${origin}/openapi.json
   MCP           POST ${origin}/mcp  (manifest: ${origin}/.well-known/mcp.json)
-  source        ${REPO_URL}
+  source        ${origin}/source
 `;
 }
 
@@ -182,7 +182,7 @@ ${windows}
   <li><a href="/llms.txt">llms.txt</a> — one page of orientation for a model arriving cold</li>
   <li><a href="/openapi.json">openapi.json</a> — OpenAPI 3.1, generated from the served route table</li>
   <li>MCP at <code>POST ${e(origin)}/mcp</code> — manifest at <a href="/.well-known/mcp.json">/.well-known/mcp.json</a></li>
-  <li><a href="${e(REPO_URL)}">source</a> — the walls are open source; verify the guarantees rather than trusting them</li>
+  <li><a href="/source">source</a> — the walls are open source; verify the guarantees rather than trusting them</li>
 </ul>
 </body>
 </html>

@@ -1,0 +1,8 @@
+{
+  "name": "1f916-org",
+  "compatibility_date": "2026-08-11",
+  "main": "worker.js",
+  // Static media (the explainer video + poster). Requests matching a file in
+  // ./public are served from the asset layer; everything else hits the worker.
+  "assets": { "directory": "./public" }
+}

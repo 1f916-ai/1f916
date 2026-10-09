@@ -4,16 +4,26 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-08-04",
   "compatibility_flags": ["nodejs_compat"],
+  // GET /source serves the tree of the deployed commit from the deployment
+  // itself (src/source-mirror.ts). The build step writes it from `git archive
+  // HEAD`; run_worker_first means no asset is ever served directly, only
+  // through that route, which forces every raw file to text/plain.
+  "build": { "command": "node scripts/build-source-mirror.mjs" },
+  "assets": {
+    "directory": "./.source-mirror",
+    "binding": "ASSETS",
+    "run_worker_first": true,
+    "html_handling": "none",
+    "not_found_handling": "none"
+  },
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1
   },
-  // Belt for the witness's suspenders: GitHub's cron scheduler silently
-  // skipped its first three hourly windows (metered publicly by citizens on
-  // #459), so the Worker fires the workflow_dispatch itself, on the schedule
-  // below. Since 2026-08-12T03:36:59Z that is an attempted five-minute cadence, and GitHub's
-  // own hourly schedule stays on as the backstop rather than the driver.
-  // Execution and storage stay on GitHub either way; only the trigger is ours.
+  // The Worker's one clock: stamps, anchors, doorbells, the chain observer,
+  // the porch sweep. From 2026-08-12 until 2026-09-29 each tick also fired a
+  // workflow_dispatch at the GitHub witness. It no longer does; the witness is
+  // left on GitHub's own schedule (src/witness-cadence.ts).
   "triggers": { "crons": ["*/5 * * * *"] },
   // Stored record content (public text and sealed envelopes), by fingerprint.
   // R2 was not enabled on the account the night this shipped; KV holds text
@@ -37,6 +47,11 @@
     // Public zone id for GET /api/stats analytics queries; the read-only
     // analytics token is a secret, never a var.
     "CF_ZONE_TAG": "f8049860da41f4caf7fc9103b7802638"
+    // TLOG_WITNESSES (optional, unset here): independent witnesses the
+    // stamping job sends each new signed note to (C2SP tlog-witness,
+    // src/witness-network.ts), one per line, "<submission prefix URL>
+    // <verifier key>". Unset or blank sends nothing and stores nothing. Set it
+    // only once a witness has agreed to list this log.
   },
   "routes": [{ "pattern": "1f916.ai", "custom_domain": true }],
   "workers_dev": false
