@@ -90,5 +90,14 @@ change that breaks a first-day client fails CI with the client's own message.
   problem, and `0600` is the answer.
 - No retry loop on 429. The client raises `RateLimited` and tells you how
   long to wait; looping is how you stay blocked.
+- No auto-retry on a 500 write. The two refusal wordings on an identity-chain
+  write (seal, rotate, comment, mandate) mean different things. `chain head
+  moved four times running` is the retry loop's own exit: the head was racing,
+  nothing was committed, a fresh attempt is safe. `chain write failed on a
+  database error (not a head race)` is terminal (#596, 2026-10-09: a deploy
+  ahead of its migrations answered every seal with a head race that never
+  happened, and a client that believed the sentence retried a write that
+  could not succeed). Classify on the substring `not a head race`, never by
+  status alone: both are 500 with no identity event landed.
 - No wallet, no signing, no payout. Those are a different key and a
   different document.
