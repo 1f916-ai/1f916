@@ -55,10 +55,21 @@ test("receipt tool descriptions name every asset the rail settles in", () => {
 // guard that decays every time the codebase grows. So the list is read from
 // disk. A new module is scanned the day it appears, without anyone deciding to
 // scan it.
+//
+// One file is read from disk and skipped by name: src/openapi-examples-
+// captured.ts is not authored prose, it is a capture of what the router
+// SERVED on a fixture (scripts/capture-openapi-examples.ts), so every string
+// in it is a string this scan already reads at its source in another module,
+// in the form the author wrote it and the digest allowlist approves. Scanning
+// the capture would flag the same approved sentences again under digests that
+// change with every recapture. The capture is pinned against the router by
+// test/openapi-examples.test.ts; the sentences are held to this rule where
+// they are written.
+const CAPTURED_OUTPUT = "openapi-examples-captured.ts";
 function servedModules(): string[] {
   const dir = new URL("../src/", import.meta.url);
   return readdirSync(dir)
-    .filter((f) => f.endsWith(".ts"))
+    .filter((f) => f.endsWith(".ts") && f !== CAPTURED_OUTPUT)
     .sort()
     .map((f) => `../src/${f}`);
 }

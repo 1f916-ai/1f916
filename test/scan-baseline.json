@@ -296,6 +296,13 @@
         "grant_proposals: SCAN p"
       ]
     },
+    "50d307a8815feb15": {
+      "status": "debt",
+      "sql": "SELECT hash FROM identity_events WHERE hash IS NOT NULL ORDER BY id ASC",
+      "plan": [
+        "identity_events: SCAN identity_events"
+      ]
+    },
     "4971ffc7d3d40c3d": {
       "status": "debt",
       "sql": "SELECT hash FROM identity_events WHERE hash IS NOT NULL ORDER BY id DESC LIMIT N",
@@ -392,6 +399,27 @@
       "sql": "SELECT id, listing_id, submission_id, citizen_id, amount_atomic, state, awarded_by, awarded_at, payable_at, expires_at, expired_at, overdue_at, ready_at, ready_binding_id, ready_payout_address, receipt_id, paid_at FROM listing_awards ORDER BY id ASC",
       "plan": [
         "listing_awards: SCAN listing_awards"
+      ]
+    },
+    "dee523f3ff7f9e0e": {
+      "status": "debt",
+      "sql": "SELECT id, mod_state FROM comments WHERE mod_state IS NOT NULL",
+      "plan": [
+        "comments: SCAN comments USING COVERING INDEX idx_comments_moderated"
+      ]
+    },
+    "10f57ac74236d476": {
+      "status": "debt",
+      "sql": "SELECT id, mod_state FROM listings WHERE mod_state IS NOT NULL",
+      "plan": [
+        "listings: SCAN listings USING COVERING INDEX idx_listings_moderated"
+      ]
+    },
+    "2f8cbf48657ebb60": {
+      "status": "debt",
+      "sql": "SELECT id, mod_state FROM posts WHERE mod_state IS NOT NULL",
+      "plan": [
+        "posts: SCAN posts USING COVERING INDEX idx_posts_moderated"
       ]
     },
     "3d457e20fdb902bd": {
@@ -681,59 +709,20 @@
       "plan": [
         "witnesses: SCAN w"
       ]
-    },
-    "50d307a8815feb15": {
-      "status": "debt",
-      "sql": "SELECT hash FROM identity_events WHERE hash IS NOT NULL ORDER BY id ASC",
-      "plan": [
-        "identity_events: SCAN identity_events"
-      ]
     }
   },
   "uncovered_reads": {
-    "70d9a6a8b617deb9": {
-      "file": "src/checkpoint.ts",
-      "sql": "SELECT id, tree_size, root, sig, created_at FROM checkpoints WHERE log = ? AND tree_size >= ? ORDER BY tree_size ASC LIMIT 1"
-    },
     "92d27d97b5340508": {
       "file": "src/index.ts",
       "sql": "SELECT c.created_at, (SELECT COUNT(*) FROM keys k WHERE k.citizen_id = c.id AND k.status = 'active') AS active_keys, (SELECT COUNT(*) FROM keys k WHERE k.citizen_id = c.id) AS total_keys, (SELECT COUNT(*) FROM seals s WHERE s.citizen_id = c.id) AS seals FROM citizens c WHERE c.handle = ?"
-    },
-    "79e9f4db1e67e5a1": {
-      "file": "src/society.ts",
-      "sql": "SELECT ${\u2026}, i.handle AS issuer, s.handle AS subject FROM attestations a JOIN citizens i ON i.id = a.issuer_id JOIN citizens s ON s.id = a.subject_id WHERE a.target_attestation_id = ? ORDER BY a.id ASC"
     },
     "d36a1c7cf4bc1a03": {
       "file": "src/society.ts",
       "sql": "SELECT COUNT(*) AS n FROM payout_receipts pr JOIN payout_bindings pb ON pb.id = pr.binding_id WHERE pb.docket_id = ?"
     },
-    "35ddf48e37a79d4e": {
-      "file": "src/society.ts",
-      "sql": "SELECT id FROM identity_events WHERE kind = 'attestation' AND instr(detail, ?) > 0 LIMIT 1"
-    },
     "d9986808055a69c7": {
       "file": "src/society.ts",
       "sql": "SELECT id FROM ledger WHERE id = ?"
-    },
-    "dc3966a3193140c8": {
-      "file": "src/society.ts",
-      "sql": "SELECT id, detail, created_at FROM identity_events WHERE kind = 'moderation' ORDER BY id ASC"
-    },
-    "710aae22e2171090": {
-      "file": "src/society.ts",
-      "sql": "SELECT id, mod_state FROM comments WHERE mod_state IS NOT NULL"
-    },
-    "1aa07dc3d59d95cc": {
-      "file": "src/society.ts",
-      "sql": "SELECT id, mod_state FROM listings WHERE mod_state IS NOT NULL"
-    },
-    "ce97c931607bc029": {
-      "file": "src/society.ts",
-      "sql": "SELECT id, mod_state FROM posts WHERE mod_state IS NOT NULL"
-    },
-    "10ef20770ad88f48": {
-      "file": "src/society.ts",
-      "sql": "SELECT MAX(id) AS id FROM identity_events WHERE kind = 'moderation'"
     },
     "c5caa8373a03e566": {
       "file": "src/society.ts",
