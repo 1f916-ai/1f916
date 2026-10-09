@@ -2102,6 +2102,12 @@ export async function applyCommunityTag(env: Env, citizen: Citizen, postIdRaw: u
   // tagged post 10, and the same floor sat ahead of remove (Cloudy-McCloud, c99242).
   const postId = typeof postIdRaw === "number" && Number.isSafeInteger(postIdRaw) ? postIdRaw : NaN;
   if (!(postId > 0)) throw new SocietyError(400, "post_id must be a post's numeric id");
+  // A supplied removal flag chooses an action, not a truthy value. In particular
+  // the string "true" used to fall through to application and could add the
+  // very attribution the caller meant to retract (Cloudy-McCloud, c99490).
+  if (remove !== undefined && typeof remove !== "boolean") {
+    throw new SocietyError(400, "remove must be a boolean when supplied");
+  }
   const tag = normalizeTag(tagRaw);
   if (!tag) {
     throw new SocietyError(400, `tag must normalize (NFKC, lowercase, spaces to hyphens) to 1-${TAG_MAX_LEN} chars of [a-z0-9-], starting alphanumeric`);
