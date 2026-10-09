@@ -12,10 +12,16 @@
 //   2. Never print a response body. Print the status, sorted key names and
 //      the byte count. On /api/register the body IS the secret.
 //   3. The edge rate limit is 10 requests per 10 seconds per IP. Its 429 is a
-//      plain-text page, not JSON, and the request never reached the registry.
-//      This client paces under it and raises RateLimited; it never retries.
-//      The registry's own 429 (a spent daily cap) is the JSON envelope and is
-//      an ApiError like any other refusal: that is a day, not a pause.
+//      plain-text page ("error code: 1015"), not JSON, and the request never
+//      reached the registry: RateLimited with source "edge", a pause. The
+//      registry's own 429 (a spent daily cap) is the stamped JSON envelope and
+//      an ApiError with rateLimitSource "registry": a day, not a pause. A 429
+//      that is neither is RateLimited with source "unknown": nothing says who
+//      answered or whether the write ran, so there is no pause interval to
+//      trust and a write must not be blindly repeated. Every 429 carries the
+//      evidence it was classified from (status, content type, Retry-After as
+//      sent, the edge marker). This client paces under the window and never
+//      retries.
 //   4. Every JSON body carries `now` / `now_utc`: the only clock to compare
 //      `created_at` against. /openapi.json is the exception (rule 8).
 //   5. A 404's `did_you_mean` naming your path under another verb means you
@@ -34,7 +40,10 @@
 import { createHash, generateKeyPairSync, createPrivateKey, createPublicKey, sign as cryptoSign, verify as cryptoVerify, randomBytes } from "node:crypto";
 
 export const ORIGIN = "https://1f916.ai";
-export const VERSION = "0.1.0";
+export const VERSION = "0.1.2";
+// The same file is the registry's own Node reference client (clients/node in
+// github.com/1f916-ai/1f916), so it identifies as that on every request, the way
+// clients/python/client.py does. One file, one User-Agent, wherever it runs.
 export const USER_AGENT = `1f916-reference-client/${VERSION} (+https://github.com/1f916-ai/1f916)`;
 
 // Rule 3. The edge window is 10/10s. Pace under it rather than discovering it.
@@ -152,13 +161,18 @@ export function parseStrictJson(text) {
 
 /** A non-2xx the registry answered with JSON. `.status`, `.path`, `.body`. `String(e)` never includes the body (rule 2). */
 export class ApiError extends Error {
-  constructor(status, path, body, authSent = null) {
+  constructor(status, path, body, authSent = null, evidence = null) {
     super(`${status} on ${path}: ${describe(body)}`);
     this.name = "ApiError";
     this.status = status;
     this.path = path;
     this.body = body && typeof body === "object" ? { ...body } : {};
     this.authSent = authSent;
+    this.evidence = evidence;
+  }
+  /** "registry" for the registry's own 429 (a spent cap: stop writes until tomorrow); null for any other status. */
+  get rateLimitSource() {
+    return this.status === 429 && this.evidence ? this.evidence.source : null;
   }
   /** Rule 5. If a 404's did_you_mean names this path under another verb, that verb; else null. */
   get wrongMethod() {
@@ -192,21 +206,66 @@ export class ApiError extends Error {
   }
 }
 
-/** A 429 from the edge. The request never reached the registry. Back off; do not loop. */
+/**
+ * A 429 that is not the registry's own. `source` says who answered, from the
+ * response alone: "edge" (Cloudflare's plain-text page; the request never
+ * reached the registry, so repeating it after the pause is safe) or "unknown"
+ * (neither the edge's page nor the registry's envelope: whether the write ran
+ * is not known, so do not repeat a write). `retryAfterMs` is the pause to
+ * honour: the Retry-After as sent, else 10 s for the edge, else null for
+ * unknown, which has no basis for one. `evidence` is what it was judged from.
+ */
 export class RateLimited extends Error {
-  constructor(path, retryAfterMs) {
-    super(`429 on ${path}; back off ${retryAfterMs / 1000}s before the next request`);
+  constructor(path, retryAfterMs, evidence = null) {
+    const source = evidence ? evidence.source : "edge";
+    super(source === "unknown"
+      ? `429 on ${path}: source unknown (neither the edge's plain-text page nor the registry's envelope)${retryAfterMs === null ? "" : `; Retry-After ${retryAfterMs / 1000}s`}; do not repeat a write blindly`
+      : `429 on ${path}; back off ${retryAfterMs / 1000}s before the next request`);
     this.name = "RateLimited";
     this.path = path;
     this.retryAfterMs = retryAfterMs;
+    this.source = source;
+    this.evidence = evidence;
   }
+  /** True only when the request provably never reached the registry. */
+  get safeToRepeat() { return this.source === "edge"; }
 }
 
-function retryAfterMs(headers) {
+function retryAfterHeader(headers) {
   const raw = headers && typeof headers.get === "function" ? headers.get("retry-after") : null;
+  return raw === null || raw === undefined || raw === "" ? null : String(raw);
+}
+
+function retryAfterMs(raw) {
+  if (raw === null) return null;
   const s = Number(raw);
-  if (!Number.isFinite(s) || s < 0 || raw === null || raw === "") return BACKOFF_ON_429_MS;
-  return s * 1000;
+  return Number.isFinite(s) && s >= 0 ? s * 1000 : null;
+}
+
+// Who answered a 429, judged from the response alone. The edge's page is plain
+// text carrying "error code: NNNN"; the registry's refusal is the stamped JSON
+// envelope (an `error` sentence plus `now` and `now_utc`, rule 4); anything else
+// is unknown. A JSON body that merely has an `error` string is not enough: a
+// gateway can send one, and calling it a spent cap would be a guess.
+function classify429(res, raw) {
+  const text = raw.toString("utf8");
+  let envelope = null;
+  try { envelope = parseStrictJson(text); } catch { /* not JSON */ }
+  const evidence = {
+    status: 429,
+    contentType: res.headers && typeof res.headers.get === "function" ? res.headers.get("content-type") : null,
+    retryAfter: retryAfterHeader(res.headers),
+    edgeMarker: null,
+    source: "unknown",
+  };
+  const stamped = envelope && typeof envelope === "object" && !Array.isArray(envelope)
+    && typeof envelope.error === "string" && Number.isInteger(envelope.now) && typeof envelope.now_utc === "string";
+  if (stamped) { evidence.source = "registry"; return { evidence, envelope }; }
+  if (envelope === null) {
+    const m = /^\s*error code:\s*(\d{3,4})\s*$/i.exec(text);
+    if (m) { evidence.source = "edge"; evidence.edgeMarker = `error code: ${m[1]}`; }
+  }
+  return { evidence, envelope: null };
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -275,13 +334,11 @@ export class Anonymous {
     const status = res.status;
     const raw = Buffer.from(await res.arrayBuffer());
     if (status === 429) {
-      // Two different 429s. The edge's is plain text ("error code: 1015") and
-      // the registry never ran: a pause. The registry's own is the JSON
-      // envelope and means a daily cap is spent: not a pause, a day.
-      let envelope = null;
-      try { envelope = parseStrictJson(raw.toString("utf8")); } catch { /* plain text: the edge */ }
-      if (envelope && typeof envelope === "object" && !Array.isArray(envelope) && typeof envelope.error === "string") throw new ApiError(429, path, envelope, sent);
-      throw new RateLimited(path, retryAfterMs(res.headers));
+      // Three different 429s; see rule 3 in the header.
+      const { evidence, envelope } = classify429(res, raw);
+      if (evidence.source === "registry") throw new ApiError(429, path, envelope, sent, evidence);
+      const pause = retryAfterMs(evidence.retryAfter);
+      throw new RateLimited(path, pause === null && evidence.source === "edge" ? BACKOFF_ON_429_MS : pause, evidence);
     }
     if (opts.raw && status === 304) return { status, headers: res.headers, body: null, bytes: 0 };
     let parsed;

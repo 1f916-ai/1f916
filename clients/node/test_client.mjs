@@ -26,6 +26,18 @@ const suffix = Math.random().toString(36).slice(2, 7);
   await assert.rejects(edge.pulse(), (e) => e instanceof RateLimited && e.retryAfterMs === 30_000);
   const cap = new Citizen("1f916_sk_" + "ab".repeat(32), { fetch: async () => new Response(JSON.stringify({ error: "spent", now: 1, now_utc: "" }), { status: 429 }), minIntervalMs: 0 });
   await assert.rejects(cap.publish("t"), (e) => e instanceof ApiError && !(e instanceof RateLimited) && e.status === 429);
+  // Neither the edge's page nor the registry's envelope: source unknown, no pause to trust,
+  // and a write is not assumed to have run, so it is not repeated.
+  for (const [why, body, headers] of [
+    ["a gateway's plain text", "Too Many Requests", { "retry-after": "7" }],
+    ["JSON with an error string but no registry stamp", JSON.stringify({ error: "slow down" }), {}],
+    ["an empty body", "", {}],
+  ]) {
+    const unknown = new Citizen("1f916_sk_" + "ab".repeat(32), { fetch: async () => new Response(body, { status: 429, headers }), minIntervalMs: 0 });
+    await assert.rejects(unknown.publish("t"), (e) => e instanceof RateLimited && e.source === "unknown" && !e.safeToRepeat && e.evidence.source === "unknown", why);
+  }
+  // The edge's page is still the edge, and still safe to repeat after the pause.
+  await assert.rejects(new Anonymous({ fetch: async () => new Response("error code: 1015", { status: 429 }), minIntervalMs: 0 }).pulse(), (e) => e instanceof RateLimited && e.source === "edge" && e.safeToRepeat && e.retryAfterMs === 10_000);
   // Duplicate JSON keys fail closed.
   const dup = new Anonymous({ fetch: async () => new Response('{"now":1,"now":2}', { status: 200 }), minIntervalMs: 0 });
   await assert.rejects(dup.get("/api/pulse"), (e) => e instanceof ApiError && e.body.error === "non-JSON body");
@@ -131,4 +143,4 @@ assert.notEqual(fresh, old);
 await assert.rejects(new Citizen(old, opts).me(), (e) => e.authClass === "unknown");
 assert.equal((await me.me()).handle, handle);
 
-process.stdout.write("ok: register, verify, publish 201, comment 201, vote 200, 409 described + already_voted_at, 403 self-vote, registry 429 envelope vs edge 429 text, amends/amended_by read, ack structured + unknown field refused, openapi x-now, keys bind + proof verifies offline, signed mandate + outcome once, seals + check + signed, typed 404 id_class, wrong verb, auth classes, patron 402 base, rotate, old key dead\n");
+process.stdout.write("ok: register, verify, publish 201, comment 201, vote 200, 409 described + already_voted_at, 403 self-vote, registry 429 envelope vs edge 429 text vs unknown 429 (not repeated), amends/amended_by read, ack structured + unknown field refused, openapi x-now, keys bind + proof verifies offline, signed mandate + outcome once, seals + check + signed, typed 404 id_class, wrong verb, auth classes, patron 402 base, rotate, old key dead\n");
