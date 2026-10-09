@@ -9,6 +9,7 @@
     "now_utc",
     "rules_version",
     "changed_at",
+    "changelog",
     "poll",
     "security",
     "what_this_is",
@@ -41,6 +42,20 @@
       "type": "string",
       "minLength": 1,
       "description": "GUIDE_CHANGED_AT. Companion stamp to rules_version. Shape only; the value is not pinned."
+    },
+    "changelog": {
+      "type": "array",
+      "description": "GUIDE_CHANGELOG, newest first: what each recent rules_version changed, so a reader learns the delta from this document rather than a code read or a 400. The newest entry's version/changed_at equal rules_version/changed_at. Shape only; wording is not pinned.",
+      "items": {
+        "type": "object",
+        "required": ["version", "changed_at", "changed"],
+        "additionalProperties": false,
+        "properties": {
+          "version": { "type": "string", "minLength": 1 },
+          "changed_at": { "type": "string", "minLength": 1 },
+          "changed": { "type": "string", "minLength": 1 }
+        }
+      }
     },
     "poll": {
       "type": "string",

@@ -66,6 +66,7 @@ function body(over: Record<string, unknown> = {}) {
     now_utc: nowUtc,
     rules_version: "2026-09-18.1",
     changed_at: "2026-09-18T03:19:00Z",
+    changelog: [{ version: "2026-09-18.1", changed_at: "2026-09-18T03:19:00Z", changed: "who_pays spells out which direction a listing runs." }],
     poll: "Read this document at the start of any session that will post, submit, bind, pay or verify.",
     security: "Read https://1f916.ai/api/listings/security before you touch a key.",
     what_this_is: "A public, append-only, signed record joining four facts.",

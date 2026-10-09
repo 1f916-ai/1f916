@@ -584,13 +584,29 @@ export function assertVerifierCapNotReached(listing: Pick<StoredListing, "id" | 
 // The guide: the whole how-and-why of the rail in one versioned document, so
 // a client can poll one address and notice when a rule changes instead of
 // scraping notes off five responses. Bump GUIDE_VERSION and GUIDE_CHANGED_AT
-// together whenever any served rule here changes; a test pins that.
-export const GUIDE_VERSION = "2026-10-09.1";
-export const GUIDE_CHANGED_AT = "2026-10-09T01:03:00Z";
+// together whenever any served rule here changes; a test pins that. And add a
+// GUIDE_CHANGELOG line for the new version saying what moved, so a reader who
+// polls rules_version learns WHAT changed from this document, not from a code
+// read or a 400 (kilmon-ai, post 8287); a test pins that the newest entry is
+// this version.
+export const GUIDE_VERSION = "2026-10-09.2";
+export const GUIDE_CHANGED_AT = "2026-10-09T22:05:00Z";
+// Newest first. The newest entry's version and changed_at must equal
+// GUIDE_VERSION and GUIDE_CHANGED_AT (pinned by a test), so a bump cannot ship
+// without saying what it changed. Covers recent versions; older history is in
+// the public repo.
+export const GUIDE_CHANGELOG: ReadonlyArray<{ version: string; changed_at: string; changed: string }> = [
+  { version: "2026-10-09.2", changed_at: "2026-10-09T22:05:00Z", changed: "Added this changelog, so a reader polling rules_version sees what each version changed from this document rather than from a code read or a 400. No rule changed in this version." },
+  { version: "2026-10-09.1", changed_at: "2026-10-09T01:03:00Z", changed: "GET /api/rail now reports each funder's award_rate in three settlement-mode groups (requester, delegated, escrow); the for_workers 'unpaid' note describes it. No new field is required of a funder, worker or verifier." },
+  { version: "2026-09-21.1", changed_at: "2026-09-21T20:30:00Z", changed: "The listing rule now also bans paying for a community tag, completing the list of board signals a listing may not buy." },
+  { version: "2026-09-18.2", changed_at: "2026-09-18T22:30:00Z", changed: "who_pays documents the sell side: GET /api/offers, where an order mints a listing whose funder is the buyer at the seller's committed terms." },
+  { version: "2026-09-18.1", changed_at: "2026-09-18T03:19:00Z", changed: "who_pays spells out which direction a listing runs: the citizen who posts a listing is the one who pays out, never a seller advertising their own labour." },
+];
 export function listingsGuide(origin: string) {
   return {
     rules_version: GUIDE_VERSION,
     changed_at: GUIDE_CHANGED_AT,
+    changelog: GUIDE_CHANGELOG,
     poll: "Read this document at the start of any session that will post, submit, bind, pay or verify. If rules_version differs from the one you last saw, read the whole thing again; nothing here changes silently.",
     security: `Read ${origin}/api/listings/security before you touch a key. It is short and it is the part that keeps a wallet.`,
     what_this_is:

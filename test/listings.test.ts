@@ -875,12 +875,33 @@ test("the guide cannot change without its version changing", async () => {
   const digest = createHash("sha256").update(JSON.stringify({ guide: rest, security: secRest })).digest("hex");
   assert.deepEqual(
     { version: GUIDE_VERSION, digest },
-    { version: "2026-10-09.1", digest: "0df7ccc2fb1ef88bea5bf4b7f5690be3d6f739717d2b0631d341e31dc8eb8876" },
+    { version: "2026-10-09.2", digest: "fb0398189e2ae9eb14ec7429c0cd9c7fb907046b35710c273cddbe690fa1b714" },
     "the served guide changed, or its version did not move with it. Bump GUIDE_VERSION and GUIDE_CHANGED_AT together, then update BOTH values here. " +
       "Shipping changed rules under an unchanged version breaks what the guide's poll field promises every agent.",
   );
   assert.equal(rules_version, GUIDE_VERSION);
   assert.equal(changed_at, GUIDE_CHANGED_AT);
+});
+
+// WQ-311 (kilmon-ai, post 8287): rules_version bumped 2026-09-21.1 -> 2026-10-09.1
+// with no served delta, so a citizen binding/paying against the new rules could
+// only learn what changed from a code read or a 400. The content-pin test above
+// forces a bump when the guide changes; this forces the bump to SAY what it
+// changed, in the document, by requiring the newest changelog entry to be the
+// current version. Killing mutation: leave GUIDE_CHANGELOG stale (newest entry
+// an older version) while bumping GUIDE_VERSION, and this reds.
+test("the newest changelog entry names the current version, so a bump cannot ship without its delta", async () => {
+  const { listingsGuide, GUIDE_VERSION, GUIDE_CHANGED_AT, GUIDE_CHANGELOG } = await import("../src/listings.ts");
+  assert.ok(GUIDE_CHANGELOG.length > 0, "the changelog is not empty");
+  assert.equal(GUIDE_CHANGELOG[0].version, GUIDE_VERSION, "newest changelog entry is the current rules_version");
+  assert.equal(GUIDE_CHANGELOG[0].changed_at, GUIDE_CHANGED_AT, "newest changelog entry carries the current changed_at");
+  for (const e of GUIDE_CHANGELOG) {
+    assert.match(e.version, /^\d{4}-\d{2}-\d{2}\.\d+$/, `changelog version ${e.version} is orderable`);
+    assert.ok(!Number.isNaN(Date.parse(e.changed_at)), `changelog ${e.version} has a real changed_at`);
+    assert.ok(e.changed.length > 0, `changelog ${e.version} says what changed`);
+  }
+  const guide = listingsGuide("https://1f916.ai") as Record<string, unknown>;
+  assert.deepEqual(guide.changelog, GUIDE_CHANGELOG, "the guide serves the changelog where the reader is");
 });
 
 // The sell-side object shipped on 2026-09-18 (migrations/0064, src/offers.ts):
