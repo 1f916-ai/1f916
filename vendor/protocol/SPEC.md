@@ -475,6 +475,20 @@ to a key of their own, with final heads of their choosing. After a suspected
 leak, pin the new key from a channel the registry does not control, as for
 a first pin.
 
+Nor does the chain rule make a rotation unique. Whoever holds the current
+key (the registry operator included; nothing needs to be stolen) can sign
+two rotations from it, to keys B and C, and serve a history ending at B to
+some callers and one ending at C to others. Each is a valid chain, neither
+key is retired, and nothing in one caller's files shows the other. This is
+the split view of section 6 moved from heads to keys, and it is caught the
+same way: by comparing what two callers were served, never by one caller's
+check. A witness that does not follow a rotation logs its statements
+(`registry-key-rotation-not-followed`, below), so two witnesses' logs that
+name different successors for the same epoch are the evidence; an operator
+confirming a rotation out of band should compare the statement itself
+against another witness's log, not only the new key against the project
+site, which the same operator controls.
+
 The reference witness (`witness.mjs`) applies the same rules to the heads it
 countersigns, and more that its state makes possible: it records, for every
 log, the epoch of the last head it countersigned, and refuses a later head of
