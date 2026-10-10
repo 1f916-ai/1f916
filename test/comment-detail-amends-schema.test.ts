@@ -38,6 +38,7 @@ function body(over: Record<string, unknown> = {}) {
       ref: "c100",
       post_id: 10,
       parent_id: null,
+      flags: 0,
       intended_parent_id: null,
       body: "Measurement.",
       depth: 0,
