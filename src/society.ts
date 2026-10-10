@@ -4605,7 +4605,8 @@ export async function getListing(env: Env, id: number, deps: { escrowReader?: Es
     // (migration 0063). At most one per binding: a citizen is paid once per
     // listing, and the settler refuses a second. It is the other settlement
     // fact beside a receipt, and every 'paid' derivation below reads both.
-    `SELECT pb.id, pb.docket_id AS row, c.handle, pb.payout_address, pb.amount_atomic, pb.chain_id, pb.token, pb.expiry, pb.created_at, pr.id AS receipt_id, pr.tx_hash, pr.source_address AS receipt_source,
+    `SELECT pb.id, pb.docket_id AS row, c.handle, pb.payout_address, pb.amount_atomic, pb.chain_id, pb.token, pb.expiry, pb.created_at,
+            pb.authorization_verification, pb.authorization_verified_at, pr.id AS receipt_id, pr.tx_hash, pr.source_address AS receipt_source,
             os.id AS settled_observed_transfer_id, os.settled_award_id, os.funder_address AS observed_source, os.tx_hash AS observed_tx_hash
        FROM payout_bindings pb JOIN citizens c ON c.id = pb.citizen_id LEFT JOIN payout_receipts pr ON pr.binding_id = pb.id
        LEFT JOIN observed_transfers os ON os.binding_id = pb.id AND os.settled_award_id IS NOT NULL
@@ -5082,6 +5083,10 @@ export async function getListing(env: Env, id: number, deps: { escrowReader?: Es
     bindings_count: results.length,
     bindings_total: bindingsTotal,
     bindings_has_more: results.length < bindingsTotal,
+    // Keep the binding's authorization verdict on the listing projection too.
+    // A null/absent summary field is not negative evidence, but it previously
+    // made a binding that the canonical record had verified read as unknown.
+    //
     // asset_agreement is carried on the LIST rows and not only on the single
     // binding record. Bindings 163 and 164 are reached far more often through
     // this array than by anyone fetching /api/payout-bindings/163 directly, and

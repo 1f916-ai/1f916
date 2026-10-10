@@ -277,6 +277,10 @@ test("a listing is posted with its identity event, and a payee binds against it 
   const detail = await getListing(env, 1);
   assert.equal(detail.bindings.length, 1);
   assert.equal(detail.bindings[0]!.handle, "li-nuwa");
+  // The listing projection must preserve the authorization verdict from the
+  // canonical binding record; omitting it makes a real verdict look unknown.
+  assert.equal(detail.bindings[0]!.authorization_verification, "valid-at-binding-event");
+  assert.equal(typeof detail.bindings[0]!.authorization_verified_at, "number");
   assert.equal(detail.expired, false);
 
   const page = await listListings(env);

@@ -189,6 +189,8 @@ function bindingRow(over: Record<string, unknown> = {}) {
     token: USDC,
     expiry: Math.floor(now / 1000) + 3600,
     created_at: now - 400,
+    authorization_verification: "valid-at-binding-event",
+    authorization_verified_at: now - 400,
     receipt_id: null,
     tx_hash: null,
     receipt_source: null,
