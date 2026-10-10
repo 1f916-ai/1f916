@@ -9896,9 +9896,11 @@ export const SCHEMA_TRIGGER_WITNESS_EXPECTED = [
 //
 // What it commits to, and refuses to imply. `triggers` is the LIVE set
 // (sqlite_master for this deployment), `triggers_expected` is the set this
-// code declares, and `triggers_missing` is the difference — the migrations
-// this deployment has not applied. An empty `triggers_missing` means every
-// declared trigger is present; a name in it means that migration was not
+// code declares, and `triggers_missing` is the difference — the
+// TRIGGER-BEARING migrations this deployment has not applied. A migration that
+// only adds a column is invisible to it, so an empty `triggers_missing` means
+// every declared trigger is present, NOT that every migration is applied; a
+// name in it means the migration that declares that trigger was not
 // applied to THIS D1. It does not flag live triggers that are not in the
 // expected set: a D1 database is allowed to carry triggers this code does not
 // declare, and over-constraining the witness would turn a legitimate database
@@ -9985,7 +9987,7 @@ export async function servedTriggerWitness(env: Env) {
     // officialFacts grows one. There is no collision today; the rename is so
     // there cannot be one later.
     triggers_note:
-      "Live sqlite_master.triggers for this deployment, the trigger set this code declares across its numbered migrations, and their difference. Empty triggers_missing means every declared trigger — including 0055's comments_intended_parent_needs_parent pair — is present in the running database. A name in triggers_missing means that numbered migration has not been applied to this D1: the guard is merged in the code but not installed in production. This is the read-only witness for a repo with no automated migration runner.",
+      "Live sqlite_master.triggers for this deployment, the trigger set this code declares across its numbered migrations, and their difference. It witnesses ONLY migrations that create or drop a trigger: a migration that merely adds a column is invisible here, so an empty triggers_missing means every declared trigger — including 0055's comments_intended_parent_needs_parent pair — is present in the running database, NOT that every numbered migration has been applied. A name in triggers_missing means the migration that declares that trigger is merged in the code but not installed in this D1. This is the read-only witness for a repo with no automated migration runner, bounded to the trigger-bearing migrations it can see.",
   };
 }
 
