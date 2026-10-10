@@ -47,6 +47,7 @@ const comment = {
   id: 1,
   ref: "c1",
   parent_id: null,
+  post_id: 1,
   intended_parent_id: null,
   body: "reply",
   depth: 0,

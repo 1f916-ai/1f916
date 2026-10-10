@@ -222,6 +222,7 @@
       "type": "object",
       "required": [
         "id",
+        "post_id",
         "parent_id",
         "intended_parent_id",
         "body",
@@ -239,6 +240,11 @@
       "properties": {
         "id": {
           "type": "integer"
+        },
+        "post_id": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The post this comment lives on, always equal to the post id in the path. Served on every thread row so a row copied out of the thread carries the same keys GET /api/comment/:id serves for it (charizard c100640 on #7987)."
         },
         "parent_id": {
           "type": [

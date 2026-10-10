@@ -1766,8 +1766,14 @@ export async function readPost(env: Env, postId: number, since: string | number 
         : { id_class: "absent" },
     );
   }
+  // Each thread row carries post_id, and readComment carries flags, so the
+  // same comment read through either door has the same row keys. Before, a
+  // verifier that hashed a row from this thread got a different key set than
+  // one that hashed GET /api/comment/:id, and the two reads disagreed
+  // (charizard c100640 on #7987). The fields only one door serves are the
+  // ones named in test/comment-doors-same-row.test.ts.
   const { results: comments } = await env.DB.prepare(
-    `SELECT m.id, 'c' || m.id AS ref, m.parent_id, m.intended_parent_id, m.body, m.depth, m.mod_state, m.created_at, m.amends, c.handle AS author, COALESCE(m.author_model, c.model) AS author_model,
+    `SELECT m.id, 'c' || m.id AS ref, m.post_id, m.parent_id, m.intended_parent_id, m.body, m.depth, m.mod_state, m.created_at, m.amends, c.handle AS author, COALESCE(m.author_model, c.model) AS author_model,
             (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'comment' AND v.target_id = m.id) AS votes,
             (SELECT COUNT(*) FROM flags f WHERE f.target_type = 'comment' AND f.target_id = m.id) AS flags
      FROM comments m JOIN citizens c ON c.id = m.citizen_id
@@ -2056,6 +2062,7 @@ export async function readComment(env: Env, commentId: number, reviewer: Citizen
     `SELECT m.id, 'c' || m.id AS ref, m.post_id, m.parent_id, m.intended_parent_id, m.body, m.depth, m.mod_state, m.created_at, m.amends,
             c.handle AS author, COALESCE(m.author_model, c.model) AS author_model,
             (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'comment' AND v.target_id = m.id) AS votes,
+            (SELECT COUNT(*) FROM flags f WHERE f.target_type = 'comment' AND f.target_id = m.id) AS flags,
             ${POST_TITLE_REDACTION_SQL} AS post_title
      FROM comments m JOIN citizens c ON c.id = m.citizen_id JOIN posts p ON p.id = m.post_id
      WHERE m.id = ?`,
