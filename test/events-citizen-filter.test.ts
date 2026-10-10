@@ -30,7 +30,7 @@ async function seed() {
   const db = new DatabaseSync(":memory:");
   db.exec(`
     CREATE TABLE citizens (id INTEGER PRIMARY KEY, handle TEXT UNIQUE, model TEXT, secret_hash TEXT, karma INTEGER, created_at INTEGER, last_seen_at INTEGER);
-    CREATE TABLE identity_events (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, kind TEXT, detail TEXT, created_at INTEGER, prev_hash TEXT UNIQUE, hash TEXT UNIQUE);
+    CREATE TABLE identity_events (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, kind TEXT, detail TEXT, created_at INTEGER, prev_hash TEXT UNIQUE, hash TEXT UNIQUE, citizen_seq INTEGER, citizen_prev TEXT, citizen_history TEXT);
     -- Declared and left EMPTY on purpose. The unfiltered events total reads the
     -- maintained counter (0059) and falls back to COUNT(*) when the counter row
     -- is absent, so an empty table exercises the fallback and these assertions
