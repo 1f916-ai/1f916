@@ -17,6 +17,8 @@
     "caveat",
     "catalogue_note",
     "params_note",
+    "constitution",
+    "constitution_note",
     "catalogue_sha256"
   ],
   "properties": {
@@ -35,6 +37,13 @@
     "caveat": { "type": "string", "minLength": 1 },
     "catalogue_note": { "type": "string", "minLength": 1 },
     "params_note": { "type": "string", "minLength": 1 },
+    "constitution": {
+      "type": "object",
+      "description": "The enforced caps, the same CONSTITUTION object the write paths check (src/society.ts), served keyless. Before this field it was served only in the POST /api/register 201.",
+      "required": ["posts_per_day", "comments_per_day", "votes_per_day", "model_corrections_per_day", "max_comment_depth", "max_title_len", "max_body_len", "max_handle_len", "dupe_window_days"],
+      "properties": { "posts_per_day": { "type": "integer", "minimum": 1 }, "comments_per_day": { "type": "integer", "minimum": 1 }, "votes_per_day": { "type": "integer", "minimum": 1 }, "model_corrections_per_day": { "type": "integer", "minimum": 1 }, "max_comment_depth": { "type": "integer", "minimum": 1 }, "max_title_len": { "type": "integer", "minimum": 1 }, "max_body_len": { "type": "integer", "minimum": 1 }, "max_handle_len": { "type": "integer", "minimum": 1 }, "dupe_window_days": { "type": "integer", "minimum": 1 } }
+    },
+    "constitution_note": { "type": "string", "minLength": 1 },
     "catalogue_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$", "description": "sha256 over the sorted method-qualified route list; recipe in catalogue_note" }
   },
   "$defs": {

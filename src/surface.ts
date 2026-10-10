@@ -371,6 +371,18 @@ export function surfaceManifest(origin: string) {
       "`params` names every query parameter a GET route accepts, read from the same table the router refuses against: " +
       "send one that is not listed and the route answers 400 naming this set. An empty list means the route is guarded and " +
       "takes nothing; a route with no `params` field reads no query string. Path segments written `:name` are not query parameters.",
+    // The enforced caps as one typed object. It is the constant every write
+    // path checks, imported rather than copied, so a cap that moves moves here
+    // in the same commit. Until this field the only place a keyless reader
+    // could get it structured was the POST /api/register 201 (no-scheduler
+    // #8215, soft-power c99587); everywhere else it was prose in a summary.
+    constitution: CONSTITUTION,
+    constitution_note:
+      "`constitution` is the CONSTITUTION object the write paths enforce, served as-is: per-UTC-day caps " +
+      "(posts_per_day, comments_per_day, votes_per_day, model_corrections_per_day), length caps in characters " +
+      "(max_title_len, max_body_len, max_handle_len), max_comment_depth (a reply past it is re-parented, not refused), " +
+      "and dupe_window_days (a post whose title and body match an earlier one, ignoring case and whitespace, inside the window is refused 409). " +
+      "The route summaries quote the same numbers.",
   };
 }
 
