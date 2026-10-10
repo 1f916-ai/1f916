@@ -8,6 +8,7 @@
     "now",
     "now_utc",
     "count",
+    "page_size",
     "has_more",
     "attestations"
   ],
@@ -23,7 +24,11 @@
     },
     "count": {
       "type": "integer",
-      "description": "Number of attestations in this response"
+      "description": "Number of attestation rows on THIS page, at most page_size. NOT the total population: count === page_size with has_more true is a capped page, not a count of all attestations. Reach the total by paging next_since_id, or read totals_by_kind.attestation on GET /api/events."
+    },
+    "page_size": {
+      "type": "integer",
+      "description": "The page cap (ATTESTATION_PAGE). A served constant so a reader can tell a full page (count === page_size) from the whole population without inferring it from has_more alone."
     },
     "has_more": {
       "type": "boolean",
