@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// capability: registry-key-epochs v1
 // The 1F916 Protocol offline verifier. Single file, zero dependencies,
 // no network access required or attempted. Node 18+.
 //
@@ -6,6 +7,7 @@
 //                   [--inclusion proof.json] [--consistency proof.json]
 //                   [--registry-key <b64url>] [--witness-key <b64url>]
 //   node verify.mjs --dossier record.json --registry-key <b64url>
+//   any of the above   [--key-history checkpoint.json]
 //
 // THE ANCHOR RULE. Every signature in these files is checked against a key.
 // If that key comes FROM THE SAME FILE, a verifying signature proves only
@@ -33,6 +35,34 @@
 //   day.jsonl        a witness day file (github.com/1f916-ai/1f916, witness/)
 //   proof.json       a saved GET /api/proof or /api/checkpoint/consistency response
 //
+// REGISTRY KEY EPOCHS (spec §8b). A registry that has rotated its signing
+// key serves registry_key_history: every key by epoch (all numbers integers),
+// each later epoch with
+// a statement
+// "1f916.registry-rotate.v1:<epoch>:<old>:<new>:<at>:<log>=<size>=<root>,..."
+// signed by the old key and the new one, whose last field is the newest head
+// of every log at the rotation (the old epoch's final heads). Every head names its key_epoch. This run
+// accepts the history only as a chain (consecutive epochs, each statement the
+// one its neighbours imply, both signatures verifying, the last epoch not
+// retired), checks each head with the key of ITS epoch, and refuses a head
+// whose created_at is outside that key's active window, or, for a retired
+// key, that goes past the final head the rotation committed to for its log
+// (the date is the signer's own word; the final heads are both keys' word).
+// A head that names no epoch takes the one whose window holds its date. With
+// --registry-key,
+// the pinned key must be one of the keys in the chain. A run that reached a
+// key NEWER than the pinned one only by following rotation statements
+// reports a verdict ending -followed (exit 5, or 3 for witness-unusable-
+// followed), never the plain verdict: a statement the old key signed is only that key holder's word. The
+// history is read from --key-history if given, else from the first input
+// file that carries one (the registry serves it beside every head). A file
+// checked on its own with no history is checked exactly as before: one key,
+// the file's own. A file with no history checked against a history from
+// another file (a checkpoint saved before a rotation, with --key-history)
+// must name a key that is in that history. A dossier signed by a retired key
+// with a pin given reports VERDICT: retired-signer (exit 6).
+
+//
 // Verdicts (spec §8): "witnessed" — math holds AND an independent witness
 // copy carries the same root; "consistent-unwitnessed" — math holds,
 // registry-trust only; "diverged" — a proof fails or the witnessed root
@@ -53,7 +83,7 @@ for (let i = 2; i < process.argv.length; i += 2) {
 if (!args.checkpoint && !args.dossier) usage();
 
 function usage() {
-  console.error("usage: node verify.mjs (--checkpoint checkpoint.json | --dossier record.json) [--witness day.jsonl] [--inclusion proof.json] [--consistency proof.json]");
+  console.error("usage: node verify.mjs (--checkpoint checkpoint.json | --dossier record.json) [--witness day.jsonl] [--inclusion proof.json] [--consistency proof.json] [--registry-key <b64url>] [--witness-key <b64url>] [--key-history checkpoint.json]");
   process.exit(2);
 }
 
@@ -141,6 +171,81 @@ function jcs(v) {
   return `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${jcs(v[k])}`).join(",")}}`;
 }
 
+// The registry key history, if any input carries one. Read before any
+// signature is checked, because it decides which key checks which head.
+function readJson(path) {
+  try {
+    return JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return null;
+  }
+}
+const isKeyText = (x) => typeof x === "string" && /^[A-Za-z0-9_-]{43}$/.test(x);
+function edOk(x, msg, sig) {
+  try {
+    return typeof sig === "string" && sig.length > 0 && edVerify(null, Buffer.from(msg, "utf8"), ed25519Key(x), b64u(sig));
+  } catch {
+    return false;
+  }
+}
+// Every number in the history is checked to be an integer before it is
+// compared. The statement text cannot carry the type: "1700001000000" and
+// 1700001000000 print the same, so a string would keep both signatures
+// valid while turning the retirement into nothing.
+const isWhole = (n) => Number.isSafeInteger(n) && n >= 0;
+const isLogName = (s) => typeof s === "string" && /^[a-z_]{1,64}$/.test(s);
+// The final heads a rotation commits to: for every log, the newest head that
+// existed when the old key was retired. Signed by both keys, so the old key's
+// holder cannot later sign a head past them, whatever date it writes on it.
+function finalHeadsText(heads) {
+  return heads.map((h) => `${h.log}=${h.tree_size}=${h.root}`).join(",");
+}
+function readFinalHeads(raw, epoch) {
+  if (!Array.isArray(raw)) return { error: `epoch ${epoch}: the rotation names no final_heads` };
+  const heads = new Map();
+  let prev = "";
+  for (const h of raw) {
+    if (!h || !isLogName(h.log) || !isWhole(h.tree_size) || !/^[0-9a-f]{64}$/.test(h.root ?? "")) return { error: `epoch ${epoch}: a final head is not {log, integer tree_size, 64-hex root}` };
+    if (h.log <= prev) return { error: `epoch ${epoch}: final_heads are not in strictly increasing log order` };
+    prev = h.log;
+    heads.set(h.log, { tree_size: h.tree_size, root: h.root });
+  }
+  return { heads, text: finalHeadsText(raw) };
+}
+function chainHistory(h) {
+  if (!Array.isArray(h) || h.length === 0) return { error: "registry_key_history is empty" };
+  const first = h[0]?.epoch;
+  if (!isWhole(first)) return { error: "registry_key_history entry 0 has no integer epoch" };
+  const keys = new Map();
+  const seen = new Set();
+  for (let i = 0; i < h.length; i++) {
+    const e = h[i];
+    const epoch = first + i;
+    const last = i === h.length - 1;
+    if (!e || e.epoch !== epoch || !isKeyText(e.public_key)) return { error: `registry_key_history entry ${i} is not epoch ${epoch} with a key` };
+    if (seen.has(e.public_key)) return { error: `epoch ${epoch}: a key that already had an epoch; a retired key never comes back` };
+    seen.add(e.public_key);
+    if (!isWhole(e.activated_at)) return { error: `epoch ${epoch}: activated_at is not an integer` };
+    if (last ? e.retired_at !== null : !(isWhole(e.retired_at) && e.retired_at > e.activated_at))
+      return { error: last ? `epoch ${epoch} is the last in the history, so its retired_at must be null` : `epoch ${epoch}: retired_at is not an integer after its activated_at` };
+    if (i > 0) {
+      const prev = h[i - 1];
+      const r = e.rotation;
+      const fin = readFinalHeads(r?.final_heads, epoch);
+      if (fin.error) return { error: fin.error };
+      const statement = `1f916.registry-rotate.v1:${epoch}:${prev.public_key}:${e.public_key}:${e.activated_at}:${fin.text}`;
+      if (!r || r.statement !== statement) return { error: `epoch ${epoch}: no rotation statement, or not ${statement}` };
+      if (prev.retired_at !== e.activated_at) return { error: `epoch ${epoch - 1} retired_at is not epoch ${epoch} activated_at` };
+      if (!edOk(prev.public_key, statement, r.old_sig)) return { error: `epoch ${epoch}: old_sig does not verify under the epoch ${epoch - 1} key; a key change the old key did not sign is not a rotation` };
+      if (!edOk(e.public_key, statement, r.new_sig)) return { error: `epoch ${epoch}: new_sig does not verify under its own key` };
+      keys.get(epoch - 1).finalHeads = fin.heads;
+    }
+    keys.set(epoch, { x: e.public_key, activated_at: e.activated_at, retired_at: last ? null : e.retired_at, finalHeads: null });
+  }
+  const last = h[h.length - 1];
+  return { keys, activeEpoch: last.epoch, activeX: last.public_key, firstEpoch: first };
+}
+
 const out = [];
 let failed = false;
 let witnessed = false;
@@ -153,6 +258,123 @@ let witnessAskedAndEmpty = false;
 const regPin = args["registry-key"] ?? null;
 let anchored = false;
 
+let history = null;
+{
+  const sources = [args["key-history"], args.checkpoint, args.dossier, args.inclusion, args.consistency].filter(Boolean);
+  for (const path of sources) {
+    const obj = readJson(path);
+    if (obj && Array.isArray(obj.registry_key_history)) {
+      history = { from: path, served: obj.registry_key_history };
+      break;
+    }
+    if (path === args["key-history"]) {
+      out.push(`FAIL  --key-history ${path} carries no registry_key_history`);
+      failed = true;
+      break;
+    }
+  }
+}
+let regChain = null; // { keys, activeEpoch, activeX } once the history chains
+let pinInChain = false;
+let pinEpoch; // the epoch of the pinned key, when the history holds it
+// Set when a signature that passed was checked with a key NEWER than the one
+// pinned: the run got there only by following rotation statements, each the
+// previous key holder's word. Reported as its own verdict.
+let followed = false;
+// Set when a dossier was signed by a retired epoch's key.
+let retiredSigner;
+if (history) {
+  const c = chainHistory(history.served);
+  if (c.error) {
+    out.push(`FAIL  registry key history (${history.from}) does not chain: ${c.error}`);
+    failed = true;
+  } else {
+    regChain = c;
+    pinInChain = !!regPin && [...c.keys.values()].some((k) => k.x === regPin);
+    if (regPin && !pinInChain) {
+      out.push(`FAIL  the pinned registry key is not in the registry key history (${history.from}): this file did not come from the registry you named, or the history was cut before your key`);
+      failed = true;
+    } else if (regPin) {
+      pinEpoch = [...c.keys.entries()].find(([, k]) => k.x === regPin)[0];
+    }
+  }
+}
+function epochOfKey(x) {
+  if (!regChain) return undefined;
+  for (const [e, k] of regChain.keys) if (k.x === x) return e;
+  return undefined;
+}
+// The epochs' windows [activated_at, retired_at) are contiguous and disjoint,
+// so a time names at most one epoch.
+function epochAtTime(t) {
+  if (!regChain || !isWhole(t)) return undefined;
+  for (const [e, k] of regChain.keys) if (t >= k.activated_at && (k.retired_at === null || t < k.retired_at)) return e;
+  return undefined;
+}
+// Consistency proofs that link a smaller head of a retired epoch to that
+// epoch's committed final head. Below the final size a retired key's head is
+// bound only through such a proof: without one, a holder of that key could
+// sign a smaller tree with any root. The registry serves one beside an
+// inclusion proof answered under such a head (final_consistency), and a
+// --consistency file from the head to the final head serves too.
+const finalLinks = [];
+{
+  const add = (c) => {
+    if (c && c.from && c.to && Array.isArray(c.proof)) finalLinks.push(c);
+  };
+  if (args.inclusion) add(readJson(args.inclusion)?.final_consistency);
+  if (args.consistency) add(readJson(args.consistency));
+}
+function linkedToFinal(row, fin) {
+  return finalLinks.some(
+    (c) =>
+      c.from.tree_size === row.tree_size &&
+      c.from.root === row.root &&
+      c.to.tree_size === fin.tree_size &&
+      c.to.root === fin.root &&
+      verifyConsistency(row.tree_size, fin.tree_size, row.root, fin.root, c.proof),
+  );
+}
+// RFC 6962: the root of an empty tree is SHA-256 of the empty string.
+const EMPTY_TREE_ROOT = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+function usedEpoch(epoch) {
+  if (pinEpoch !== undefined && epoch > pinEpoch) followed = true;
+}
+// The key for one head, from the chained history. A head that names no epoch
+// takes the epoch whose window holds its created_at. It is refused unless it
+// is dated inside that window AND, for a retired epoch, it does not go past
+// the final head the rotation committed to for its log: the same root at the
+// committed size, and below it only with a consistency proof to that head. The date is the signer's own
+// word; the committed final heads are the new key's too, which is what binds
+// a holder of the retired key. Without a history, the file's own key.
+function keyForHead(row, fallbackX) {
+  if (!regChain) return fallbackX ? { x: fallbackX } : { refused: "no registry key available" };
+  const named = row.key_epoch;
+  const epoch = named === undefined || named === null ? epochAtTime(row.created_at) : named;
+  if (epoch === undefined) return { refused: "the head names no key_epoch and no epoch in the history was active at its created_at" };
+  if (!isWhole(epoch)) return { refused: "the head's key_epoch is not an integer" };
+  const k = regChain.keys.get(epoch);
+  if (!k) return { refused: `no key for epoch ${epoch} in the registry key history` };
+  if (!isWhole(row.created_at)) return { refused: "the head's created_at is not an integer" };
+  if (row.created_at < k.activated_at) return { refused: `signed at ${row.created_at}, before epoch ${epoch} was activated (${k.activated_at})` };
+  if (k.retired_at !== null && !(row.created_at < k.retired_at)) return { refused: `signed at ${row.created_at}, at or after epoch ${epoch} was retired (${k.retired_at})` };
+  if (k.retired_at !== null) {
+    const fin = k.finalHeads?.get(row.log);
+    if (!fin) return { refused: `epoch ${epoch} was retired with no final head for ${row.log}, so no head of that log can be under it` };
+    // A consistency proof from size 0 binds no root (RFC 9162: any empty
+    // proof holds), so a size-0 head must carry the empty tree's own root.
+    if (row.tree_size === 0 && row.root !== EMPTY_TREE_ROOT) return { refused: `a size-0 ${row.log} head under retired epoch ${epoch} must carry the empty tree's root` };
+    if (!isWhole(row.tree_size) || row.tree_size > fin.tree_size)
+      return { refused: `epoch ${epoch} was retired at ${row.log} size ${fin.tree_size}; a head of size ${row.tree_size} under that key goes past what both keys committed to` };
+    if (row.tree_size === fin.tree_size && row.root !== fin.root) return { refused: `epoch ${epoch} was retired at ${row.log} size ${fin.tree_size} with a different root` };
+    if (row.tree_size < fin.tree_size && !linkedToFinal(row, fin))
+      return {
+        refused: `a head of retired epoch ${epoch} below its final ${row.log} size ${fin.tree_size} counts only with a consistency proof to that final head: GET /api/checkpoint/consistency?log=${row.log}&from=${row.tree_size}&to=${fin.tree_size}, passed with --consistency (an inclusion proof from the registry carries it as final_consistency)`,
+      };
+  }
+  return { x: k.x, epoch };
+}
+
 // --dossier: a saved GET /api/record/:handle. Verifies the registry
 // signature over the canonical core, the checkpoint signature, every
 // event's inclusion proof, and every signed attestation-about.
@@ -164,7 +386,36 @@ if (args.dossier) {
     if (k in d) core[k] = d[k];
   }
   if ("next_events_since" in d) core.next_events_since = d.next_events_since;
-  if (d.registry_sig) {
+  if (d.registry_sig && regChain) {
+    // The dossier names the epoch of the key that signed it. That key must be
+    // the one the history holds for that epoch. A dossier is signed when it is
+    // served, so it is current only under the ACTIVE key: one signed by a key
+    // since retired was valid only if it was saved before that retirement,
+    // which this run cannot tell from the file.
+    const present = d.registry_sig.registry_public_key;
+    const named = d.registry_sig.key_epoch;
+    const epoch = named === undefined || named === null ? epochOfKey(present) : named;
+    const k = isWhole(epoch) ? regChain.keys.get(epoch) : undefined;
+    if (!k || k.x !== present) {
+      out.push(`FAIL  dossier is signed by ${String(present).slice(0, 12)}…, which is not the epoch ${epoch} key in the registry key history`);
+      failed = true;
+    } else {
+      const digest = createHash("sha256").update(jcs(core), "utf8").digest("hex");
+      const ok = edOk(present, `1f916.record.v1:${digest}`, d.registry_sig.sig);
+      const anchorNote = !regPin ? `  [UNANCHORED: key ${String(present).slice(0, 12)}… came from the input files]` : `  [epoch ${epoch}, linked to the pinned registry key]`;
+      out.push(`${ok ? "PASS" : "FAIL"}  registry signature over dossier core (${d.handle})${anchorNote}`);
+      if (!ok) failed = true;
+      if (ok && k.retired_at !== null) {
+        // Never exit 0 with a pin: the core carries fields no inclusion proof
+        // covers (keys, bindings, model), and they are the retired key's word.
+        retiredSigner = epoch;
+        out.push(`....  the dossier is signed by epoch ${epoch}, retired at ${k.retired_at}. A dossier signed by a retired key counts only if it was saved before then, and this run cannot tell when the file was saved. Its checkpoint is checked below against the final heads both keys committed to at the retirement; its keys, bindings and model are covered by no proof and are the retired key's word alone. Fetch it again to get one signed by the active key.`);
+      } else if (ok && regPin && pinInChain) {
+        anchored = true;
+        usedEpoch(epoch);
+      }
+    }
+  } else if (d.registry_sig) {
     const present = d.registry_sig.registry_public_key;
     if (regPin && regPin !== present) {
       out.push(`FAIL  dossier is signed by ${String(present).slice(0, 12)}…, NOT by the pinned registry key — this file did not come from the registry you named`);
@@ -179,7 +430,10 @@ if (args.dossier) {
     }
   } else out.push("....  dossier is unsigned (registry unconfigured) — content checks only");
   if (d.checkpoint) {
-    dossierCheckpointFile = { registry_public_key: { x: d.registry_sig?.registry_public_key }, checkpoints: [d.checkpoint] };
+    // The checkpoint's epoch rides outside the signed core (checkpoint_key_epoch),
+    // and the head may predate the key that signed the dossier.
+    const head = d.checkpoint_key_epoch === undefined || d.checkpoint_key_epoch === null ? d.checkpoint : { ...d.checkpoint, key_epoch: d.checkpoint_key_epoch };
+    dossierCheckpointFile = { registry_public_key: { x: d.registry_sig?.registry_public_key }, checkpoints: [head] };
     let proven = 0, unproven = 0;
     for (const e of d.events ?? []) {
       if (!e.proof) { unproven++; continue; }
@@ -213,22 +467,45 @@ if (args.dossier) {
 
 const cp = args.checkpoint ? JSON.parse(readFileSync(args.checkpoint, "utf8")) : dossierCheckpointFile;
 const pubX = cp?.registry_public_key?.x;
-if (regPin && pubX && regPin !== pubX) {
+// A checkpoint saved before the registry rotated carries no history and names
+// the key of its day; checked against a newer history, that key must be in
+// it. Each of its heads then takes the epoch whose window holds its date, and
+// the final-head bound of that epoch if it is retired (keyForHead).
+if (regChain) {
+  const ownHistory = Array.isArray(cp?.registry_key_history);
+  const e = pubX ? epochOfKey(pubX) : undefined;
+  if (pubX && e === undefined) {
+    out.push(`FAIL  the file's registry_public_key ${String(pubX).slice(0, 12)}… is not a key in the registry key history (${history.from})`);
+    failed = true;
+  } else if (args.checkpoint && ownHistory && pubX && pubX !== regChain.activeX) {
+    // A file that carries its own history names the key active when it was
+    // served, which is the last one in that history.
+    out.push(`FAIL  checkpoint file's registry_public_key ${String(pubX).slice(0, 12)}… is not the active key of its own registry key history`);
+    failed = true;
+  } else if (regPin && pinInChain && !args.dossier) anchored = true;
+} else if (regPin && pubX && regPin !== pubX) {
   out.push(`FAIL  checkpoint file is signed by ${String(pubX).slice(0, 12)}…, NOT by the pinned registry key`);
   failed = true;
 } else if (regPin && pubX) anchored = true;
-const key = pubX ? ed25519Key(pubX) : null;
-if (!key && (args.checkpoint || args.inclusion || args.consistency)) {
+if (!pubX && !regChain && (args.checkpoint || args.inclusion || args.consistency)) {
   console.error("no registry_public_key available");
   process.exit(2);
 }
 
-// 1. Registry signatures over every checkpoint in the file.
-for (const row of (key && cp ? cp.checkpoints ?? [] : [])) {
+// 1. Registry signatures over every checkpoint in the file, each with the key
+// of its own epoch when the registry serves a key history.
+for (const row of (cp && (pubX || regChain) ? cp.checkpoints ?? [] : [])) {
   const payload = `1f916.checkpoint.v1:${row.log}:${row.tree_size}:${row.root}:${row.created_at}`;
-  const ok = edVerify(null, Buffer.from(payload, "utf8"), key, b64u(row.sig));
-  out.push(`${ok ? "PASS" : "FAIL"}  registry signature  ${row.log} size=${row.tree_size}`);
+  const k = keyForHead(row, pubX);
+  if (k.refused) {
+    out.push(`FAIL  registry signature  ${row.log} size=${row.tree_size}: ${k.refused}`);
+    failed = true;
+    continue;
+  }
+  const ok = edOk(k.x, payload, row.sig);
+  out.push(`${ok ? "PASS" : "FAIL"}  registry signature  ${row.log} size=${row.tree_size}${k.epoch === undefined ? "" : `  [key epoch ${k.epoch}]`}`);
   if (!ok) failed = true;
+  else if (k.epoch !== undefined) usedEpoch(k.epoch);
 }
 
 // 2. Witness check. Two grades, stated honestly:
@@ -400,14 +677,13 @@ if (args.inclusion) {
   } else {
     const pr = read.proof;
     const ok = verifyInclusion(pr.event.hash, pr.event.leaf_index, pr.checkpoint.tree_size, pr.proof, pr.checkpoint.root);
-    const sigOk = edVerify(
-      null,
-      Buffer.from(`1f916.checkpoint.v1:${pr.log}:${pr.checkpoint.tree_size}:${pr.checkpoint.root}:${pr.checkpoint.created_at}`, "utf8"),
-      key,
-      b64u(pr.checkpoint.sig),
-    );
-    out.push(`${ok && sigOk ? "PASS" : "FAIL"}  inclusion  ${pr.log} event=${pr.event.id} index=${pr.event.leaf_index} under size=${pr.checkpoint.tree_size}`);
+    // The registry's proof names its log once, outside the checkpoint.
+    const k = keyForHead({ ...pr.checkpoint, log: pr.log }, pubX);
+    const sigOk =
+      !k.refused && edOk(k.x, `1f916.checkpoint.v1:${pr.log}:${pr.checkpoint.tree_size}:${pr.checkpoint.root}:${pr.checkpoint.created_at}`, pr.checkpoint.sig);
+    out.push(`${ok && sigOk ? "PASS" : "FAIL"}  inclusion  ${pr.log} event=${pr.event.id} index=${pr.event.leaf_index} under size=${pr.checkpoint.tree_size}${k.refused ? `: ${k.refused}` : k.epoch === undefined ? "" : `  [key epoch ${k.epoch}]`}`);
     if (!(ok && sigOk)) failed = true;
+    else if (k.epoch !== undefined) usedEpoch(k.epoch);
   }
 }
 
@@ -432,6 +708,10 @@ if (args.consistency) {
   }
 }
 
+if (followed)
+  out.push(
+    `....  the registry rotated its key after the one you pinned (epoch ${pinEpoch} -> ${regChain.activeEpoch}); this run checked signatures with the newer key(s) by following rotation statements, each signed by the old and the new key. A statement the old key signed is only that key holder's word: if the old key leaked, its thief can sign one too. Cross-check the current key against the project site and pin it to get the plain verdict.`,
+  );
 for (const line of out) console.log(line);
 console.log("");
 // witnessed implies anchored: it now requires a pinned witness key whose
@@ -450,17 +730,24 @@ const witnessUnusable = witnessAskedAndEmpty && !witnessed && !failed;
 // turns a crash into a WRONG claim is one verdict short of a fix. It ranks
 // below a real failure, because if some other check actually diverged the
 // caller needs to hear that first.
+// A followed rotation marks every verdict it could otherwise hide behind. A
+// witness does not lift it: a witness's countersignature is about the log's
+// heads, not about which key the registry is, and a witness that itself
+// followed the same statement adds nothing independent about the key.
+const followTag = (v) => (followed ? `${v}-followed` : v);
 const verdict = failed
   ? "diverged"
   : inputUnusable
     ? "input-unusable"
-    : witnessed
-      ? "witnessed"
-      : witnessUnusable
-        ? "witness-unusable"
-        : anchored
-          ? "consistent-unwitnessed"
-          : "unanchored";
+    : retiredSigner !== undefined && regPin
+      ? "retired-signer"
+      : witnessed
+        ? followTag("witnessed")
+        : witnessUnusable
+          ? followTag("witness-unusable")
+          : anchored
+            ? followTag("consistent-unwitnessed")
+            : "unanchored";
 console.log(`VERDICT: ${verdict}`);
 if (verdict === "unanchored")
   console.log(
@@ -468,6 +755,14 @@ if (verdict === "unanchored")
   );
 if (verdict === "consistent-unwitnessed")
   console.log("The math holds against the pinned registry key, but no pinned witness countersignature was checked — this run trusts the registry's word for timing. Pass --witness with a day file plus --witness-key.");
+if (verdict === "retired-signer")
+  console.log(
+    "The dossier is signed by a key the registry has since retired. If you saved it before the retirement it is what it was; a copy fetched now should be signed by the active key, and one that is not is a stale cache or a forgery by whoever holds the old key. Exit code 6, deliberately not 0: fetch the record again.",
+  );
+if (verdict.endsWith("-followed"))
+  console.log(
+    "The checks hold, and the key you pinned is in the registry's key history, but some signatures were made by a NEWER key that this run reached only by following rotation statements. Each statement is signed by both keys, so it proves the holder of your pinned key agreed to the change; it cannot prove that holder was the registry and not someone who stole the key. Deliberately its own verdict, and exit code 5 (3 when the witness file was unusable): pin the current key, cross-checked against the project site, to remove the dependence on the old one.",
+  );
 if (verdict === "witness-unusable")
   console.log(
     "You passed --witness and the file carried no line this run could apply, so no countersignature was checked. The record itself may be perfectly sound: this verdict is about the RUN, not about the record. Re-fetch the day file (use curl -sf, so a 404 body cannot land in it as if it were data) and try again. This is deliberately not reported as 'consistent-unwitnessed', because asking and receiving nothing is a different state from never asking, and only the first one means somebody should go look.",
@@ -479,4 +774,6 @@ if (verdict === "input-unusable")
 if (verdict === "diverged") console.log("Keep every input file: a failing proof against a witnessed checkpoint is publishable evidence, not a bug report.");
 console.log("");
 console.log("This run does NOT prove: who holds any private key (custody labels are claims in the record), that any event's content is true, or anything about rows labeled legacy_unsealed.");
-process.exit(failed ? 1 : verdict === "input-unusable" ? 4 : verdict === "witness-unusable" ? 3 : 0);
+process.exit(
+  failed ? 1 : verdict === "input-unusable" ? 4 : verdict.startsWith("witness-unusable") ? 3 : verdict === "retired-signer" ? 6 : verdict.endsWith("-followed") ? 5 : 0,
+);

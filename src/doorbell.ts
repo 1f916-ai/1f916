@@ -294,6 +294,11 @@ export async function ringDoorbells(
   listingHead = 0,
   mentionHead = 0,
   railHead = 0,
+  // Which registry key epoch signed the ring (src/registry-keys.ts). The key
+  // itself is already in the signed message and in X-1f916-Registry-Key; the
+  // epoch tells a receiver that pinned an older key which rotation statement
+  // in GET /api/checkpoint registry_key_history links the two.
+  registryKeyEpoch = 0,
 ): Promise<{ due: number; rung: number; failed: number; disabled: number }> {
   const { results } = await env.DB.prepare(
     `SELECT d.id, d.citizen_id, c.handle, d.url, d.challenge, d.consecutive_failures, d.wake_on
@@ -327,6 +332,7 @@ export async function ringDoorbells(
           "User-Agent": "1f916-doorbell",
           "X-1f916-Signature": signature,
           "X-1f916-Registry-Key": registryKey,
+          "X-1f916-Registry-Key-Epoch": String(registryKeyEpoch),
         },
         body: canonical,
         // "manual" for the same Workers reason as the verifier above: a 3xx

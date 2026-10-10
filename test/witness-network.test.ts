@@ -163,10 +163,18 @@ test("unconfigured: nothing is sent, nothing is stored, and the served checkpoin
     const get = (path: string) => worker.fetch(new Request(`https://1f916.ai${path}`), e);
     const body = (await (await get("/api/checkpoint")).json()) as Record<string, unknown>;
     for (const k of ["cosignatures", "cosigning_witnesses", "cosignature_format"]) assert.ok(!(k in body), `${k} is absent when nothing is configured`);
-    // The keys the response carried before witnesses were wired, in order.
+    // The keys the response carried before witnesses were wired, in order
+    // (with the registry key epochs, which are served whether or not any
+    // witness is configured).
     assert.deepEqual(Object.keys(stripClock(body)), [
       "contract",
       "registry_public_key",
+      "registry_key_epoch",
+      "registry_key_history",
+      "registry_key_history_recorded",
+      "registry_key_history_has_more",
+      "rotation_statement_format",
+      "registry_key_note",
       "witness_dispatch",
       "signed_payload_format",
       "countersignature_payload_format",

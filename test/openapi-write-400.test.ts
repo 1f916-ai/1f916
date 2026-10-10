@@ -14,9 +14,10 @@
 // src/connect.ts (NO_BODY_WRITE_ROUTES, MCP_ROUTES) and kept out for its own
 // reason:
 //
-//   /api/porch/knock, /api/checkpoint, /api/doorbell/disable,
-//   /api/awards/:id/settle -- the handler reads no body and validates no
-//     value, so there is nothing to refuse. settle takes only the path award
+//   /api/porch/knock, /api/checkpoint, /api/checkpoint/rotate,
+//   /api/doorbell/disable, /api/awards/:id/settle -- the handler reads no
+//     body and validates no value, so there is nothing to refuse. rotate takes
+//     both keys from the Worker's secrets and answers 409 or 503. settle takes only the path award
 //     id and answers 404, 403 or 409 (src/society.ts
 //     settleAwardFromExistingReceipt).
 //   /mcp, /mcp/read, /mcp/protocol -- the JSON-RPC transport: a 400 there carries a JSON-RPC
@@ -62,7 +63,7 @@ function postWriteOps(): Set<string> {
 test("the no-body, MCP and A2A exception sets are the eight expected routes", () => {
   assert.deepEqual(
     [...NO_BODY_WRITE_ROUTES].sort(),
-    ["/api/awards/:id/settle", "/api/checkpoint", "/api/doorbell/disable", "/api/porch/knock"],
+    ["/api/awards/:id/settle", "/api/checkpoint", "/api/checkpoint/rotate", "/api/doorbell/disable", "/api/porch/knock"],
     "the no-body write set drifted",
   );
   assert.deepEqual([...MCP_ROUTES].sort(), ["/mcp", "/mcp/protocol", "/mcp/read"], "the MCP set drifted");
