@@ -499,6 +499,9 @@ for (const [name, body] of unusableFiles) {
     ["rotation-thief-extends-log", ["--checkpoint", write("rot-thief.json", { registry_public_key: { x: regBX }, registry_key_history: goodHistory, checkpoints: [thiefExtends] }), "--registry-key", regBX], "diverged"],
     ["rotation-thief-fabricated-event", ["--checkpoint", rotatedCp, "--inclusion", fabricatedProof, "--registry-key", regBX], "diverged"],
     ["rotation-thief-head-without-epoch", ["--checkpoint", write("rot-thief-bare.json", { registry_public_key: { x: regX }, checkpoints: [(({ key_epoch, ...h }) => h)(thiefExtends)] }), "--key-history", rotatedCp, "--registry-key", regBX], "diverged"],
+    // Nor can it mint a log the retired key never had: no final head names it,
+    // so nothing under that epoch is accepted for it.
+    ["rotation-thief-invents-log", ["--checkpoint", write("rot-invent.json", { registry_public_key: { x: regBX }, registry_key_history: goodHistory, checkpoints: [headBy(reg, "porch_log", 1, leafRoot(fakeLeaf), rotatedAt - 1, 0)] }), "--registry-key", regBX], "diverged"],
     ["rotation-retired-key-after-retirement", ["--checkpoint", write("rot-late.json", { registry_public_key: { x: regBX }, registry_key_history: goodHistory, checkpoints: [lateOld] }), "--registry-key", regBX], "diverged"],
     ["rotation-history-with-string-numbers", ["--checkpoint", write("rot-strings.json", { registry_public_key: { x: regBX }, registry_key_history: stringified, checkpoints: [lateOld] }), "--registry-key", regBX], "diverged"],
     ["rotation-history-without-final-heads", ["--checkpoint", write("rot-nofinal.json", { registry_public_key: { x: regBX }, registry_key_history: noFinal, checkpoints: [newHead] }), "--registry-key", regBX], "diverged"],
@@ -645,6 +648,8 @@ globalThis.fetch = async (url) => {
     // THE ATTACK THE FINAL HEADS STOP: a thief with the retired key extends a
     // log with a head dated just before the retirement.
     ["witness-thief-extends-log", () => runWitness({ ...rotatedBody, checkpoints: [headBy(reg, "ledger", rotatedAt - 1, 0, 5)] }, regBX), (r) => r.code === 1 && status(r, "ledger") === "refused-registry-key-epoch"],
+    // Or mints a log no final head names.
+    ["witness-thief-invents-log", () => runWitness({ ...rotatedBody, checkpoints: [headBy(reg, "porch_log", rotatedAt - 1, 0, 1)] }, regBX), (r) => r.code === 1 && status(r, "porch_log") === "refused-registry-key-epoch"],
     // And a log never goes back to an older key once a newer one was countersigned.
     ["witness-epoch-regression-setup", () => runWitness({ ...rotatedBody, checkpoints: [headBy(regB, "ledger", rotatedAt + 20, 1, 3)] }, regBX, [], {}, "w-regress"), (r) => r.code === 0 && status(r, "ledger") === "countersigned"],
     ["witness-epoch-regression", () => runWitness({ ...rotatedBody, checkpoints: [headBy(reg, "ledger", rotatedAt - 10, 0, 3)] }, regBX, [], {}, "w-regress"), (r) => r.code === 1 && status(r, "ledger") === "refused-registry-key-epoch"],
