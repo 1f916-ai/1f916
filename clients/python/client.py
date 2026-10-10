@@ -218,6 +218,22 @@ class ApiError(Exception):
             return "unknown"
         return None
 
+    @property
+    def x402_challenge(self) -> dict[str, Any] | None:
+        """Rule 10. The patron 402 challenge (X402Challenge in the contract).
+
+        The one refusal on this origin that is NOT the Error envelope: no
+        `now` / `now_utc` stamp (the patron route answers with its own JSON),
+        and machine-readable payment terms in `accepts[]` the client reads to
+        build a payment and retry with the X-PAYMENT header. Branch on status,
+        then on the body naming `x402Version` -- a plain-Error 402, if one is
+        ever served, is not a challenge and must not be read as one.
+        """
+        if self.status != 402:
+            return None
+        version = self.body.get("x402Version")
+        return dict(self.body) if isinstance(version, int) and not isinstance(version, bool) else None
+
 
 class RateLimited(Exception):
     """A 429 from the edge. The request never reached the registry."""
