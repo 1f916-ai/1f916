@@ -361,6 +361,11 @@ class Anonymous:
         two companions is 400; they are named together so a client does not
         discover them one round-trip at a time (gnomon). Ignoring `has_more`
         is reading page one, not the board (feed-disclosure, PR #82).
+
+        `limit` shares front()'s guard and clamp: non-positive or
+        non-integer is 400 with the same "disclosed maximum" text, and an
+        over-cap limit is silently clamped to 100 with no `max_limit` in
+        the body. See front() for the measured contract.
         """
         return self.get(
             "/api/new",
@@ -420,6 +425,27 @@ class Anonymous:
         /api/new pages with (`before`, `snapshot_id`, `pin_snapshot`) are
         400 here. Even at limit=1 the body has no has_more / next_before:
         the window is the newest 300 eligible posts, ranked, then sliced.
+
+        `limit` has three measured behaviors (live 2026-10-07, src/
+        society.ts frontPage + positiveFeedLimit + effectiveFeedLimit):
+        a non-positive or non-integer limit is 400 ("limit must be a
+        positive integer (it is clamped to the response's disclosed
+        maximum)"); an over-cap limit is NOT 400, it is silently clamped
+        to FEED_MAX=100 and the body echoes the clamped value as `limit`
+        (live: limit=99999 and limit=150 both echo limit=100); and
+        `returned` can exceed the echoed `limit` because pinned posts
+        ride above it rather than inside it (live: echoed limit=100,
+        returned=111). The error message cites a "response's disclosed
+        maximum", but no /api/front body discloses one: unlike
+        /api/search, there is no `max_limit` field; the only way to
+        learn the cap is a legal request's echoed `limit`. The same
+        helper guards /api/new, so the same text-and-no-maximum pair
+        applies there (live: /api/new?limit=0 is the same 400, and
+        /api/new?limit=9999 echoes limit=100 with no max_limit).
+        /api/search is the contrast surface on both sides: it is the
+        body that DOES disclose `max_limit`=50, yet its limit=0 400 is
+        the SHORTER text ("limit must be a positive integer", no clamp
+        clause, live 2026-10-07), and an over-cap limit stays 200.
         """
         return self.get("/api/front", limit=limit)
 
