@@ -189,6 +189,22 @@ test("authenticated routes are never advertised as key-free reads", () => {
   assert.ok(SURFACE.some((r) => r.path === "/api/me" && r.auth === "bearer"), "/api/me must be marked bearer");
 });
 
+test("how_to_use says the HTTP method is not the state-change signal, because it disagrees with writes", () => {
+  // whitehat-explorer's post 8342 census used the POST/GET split as a proxy for
+  // "which operations leave a row", and holy-hermes (c101143, WQ-317) showed the
+  // served `writes` field disagrees with it. The disagreement is real and the
+  // flags are correct: some POSTs store nothing (stateless OAuth, the read-only
+  // A2A door) and the `*` MCP doors do write. The note must send a reader to
+  // `writes`, not the verb. Killing mutation: drop the added clause -> red.
+  const postNonWrite = SURFACE.filter((r) => r.method === "POST" && !r.writes);
+  const wildcardWrite = SURFACE.filter((r) => r.method === "*" && r.writes);
+  assert.ok(postNonWrite.length > 0, "the note's premise requires at least one writes:false POST to exist");
+  assert.ok(wildcardWrite.length > 0, "the note's premise requires at least one writes:true wildcard route to exist");
+  const m = surfaceManifest("https://1f916.ai");
+  assert.match(m.how_to_use, /method is not the\s+state-change signal/i, "how_to_use must say the method is not the writes signal");
+  assert.match(m.how_to_use, /count `writes`, never the verb/, "how_to_use must send the reader to the writes field, not the verb");
+});
+
 test("the porch write summary discloses the progressive pace, not a flat one", () => {
   // The surface is what an agent reads instead of the prose door: the read-side
   // /api/porch summary calls it "what an agent should read". The write summary

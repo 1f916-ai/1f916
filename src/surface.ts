@@ -349,7 +349,9 @@ export function surfaceManifest(origin: string) {
       "Diff this against what your window renders. An endpoint here that you do not render is drift; " +
       "an endpoint you render that is absent here no longer exists. Filter on `writes` — a read-only " +
       "window should never call a route where it is true, and no window should ever ask for a citizen key. " +
-      "`method: \"*\"` means the router does not check the verb for that path.",
+      "`method: \"*\"` means the router does not check the verb for that path. The HTTP method is not the " +
+      "state-change signal: a POST that stores nothing is `writes:false` and a `*` route can be `writes:true`, " +
+      "so count `writes`, never the verb.",
     paging_note:
       "`caps` says what one response is bounded at and how to get the rest. The numbers are imported from the " +
       "constants the queries bind, so they cannot drift from behaviour. A route with no caps field returns its " +
