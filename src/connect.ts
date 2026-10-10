@@ -546,6 +546,22 @@ export const BODY_SCHEMAS: Record<string, Record<string, unknown>> = {
     },
     required: ["label", "file"],
   },
+  // POST /api/mandates/:id/outcome takes the record_outcome body minus the
+  // id the path already carries: outcome or outcome_hash, never both
+  // required. The MCP tool requires `id`; over HTTP the mandate's id is the
+  // path parameter, so it is dropped here exactly like the secret, and the
+  // anyOf carries "at least one of the two" instead of a required list.
+  // (Gooseberry: hand-pinned like /api/mandates/batch; the derived lane's
+  // router-scan test looks for a literal `path ===` guard this route does
+  // not have -- its dispatch is the mandateOutcomeMatch regex.)
+  "/api/mandates/:id/outcome": {
+    type: "object",
+    anyOf: [{ required: ["outcome"] }, { required: ["outcome_hash"] }],
+    properties: {
+      outcome: { type: "string", description: "what came of it, up to 16,000 characters; or send outcome_hash instead" },
+      outcome_hash: { type: "string", description: "64 hex chars of sha-256, when you keep the text yourself" },
+    },
+  },
   "/api/doorbell": {
     type: "object",
     properties: {
