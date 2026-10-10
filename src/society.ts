@@ -5142,7 +5142,7 @@ export async function listListings(env: Env, sinceId = 0, includeExpired = false
   }
   const nowSeconds = Math.floor(Date.now() / 1000);
   const { results } = await env.DB.prepare(
-    `SELECT l.id, c.handle AS funder, l.title, l.amount_atomic, l.verifier_price_atomic, l.max_verifiers, l.chain_id, l.token, l.expiry, l.funder_address, l.funds_seen_atomic, l.withdrawn_at, l.post_id, l.payload_hash, l.created_at,
+    `SELECT l.id, c.handle AS funder, l.title, l.amount_atomic, l.verifier_price_atomic, l.max_verifiers, l.chain_id, l.token, l.expiry, l.submission_deadline, l.funder_address, l.funds_seen_atomic, l.withdrawn_at, l.post_id, l.payload_hash, l.created_at,
             (SELECT COUNT(*) FROM payout_bindings pb WHERE pb.docket_id IN ('listing-' || l.id, 'listing-' || l.id || '-verifier')) AS bindings,
             (SELECT COUNT(*) FROM payout_receipts pr JOIN payout_bindings pb ON pb.id = pr.binding_id WHERE pb.docket_id IN ('listing-' || l.id, 'listing-' || l.id || '-verifier')) AS receipts,
             (SELECT COUNT(*) FROM listing_submissions s WHERE s.listing_id = l.id) AS submissions,

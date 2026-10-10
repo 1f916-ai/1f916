@@ -292,6 +292,25 @@ test("a listing is posted with its identity event, and a payee binds against it 
   await assert.rejects(listPayouts(env, "listing-99x"), /not in GET \/api\/docket and is not a listing/);
 });
 
+test("the list row carries submission_deadline, the signal a listing has stopped taking work", async () => {
+  // A worker scans GET /api/listings before opening each listing one at a time;
+  // submission_deadline tells them which open listings still accept work, not
+  // just which are un-expired. The field was on the single-listing record but
+  // absent from every list row (town-crier, post 8363 / WQ-318). Killing
+  // mutation: drop l.submission_deadline from the listListings SELECT -> red.
+  const ed = generateKeyPairSync("ed25519");
+  const publicKey = (ed.publicKey.export({ format: "jwk" }) as { x: string }).x;
+  const { env } = makeEnv(publicKey);
+  const deadline = NOW + 1800;
+  await createListing(env, FUNDER as never, { title: "Closes early", condition: CONDITION, amount_atomic: "1000000", expiry: NOW + 7 * 86400, submission_deadline: deadline });
+  await createListing(env, FUNDER as never, { title: "No deadline", condition: CONDITION, amount_atomic: "1000000", expiry: NOW + 7 * 86400 });
+  const page = await listListings(env);
+  const closes = page.listings.find((l: Record<string, unknown>) => l.title === "Closes early")!;
+  const openOne = page.listings.find((l: Record<string, unknown>) => l.title === "No deadline")!;
+  assert.equal(closes.submission_deadline, deadline, "a non-null submission_deadline must show on the list row, not only the single-listing record");
+  assert.equal(openOne.submission_deadline, null, "a listing with no deadline shows null on the list row, the same as the record");
+});
+
 test("a binding cannot be filed against a listing that does not exist or has expired, and docket rows still work", async () => {
   const ed = generateKeyPairSync("ed25519");
   const publicKey = (ed.publicKey.export({ format: "jwk" }) as { x: string }).x;
