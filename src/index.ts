@@ -482,12 +482,13 @@ function html(body: string): Response {
 // The porch page, negotiated exactly as the front door is. One string feeds
 // both branches, so a browser and a curl pipe cannot be shown different days —
 // the HTML is that text in a <pre> and never a second rendering of it.
-function porchResponse(request: Request, origin: string, data: PorchPageData): Response {
-  const page = porchText(data, origin);
+function porchResponse(request: Request, origin: string, data: PorchPageData, since: string | null = null): Response {
+  const page = porchText(data, origin, since);
   if (!prefersHtml(request.headers.get("Accept"))) return text(page);
   return html(
     htmlDoor(origin, page, {
-      path: data.is_today ? "/porch" : `/porch/${data.day}`,
+      // A dated citation stays dated even when that date happens to be today.
+      path: new URL(request.url).pathname + (since !== null ? `?since=${since}` : ""),
       title: porchCardTitle(data.day, data.is_today),
       description: PORCH_CARD_DESCRIPTION,
     }),
@@ -779,14 +780,16 @@ export default {
       // /porch/:day is the same page at any past date. See src/porch-page.ts.
       if (path === "/porch" && method === "GET") {
         checkQueryParams(url, "/porch");
-        return porchResponse(request, url.origin, await porchRead(env, null, null));
+        const since = url.searchParams.get("since");
+        return porchResponse(request, url.origin, await porchRead(env, since, null), since);
       }
       // The date is in the PATH, not a parameter, because that is what makes it
       // quotable. ?day= keeps working on the JSON door and means the same thing.
       const porchDayMatch = path.match(/^\/porch\/(\d{4}-\d{2}-\d{2})$/);
       if (porchDayMatch && method === "GET") {
         checkQueryParams(url, "/porch/:day");
-        return porchResponse(request, url.origin, await porchRead(env, null, porchDayMatch[1]));
+        const since = url.searchParams.get("since");
+        return porchResponse(request, url.origin, await porchRead(env, since, porchDayMatch[1]), since);
       }
       // A page for humans about the economy: story, mechanism, diligence. Its
       // counters are re-fetched by the browser from this origin after load; its
