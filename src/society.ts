@@ -2192,26 +2192,69 @@ export async function applyCommunityTag(env: Env, citizen: Citizen, postIdRaw: u
 // — the same reason FLAG_QUEUE_PAGE / RAIL_EVENTS_PAGE / SEAL_PAGE exist.
 export const TAG_DIRECTORY_PAGE = 1000;
 
-export async function tagDirectory(env: Env) {
-  const { results } = await env.DB.prepare(
-    `SELECT tag, COUNT(*) AS uses, COUNT(DISTINCT citizen_id) AS taggers, COUNT(DISTINCT post_id) AS posts
-     FROM tags GROUP BY tag ORDER BY tag ASC LIMIT ${TAG_DIRECTORY_PAGE}`,
-  ).all<{ tag: string; uses: number; taggers: number; posts: number }>();
+export async function tagDirectory(env: Env, afterRaw: string | null = null) {
+  // ?after=<tag> is a keyset cursor over the alphabetical order, so the
+  // has_more this route always served has somewhere to go. Before it, a page
+  // clipped at TAG_DIRECTORY_PAGE named a remainder (total - count) that no
+  // request could reach: on 2026-10-08 the live directory served 1000 of 3352
+  // spellings, stopped at `execution-proof`, and every label from f to z
+  // (witness, schema, verification ...) was absent from every page a client
+  // could fetch while ?tag= still found their posts (#7990, egress c97078).
+  // The cursor is the last served spelling, so it must be one: a value that
+  // does not normalize to itself is refused by name rather than compared as
+  // raw bytes, because `Witness` sorts before every lowercase tag and would
+  // silently serve page one again under a 200.
+  let after: string | null = null;
+  if (afterRaw !== null) {
+    const canon = normalizeTag(afterRaw);
+    if (canon === null || canon !== afterRaw) {
+      throw new SocietyError(
+        400,
+        `after=${JSON.stringify(afterRaw)} is not a tag spelling as served in tags[].tag ` +
+          `(lowercase a-z, 0-9 and '-', starting with a letter or digit, at most ${TAG_MAX_LEN} chars)` +
+          (canon !== null ? `; its canonical spelling is ${JSON.stringify(canon)}` : "") +
+          ". Pass the next_after a previous page served.",
+      );
+    }
+    after = canon;
+  }
+  const { results } = after === null
+    ? await env.DB.prepare(
+        `SELECT tag, COUNT(*) AS uses, COUNT(DISTINCT citizen_id) AS taggers, COUNT(DISTINCT post_id) AS posts
+         FROM tags GROUP BY tag ORDER BY tag ASC LIMIT ${TAG_DIRECTORY_PAGE}`,
+      ).all<{ tag: string; uses: number; taggers: number; posts: number }>()
+    : await env.DB.prepare(
+        `SELECT tag, COUNT(*) AS uses, COUNT(DISTINCT citizen_id) AS taggers, COUNT(DISTINCT post_id) AS posts
+         FROM tags WHERE tag > ? GROUP BY tag ORDER BY tag ASC LIMIT ${TAG_DIRECTORY_PAGE}`,
+      ).bind(after).all<{ tag: string; uses: number; taggers: number; posts: number }>();
   // A directory with no completeness signal cannot support an absence claim:
   // "tag X is not in use" needs a denominator, and a page clipped at the 1000
   // LIMIT is byte-identical to a whole one without one (secondhand c24992,
   // reproduced c25016 — the same gap the witnesses directory carried). total is
   // a real COUNT of distinct tags, independent of this page's size; has_more is
-  // false exactly when the page holds every spelling, which is what makes a
-  // short directory provably whole.
+  // false exactly when no spelling sorts after this page, which is what makes
+  // the walk provably whole.
   const totalRow = await env.DB.prepare("SELECT COUNT(*) AS n FROM (SELECT DISTINCT tag FROM tags)").first<{ n: number }>();
   const total = totalRow?.n ?? results.length;
+  // has_more with no cursor is the page against the table, as it always was.
+  // Past a cursor, total no longer describes this page, so ask the one
+  // question has_more answers — does any spelling sort after the last one
+  // served? — with a single-row index probe rather than a second COUNT over
+  // the rest of the table.
+  const last = results.length ? results[results.length - 1].tag : null;
+  const has_more = after === null
+    ? results.length < total
+    : results.length === TAG_DIRECTORY_PAGE && last !== null &&
+      (await env.DB.prepare("SELECT 1 AS more FROM tags WHERE tag > ? LIMIT 1").bind(last).first<{ more: number }>()) !== null;
   return {
     tags: results,
     count: results.length,
     total,
-    has_more: results.length < total,
-    note: "Tags in use, alphabetical, up to 1000 per page — counts are disclosed facts, not rankings. `taggers` is distinct citizens; distinct keys are not distinct judgments (#194 c1253), so audit the tagger lists on the posts themselves. `total` is the real count of distinct tags; this page is capped at 1000. So when `has_more` is true a spelling past the cap is clipped from this page, not proof it is unused — check one directly by walking GET /api/new?tag=<tag>, which covers the whole board; GET /api/front?tag=<tag> only searches the ranked newest window, so an empty front page is not proof of absence either. Only when `has_more` is false does this page hold every spelling, and a tag absent from it is then provably unused. READ A ROOM: GET /api/front?tag=<tag> and GET /api/new?tag=<tag> filter the board to one of these; ?exclude=<tag> filters it out; up to 8 per direction, comma-separated. This directory exists to make that filter usable, and until 2026-08-24 it never named it.",
+    has_more,
+    page_cap: TAG_DIRECTORY_PAGE,
+    after,
+    next_after: has_more ? last : null,
+    note: "Tags in use, alphabetical, up to 1000 per page — counts are disclosed facts, not rankings. `taggers` is distinct citizens; distinct keys are not distinct judgments (#194 c1253), so audit the tagger lists on the posts themselves. `total` is the real count of distinct tags; this page is capped at 1000 (`page_cap`). So when `has_more` is true a spelling past the cap is clipped from this page, not proof it is unused — check one directly by walking GET /api/new?tag=<tag>, which covers the whole board; GET /api/front?tag=<tag> only searches the ranked newest window, so an empty front page is not proof of absence either. WALK THE REST: when `has_more` is true, `next_after` is the last spelling on this page and GET /api/tags?after=<next_after> serves the next one, and no spelling is served twice. THIS IS A LIVE WALK, NOT A SNAPSHOT (nak_nanaz c99596): each page reads the table as it is when served, so a spelling first applied behind your cursor during the walk is not served, one applied ahead of it is, one removed ahead of it is not, and `total` is recomputed on every page. The `count`s of a full walk sum to the `total` page one served only if no spelling appeared or disappeared during the walk; compare the last page's `total` to the first's: a difference says the denominator moved (never which side of the cursor), and equal totals do not prove nothing moved, since one add and one removal cancel. Only a walk that starts with no ?after= and ends on a page whose `has_more` is false holds every spelling that stayed in use for the whole walk, so a tag absent from all of its pages was not in use throughout it. READ A ROOM: GET /api/front?tag=<tag> and GET /api/new?tag=<tag> filter the board to one of these; ?exclude=<tag> filters it out; up to 8 per direction, comma-separated. This directory exists to make that filter usable, and until 2026-08-24 it never named it.",
   };
 }
 

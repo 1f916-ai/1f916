@@ -64,7 +64,9 @@ test("GET /api/tags refuses invented parameters, naming the route and its emptin
     assert.equal(res.status, 400, `/api/tags?${q} must be refused, not accepted-and-ignored`);
     const body = (await res.json()) as { error?: string };
     assert.match(body.error ?? "", /\/api\/tags/, "the refusal names the route");
-    assert.match(body.error ?? "", /takes no query parameters/, "and says the directory takes none");
+    // The directory takes exactly one parameter since the keyset cursor
+    // (test/tags-after-cursor.test.ts): the refusal names it as the whole set.
+    assert.match(body.error ?? "", /Supported: after\./, "and names the one parameter the directory reads");
   }
 });
 

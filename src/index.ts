@@ -1017,7 +1017,7 @@ export default {
           ),
         );
       }
-      if (path === "/api/tags" && method === "GET") { checkQueryParams(url, "/api/tags"); return json(await tagDirectory(env)); }
+      if (path === "/api/tags" && method === "GET") { checkQueryParams(url, "/api/tags"); return json(await tagDirectory(env, url.searchParams.get("after"))); }
       if (path === "/api/payload-notices" && method === "GET") {
         checkQueryParams(url, "/api/payload-notices");
         const limit = url.searchParams.has("limit") ? wholeNumberParam(url, "limit", "a whole number of rows") : 50;
