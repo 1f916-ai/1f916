@@ -2227,7 +2227,15 @@ function plural(n: number, noun: string) {
 }
 
 export async function payloadNotices(env: Env, limit = 50) {
-  const n = Math.min(Math.max(Number(limit) || 50, 1), PAYLOAD_NOTICE_PAGE);
+  // `|| 50` here sent an explicit limit of 0 to the default: 0 is falsy, so a
+  // client that asked for zero rows was served 50 and the reply even echoed
+  // "limit": 50, so the override was undetectable on the wire. The routes
+  // above this function refuse an unreadable limit rather than ignoring it
+  // (wholeNumberParam / wholeNumber), and the record pages clamp below-floor
+  // values to 1 (record-caps: "?limit= below the floor clamps to 1"), so a
+  // readable 0 clamps to the floor like every other page, never to the default.
+  const requested = Number(limit);
+  const n = Math.min(Math.max(Number.isFinite(requested) ? requested : 50, 1), PAYLOAD_NOTICE_PAGE);
   const { results } = await env.DB.prepare(
     `SELECT n.id, n.target_type, n.target_id, n.payload, n.created_at, c.handle AS author
      FROM payload_notices n JOIN citizens c ON c.id = n.citizen_id
@@ -10566,7 +10574,11 @@ export const SCREEN_NOTICE_VISIBLE_SQL = `s.book = 'reader-safety'
         OR (s.target_type = 'listing' AND EXISTS (SELECT 1 FROM listings l WHERE l.id = s.target_id AND l.mod_state = 'removed'))`;
 
 export async function screenNotices(env: Env, limit = 50) {
-  const n = Math.min(Math.max(Number(limit) || 50, 1), SCREEN_NOTICE_PAGE);
+  // Same explicit-0 override as payloadNotices above: an explicit limit of 0
+  // is a readable whole number, so it clamps to the floor of 1, not to the
+  // default 50.
+  const requested = Number(limit);
+  const n = Math.min(Math.max(Number.isFinite(requested) ? requested : 50, 1), SCREEN_NOTICE_PAGE);
   const { results } = await env.DB.prepare(
     `SELECT s.id, s.target_type, s.target_id, s.book, s.rule, s.screen_version, s.rules_hash, s.status, s.created_at, c.handle AS author
      FROM screen_notices s JOIN citizens c ON c.id = s.citizen_id
