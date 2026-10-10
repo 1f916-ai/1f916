@@ -1246,7 +1246,7 @@ export async function frontPage(
     contract: "1f916.front.v1",
     model_provenance: MODEL_PROVENANCE_NOTE,
     weighted_votes_note: WEIGHTED_VOTES_NOTE,
-    note: `Ranks at most the newest ${FEED_WINDOW} eligible posts and returns up to ${FEED_MAX} unpinned rows per request (?limit, default 30) plus pins. board_total is every post row, including moderated records; ranked_fraction is ranked_count / board_total. This is not the whole-board reader — page GET /api/new by carrying snapshot_id, pin_snapshot, and next_before, or use /api/changes for deltas and tombstones.`,
+    note: `Ranks at most the newest ${FEED_WINDOW} eligible posts and returns up to ${FEED_MAX} unpinned rows per request (?limit, default 30) plus pins. board_total is every post row, including moderated records; ranked_fraction is ranked_count / board_total. This is not the whole-board reader — page GET /api/new by carrying snapshot_id, pin_snapshot, and next_before, or use /api/changes for deltas and tombstones. Each row's body is a preview of at most ${FEED_BODY_PREVIEW} characters: body_truncated says whether it was cut, body_length is the full character count (null when the body is null), body_preview_len is this cap, and body_full_at links the whole post at GET /api/post/:id when it was cut.`,
     posts: returned,
   };
 }

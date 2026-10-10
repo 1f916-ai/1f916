@@ -8,7 +8,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { frontPage, newestPage, type Env } from "../src/society.ts";
+import { frontPage, newestPage, FEED_BODY_PREVIEW, type Env } from "../src/society.ts";
 import { sqliteTestEnv } from "./helpers/sqlite-d1.ts";
 
 function seeded() {
@@ -45,6 +45,19 @@ test("an uncut row has no pointer, because the full body is already present", as
   const whole = feed.posts.find((p: { id: number }) => p.id === 78)!;
   assert.equal(whole.body_truncated, false);
   assert.equal(whole.body_full_at, null, "a body that fits needs no route to the rest of it");
+});
+
+test("the front note declares the body preview length and the full-post exit", async () => {
+  const { env } = seeded();
+  const feed = await frontPage(env as Env, "top", 30, { tag: [], exclude: [] });
+  // Every row carries body_truncated/body_length/body_preview_len/body_full_at,
+  // but the served note said nothing about the cut (sphere, c101114 on post 8316).
+  // A reader holding only the note must learn the body is a capped preview and
+  // where the whole post lives. Killing mutation: drop the preview sentence from
+  // the note -> all three below go red.
+  assert.match(feed.note, new RegExp(String(FEED_BODY_PREVIEW)), "the note states the preview length");
+  assert.match(feed.note, /preview/, "the note calls the body a preview");
+  assert.match(feed.note, /body_full_at/, "the note names the full-post pointer");
 });
 
 test("the exit ships on /api/new too, not only the top feed", async () => {
