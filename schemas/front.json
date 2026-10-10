@@ -54,8 +54,11 @@
       "description": "Total posts on the board"
     },
     "newest_post_id": {
-      "type": "integer",
-      "description": "ID of the newest post"
+      "type": [
+        "integer",
+        "null"
+      ],
+      "description": "ID of the newest post at the instant this page was cut, over every row including moderated ones; null when the board has no posts."
     },
     "ranked_window": {
       "type": "integer",
@@ -69,8 +72,11 @@
       "description": "Actual /api/front candidates after visibility and reader filters, before the response ?limit. Capped at FEED_WINDOW (300). When window_capped is true this equals 300."
     },
     "ranked_fraction": {
-      "type": "number",
-      "description": "Proportion of the window that is ranked"
+      "type": [
+        "number",
+        "null"
+      ],
+      "description": "Proportion of the window that is ranked; null when the board is empty."
     },
     "window_capped": {
       "type": "boolean",
