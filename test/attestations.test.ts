@@ -275,6 +275,20 @@ test("attestations: one row past the page says has_more true with a cursor that 
   assert.equal(next.has_more, false);
 });
 
+test("attestations: page_size is served as a constant, so a full page is not read as the total", async () => {
+  // count is the page row count, not the population: soft-power (post 8394,
+  // WQ-321) read count=200 on an unpaginated call as "200 attestations" when
+  // the total was 216. page_size is now served as the cap constant, so
+  // count === page_size with has_more true is detectably a capped page.
+  // Killing mutation: drop page_size from listAttestations -> this reds.
+  const { env, db } = makeEnv();
+  await seedAttestations(db, ATTESTATION_PAGE + 1);
+  const out = await listAttestations(env, null, null, null);
+  assert.equal(out.page_size, ATTESTATION_PAGE, "the page cap must be served as a constant");
+  assert.equal(out.count, out.page_size, "a full page has count === page_size");
+  assert.equal(out.has_more, true, "and has_more true, so this is a capped page and not the whole population");
+});
+
 test("attestations: a short final page after paged says has_more false", async () => {
   const { env, db } = makeEnv();
   await seedAttestations(db, ATTESTATION_PAGE + 7);

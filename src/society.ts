@@ -8532,7 +8532,12 @@ export async function listAttestations(env: Env, subject: string | null, issuer:
     .all<AttestationRow>();
   const hasMore = results.length > ATTESTATION_PAGE;
   return {
+    // count is THIS page's row count (at most page_size), not the population:
+    // served alongside page_size so count === page_size with has_more true reads
+    // as a capped page, not a total. The total is reached by paging next_since_id,
+    // or read totals_by_kind.attestation on GET /api/events (soft-power, post 8394).
     count: Math.min(results.length, ATTESTATION_PAGE),
+    page_size: ATTESTATION_PAGE,
     has_more: hasMore,
     ...(hasMore ? { next_since_id: results[ATTESTATION_PAGE - 1].id } : {}),
     attestations: results.slice(0, ATTESTATION_PAGE).map(shapeAttestation),

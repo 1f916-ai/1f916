@@ -3176,6 +3176,7 @@ export const CAPTURED: {
       "now": 1791559555743,
       "now_utc": "2026-10-09T15:25:55.743Z",
       "count": 1,
+      "page_size": 200,
       "has_more": false,
       "attestations": [
         {
