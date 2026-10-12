@@ -13,8 +13,8 @@
 
 import { jcs, sha256Hex } from "./attestations.ts";
 import { MerkleTree } from "./merkle.ts";
-import { b64urlDecode, b64urlEncode } from "./keys.ts";
 import { SocietyError, type Env } from "./society.ts";
+import { activeRegistryKey, historyView, readRegistryKeyHistory, withKeyEpoch } from "./registry-keys.ts";
 import { conductLedger } from "./conduct.ts";
 
 export const RECORD_EVENTS_PAGE = 200;
@@ -25,19 +25,52 @@ export const RECORD_ATTESTATIONS_PAGE = 200;
 export const RECORD_SEALS_PAGE = 200;
 export const RECORD_SIG_PREFIX = "1f916.record.v1";
 
-const PKCS8_PREFIX = new Uint8Array([0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20]);
+// Signed with the ACTIVE registry key (src/registry-keys.ts), the same one
+// that signs checkpoints and doorbells, and the epoch is served beside it so a
+// dossier saved before a rotation still names the key that verifies it.
+async function signRecord(env: Env, payload: string): Promise<{ sig: string; pub: string; epoch: number } | null> {
+  const [seedB64u, pubB64u] = (env.REGISTRY_SEED ?? "").split(".");
+  if (!seedB64u || !pubB64u) {
+    // Unsigned only where no key is configured at all, and labeled. With
+    // REGISTRY_SEED empty and REGISTRY_SEED_NEXT set, a rotation's secrets are
+    // half moved: that is a broken configuration, and serving an unsigned
+    // dossier from it would read as an unconfigured registry.
+    if (env.REGISTRY_SEED_NEXT)
+      throw new SocietyError(503, "REGISTRY_SEED is empty while REGISTRY_SEED_NEXT is set: a key rotation's secrets are half moved. Refusing to serve an unsigned dossier; move the active key into REGISTRY_SEED.");
+    return null;
+  }
+  const signer = await activeRegistryKey(env);
+  return { sig: await signer.sign(payload), pub: signer.key, epoch: signer.epoch };
+}
 
-async function signRecord(env: Env, payload: string): Promise<{ sig: string; pub: string } | null> {
-  const raw = env.REGISTRY_SEED ?? "";
-  const [seedB64u, pubB64u] = raw.split(".");
-  if (!seedB64u || !pubB64u) return null; // unsigned dossier on unconfigured deployments, labeled
-  const seed = b64urlDecode(seedB64u);
-  const pkcs8 = new Uint8Array(PKCS8_PREFIX.length + 32);
-  pkcs8.set(PKCS8_PREFIX);
-  pkcs8.set(seed, PKCS8_PREFIX.length);
-  const priv = await crypto.subtle.importKey("pkcs8", pkcs8 as unknown as BufferSource, { name: "Ed25519" }, false, ["sign"]);
-  const sig = await crypto.subtle.sign({ name: "Ed25519" }, priv, new TextEncoder().encode(payload) as unknown as BufferSource);
-  return { sig: b64urlEncode(new Uint8Array(sig)), pub: pubB64u };
+// The served offline-verification instruction, built from the key that
+// actually signed this dossier rather than a literal: a literal is the one
+// place a rotation would have left the registry telling readers to verify
+// against a key it no longer signs with. The anchoring advice: the key named
+// here comes from this response, so the reader cross-checks it against the
+// published copy. A dossier is signed when it is served, so a freshly fetched
+// one is current only under the ACTIVE key; one signed by a key since retired
+// counts only if it was saved before that key's retired_at. A retired key is
+// never a reason to accept a fresh dossier, because after a leak the thief
+// holds exactly that key.
+// The registry key published in the protocol repo, SPEC section 8 and on
+// 1f916.org: epoch 0. While no rotation has happened it is the key that signs,
+// and the command pins it. After a rotation the command pins the ACTIVE key,
+// never the published epoch-0 one: a verifier pinned to a retired key cannot
+// tell a holder of that key, serving a history cut back to end at it, from
+// the registry (SPEC section 8b). The operator publishes the new key where
+// the old one was published, so the reader can cross-check it there.
+export const PUBLISHED_REGISTRY_KEY = "mpQPa0FjyynqoSg2Z9j91hRhb8WckxIpRGod43CQqLw";
+
+export function verifyOfflineInstruction(signed: { pub: string; epoch: number } | null): string {
+  if (!signed)
+    return "https://1f916.ai/source/protocol/verify.mjs (the protocol repository, github.com/1f916-ai/protocol) — node verify.mjs --dossier <this file saved> --registry-key <the registry key>. This deployment has no registry key configured, so registry_sig is null and this dossier is unsigned: without a key the run can only report VERDICT: unanchored, which checks the file's signatures against a key the file itself supplies, so a fabricated record signed with a freshly minted key clears it identically.";
+  const pin = signed.epoch === 0 ? PUBLISHED_REGISTRY_KEY : signed.pub;
+  const where =
+    signed.epoch === 0
+      ? "The registry key above is the one published in the protocol repo, SPEC section 8 and on 1f916.org; cross-check it across those rather than trusting this response."
+      : `The registry key above is the registry's active key (epoch ${signed.epoch}), which signed this dossier. The registry has rotated its key: the key published before the rotation is retired, and pinning a retired key is unsafe, because a verifier pinned to it cannot detect someone holding that key who serves a history cut back to end at it (SPEC section 8b). Cross-check the key above against the one now published in the protocol repo, SPEC section 8 and on 1f916.org rather than trusting this response.`;
+  return `https://1f916.ai/source/protocol/verify.mjs (the protocol repository, github.com/1f916-ai/protocol) — node verify.mjs --dossier <this file saved> --registry-key ${pin} [--witness <day.jsonl> --witness-key <a pinned key from GET /api/witnesses>]. Without --registry-key the run reports VERDICT: unanchored: it checks the file's signatures against a key the file itself supplies, so a fabricated record signed with a freshly minted key clears it identically. ${where} This dossier was signed by ${signed.pub} (registry_sig.key_epoch ${signed.epoch}). A dossier you fetch now must verify under the active key; one signed by a key that registry_key_history (served here) shows as retired counts only if you saved it before that key's retired_at. The checkpoint in this dossier may predate the key that signed it and is checked under its own epoch's key (checkpoint_key_epoch). All of this needs the protocol's verify.mjs with key-epoch support (SPEC section 8b).`;
 }
 
 export async function record(env: Env, handle: string, sinceEventId: number = NaN) {
@@ -90,9 +123,23 @@ export async function record(env: Env, handle: string, sinceEventId: number = Na
   const page = events.slice(0, RECORD_EVENTS_PAGE);
   const totalRow = await env.DB.prepare("SELECT COUNT(*) AS n FROM identity_events WHERE citizen_id = ?").bind(citizen.id).first<{ n: number }>();
 
-  const checkpoint = await env.DB.prepare(
-    "SELECT log, tree_size, root, sig, created_at FROM checkpoints WHERE log = 'identity_events' ORDER BY id DESC LIMIT 1",
-  ).first<{ log: string; tree_size: number; root: string; sig: string; created_at: number }>();
+  // key_epoch is read beside the head and served OUTSIDE the signed core
+  // (checkpoint_key_epoch below): verify.mjs rebuilds the core from a fixed
+  // shape, so a new field inside `checkpoint` would break every copy already
+  // downloaded.
+  const checkpointRow = await withKeyEpoch((epochCol) =>
+    env.DB.prepare(`SELECT log, tree_size, root, sig, created_at${epochCol} FROM checkpoints WHERE log = 'identity_events' ORDER BY id DESC LIMIT 1`).first<{
+      log: string;
+      tree_size: number;
+      root: string;
+      sig: string;
+      created_at: number;
+      key_epoch: number;
+    }>(),
+  );
+  const checkpoint = checkpointRow
+    ? { log: checkpointRow.log, tree_size: checkpointRow.tree_size, root: checkpointRow.root, sig: checkpointRow.sig, created_at: checkpointRow.created_at }
+    : null;
 
   // One leaf-set read serves every proof in the page, and one tree over it
   // serves them without rehashing: the subtrees a proof needs are the same
@@ -207,7 +254,11 @@ export async function record(env: Env, handle: string, sinceEventId: number = Na
     ...sealsCounted,
     caps_note: `attestations_about and seals are the oldest ${RECORD_ATTESTATIONS_PAGE}/${RECORD_SEALS_PAGE} rows by id; when *_has_more is true, read the rest at GET /api/attestations?subject=<handle>&since_id= and GET /api/seals?citizen=<handle>&since_id=. The signed core carries what this page carries — the counts above tell you what it does not.`,
     seals_note: "convenience view, not part of the signed core — each seal's authoritative anchor is its 'memory.seal' event in `events`, covered by the registry signature and its own inclusion proof",
-    registry_sig: signed ? { sig: signed.sig, over: `${RECORD_SIG_PREFIX}:sha256(JCS(dossier-core))`, registry_public_key: signed.pub } : null,
+    registry_sig: signed ? { sig: signed.sig, over: `${RECORD_SIG_PREFIX}:sha256(JCS(dossier-core))`, registry_public_key: signed.pub, key_epoch: signed.epoch } : null,
+    checkpoint_key_epoch: checkpointRow ? checkpointRow.key_epoch : null,
+    // Outside the signed core, like the two epochs above: the keys by epoch,
+    // so verify.mjs can check the checkpoint here under its own epoch's key.
+    ...(signed ? { registry_key_history: historyView((await readRegistryKeyHistory(env)).rows) } : {}),
     what_this_proves:
       "Signed events by their keys; presence and timing via inclusion proofs against the signed, witnessed checkpoint; append-only history via consistency proofs. What it does NOT prove: who holds any private key (custody labels are claims), truth of any claim's content, anything about unbound names or legacy_unsealed rows.",
     // The served instruction must name the flag that reaches a meaningful
@@ -219,7 +270,7 @@ export async function record(env: Env, handle: string, sinceEventId: number = Na
     // cross-published (protocol README, SPEC §8, 1f916.org). Same class as
     // test/attest-read-instruction.test.ts: the reading instruction must name
     // the field that goes red.
-    verify_offline: "https://1f916.ai/source/protocol/verify.mjs (the protocol repository, github.com/1f916-ai/protocol) — node verify.mjs --dossier <this file saved> --registry-key mpQPa0FjyynqoSg2Z9j91hRhb8WckxIpRGod43CQqLw [--witness <day.jsonl> --witness-key <a pinned key from GET /api/witnesses>]. Without --registry-key the run reports VERDICT: unanchored: it checks the file's signatures against a key the file itself supplies, so a fabricated record signed with a freshly minted key clears it identically. The registry key above is published in the protocol repo, SPEC section 8 and on 1f916.org; cross-check it across those rather than trusting this response.",
+    verify_offline: verifyOfflineInstruction(signed),
   };
 }
 

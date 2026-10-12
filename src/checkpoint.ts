@@ -8,7 +8,10 @@
 //
 // The signing seed lives in a Worker secret (REGISTRY_SEED, base64url raw 32
 // bytes); the public key is published on GET /api/checkpoint, and the witness
-// records each checkpoint outside this registry's failure domain.
+// records each checkpoint outside this registry's failure domain. Each row
+// records the key_epoch that signed it; the payload does not change, so every
+// head signed before epochs existed verifies exactly as it did, under epoch 0
+// (src/registry-keys.ts has the rotation).
 // From there: inclusion proofs date any event, consistency proofs prove the
 // log only ever appended, and both verify offline against a witnessed head.
 //
@@ -16,67 +19,39 @@
 // verification keeps working. Checkpoints are the sublinear path over the
 // same bytes.
 
-import { b64urlDecode, b64urlEncode } from "./keys.ts";
+import { b64urlDecode } from "./keys.ts";
 import { consistencyProof, inclusionProof, merkleRoot } from "./merkle.ts";
 import { SocietyError, type Env } from "./society.ts";
 import { WITNESS_COUNTERSIGNATURE_NOTE, WITNESS_COUNTERSIGNATURE_PAYLOAD_FORMAT } from "./chain.ts";
 import { NOTE_KEY_NAME, checkpointBody, noteFromField, noteKeyId, originOf, signatureField, verifierKey } from "./note.ts";
 import { WITNESS_CADENCE, WITNESS_STANDING, WITNESS_TRIGGER_NEVER_NOTE, WITNESS_TRIGGER_RETIRED_NOTE } from "./witness-cadence.ts";
 import { cosignaturesFor, witnessView } from "./witness-network.ts";
+import {
+  activeRegistryKey,
+  ensureEpochZero,
+  historyView,
+  readRegistryKeyHistory,
+  REGISTRY_KEY_HISTORY_NOTE,
+  REGISTRY_ROTATE_FORMAT,
+  type RegistryKeyHistory,
+  type RegistryKeyRow,
+  type FinalHead,
+  parseFinalHeads,
+  isMissingKeyEpochColumn,
+  isMissingRegistryKeysTable,
+  withKeyEpoch,
+} from "./registry-keys.ts";
 
 export const CHECKPOINT_PAYLOAD_PREFIX = "1f916.checkpoint.v1";
 const LOGS = ["identity_events", "ledger"] as const;
 export type CheckpointLog = (typeof LOGS)[number];
 
-// PKCS#8 wrapper for a raw Ed25519 seed: fixed 16-byte prefix per RFC 8410.
-const PKCS8_PREFIX = new Uint8Array([0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20]);
-
-// The seed secret carries both halves: "<seed_b64u>.<pub_b64u>". Deriving
-// Ed25519 public keys from seeds needs either key export (unsupported for
-// pkcs8-imported signing keys in Workers) or a hand-rolled field
-// implementation; declaring the public half beside the seed and self-checking
-// it at read time is simpler and fails loudly if they ever mismatch.
-let verifiedPub: string | null = null;
-
-function parts(env: Env): { seedB64u: string; pubB64u: string } {
-  const raw = env.REGISTRY_SEED ?? "";
-  const [seedB64u, pubB64u] = raw.split(".");
-  if (!seedB64u || !pubB64u) throw new SocietyError(503, "checkpointing is not configured (REGISTRY_SEED must be '<seed>.<public>')");
-  return { seedB64u, pubB64u };
-}
-
-async function checkedPublicKey(env: Env): Promise<string> {
-  const { seedB64u, pubB64u } = parts(env);
-  if (verifiedPub === pubB64u) return pubB64u;
-  const seed = b64urlDecode(seedB64u);
-  if (seed.length !== 32) throw new SocietyError(503, "REGISTRY_SEED seed half must be 32 raw bytes");
-  const pkcs8 = new Uint8Array(PKCS8_PREFIX.length + 32);
-  pkcs8.set(PKCS8_PREFIX);
-  pkcs8.set(seed, PKCS8_PREFIX.length);
-  const priv = await crypto.subtle.importKey("pkcs8", pkcs8 as unknown as BufferSource, { name: "Ed25519" }, false, ["sign"]);
-  const probe = new TextEncoder().encode("1f916.registry-key.selfcheck");
-  const sig = new Uint8Array(await crypto.subtle.sign({ name: "Ed25519" }, priv, probe as unknown as BufferSource));
-  const pub = await crypto.subtle.importKey("raw", b64urlDecode(pubB64u) as unknown as BufferSource, { name: "Ed25519" }, false, ["verify"]);
-  const ok = await crypto.subtle.verify({ name: "Ed25519" }, pub, sig as unknown as BufferSource, probe as unknown as BufferSource);
-  if (!ok) throw new SocietyError(503, "REGISTRY_SEED public half does not match its seed — refusing to publish a key that cannot verify our signatures");
-  verifiedPub = pubB64u;
-  return pubB64u;
-}
-
-export async function registrySigner(env: Env): Promise<{ sign: (payload: string) => Promise<string>; key: string }> {
-  const key = await checkedPublicKey(env);
-  return { sign: (payload: string) => signPayload(env, payload), key };
-}
-
-async function signPayload(env: Env, payload: string): Promise<string> {
-  const { seedB64u } = parts(env);
-  const seed = b64urlDecode(seedB64u);
-  const pkcs8 = new Uint8Array(PKCS8_PREFIX.length + 32);
-  pkcs8.set(PKCS8_PREFIX);
-  pkcs8.set(seed, PKCS8_PREFIX.length);
-  const priv = await crypto.subtle.importKey("pkcs8", pkcs8 as unknown as BufferSource, { name: "Ed25519" }, false, ["sign"]);
-  const sig = await crypto.subtle.sign({ name: "Ed25519" }, priv, new TextEncoder().encode(payload) as unknown as BufferSource);
-  return b64urlEncode(new Uint8Array(sig));
+// The key itself (which epoch, which secret holds it, how it rotates) lives in
+// src/registry-keys.ts. This module asks it for the active signer and serves
+// the history beside the heads it explains.
+export async function registrySigner(env: Env): Promise<{ sign: (payload: string) => Promise<string>; key: string; epoch: number }> {
+  const active = await activeRegistryKey(env);
+  return { sign: active.sign, key: active.key, epoch: active.epoch };
 }
 
 function assertLog(log: string | null): CheckpointLog {
@@ -98,21 +73,41 @@ export function checkpointPayload(log: string, treeSize: number, root: string, c
 // inserts nothing.
 export async function makeCheckpoints(env: Env): Promise<{ log: string; tree_size: number; root: string; skipped?: boolean }[]> {
   const out: { log: string; tree_size: number; root: string; skipped?: boolean }[] = [];
+  await ensureEpochZero(env);
+  const signer = await activeRegistryKey(env);
   for (const log of LOGS) {
     const leaves = await sealedHashes(env, log);
     const root = await merkleRoot(leaves);
-    const now = Date.now();
+    // Never dated before the signing epoch began: a clock behind the instant
+    // the rotation chose would otherwise date a new-key head inside the old
+    // key's window, where verifiers look for the old key.
+    const now = Math.max(Date.now(), signer.activated_at);
     const payload = checkpointPayload(log, leaves.length, root, now);
-    const sig = await signPayload(env, payload);
-    const r = await env.DB.prepare(
-      "INSERT OR IGNORE INTO checkpoints (log, tree_size, root, sig, created_at) VALUES (?, ?, ?, ?, ?)",
-    )
-      .bind(log, leaves.length, root, sig, now)
-      .run();
+    const sig = await signer.sign(payload);
+    // Written only while the key that signed it is still the active one. A
+    // rotation that commits between the read above and this insert retires
+    // that key at an instant before `now`, and a head signed by a retired key
+    // after its retirement is exactly what a verifier must refuse; so the pass
+    // writes nothing for this log and the next one signs with the new key.
+    let r: { meta: { changes: number } };
+    try {
+      r = await env.DB.prepare(
+        "INSERT OR IGNORE INTO checkpoints (log, tree_size, root, sig, created_at, key_epoch) SELECT ?, ?, ?, ?, ?, ? WHERE COALESCE((SELECT MAX(epoch) FROM registry_keys), 0) = ?",
+      )
+        .bind(log, leaves.length, root, sig, now, signer.epoch, signer.epoch)
+        .run();
+    } catch (e) {
+      // Code before migration 0078: no key_epoch column and no registry_keys,
+      // so there is only epoch 0 and the insert is the one it always was.
+      if (signer.epoch !== 0 || !(isMissingKeyEpochColumn(e) || isMissingRegistryKeysTable(e))) throw e;
+      r = await env.DB.prepare("INSERT OR IGNORE INTO checkpoints (log, tree_size, root, sig, created_at) VALUES (?, ?, ?, ?, ?)")
+        .bind(log, leaves.length, root, sig, now)
+        .run();
+    }
     out.push({ log, tree_size: leaves.length, root, ...(r.meta.changes === 0 ? { skipped: true } : {}) });
     // The stamp above is written. The note only adds to it, so a failure here
     // is logged and never costs the stamp.
-    await signNoteFor(env, log, leaves.length).catch((e) => console.error(`checkpoint: note not signed for ${log} at ${leaves.length}: ${String(e)}`));
+    await signNoteFor(env, log, leaves.length, signer).catch((e) => console.error(`checkpoint: note not signed for ${log} at ${leaves.length}: ${String(e)}`));
   }
   return out;
 }
@@ -125,16 +120,21 @@ export async function makeCheckpoints(env: Env): Promise<{ log: string; tree_siz
 // What is signed is the STORED row, not what this run computed, so a note can
 // never state a size or a root that the stamp beside it does not. The stamp's
 // row is never written: the note goes in its own table, once.
-async function signNoteFor(env: Env, log: CheckpointLog, treeSize: number): Promise<void> {
-  const row = await env.DB.prepare(
-    "SELECT c.id, c.tree_size, c.root, n.signature FROM checkpoints c LEFT JOIN checkpoint_notes n ON n.checkpoint_id = c.id WHERE c.log = ? AND c.tree_size = ?",
-  )
-    .bind(log, treeSize)
-    .first<{ id: number; tree_size: number; root: string; signature: string | null }>();
+async function signNoteFor(env: Env, log: CheckpointLog, treeSize: number, signer: { epoch: number; key: string; sign: (payload: string) => Promise<string> }): Promise<void> {
+  const row = await withKeyEpoch((epochCol) =>
+    env.DB.prepare(
+      `SELECT c.id, c.tree_size, c.root${epochCol === ", key_epoch" ? ", c.key_epoch" : epochCol}, n.signature FROM checkpoints c LEFT JOIN checkpoint_notes n ON n.checkpoint_id = c.id WHERE c.log = ? AND c.tree_size = ?`,
+    )
+      .bind(log, treeSize)
+      .first<{ id: number; tree_size: number; root: string; key_epoch: number; signature: string | null }>(),
+  );
   if (!row || row.signature !== null) return;
+  // A note is signed by the key that signed its stamp (the note's key id names
+  // that key). The job holds only the active key, so a stamp left from an
+  // earlier epoch gets no note rather than one signed by a different key.
+  if (row.key_epoch !== signer.epoch) return;
   const body = checkpointBody(originOf(log), row.tree_size, row.root);
-  const pub = b64urlDecode(await checkedPublicKey(env));
-  const field = signatureField(await noteKeyId(NOTE_KEY_NAME, pub), b64urlDecode(await signPayload(env, body)));
+  const field = signatureField(await noteKeyId(NOTE_KEY_NAME, b64urlDecode(signer.key)), b64urlDecode(await signer.sign(body)));
   await env.DB.prepare("INSERT OR IGNORE INTO checkpoint_notes (checkpoint_id, signature, created_at) VALUES (?, ?, ?)").bind(row.id, field, Date.now()).run();
 }
 
@@ -251,15 +251,19 @@ interface CheckpointRow {
   root: string;
   sig: string;
   created_at: number;
+  key_epoch: number;
 }
 
 export async function latestCheckpoints(env: Env) {
-  const pub = await checkedPublicKey(env);
+  const history = await readRegistryKeyHistory(env);
+  const active = history.rows[history.rows.length - 1];
   const rows: CheckpointRow[] = [];
   for (const log of LOGS) {
-    const row = await env.DB.prepare("SELECT id, log, tree_size, root, sig, created_at FROM checkpoints WHERE log = ? ORDER BY id DESC LIMIT 1")
-      .bind(log)
-      .first<CheckpointRow>();
+    const row = await withKeyEpoch((epochCol) =>
+      env.DB.prepare(`SELECT id, log, tree_size, root, sig, created_at${epochCol} FROM checkpoints WHERE log = ? ORDER BY id DESC LIMIT 1`)
+        .bind(log)
+        .first<CheckpointRow>(),
+    );
     if (row) rows.push(row);
   }
   const sequenceHead = await readCheckpointSequenceHead(env);
@@ -271,18 +275,26 @@ export async function latestCheckpoints(env: Env) {
   const witnesses = await witnessView(env, rows);
   return {
     contract: CHECKPOINT_PAYLOAD_PREFIX,
-    registry_public_key: { kty: "OKP", crv: "Ed25519", x: pub },
+    // The ACTIVE key, as before: a client that reads only this field keeps
+    // working until a rotation, and a rotation is announced in the history.
+    registry_public_key: { kty: "OKP", crv: "Ed25519", x: active.public_key },
+    registry_key_epoch: active.epoch,
+    registry_key_history: historyView(history.rows),
+    registry_key_history_recorded: history.recorded,
+    registry_key_history_has_more: history.has_more,
+    rotation_statement_format: REGISTRY_ROTATE_FORMAT,
+    registry_key_note: REGISTRY_KEY_HISTORY_NOTE,
     witness_dispatch: witnessDispatchView(dispatchRow, Date.now()),
     signed_payload_format: `${CHECKPOINT_PAYLOAD_PREFIX}:<log>:<tree_size>:<root>:<created_at>`,
     countersignature_payload_format: WITNESS_COUNTERSIGNATURE_PAYLOAD_FORMAT,
     countersignature_note: WITNESS_COUNTERSIGNATURE_NOTE,
     checkpoints: rows,
-    note: await noteFacts(env),
+    note: await noteFacts(env, history),
     checkpoint_sequence: checkpointSequenceView(sequenceHead, rows),
     leaves_are: "the sealed rows' `hash` column values (lowercase hex, as UTF-8 bytes), in id order — the same hashes the linear chain and GET /api/attest already publish",
     tree: "RFC 6962: leaf = SHA-256(0x00 || leaf), node = SHA-256(0x01 || l || r)",
     how_to_verify:
-      "Check sig over the payload format above with registry_public_key. Then GET /api/proof?log=&event= for inclusion, /api/checkpoint/consistency?log=&from=&to= for append-only-ness. The witness records checkpoints at github.com/1f916-ai/1f916 under witness/. " +
+      "Check sig over the payload format above with the key of the row's key_epoch in registry_key_history (registry_public_key is the active one; a head signed before a rotation names the older epoch). Then GET /api/proof?log=&event= for inclusion, /api/checkpoint/consistency?log=&from=&to= for append-only-ness. The witness records checkpoints at github.com/1f916-ai/1f916 under witness/. " +
       `${WITNESS_CADENCE}. ${WITNESS_STANDING}. ` +
       "The achieved cadence is whatever the day file's own `at` timestamps show (the dispatch attempt failed for days at a stretch while GitHub's own schedule held, #1264). Compare roots there before believing ours.",
     ...(witnesses ?? {}),
@@ -318,18 +330,43 @@ export async function checkpointNote(env: Env, logParam: string | null, sizePara
   return note + cosigned.map((c) => c.line + "\n").join("");
 }
 
-export async function noteFacts(env: Env) {
-  const pub = b64urlDecode(await checkedPublicKey(env));
+export async function noteFacts(env: Env, history?: RegistryKeyHistory) {
+  const h = history ?? (await readRegistryKeyHistory(env));
+  const active = h.rows[h.rows.length - 1];
   return {
     format: "A signed note whose text is a checkpoint, as the transparency logs publish them (C2SP signed-note and tlog-checkpoint): origin, tree size, base64 root, a blank line, then the signature line.",
     key_name: NOTE_KEY_NAME,
-    verifier_key: await verifierKey(NOTE_KEY_NAME, pub),
+    verifier_key: await verifierKey(NOTE_KEY_NAME, b64urlDecode(active.public_key)),
+    // One verifier key per registry key epoch, oldest first. A note's key id
+    // names the key that signed it, so a note made before a rotation verifies
+    // under its own epoch's verifier key here; the rotation statement that
+    // links the two keys is in registry_key_history.
+    verifier_keys: await Promise.all(h.rows.map(async (r) => ({ key_epoch: r.epoch, verifier_key: await verifierKey(NOTE_KEY_NAME, b64urlDecode(r.public_key)) }))),
     origins: Object.fromEntries(LOGS.map((l) => [l, originOf(l)])),
     url: "/api/checkpoint/note/<log>",
-    same_key: "A note is signed by the same registry key as its stamp, over that stamp's own log, size and root.",
+    same_key: "A note is signed by the same registry key as its stamp (the key of the stamp's key_epoch), over that stamp's own log, size and root. verifier_key is the active epoch's; verifier_keys has every epoch's, and the key id on a note's signature line says which one signed it.",
     cosignatures: "When independent witnesses are configured, each one's verified cosignature/v1 line (C2SP tlog-cosignature) follows the registry's signature line, one line per witness. A verifier that pins only the registry key ignores them, as the signed-note format says; one that pins a witness's key (GET /api/checkpoint, cosigning_witnesses) checks it.",
     signed_when: "By the stamping job when it runs, for the stamp at the size the log has then. Never on a reader's request: the endpoint serves what was stored. A stamp that was already behind the log when notes began has none.",
   };
+}
+
+// The key history served beside a proof, so the proof file alone tells a
+// verifier which key checks its head (a head from before a rotation names the
+// older epoch). The proof routes never needed a key, so a key configuration
+// problem (no key, or a malformed one, with nothing recorded yet: a 503 from
+// the history read) omits the history rather than failing the proof. A
+// database failure is not a configuration problem and is thrown.
+async function historyRowsBesideProof(env: Env): Promise<RegistryKeyRow[] | null> {
+  try {
+    return (await readRegistryKeyHistory(env)).rows;
+  } catch (e) {
+    if (e instanceof SocietyError && e.status === 503) return null;
+    throw e;
+  }
+}
+async function historyBesideProof(env: Env): Promise<{ registry_key_history?: ReturnType<typeof historyView> }> {
+  const rows = await historyRowsBesideProof(env);
+  return rows ? { registry_key_history: historyView(rows) } : {};
 }
 
 export async function consistency(env: Env, logParam: string | null, fromParam: string | null, toParam: string | null) {
@@ -338,12 +375,14 @@ export async function consistency(env: Env, logParam: string | null, fromParam: 
   const to = Number(toParam);
   if (!Number.isInteger(from) || !Number.isInteger(to) || from < 0 || to < from)
     throw new SocietyError(400, "from and to must be tree sizes with 0 <= from <= to");
-  const fromRow = await env.DB.prepare("SELECT tree_size, root, sig, created_at FROM checkpoints WHERE log = ? AND tree_size = ?")
-    .bind(log, from)
-    .first<CheckpointRow>();
-  const toRow = await env.DB.prepare("SELECT tree_size, root, sig, created_at FROM checkpoints WHERE log = ? AND tree_size = ?")
-    .bind(log, to)
-    .first<CheckpointRow>();
+  const sized = (size: number) =>
+    withKeyEpoch((epochCol) =>
+      env.DB.prepare(`SELECT tree_size, root, sig, created_at${epochCol} FROM checkpoints WHERE log = ? AND tree_size = ?`)
+        .bind(log, size)
+        .first<CheckpointRow>(),
+    );
+  const fromRow = await sized(from);
+  const toRow = await sized(to);
   if (!fromRow || !toRow) {
     const missing = [!fromRow ? `from=${from}` : null, !toRow ? `to=${to}` : null].filter(Boolean).join(" and ");
     throw new SocietyError(404, `no checkpoint at ${missing} for log ${log} — GET /api/checkpoint lists the latest; historical sizes exist only where a run landed: attempted every five minutes since 2026-08-12T03:41Z with an hourly backstop, hourly before that, and sparser wherever the five-minute leg was down (the witness day files record what actually landed)`);
@@ -356,6 +395,7 @@ export async function consistency(env: Env, logParam: string | null, fromParam: 
     from: fromRow,
     to: toRow,
     proof,
+    ...(await historyBesideProof(env)),
     how_to_verify:
       "RFC 6962 §2.1.2 (RFC 9162 §2.1.4.2): the proof reconstructs BOTH roots from the shared prefix. If it verifies, every event in the `from` tree is in the `to` tree, unchanged, in place — the log only appended between the two checkpoints.",
   };
@@ -372,16 +412,38 @@ export async function inclusion(env: Env, logParam: string | null, eventParam: s
   const leaves = await sealedHashes(env, log);
   const index = leaves.indexOf(row.hash);
   if (index === -1) throw new SocietyError(500, "sealed row missing from leaf set — this response is itself evidence; keep it");
-  const cp = await env.DB.prepare("SELECT id, tree_size, root, sig, created_at FROM checkpoints WHERE log = ? AND tree_size >= ? ORDER BY tree_size ASC LIMIT 1")
-    .bind(log, index + 1)
-    .first<CheckpointRow>();
+  const cp = await withKeyEpoch((epochCol) =>
+    env.DB.prepare(`SELECT id, tree_size, root, sig, created_at${epochCol} FROM checkpoints WHERE log = ? AND tree_size >= ? ORDER BY tree_size ASC LIMIT 1`)
+      .bind(log, index + 1)
+      .first<CheckpointRow>(),
+  );
   if (!cp) throw new SocietyError(404, "no checkpoint covers this event yet — a later run will. Runs are attempted every five minutes with an hourly backstop and the five-minute leg has been down for stretches (#1264), so the achieved cadence is whatever the witness day files record, not a five-minute guarantee");
   const proof = await inclusionProof(leaves.slice(0, cp.tree_size), index, cp.tree_size);
+  // The smallest head covering an old event may be one a key since retired
+  // signed, below the final head that key's rotation committed to. A verifier
+  // accepts such a head only linked to that final head, so the link is served
+  // here: the consistency proof from this head to the committed one.
+  const rows = await historyRowsBesideProof(env);
+  let finalConsistency: { log: string; from: { tree_size: number; root: string }; to: FinalHead; proof: string[] } | undefined;
+  if (rows) {
+    const key = rows.find((r) => r.epoch === cp.key_epoch);
+    const next = rows.find((r) => r.epoch === cp.key_epoch + 1);
+    const fin = key && key.retired_at !== null ? parseFinalHeads(next?.final_heads).find((h) => h.log === log) : undefined;
+    if (fin && cp.tree_size < fin.tree_size && fin.tree_size <= leaves.length)
+      finalConsistency = {
+        log,
+        from: { tree_size: cp.tree_size, root: cp.root },
+        to: fin,
+        proof: await consistencyProof(leaves.slice(0, fin.tree_size), cp.tree_size, fin.tree_size),
+      };
+  }
   return {
     log,
     event: { id: row.id, hash: row.hash, leaf_index: index },
     checkpoint: cp,
     proof,
+    ...(rows ? { registry_key_history: historyView(rows) } : {}),
+    ...(finalConsistency ? { final_consistency: finalConsistency } : {}),
     how_to_verify:
       "RFC 6962 §2.1.1: fold the leaf hash (SHA-256(0x00 || hash-hex-as-utf8)) up the proof path; the result must equal checkpoint.root. With the checkpoint's signature and the witness's copy, that places this event in the log by checkpoint time, on math alone.",
   };

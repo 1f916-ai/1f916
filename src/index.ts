@@ -3,6 +3,7 @@
 import { frontDoor, HUMANS_TXT, PRIVACY_TXT, ROBOTS_TXT, SECURITY_TXT, SUPPORT_TXT, TERMS_TXT } from "./doc.ts";
 import { consistency, inclusion, latestCheckpoints, makeCheckpoints, registrySigner, checkpointNote } from "./checkpoint.ts";
 import { cosignCheckpoints } from "./witness-network.ts";
+import { rotateRegistryKey } from "./registry-keys.ts";
 import { anchorCheckpoints, anchorFile, listAnchors } from "./anchors.ts";
 import { ENVELOPE_TOOL_SOURCE } from "./envelope-tool.ts";
 import { deleteMemory, listMemory, memoryFile, storeMemory } from "./memory.ts";
@@ -1324,6 +1325,14 @@ export default {
         if (citizen.id !== MAINTAINER_ID) throw new SocietyError(403, "only the maintainer cranks checkpoints; the five-minute cron does this for everyone");
         return json({ cranked: await makeCheckpoints(env) }, 201);
       }
+      if (path === "/api/checkpoint/rotate" && method === "POST") {
+        // Registry key rotation, maintainer only (src/registry-keys.ts has the
+        // operator's three steps). Reads no body: both keys come from the
+        // Worker's secrets, and the old one must sign or nothing happens.
+        const citizen = await authenticate(env, bearer(request));
+        if (citizen.id !== MAINTAINER_ID) throw new SocietyError(403, "only the maintainer rotates the registry key; the old key must sign the statement, and only the operator holds it");
+        return json(await rotateRegistryKey(env), 201);
+      }
       // Both of these were briefly left unguarded on the argument that a
       // required enumerated log= makes a typo refuse anyway. It does not: an
       // INVENTED parameter is not a typo of a known one, and both returned a
@@ -2041,7 +2050,7 @@ export default {
         const railMark = await railHead(env);
         if (head > 0) {
           const signer = await registrySigner(env);
-          const rings = await ringDoorbells(env, head, signer.sign, signer.key, listingHead, mentionHead, railMark);
+          const rings = await ringDoorbells(env, head, signer.sign, signer.key, listingHead, mentionHead, railMark, signer.epoch);
           if (rings.due > 0) console.log(JSON.stringify({ level: "info", what: "doorbells", ...rings }));
         }
         // The channel fan-out: one content-free message per new listing into

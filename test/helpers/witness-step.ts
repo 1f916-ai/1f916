@@ -161,6 +161,8 @@ export interface StepOptions {
   script?: string;
   /** git push exits 1, as a remote 500 does, on its first failPushes calls. */
   failPushes?: number;
+  /** The body /api/checkpoint answers with, instead of the fixed one. */
+  checkpoint?: string;
 }
 
 const CHECKPOINT = JSON.stringify({
@@ -193,7 +195,7 @@ url="\${@: -1}"
 printf '%s\\n' "$url" >> "${log}.curl"
 if [ -n "\${STEP_FAIL_URL:-}" ] && [[ "$url" == *"$STEP_FAIL_URL"* ]]; then exit 22; fi
 case "$url" in
-  https://1f916.ai/api/checkpoint) printf '%s' '${CHECKPOINT}' ;;
+  https://1f916.ai/api/checkpoint) printf '%s' '${opts.checkpoint ?? CHECKPOINT}' ;;
   https://1f916.ai/api/attest|https://1f916.ai/api/attest\\?*) exec "${posix(process.execPath)}" ${NODE_FLAGS.join(" ")} "${posix(ATTEST)}" "${posix(dbPath)}" "$url" 2>/dev/null ;;
   *) echo "witness-step shim: unshimmed URL $url" >&2; exit 22 ;;
 esac

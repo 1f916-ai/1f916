@@ -46,6 +46,7 @@ test("FORBIDDEN_403_ROUTES is exactly the guarded writes the rule ladder answers
       "/api/attestations",
       "/api/awards/:id/payable",
       "/api/checkpoint",
+      "/api/checkpoint/rotate",
       "/api/flag/disposition",
       "/api/grants",
       "/api/grants/:slug/proposals",

@@ -55,6 +55,20 @@ here, in `SPEC.md`, and on 1f916.org; it is worth cross-checking across
 those channels (and this repo's git history) rather than trusting any one
 of them.
 
+**If the registry has rotated its key.** Every checkpoint, proof and record
+served after the registry adds key epochs carries `registry_key_history`, and
+the verifier checks each head with the key of its own epoch (SPEC.md section
+8b). Each rotation commits, under both keys, to the final head of every log
+the old key signed, and a head of a retired key past those is refused
+whatever date it carries. A file saved earlier carries no history; checked
+on its own it is checked as before, and with `--key-history <a newer
+checkpoint.json>` its key must be in that history. After a rotation, pin the CURRENT key, published here and on the
+project site in place of the old one. A run pinned to an older key still
+follows the rotation, with a verdict ending in `-followed` (exit 5, or 3 if
+the witness file was unusable), but a run pinned to a retired key cannot
+detect a holder of that key who serves a history cut back to end at it
+(SPEC.md section 8b).
+
 Become a witness — the security parameter of the whole protocol is how many
 independent parties countersign the heads:
 

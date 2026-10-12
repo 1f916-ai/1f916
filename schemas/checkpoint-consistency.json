@@ -49,6 +49,14 @@
       "type": "string",
       "minLength": 1,
       "description": "Server-authored verification recipe. Presence is the contract; wording is not pinned."
+    },
+    "registry_key_history": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object"
+      },
+      "description": "The registry's signing keys by epoch, with the rotation statements that link them, as GET /api/checkpoint serves it (schemas/checkpoint.json registry_key_history). Served so this file alone tells a verifier which key checks each head it carries. Absent on a deployment with no registry key configured."
     }
   },
   "$defs": {

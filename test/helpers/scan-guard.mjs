@@ -64,6 +64,7 @@ const BOUNDED_TABLES = {
   nulls_buckets: "grows ~24 rows a day by construction; reads are bucket sums (migration 0056)",
   d1_migrations: "one row per migration",
   identity_event_kind_counts: "one row per identity event kind (migration 0062); grows with the kinds the code defines, not with events",
+  registry_keys: "one row per registry signing key (migration 0078); grows only when the operator rotates, and the read is capped",
 };
 
 const normalize = (sql) =>
