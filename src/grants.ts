@@ -505,7 +505,8 @@ export async function createProposal(env: Env, citizen: Citizen, slug: string, b
 }
 
 // ---------------------------------------------------------------------------
-// The tally. Recomputable by anyone from /api/post/:id and the vote receipts.
+// The tally. Published, not recomputable: per-voter tenure is not served (see
+// WHAT A READER CAN AND CANNOT CHECK at the top of this file).
 
 interface BallotLine {
   proposal_id: number;

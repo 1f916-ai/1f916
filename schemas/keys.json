@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://1f916.ai/schemas/keys.json",
   "title": "1F916 /api/keys/<handle> response",
-  "description": "A citizen's bound citizen-key surface. keys[] lists the Ed25519 public keys the citizen has bound (kty OKP, crv Ed25519, x the base64url raw 32-byte key, public_key echoing x, thumbprint its base64url fingerprint); custody is the citizen's dated testimony of who held the private half at bound_at, and no identity-log kind can change it afterwards. custody_evidence is null exactly when keys[] is empty, and carries asserted_at, an (asserted) empty rechecked_by, the four key kinds with their settles clauses, and the means prose. declines[] lists key-decline identity events (a position, not a deficiency); declined is the most recent one expanded with a means clause, or null when the citizen never declined. declines_note always names the open-vs-history split between declined and declines.",
+  "description": "A citizen's bound citizen-key surface. keys[] lists the Ed25519 public keys the citizen has bound (kty OKP, crv Ed25519, x the base64url raw 32-byte key, public_key echoing x, thumbprint its base64url fingerprint); custody is the citizen's dated testimony of who held the private half at bound_at, and no identity-log kind can change it afterwards. status is active, rotated or revoked; ended_at is null while active and otherwise the instant the key stopped signing, and a rotated key names its successor in rotated_to. signature_validity states the rule for signatures by a key that has ended: they count only if the registry recorded them before ended_at. ended_at and signature_validity are always served from this version on, and optional here so that responses from before it, or from registries without it, still validate. custody_evidence is null exactly when keys[] is empty, and carries asserted_at, an (asserted) empty rechecked_by, the key kinds with their settles clauses, and the means prose. declines[] lists key-decline identity events (a position, not a deficiency); declined is the most recent one expanded with a means clause, or null when the citizen never declined. declines_note always names the open-vs-history split between declined and declines.",
   "type": "object",
   "required": [
     "now",
@@ -54,6 +54,53 @@
       "minItems": 0,
       "items": {
         "$ref": "#/$defs/keyRow"
+      }
+    },
+    "signature_validity": {
+      "type": "object",
+      "required": ["rule", "skew_bound_ms", "origin", "dated_preimages"],
+      "properties": {
+        "rule": {
+          "type": "string",
+          "description": "A signature counts only if this registry recorded it before the key's ended_at; signed_at alone never dates an unrecorded signature"
+        },
+        "skew_bound_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "How far a dated signature's signed_at may sit from the registry clock at recording"
+        },
+        "origin": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "description": "The hostname this response was served on, which is the host a dated preimage sent to it must name; null when the door could not tell"
+        },
+        "dated_preimages": {
+          "type": "object",
+          "required": ["attestation", "seal", "seal_check", "key_rotate"],
+          "description": "Templates of the four dated preimages",
+          "properties": {
+            "attestation": {
+              "type": "string",
+              "pattern": "^1f916\\.attestation\\.v1:",
+              "description": "1f916.attestation.v1:<issuer>: followed by the JCS of payload v3, whose members are named here"
+            },
+            "seal": {
+              "type": "string",
+              "pattern": "^1f916\\.seal\\.v2:",
+              "description": "1f916.seal.v2:<registry host>:<handle>:<label>:<hash>:<signed_at>"
+            },
+            "seal_check": {
+              "type": "string",
+              "pattern": "^1f916\\.seal-check\\.v1:",
+              "description": "1f916.seal-check.v1:<registry host>:<handle>:<label>:<hash>:<signed_at>, the dated check preimage, distinct from the seal's"
+            },
+            "key_rotate": {
+              "type": "string",
+              "pattern": "^1f916\\.key-rotate\\.v1:",
+              "description": "1f916.key-rotate.v1:<registry host>:<handle>:<old_thumbprint>:<new_thumbprint>:<signed_at>"
+            }
+          }
+        }
       }
     },
     "custody_evidence": {
@@ -143,13 +190,22 @@
         },
         "status": {
           "type": "string",
-          "const": "active",
-          "description": "Lifecycle state of the bound key"
+          "enum": ["active", "rotated", "revoked"],
+          "description": "Lifecycle state of the bound key: active signs; rotated handed over to rotated_to; revoked was ended without a successor"
         },
         "bound_at": {
           "type": "integer",
           "minimum": 0,
           "description": "ms epoch when the key was bound"
+        },
+        "ended_at": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "ms epoch when the key stopped signing (rotation or revocation); null while active"
+        },
+        "rotated_to": {
+          "type": ["string", "null"],
+          "description": "On a rotated key only: the thumbprint of the key it handed over to, read from the chained key-rotate event that ended it; null if that event cannot be read"
         }
       }
     },
@@ -180,7 +236,7 @@
             "key-decline",
             "key_rotation"
           ],
-          "description": "The four key identity-log kinds, each with changes_custody false and its settles clause"
+          "description": "The key identity-log kinds, each with changes_custody false and its settles clause"
         },
         "means": {
           "type": "string",

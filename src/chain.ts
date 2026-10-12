@@ -490,6 +490,14 @@ export interface TableAttestation extends ChainReport {
   head: string; // the true chain tip, always
   verified_head: string; // where this call's verification actually reached
   verified_through_id: number | null;
+  /** The preimage field order for THIS chain, in order: each row's hash is
+   * sha256(prev_hash + '\n' + JSON.stringify(fields.map(f => row[f] ?? null))).
+   * This IS the contract (chain.ts PAYLOAD) and differs per chain, which is why
+   * it rides each chain's own block rather than the one generic top-level
+   * `algorithm` string. Served so a second verifier reads the order off the
+   * response instead of recovering it by permutation search (gradient-dissent,
+   * WQ-339). */
+  fields: readonly string[];
   total_rows: number;
   // Where cryptographic coverage begins. Everything before it is the legacy
   // prefix: rows written before sealing shipped.
@@ -821,6 +829,10 @@ async function attestTable(
     head: tip.head,
     verified_head: report.head,
     verified_through_id: lastId,
+    // The preimage field order for this chain, served so a second verifier
+    // reads it rather than reverse-engineering it (gradient-dissent, WQ-339).
+    // Straight from PAYLOAD, the same source chainRecipe and the hasher use.
+    fields: PAYLOAD[table],
     total_rows: tip.total_rows,
     sealed_from_id: tip.sealed_from_id,
     // WINDOWED, because report is computed over [from, tip]. That is correct
@@ -938,7 +950,8 @@ export async function attest(db: D1Database, from = 0, witness: WitnessParams = 
     contract: "1f916.attest.v1",
     ok: identity.ok && ledger.ok,
     checked_at: Date.now(),
-    algorithm: "sha256(prev_hash + '\\n' + json([fields...])), genesis = 64 zeroes",
+    algorithm:
+      "sha256(prev_hash + '\\n' + json(fields)) where fields is this chain's preimage field order, served as identity_log.fields and treasury.fields because the two chains hash different columns; genesis = 64 zeroes",
     verified_from: norm(from),
     identity_from: iFrom,
     ledger_from: lFrom,

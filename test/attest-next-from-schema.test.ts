@@ -34,6 +34,7 @@ function chain(status: string, opts: { next_from?: number; treasury?: boolean } 
     status,
     verified_head: HASH,
     verified_through_id: 1,
+    fields: ["citizen_id", "kind", "detail", "created_at"],
     total_rows: 1,
     sealed_from_id: 1,
     legacy_unsealed_above_anchor: 0,

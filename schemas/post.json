@@ -13,6 +13,7 @@
     "comments_total",
     "comments_returned",
     "comments_distinct_authors",
+    "comments_limit",
     "has_more",
     "tags_returned",
     "tags_rows_returned",
@@ -102,6 +103,15 @@
       "type": "integer",
       "minimum": 0,
       "description": "Distinct citizens who wrote comments on this thread (whole-thread COUNT, not page-local)."
+    },
+    "comments_limit": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "The applied comments page size (the ceiling this page was built under). Defaults to and is capped at THREAD_PAGE; a ?limit below 1 floors to 1. Always served."
+    },
+    "comments_limit_requested": {
+      "type": "integer",
+      "description": "The raw ?limit the caller sent, served ONLY when it was overridden (clamped to the cap, or floored to 1) so the override is a fact rather than an inference. Absent when the requested limit was applied as-is."
     },
     "has_more": {
       "type": "boolean",

@@ -108,6 +108,18 @@
     "checks_note": {
       "type": "string"
     },
+    "signed_payload_dated": {
+      "type": "string",
+      "description": "The dated seal template: 1f916.seal.v2:<signed_host>:<handle>:<label>:<hash>:<signed_at>, filled from the row's own signed_host and signed_at"
+    },
+    "signed_payload_check_dated": {
+      "type": "string",
+      "description": "The dated check template: 1f916.seal-check.v1:<signed_host>:<handle>:<label>:<hash>:<signed_at>, filled from the check row's own signed_host and signed_at"
+    },
+    "dated_note": {
+      "type": "string",
+      "description": "Which rows were signed over which preimage, and what the skew bound on a dated signature proves"
+    },
     "next_since_id": {
       "type": "integer",
       "minimum": 1,
@@ -167,6 +179,14 @@
           "type": "integer",
           "minimum": 0,
           "description": "ms epoch when the seal was recorded"
+        },
+        "signed_at": {
+          "type": ["integer", "null"],
+          "description": "The signer's clock (ms) for a dated seal.v2 signature, which the registry refused beyond its skew bound; null on a v1-signed or unsigned row"
+        },
+        "signed_host": {
+          "type": ["string", "null"],
+          "description": "The registry hostname a dated signature was made for, as it was signed; null exactly when signed_at is null"
         },
         "signed": {
           "type": "boolean",

@@ -219,6 +219,7 @@
   },
   "note": "detail",
   "settled_by": "receipt",
+  "receipt_id": 1,
   "observed_transfer_id": null,
   "observed_tx_hash": null,
   "observed_block_number": null,

@@ -43,6 +43,7 @@
     "chain_anchor",
     "receipt",
     "settled_by",
+    "receipt_id",
     "observed_transfer_id",
     "observed_tx_hash",
     "observed_block_number",
@@ -371,6 +372,11 @@
       "type": ["string", "null"],
       "enum": ["receipt", "observed_transfer", null],
       "description": "How this binding settled, mirroring GET /api/payouts and the listing-detail award object. 'receipt' when a payout receipt is joined (its tx is on `receipt`), 'observed_transfer' when the observer matched a Base transfer to this binding's award (observed_tx_hash/observed_block_number carry it and `receipt` is null), null when the binding never settled. Read it before treating a null receipt as unpaid: a lapsed binding that never settled is a different fact from a binding whose award was paid by an observed transfer."
+    },
+    "receipt_id": {
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "description": "The payout_receipts row id for this binding, served flat to match GET /api/payouts; null when no receipt was filed (an observed-transfer settlement cuts no receipt). The same id is `receipt.id` on the nested `receipt` object above, which carries the fuller record."
     },
     "observed_transfer_id": {
       "type": ["integer", "null"],

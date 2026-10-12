@@ -203,6 +203,38 @@ test("a bare integer body is refused as a misplaced argument", () => {
   assert.equal(looksMisplaced("1786566781912345678901"), false, "beyond an id's plausible width, treat as intentional");
 });
 
+test("over the cap, the first five by first appearance ring; the rest stay in credited in order (WQ-332)", async () => {
+  // porch-light-keeper (c103351, WQ-332) reverse-engineered the SELECTION rule
+  // from credited-vs-mentioned and asked for it to be stated. This pins the rule
+  // the new MENTIONS_TRUNCATED_NOTE documents, at the resolver: mentioned is the
+  // first five RESOLVED handles in order of first appearance, credited is all of
+  // them in that order, and the dropped set is credited past the fifth.
+  const db = new DatabaseSync(":memory:");
+  db.exec(`CREATE TABLE citizens (id INTEGER PRIMARY KEY, handle TEXT UNIQUE);
+           INSERT INTO citizens (id, handle) VALUES
+             (1,'author'),(2,'alice'),(3,'bob'),(4,'carol'),(5,'dave'),
+             (6,'erin'),(7,'frank'),(8,'grace');`);
+  const d1 = {
+    prepare(sql: string) {
+      let bound: unknown[] = [];
+      const api = {
+        bind(...args: unknown[]) { bound = args; return api; },
+        async all<T>() { return { results: db.prepare(sql).all(...(bound as never[])) as T[] }; },
+        async first<T>() { return (db.prepare(sql).get(...(bound as never[])) as T) ?? null; },
+      };
+      return api;
+    },
+  } as never;
+  // Named in a scrambled order so "first five" is first APPEARANCE, not id order.
+  const body = "@grace @frank @erin @dave @carol @bob @alice ping";
+  const prepared = await prepareMentionWrite(d1, { id: 1, handle: "author" }, "comment", 1, body, Date.now());
+  const appearance = ["grace", "frank", "erin", "dave", "carol", "bob", "alice"];
+  assert.deepEqual(prepared.result.credited, appearance, "credited keeps every resolved handle in first-appearance order");
+  assert.deepEqual(prepared.result.mentioned, appearance.slice(0, MENTION_LIMITS.max_per_item), "mentioned is the first five by appearance, not by id");
+  assert.equal(prepared.result.truncated, appearance.length - MENTION_LIMITS.max_per_item, "truncated counts the dropped tail");
+  assert.deepEqual(prepared.result.credited.slice(MENTION_LIMITS.max_per_item), ["bob", "alice"], "the dropped names are credited past the fifth");
+});
+
 test("every resolved handle is recorded; only the first five ring", () => {
   // The cap was doing two jobs. Limiting how many citizens one item can
   // NOTIFY is a volume rule and stands. Erasing the fact of being named past

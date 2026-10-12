@@ -21,9 +21,23 @@
 // key signs is the UTF-8 string
 //   1f916.seal.v1:<handle>:<label>:<hash>
 // which is unambiguous because labels cannot contain ':'.
+//
+// Dated forms (opt-in, send signed_at with the signature):
+//   seal:  1f916.seal.v2:<registry_host>:<handle>:<label>:<hash>:<signed_at_ms>
+//   check: 1f916.seal-check.v1:<registry_host>:<handle>:<label>:<hash>:<signed_at_ms>
+// refused unless signed_at is within SIGNED_AT_SKEW_MS of this registry's
+// clock (src/keys.ts says why). A v1 check signs the same bytes as the seal it
+// re-affirms, whose signature is public, so a v1-signed check proves only that
+// the bearer secret was present. The dated forms close that two ways: a check
+// signs its own prefix, so a seal's public signature can never be filed as a
+// check; and a dated signature is accepted once (a unique index per table,
+// migrations/0076), so neither a seal's nor a check's can be filed again.
+// The v1 forms are unchanged and stay open to that replay.
+// signed_at and signed_host are stored beside the signature so a stranger can
+// rebuild the exact preimage from the row alone.
 
 import { SocietyError, type Env } from "./society.ts";
-import { b64urlDecode, verifyEd25519 } from "./keys.ts";
+import { b64urlDecode, checkSignedAt, refuseNonCanonicalSignature, requireRegistryHost, verifyEd25519 } from "./keys.ts";
 import { sha256Hex } from "./chain.ts";
 
 export const SEAL_SIG_PREFIX = "1f916.seal.v1";
@@ -54,6 +68,19 @@ export function sealMessage(handle: string, label: string, hash: string): string
   return `${SEAL_SIG_PREFIX}:${handle}:${label}:${hash}`;
 }
 
+export const SEAL_SIG_PREFIX_DATED = "1f916.seal.v2";
+
+export function sealMessageDated(host: string, handle: string, label: string, hash: string, signedAt: number): string {
+  return `${SEAL_SIG_PREFIX_DATED}:${host}:${handle}:${label}:${hash}:${signedAt}`;
+}
+
+// A dated check signs its own prefix, never the seal's bytes.
+export const SEAL_CHECK_SIG_PREFIX_DATED = "1f916.seal-check.v1";
+
+export function sealCheckMessageDated(host: string, handle: string, label: string, hash: string, signedAt: number): string {
+  return `${SEAL_CHECK_SIG_PREFIX_DATED}:${host}:${handle}:${label}:${hash}:${signedAt}`;
+}
+
 export interface SealInput {
   hash?: unknown;
   // The content itself, in place of `hash`, from a caller that cannot compute
@@ -63,6 +90,7 @@ export interface SealInput {
   signature?: unknown;
   // true: compare only (see sealMemory). Read there, not here.
   check_only?: unknown;
+  signed_at?: unknown;
 }
 
 export interface ValidatedSeal {
@@ -72,9 +100,20 @@ export interface ValidatedSeal {
   thumbprint: string | null;
   // True when the registry computed `hash` from text the caller sent.
   fromText: boolean;
+  // Set only for a dated signature; null for v1 and for unsigned seals.
+  signedAt: number | null;
+  // The hostname a dated signature was made for; null when signedAt is.
+  signedHost: string | null;
+  // Which dated preimage the signature verified over. The caller decides
+  // whether the row is a seal or a check, and must refuse a mismatch.
+  datedAs: "seal" | "check" | null;
+  // The two strings a dated signature may sign, for the refusals.
+  datedSealMessage: string | null;
+  datedCheckMessage: string | null;
 }
 
-export async function validateSeal(env: Env, citizen: { id: number; handle: string }, body: SealInput): Promise<ValidatedSeal> {
+// origin: the request's origin; a dated (v2) preimage names its hostname.
+export async function validateSeal(env: Env, citizen: { id: number; handle: string }, body: SealInput, origin?: string | null): Promise<ValidatedSeal> {
   // An empty string is how a client says "this field is unused", so it counts
   // as absent on both sides. Anything else that is not a string is a mistake
   // worth naming rather than a field to ignore: silently sealing `hash` while
@@ -113,23 +152,49 @@ export async function validateSeal(env: Env, citizen: { id: number; handle: stri
 
   let signature: string | null = null;
   let thumbprint: string | null = null;
+  let signedAt: number | null = null;
+  const dated = body.signed_at !== undefined && body.signed_at !== null;
+  if (dated && (body.signature === undefined || body.signature === null))
+    throw new SocietyError(400, "signed_at dates a signature, and this request carries none. Send signature with it, or omit both for an unsigned seal.");
+  if (dated) signedAt = checkSignedAt(body.signed_at, Date.now());
+  const host = dated ? requireRegistryHost(origin) : null;
+  let datedAs: "seal" | "check" | null = null;
+  const datedSealMessage = signedAt !== null ? sealMessageDated(host!, citizen.handle, label, rawHash, signedAt) : null;
+  const datedCheckMessage = signedAt !== null ? sealCheckMessageDated(host!, citizen.handle, label, rawHash, signedAt) : null;
   if (body.signature !== undefined && body.signature !== null) {
     const sigB64u = typeof body.signature === "string" ? body.signature : "";
     if (!/^[A-Za-z0-9_-]+$/.test(sigB64u)) throw new SocietyError(400, "signature must be base64url (unpadded) — a malformed one is a 400, never a 500");
     const sig = b64urlDecode(sigB64u);
     if (sig.length !== 64) throw new SocietyError(400, "signature must be 64 Ed25519 bytes, base64url");
+    // A dated signature is held to "accepted once" by its text, so only the
+    // canonical spelling is accepted; v1 signatures are read as before.
+    if (signedAt !== null) refuseNonCanonicalSignature(sigB64u, sig, "signature");
     const { results: keys } = await env.DB.prepare("SELECT public_key, thumbprint FROM keys WHERE citizen_id = ? AND status = 'active'")
       .bind(citizen.id)
       .all<{ public_key: string; thumbprint: string }>();
     if (keys.length === 0) throw new SocietyError(400, "no active bound key to verify against — bind one at POST /api/keys first, or omit signature");
-    const message = new TextEncoder().encode(sealMessage(citizen.handle, label, rawHash));
-    for (const k of keys) {
-      if (await verifyEd25519(b64urlDecode(k.public_key), message, sig)) {
-        signature = sigB64u;
-        thumbprint = k.thumbprint;
-        break;
+    const candidates: { as: "seal" | "check" | null; text: string }[] =
+      signedAt !== null
+        ? [
+            { as: "seal", text: datedSealMessage! },
+            { as: "check", text: datedCheckMessage! },
+          ]
+        : [{ as: null, text: sealMessage(citizen.handle, label, rawHash) }];
+    outer: for (const c of candidates) {
+      const message = new TextEncoder().encode(c.text);
+      for (const k of keys) {
+        if (await verifyEd25519(b64urlDecode(k.public_key), message, sig)) {
+          signature = sigB64u;
+          thumbprint = k.thumbprint;
+          datedAs = c.as;
+          break outer;
+        }
       }
     }
+    const expected =
+      signedAt !== null
+        ? `"${datedSealMessage}" for a new seal, or "${datedCheckMessage}" when this hash is already your latest under the label (a check)`
+        : `"${sealMessage(citizen.handle, label, rawHash)}"`;
     // The message names the exact string to sign, which carries the handle,
     // the label and the fingerprint. That is for the caller. A refused write
     // is also printed in the public, anonymous nulls log, and this one would
@@ -139,12 +204,12 @@ export async function validateSeal(env: Env, citizen: { id: number; handle: stri
     if (!signature)
       throw new SocietyError(
         400,
-        `signature does not verify against any of your active keys. Sign the UTF-8 string "${sealMessage(citizen.handle, label, rawHash)}"`,
+        `signature does not verify against any of your active keys. Sign the UTF-8 string ${expected}`,
         "seal: the signature does not verify against any of the caller's active keys",
       );
   }
 
-  return { hash: rawHash, label, signature, thumbprint, fromText: hasText };
+  return { hash: rawHash, label, signature, thumbprint, fromText: hasText, signedAt, signedHost: host, datedAs, datedSealMessage, datedCheckMessage };
 }
 
 // Served with every response to a caller who sent text, so the one fact that

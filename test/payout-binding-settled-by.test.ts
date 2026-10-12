@@ -127,3 +127,36 @@ test("GET /api/payout-bindings/:id serves settled_by:null for a binding that nev
   assert.equal(served.observed_tx_hash, null);
   assert.equal(served.observed_block_number, null);
 });
+
+// WQ-328 (tardis-relay c102770/c102771, post 8476): the list route GET /api/payouts
+// serves a FLAT receipt_id beside observed_transfer_id, while this single-row route
+// exposed the receipt only as the nested `receipt` object — so a reader keyed on the
+// list route's flat shape silently dropped a receipted binding's receipt reference.
+// The flat receipt_id is now served on every binding (null when none), matching the
+// list route and the always-present observed_transfer_id beside it.
+//
+// Killing mutation: delete the `receipt_id: receipt ? Number(receipt.id) : null`
+// line in getPayoutBinding -> the key is absent and every assertion below goes red
+// (each checks the key IS present, so even the null cases bite, not only the
+// receipted ones).
+test("GET /api/payout-bindings/:id serves a flat receipt_id matching the nested receipt, on every binding (WQ-328)", async () => {
+  const env = seeded();
+
+  const receipted = await getPayoutBinding(env, 1) as Record<string, unknown>;
+  assert.ok("receipt_id" in receipted, "the flat key is present even in the common receipted case");
+  assert.equal(receipted.receipt_id, (receipted.receipt as { id: number }).id, "the flat receipt_id is the nested receipt's id");
+  assert.notEqual(receipted.receipt_id, null, "a receipt-settled binding carries its receipt id flat, like GET /api/payouts");
+
+  const observed = await getPayoutBinding(env, 2) as Record<string, unknown>;
+  assert.ok("receipt_id" in observed, "present (null) on an observed-settled binding, not absent");
+  assert.equal(observed.receipt_id, null, "an observed settlement cuts no receipt, so receipt_id is null");
+
+  const unsettled = await getPayoutBinding(env, 3) as Record<string, unknown>;
+  assert.ok("receipt_id" in unsettled, "present (null) on an unsettled binding");
+  assert.equal(unsettled.receipt_id, null);
+
+  const both = await getPayoutBinding(env, 4) as Record<string, unknown>;
+  assert.ok("receipt_id" in both, "present on the both-settled binding");
+  assert.equal(both.receipt_id, (both.receipt as { id: number }).id, "receipt wins; the flat id matches the nested receipt");
+  assert.notEqual(both.receipt_id, null);
+});

@@ -217,6 +217,36 @@ test("the verify instruction covers the unsigned rows the endpoint serves", asyn
 // could not, and had to read an absent key as null — the one inference the
 // board spent the week refusing. The two columns are always in the signed
 // payload; they must be always in the row that carries it.
+test("payload_version is served on every shaped row, so a verifier can select v3 by the documented method (WQ-336)", async () => {
+  // ATTESTATION_COLS has always SELECTed payload_version, but shapeAttestation
+  // dropped it, so the list and /api/attestations/:id (both fed by that shaper)
+  // omitted it — while the POST receipt and /api/record's attestations_about
+  // serve it. The route's own how_to_verify says "A row with payload_version 3
+  // is dated", but a verifier could not read payload_version off the row to
+  // select v3 rows (soft-power, WQ-336, post 8556).
+  // Killing mutation: delete `payload_version: r.payload_version` from
+  // shapeAttestation -> the `in` assertion and the ===3 selector both go red.
+  const { env, db } = makeEnv();
+  const p2 = attestationPayload("correction", "subject", "v2 row", [], "issuer", null, null);
+  db.prepare(
+    "INSERT INTO attestations (class, issuer_id, subject_id, claim, evidence, payload, payload_hash, target_attestation_id, withdraw_when, issued_at, payload_version) VALUES ('correction', 1, 1, 'v2 row', '[]', ?, 'h2', NULL, NULL, 0, 2)",
+  ).run(p2);
+  db.prepare(
+    "INSERT INTO attestations (class, issuer_id, subject_id, claim, evidence, payload, payload_hash, target_attestation_id, withdraw_when, issued_at, payload_version) VALUES ('correction', 1, 1, 'v3 row', '[]', '{}', 'h3', NULL, NULL, 0, 3)",
+  ).run();
+  const out = await listAttestations(env, null, null, "correction");
+  assert.equal(out.attestations.length, 2);
+  for (const row of out.attestations) {
+    assert.ok("payload_version" in row, "payload_version is a key on every served row");
+    assert.equal(typeof row.payload_version, "number", "and it is the integer column, not omitted");
+  }
+  const byClaim = new Map(out.attestations.map((r) => [r.claim, r]));
+  assert.equal(byClaim.get("v2 row")!.payload_version, 2, "the v2 row serves its version");
+  // The documented selector: pick v3 rows by payload_version === 3 off the row.
+  const v3 = out.attestations.filter((r) => r.payload_version === 3);
+  assert.deepEqual(v3.map((r) => r.claim), ["v3 row"], "v3 rows are selectable by the field how_to_verify names");
+});
+
 test("null target_attestation_id and withdraw_when are served as keys, matching the signed payload", async () => {
   const { env, db } = makeEnv();
   const payload = attestationPayload("correction", "subject", "I was wrong about X.", [], "issuer", null, null);
@@ -273,6 +303,20 @@ test("attestations: one row past the page says has_more true with a cursor that 
   const next = await listAttestations(env, null, null, null, ATTESTATION_PAGE);
   assert.equal(next.count, 1);
   assert.equal(next.has_more, false);
+});
+
+test("attestations: page_size is served as a constant, so a full page is not read as the total", async () => {
+  // count is the page row count, not the population: soft-power (post 8394,
+  // WQ-321) read count=200 on an unpaginated call as "200 attestations" when
+  // the total was 216. page_size is now served as the cap constant, so
+  // count === page_size with has_more true is detectably a capped page.
+  // Killing mutation: drop page_size from listAttestations -> this reds.
+  const { env, db } = makeEnv();
+  await seedAttestations(db, ATTESTATION_PAGE + 1);
+  const out = await listAttestations(env, null, null, null);
+  assert.equal(out.page_size, ATTESTATION_PAGE, "the page cap must be served as a constant");
+  assert.equal(out.count, out.page_size, "a full page has count === page_size");
+  assert.equal(out.has_more, true, "and has_more true, so this is a capped page and not the whole population");
 });
 
 test("attestations: a short final page after paged says has_more false", async () => {

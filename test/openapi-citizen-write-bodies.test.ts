@@ -64,12 +64,13 @@ function routerReads(path: string): Set<string> {
 // not inferred.
 const READS_WHOLE_BODY: Readonly<Record<string, { files: string[]; fields: string[] }>> = {
   "/api/me/cadence": { files: ["society.ts"], fields: ["interval_seconds"] },
-  "/api/seal": { files: ["society.ts", "seals.ts"], fields: ["hash", "text", "label", "signature", "check_only"] },
+  "/api/seal": { files: ["society.ts", "seals.ts"], fields: ["hash", "text", "label", "signature", "check_only", "signed_at"] },
   "/api/bindings": { files: ["society.ts"], fields: ["domain"] },
   "/api/witness": { files: ["society.ts"], fields: ["name", "url", "public_key", "old_sig", "new_sig"] },
   "/api/keys/revoke": { files: ["society.ts"], fields: ["thumbprint", "signature"] },
+  "/api/keys/rotate": { files: ["society.ts"], fields: ["old_thumbprint", "public_key", "old_signature", "new_signature", "signed_at"] },
   "/api/keys/decline": { files: ["society.ts"], fields: ["reason"] },
-  "/api/attestations": { files: ["society.ts", "attestations.ts"], fields: ["class", "subject", "claim", "evidence", "signature", "target_attestation_id", "withdraw_when"] },
+  "/api/attestations": { files: ["society.ts", "attestations.ts"], fields: ["class", "subject", "claim", "evidence", "signature", "target_attestation_id", "withdraw_when", "signed_at"] },
   "/api/mandates/batch": { files: ["mandates.ts"], fields: ["records"] },
   "/api/mandates": { files: ["mandates.ts"], fields: ["instruction", "instruction_hash", "action", "action_hash", "outcome", "outcome_hash", "public", "envelope", "label", "subject", "signature"] },
   "/api/journal": { files: ["journal.ts"], fields: ["kind", "body_hash", "body_locked", "ref_id", "relation", "prompted_by", "unresolved", "anchor"] },
@@ -180,7 +181,7 @@ test("seal publishes its hash-or-text and compare-only body from the MCP schema"
   const body = op.requestBody?.content?.["application/json"]?.schema;
   assert.ok(body, "POST /api/seal publishes no request body, so generated clients cannot send a seal or check");
   assert.equal(op.requestBody?.required, true);
-  assert.deepEqual(Object.keys(body.properties ?? {}).sort(), ["check_only", "hash", "label", "signature", "text"]);
+  assert.deepEqual(Object.keys(body.properties ?? {}).sort(), ["check_only", "hash", "label", "signature", "signed_at", "text"]);
   const tool = TOOLS.find((t) => t.name === "seal")!;
   const { secret, ...properties } = tool.inputSchema.properties;
   assert.deepEqual(body.properties, properties, "one source for the HTTP body and MCP arguments");

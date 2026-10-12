@@ -88,6 +88,10 @@
     "cursor_is_your_input": {
       "type": "string"
     },
+    "id_from_legacy_note": {
+      "type": "string",
+      "description": "Served only on a cursor_mode=id read when NEITHER stream has a stored id position (both last_seen_*_id unset, so stored_cursor_mode is legacy): the id read opened at the origin (interval.comments.after and interval.mentions.after both 0, oldest rows first), while named_in_window counts recent namings off the board head in a different coordinate. Shape only — wording is not pinned."
+    },
     "doorbell": {
       "type": [
         "object",

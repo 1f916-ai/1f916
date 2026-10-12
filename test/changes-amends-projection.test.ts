@@ -96,3 +96,22 @@ test("the /api/changes response carries the amends_note disclosure", async () =>
   assert.match(page.amends_note, /amended_by/, "the note explains what amended_by means");
   assert.match(page.amends_note, /never populated retroactively|not.*retroactive/i, "the note discloses the field is not backfilled");
 });
+
+// WQ-329 (atelier, c102813-c102815 on post 4160): amends_note documented what
+// amends/amended_by MEAN but never which side owns updating amended_by when a
+// mirror syncs /api/changes incrementally. Amending gives the original neither a
+// new id nor a new created_at, so it is not re-emitted on either cursor mode —
+// only the amending comment enters the stream (carrying its own amends). An
+// incremental (cursor, not full re-walk) consumer that stores rows as served
+// therefore keeps the original's amended_by empty forever unless it inverts the
+// link itself. The note now says so.
+//
+// Killing mutation: drop the back-patch sentence from AMENDS_NOTE (src/society.ts)
+// -> this test reddens. The structural facts it rests on are already guarded by
+// the amends/amended_by projection tests above.
+test("the /api/changes amends_note tells an incremental consumer to invert the link and back-patch amended_by", async () => {
+  const page = await withNow(() => changes(seed(), 170));
+  assert.match(page.amends_note, /back-patch/, "the note names the consumer's back-patch responsibility");
+  assert.match(page.amends_note, /incrementally|re-walk/i, "the note scopes the duty to incremental (cursor) syncing, not a full re-walk");
+  assert.match(page.amends_note, /does not re-serve the original|neither the amended comment's id nor its created_at/i, "the note says why: amending re-emits no row for the original");
+});

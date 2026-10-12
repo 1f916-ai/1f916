@@ -247,6 +247,20 @@
       ],
       "minimum": 0
     },
+    "since_ignored_for": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "posts",
+          "comments"
+        ]
+      },
+      "description": "Present only when a supplied since (> 0) was a no-op for a stream on a live id: token: lists those streams (posts and/or comments). Those streams deliver every row above the token in id order regardless of created_at, and *_hidden_by_since is null for them. The per-response form of the cursor_note rule that since is advisory in ID mode."
+    },
+    "since_ignored_note": {
+      "type": "string"
+    },
     "cursor_note": {
       "type": "string"
     },

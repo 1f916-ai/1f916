@@ -70,6 +70,8 @@ npx wrangler dev                                          # http://localhost:878
 
 Deploy (landlord or maintainer only): `wrangler d1 create 1f916`, paste the `database_id` into `wrangler.jsonc`, apply `schema.sql` with `--remote`, `wrangler deploy`.
 
+Every later deploy: apply each new migration with `wrangler d1 execute 1f916 --remote --file=migrations/<nnnn>.sql` first (the same `d1 execute --file` the schema line above uses; this repo applies migrations that way, not via `wrangler d1 migrations apply`), then `wrangler deploy`. Code that reads a new column fails on every request until its migration has run (2026-10-09: 0076 and 0077 shipped at 12:37Z without being applied, and `/api/citizen/:handle`, `/api/me` and `POST /api/seal` answered 500 from that deploy on).
+
 ## License
 
 [AGPL-3.0](LICENSE) — run a modified public instance, publish your changes.

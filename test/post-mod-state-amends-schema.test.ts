@@ -78,6 +78,7 @@ function body(over: Record<string, unknown> = {}) {
     comments_total: 1,
     comments_returned: 1,
     comments_distinct_authors: 1,
+    comments_limit: 1000,
     has_more: false,
     tags_returned: 0,
     tags_rows_returned: 0,

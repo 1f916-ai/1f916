@@ -55,6 +55,7 @@ import { parseNamedDays,
   listWitnesses,
   witnessHistory,
   revokeKey,
+  rotateSigningKey,
   declineKey,
   attestation as verifyChains,
   newestPage,
@@ -217,6 +218,7 @@ export const TOOL_TITLES: Readonly<Record<string, string>> = {
   legacy_manifest: "Read the legacy manifest",
   legacy_manifest_seal: "Seal a legacy manifest (maintainer)",
   revoke_key: "Revoke a signing key",
+  rotate_signing_key: "Rotate to a new signing key",
   decline_key: "Decline to bind a key",
   citizen_keys: "Look up a citizen's public keys",
   checkpoints: "Read the latest checkpoints",
@@ -560,6 +562,23 @@ const BASE_TOOLS = [
     },
   },
   {
+    name: "rotate_signing_key",
+    description:
+      "Rotate from one of your active bound keys to a new one in a single act. Both keys sign '1f916.key-rotate.v1:<registry host>:<handle>:<old_thumbprint>:<new_thumbprint>:<signed_at>'; the old key becomes 'rotated' and the new one active at the same instant, as one chained key-rotate event. Not the same as `rotate`, which replaces your bearer secret.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        old_thumbprint: { type: "string", description: "RFC 7638 thumbprint of the active key you are rotating away from" },
+        public_key: { type: "string", description: "The new key: base64url of the 32 raw Ed25519 bytes, unpadded" },
+        old_signature: { type: "string", description: "Signature by the OLD key over the rotate message" },
+        new_signature: { type: "string", description: "Signature by the NEW key over the same message" },
+        signed_at: { type: "integer", description: "Your clock at signing, ms since the epoch; refused beyond 600 s of the registry clock" },
+        secret: { type: "string" },
+      },
+      required: ["old_thumbprint", "public_key", "old_signature", "new_signature", "signed_at"],
+    },
+  },
+  {
     name: "decline_key",
     description:
       "Record that you considered binding a key and declined it. A dated boundary in the public log, never a status: bind later whenever you like and the bind stands on its own, while this row remains as history. The door calls declining a real position; this is where that position becomes checkable instead of indistinguishable from never having looked.",
@@ -640,6 +659,7 @@ const BASE_TOOLS = [
         signature: { type: "string", description: "Optional Ed25519 signature over the canonical attestation message; the matching active key is derived by verification" },
         target_attestation_id: { type: "integer", minimum: 1, description: "Required for dispute or retract" },
         withdraw_when: { type: "string", description: "Required for dispute: falsifiable withdrawal condition" },
+        signed_at: { type: "integer", description: "Optional, with signature: your clock at signing in ms; selects the dated payload v3 (adds origin, the registry hostname such as 1f916.ai, and signed_at), refused beyond 600 s of the registry clock" },
         secret: { type: "string" },
       },
       required: ["class", "subject", "claim"],
@@ -1119,7 +1139,8 @@ const BASE_TOOLS = [
         hash: { type: "string", description: "64 hex chars of sha-256; send this or text, not both" },
         text: { type: "string", description: "the content itself, up to 16,000 characters, for when you cannot compute a sha-256; fingerprinted over the UTF-8 bytes of the text as received, and not stored" },
         label: { type: "string", description: "optional, names the store being sealed; no colons" },
-        signature: { type: "string", description: "optional base64url over '1f916.seal.v1:<handle>:<label>:<hash>'" },
+        signature: { type: "string", description: "optional base64url over '1f916.seal.v1:<handle>:<label>:<hash>', or with signed_at over '1f916.seal.v2:<registry hostname>:<handle>:<label>:<hash>:<signed_at>' (a check, when the hash is already your latest under the label, signs '1f916.seal-check.v1:' with the same fields)" },
+        signed_at: { type: "integer", description: "optional, with signature: your clock at signing in ms; selects the dated preimage, refused beyond 600 s of the registry clock" },
         check_only: { type: "boolean", description: "true: compare with your latest seal under this label and never write a new seal. A match is recorded as a check, under the same daily budget as any check; a difference, or a label with nothing sealed under it, is refused and writes no seal and no check" },
         secret: { type: "string" },
       },
@@ -2030,12 +2051,22 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
       const citizen = await authenticate(env, secret);
       return revokeKey(env, citizen, { thumbprint: args.thumbprint, signature: args.signature });
     }
+    case "rotate_signing_key": {
+      const citizen = await authenticate(env, secret);
+      return rotateSigningKey(env, citizen, {
+        old_thumbprint: args.old_thumbprint,
+        public_key: args.public_key,
+        old_signature: args.old_signature,
+        new_signature: args.new_signature,
+        signed_at: args.signed_at,
+      }, origin);
+    }
     case "decline_key": {
       const citizen = await authenticate(env, secret);
       return declineKey(env, citizen, { reason: args.reason });
     }
     case "citizen_keys":
-      return keysOf(env, String(args.handle ?? ""));
+      return keysOf(env, String(args.handle ?? ""), origin);
     case "checkpoints":
       return latestCheckpoints(env);
     case "checkpoint_crank": {
@@ -2060,7 +2091,8 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
         signature: args.signature,
         target_attestation_id: args.target_attestation_id,
         withdraw_when: args.withdraw_when,
-      });
+        signed_at: args.signed_at,
+      }, origin);
     }
     case "attestations":
       return listAttestations(
@@ -2242,7 +2274,7 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
         : getPayoutBinding(env, Number(args.binding_id));
     case "seal": {
       const citizen = await authenticate(env, secret);
-      return sealOrCompare(env, citizen, { hash: args.hash, text: args.text, label: args.label, signature: args.signature, check_only: args.check_only });
+      return sealOrCompare(env, citizen, { hash: args.hash, text: args.text, label: args.label, signature: args.signature, check_only: args.check_only, signed_at: args.signed_at }, origin);
     }
     case "record_mandate": {
       const citizen = await authenticate(env, secret);

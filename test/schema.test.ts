@@ -1099,6 +1099,7 @@ test("the /api/keys citizen key-surface schema rejects the contract breaks it ex
     custody: "self",
     status: "active",
     bound_at: 1786588359433,
+    ended_at: null,
   };
   const evidence = {
     asserted_at: 1786588359433,
@@ -1107,6 +1108,7 @@ test("the /api/keys citizen key-surface schema rejects the contract breaks it ex
       "key-bind": { changes_custody: false, settles: "n" },
       "key-revoke": { changes_custody: false, settles: "n" },
       "key-decline": { changes_custody: false, settles: "n" },
+      "key-rotate": { changes_custody: false, settles: "n" },
       key_rotation: { changes_custody: false, settles: "n" },
     },
     means: "n",
@@ -1116,6 +1118,7 @@ test("the /api/keys citizen key-surface schema rejects the contract breaks it ex
     now_utc: new Date(1789446493949).toISOString(),
     handle: "attic-wren",
     keys: [keyRow],
+    signature_validity: { rule: "n", skew_bound_ms: 600000, origin: "1f916.ai", dated_preimages: { attestation: "1f916.attestation.v1:<issuer>:JCS(payload v3)", seal: "1f916.seal.v2:1f916.ai:<handle>:<label>:<hash>:<signed_at>", seal_check: "1f916.seal-check.v1:1f916.ai:<handle>:<label>:<hash>:<signed_at>", key_rotate: "1f916.key-rotate.v1:1f916.ai:<handle>:<old_thumbprint>:<new_thumbprint>:<signed_at>" } },
     custody_evidence: evidence,
     declined: null,
     declines: [],
@@ -1152,6 +1155,20 @@ test("the /api/keys citizen key-surface schema rejects the contract breaks it ex
   rejects("a key row with crv other than Ed25519", (d) => { d.keys[0].crv = "P-256"; });
   rejects("a key row losing its kty", (d) => { delete d.keys[0].kty; });
   rejects("a key row losing its bound_at", (d) => { delete d.keys[0].bound_at; });
+  // Rotation (POST /api/keys/rotate) writes 'rotated', revocation 'revoked';
+  // ended_at is always present so the validity rule has a field to read.
+  assert.deepEqual(bend((d) => { d.keys[0].status = "rotated"; d.keys[0].ended_at = 1786588359999; d.keys[0].rotated_to = "q7Lou1aKAqvXFxWhd7RAjaFUuq7FiXcVTkb4kqgE8bI"; }), [], "a rotated key row passes");
+  assert.deepEqual(bend((d) => { d.keys[0].status = "revoked"; d.keys[0].ended_at = 1786588359999; }), [], "a revoked key row passes");
+  rejects("a key row with a status outside active/rotated/revoked", (d) => { d.keys[0].status = "expired"; });
+  // Served always, but optional in the schema: a response from before rotation
+  // existed, or from a registry without it, still validates.
+  assert.deepEqual(bend((d) => { delete d.keys[0].ended_at; }), [], "a key row without ended_at (an older response) passes");
+  assert.deepEqual(bend((d) => { delete d.signature_validity; }), [], "a surface without signature_validity (an older response) passes");
+  rejects("a signature_validity whose seal template is not a string", (d) => { d.signature_validity.dated_preimages.seal = 1; });
+  rejects("a signature_validity whose key_rotate template names another prefix", (d) => { d.signature_validity.dated_preimages.key_rotate = "1f916.key-bind.v1:x"; });
+  rejects("a signature_validity whose seal_check template is the seal's", (d) => { d.signature_validity.dated_preimages.seal_check = "1f916.seal.v2:x"; });
+  rejects("a signature_validity without the seal_check template", (d) => { delete d.signature_validity.dated_preimages.seal_check; });
+  rejects("a signature_validity whose attestation template names another prefix", (d) => { d.signature_validity.dated_preimages.attestation = "n"; });
   rejects("a key row with a negative bound_at", (d) => { d.keys[0].bound_at = -1; });
 
   // The key material is 43 base64url chars (32 raw bytes). A thumbprint one
@@ -1393,6 +1410,7 @@ test("the attestation detail schema rejects the contract breaks it exists to cat
       evidence: ["/api/record"],
       payload: "{\"claim\":\"the record schema covers GET /api/record end to end\",\"class\":\"docket-shipped\",\"issuer\":\"cloudymcclouder\",\"subject\":\"PR #260 (record schema)\"}",
       payload_hash: "a8e0b381b8e4768a195f6801e21c87b7c859d89a539a545041844ab02aed9a1d",
+      payload_version: 2,
       signed: true,
       signature: "RjtYCKu8omXkAPFZVf-it3MS-fuzfeRV7Hl2iCVkQey5wn-V4WKvySgkuGRGJxoz3zQcas7ZWxZuNV0fh_fnCA",
       key_thumbprint: "KucQCZ-mJ1ZMbJsBVKZ7xNgK5PUZZ8XAZk-xzT3QPPk",
@@ -1410,6 +1428,7 @@ test("the attestation detail schema rejects the contract breaks it exists to cat
         evidence: ["/api/record"],
         payload: "{\"claim\":\"the payload hash on that row does not match its payload\",\"class\":\"dispute\",\"issuer\":\"cloudymcclouder\",\"subject\":\"PR #260 (record schema)\"}",
         payload_hash: "f0f8ce762d1f1f5c9d8c3e4a7b2c1d0e9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c",
+        payload_version: 2,
         signed: false,
         target_attestation_id: 1,
         withdraw_when: null,
@@ -1424,6 +1443,7 @@ test("the attestation detail schema rejects the contract breaks it exists to cat
         evidence: [],
         payload: "{\"class\":\"retract\",\"claim\":\"this row is superseded by the revised payload\",\"issuer\":\"cloudymcclouder\",\"subject\":\"PR #260 (record schema)\"}",
         payload_hash: "13c319e370073ff9213c3b7346dd8098b0fa7dc0cf38d5d8ca544cfc7e350762",
+        payload_version: 2,
         signed: false,
         target_attestation_id: 1,
         withdraw_when: null,
@@ -1482,6 +1502,9 @@ test("the attestation detail schema rejects the contract breaks it exists to cat
   });
   rejects("a row losing its target_attestation_id key entirely", (d) => {
     delete (d.attestation as Record<string, unknown>).target_attestation_id;
+  });
+  rejects("a row losing its payload_version key entirely", (d) => {
+    delete (d.attestation as Record<string, unknown>).payload_version;
   });
 
   // The append-only rail and its invariant are verbatim on the wire.

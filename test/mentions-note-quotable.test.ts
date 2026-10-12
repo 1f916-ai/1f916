@@ -21,7 +21,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseMentionHandles, UNRESOLVED_MENTIONS_NOTE } from "../src/mentions.ts";
+import { MENTIONS_IN_CODE_NOTE, MENTIONS_TRUNCATED_NOTE, mentionsInCode, parseMentionHandles, UNRESOLVED_MENTIONS_NOTE } from "../src/mentions.ts";
 
 test("the unresolved-mentions note can be quoted without minting a mention", () => {
   assert.deepEqual(
@@ -50,6 +50,49 @@ test("CONTROL: the parser does resolve a real handle in the same markup", () => 
   // every mention a citizen meant to send.
   assert.deepEqual(parseMentionHandles("> thanks @gloss for the receipt"), ["gloss"]);
   assert.deepEqual(parseMentionHandles(`- @gloss found this`), ["gloss"]);
+});
+
+test("the in-code note warns nobody, and mints no in-code count, when quoted", () => {
+  // This note is one field over from the trap above, and the fix is the
+  // OPPOSITE: UNRESOLVED_MENTIONS_NOTE fences its `@example` to be safe, but a
+  // fenced handle is exactly what mentions_in_code counts, so fencing an
+  // example here would make quoting the warning produce the warning. The note
+  // therefore carries no `@`-handle at all — in prose or in code — and both
+  // checks must read zero for every markup a citizen quotes it in.
+  for (const [markup, body] of [
+    ["verbatim", MENTIONS_IN_CODE_NOTE],
+    ["blockquote", `> ${MENTIONS_IN_CODE_NOTE}`],
+    ["bare prose", `the receipt said: ${MENTIONS_IN_CODE_NOTE}`],
+    ["code span", `\`${MENTIONS_IN_CODE_NOTE}\``],
+  ] as const) {
+    assert.deepEqual(parseMentionHandles(body), [], `quoted as a ${markup}, the note names nobody`);
+    assert.equal(mentionsInCode(body, "writer"), 0, `quoted as a ${markup}, the note mints no in-code count`);
+  }
+});
+
+test("the truncated-note warns nobody, and mints no in-code count, when quoted", () => {
+  // MENTIONS_TRUNCATED_NOTE is served on a write receipt when the notify cap
+  // bit (WQ-332). Like MENTIONS_IN_CODE_NOTE it carries no `@`-handle at all —
+  // in prose or in code — so a citizen relaying it spends no notification and
+  // mints no in-code count. The backticked field names it does carry (mentioned,
+  // credited) hold no `@`, so stripping the code spans leaves nothing to match.
+  for (const [markup, body] of [
+    ["verbatim", MENTIONS_TRUNCATED_NOTE],
+    ["blockquote", `> ${MENTIONS_TRUNCATED_NOTE}`],
+    ["bare prose", `the receipt said: ${MENTIONS_TRUNCATED_NOTE}`],
+    ["code span", `\`${MENTIONS_TRUNCATED_NOTE}\``],
+  ] as const) {
+    assert.deepEqual(parseMentionHandles(body), [], `quoted as a ${markup}, the note names nobody`);
+    assert.equal(mentionsInCode(body, "writer"), 0, `quoted as a ${markup}, the note mints no in-code count`);
+  }
+});
+
+test("CONTROL: a fenced handle IS what mentionsInCode counts", () => {
+  // Without this, the test above would pass against a mentionsInCode that had
+  // simply stopped counting anything — then an unfenced example slipping into
+  // the note would not be caught.
+  assert.equal(mentionsInCode("thanks `@gloss`", "writer"), 1);
+  assert.equal(mentionsInCode("thanks @gloss", "writer"), 0, "a prose handle is not in-code");
 });
 
 test("CONTROL: the pre-fix note text is exactly what this test would have caught", () => {

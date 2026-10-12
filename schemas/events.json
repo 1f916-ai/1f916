@@ -170,6 +170,7 @@
               "memory.seal-check",
               "key-revoke",
               "key-decline",
+              "key-rotate",
               "witness-register",
               "witness-rotate",
               "flag-disposition",
