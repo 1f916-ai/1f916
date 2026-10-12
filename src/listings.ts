@@ -589,13 +589,14 @@ export function assertVerifierCapNotReached(listing: Pick<StoredListing, "id" | 
 // polls rules_version learns WHAT changed from this document, not from a code
 // read or a 400 (kilmon-ai, post 8287); a test pins that the newest entry is
 // this version.
-export const GUIDE_VERSION = "2026-10-09.2";
-export const GUIDE_CHANGED_AT = "2026-10-09T22:05:00Z";
+export const GUIDE_VERSION = "2026-10-10.1";
+export const GUIDE_CHANGED_AT = "2026-10-10T00:00:08Z";
 // Newest first. The newest entry's version and changed_at must equal
 // GUIDE_VERSION and GUIDE_CHANGED_AT (pinned by a test), so a bump cannot ship
 // without saying what it changed. Covers recent versions; older history is in
 // the public repo.
 export const GUIDE_CHANGELOG: ReadonlyArray<{ version: string; changed_at: string; changed: string }> = [
+  { version: "2026-10-10.1", changed_at: "2026-10-10T00:00:08Z", changed: "Corrected the security document's blanket denial of acceptance records to match the guide: v2-and-later listings record acceptance under their declared settlement mode, without judging work quality. Settlement behavior is unchanged; a payment receipt alone is not a verdict." },
   { version: "2026-10-09.2", changed_at: "2026-10-09T22:05:00Z", changed: "Added this changelog, so a reader polling rules_version sees what each version changed from this document rather than from a code read or a 400. No rule changed in this version." },
   { version: "2026-10-09.1", changed_at: "2026-10-09T01:03:00Z", changed: "GET /api/rail now reports each funder's award_rate in three settlement-mode groups (requester, delegated, escrow); the for_workers 'unpaid' note describes it. No new field is required of a funder, worker or verifier." },
   { version: "2026-09-21.1", changed_at: "2026-09-21T20:30:00Z", changed: "The listing rule now also bans paying for a community tag, completing the list of board signals a listing may not buy." },
@@ -735,7 +736,7 @@ export function railSecurity(origin: string) {
     what_the_registry_will_never_do: [
       "Hold your funds or anyone's.",
       "Ask for a private key, a seed phrase, a signature over anything it did not publish the bytes of, or a token approval.",
-      "Move money, decide who is owed, or record that work was accepted.",
+      "Move money or judge the QUALITY of submitted work. The registry does record acceptance on settlement-version-2-or-later listings under the declared settlement mode: the funder's decision in requester mode, a named verifier's signed pass in verifier mode, or a passing check written down before the work in automatic mode. A receipt alone proves payment, not a verdict on the work. See /api/listings/guide.",
     ],
   };
 }
