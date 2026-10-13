@@ -3439,6 +3439,7 @@ export async function createListing(
   if (listing.funderAddress !== null) {
     // The listing's OWN asset, not USDC by default: a token-priced listing
     // proved by a dollar balance would be proof of the wrong thing entirely.
+    const readStartedMs = Date.now();
     const read = await (deps.readBalance ?? readBalanceTwoSource)(env, listing.funderAddress, listing.token);
     // The cover check now uses the listing's MAXIMUM LIABILITY, not one award.
     // Before settlement v2 a listing with no worker cap was checked against a
@@ -3480,10 +3481,32 @@ export async function createListing(
           ORDER BY id ASC`,
       ).bind(wallet, listing.token, listing.chainId, Math.floor(nowMs / 1000))
         .all<{ id: number; amount_atomic: string; max_awards: number | null; verifier_price_atomic: string | null; max_verifiers: number }>();
-      const othersAtomic = others.reduce(
-        (sum, o) => sum + BigInt(o.amount_atomic) * BigInt(o.max_awards ?? 1) + (o.verifier_price_atomic === null ? 0n : BigInt(o.verifier_price_atomic) * BigInt(o.max_verifiers ?? 0)),
-        0n,
-      );
+      // Awards already PAID on those open listings are no longer owed. The
+      // maximum liability counts every award seat at full price, so without
+      // this a funder who paid out on an open listing is refused a listing the
+      // wallet does cover, with a shortfall they cannot reconcile against their
+      // own on-chain balance: the payment has left the wallet AND is still
+      // reserved. Only payments recorded before the balance read began are
+      // subtracted, so a payment observed mid-check (whose transfer the read
+      // may not yet reflect) stays reserved instead of being freed twice.
+      // Verifier payments are still reserved at full price; that can only
+      // over-refuse, never under-cover.
+      const { results: paidRows } = await env.DB.prepare(
+        `SELECT a.listing_id, a.amount_atomic
+           FROM listings l JOIN listing_awards a ON a.listing_id = l.id
+          WHERE l.funder_address = ? AND l.token = ? AND l.chain_id = ? AND l.funding_mode = 'verified'
+            AND l.expiry > ? AND l.withdrawn_at IS NULL AND l.mod_state IS NULL
+            AND a.state = 'paid' AND a.paid_at < ?`,
+      ).bind(wallet, listing.token, listing.chainId, Math.floor(nowMs / 1000), readStartedMs)
+        .all<{ listing_id: number; amount_atomic: string }>();
+      const paidByListing = new Map<number, bigint>();
+      for (const p of paidRows) paidByListing.set(p.listing_id, (paidByListing.get(p.listing_id) ?? 0n) + BigInt(p.amount_atomic));
+      const othersAtomic = others.reduce((sum, o) => {
+        const awardsAtomic = BigInt(o.amount_atomic) * BigInt(o.max_awards ?? 1);
+        const paidAtomic = paidByListing.get(o.id) ?? 0n;
+        const stillOwedAtomic = paidAtomic >= awardsAtomic ? 0n : awardsAtomic - paidAtomic;
+        return sum + stillOwedAtomic + (o.verifier_price_atomic === null ? 0n : BigInt(o.verifier_price_atomic) * BigInt(o.max_verifiers ?? 0));
+      }, 0n);
       // Unpaid awards on the wallet's CLOSED verified listings. An open
       // listing's maximum liability above already includes its awards. The
       // stored state can lag its clock (the sweep runs on a poke), so the
@@ -3506,7 +3529,7 @@ export async function createListing(
       const combinedAtomic = othersAtomic + owedAtomic + BigInt(maxLiabilityAtomic);
       if ((others.length > 0 || owed.length > 0) && BigInt(read.balanceAtomic) < combinedAtomic) {
         const parts = [
-          others.length > 0 ? `the maximum liability of the ${others.length} open verified listing(s) already naming this wallet in this asset (${others.map((o) => `listing ${o.id}`).join(", ")}, ${othersAtomic} between them)` : null,
+          others.length > 0 ? `what the ${others.length} open verified listing(s) already naming this wallet in this asset can still owe, their maximum liability less awards already paid (${others.map((o) => `listing ${o.id}`).join(", ")}, ${othersAtomic} between them)` : null,
           owed.length > 0 ? `${owed.length} unpaid award(s) still owed on its closed verified listing(s) (${owedListings.map((id) => `listing ${id}`).join(", ")}, ${owedAtomic} between them)` : null,
         ].filter((p) => p !== null).join(" and ");
         throw new SocietyError(409, `funder wallet holds ${read.balanceAtomic} atomic units of ${settlementAsset(listing.token)?.symbol ?? listing.token} at block ${read.blockNumber}, which covers this listing's maximum liability of ${maxLiabilityAtomic} on its own but not together with ${parts}: the combined figure is ${combinedAtomic}. One balance read cannot verify the same money twice. Fund the wallet up to the combined figure, withdraw an open listing to free its unearned share, pay what is owed, post this one as funding_mode promise, or name a different wallet.`);

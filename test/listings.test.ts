@@ -594,6 +594,41 @@ test("unpaid awards on a withdrawn verified listing still count against the wall
   assert.equal(second.funding_mode, "verified");
 });
 
+// An open verified listing reserves every award seat at full price. Once an
+// award on it is paid, that money has left the wallet and is owed no more, so
+// reserving it again would refuse a wallet that does cover the new listing.
+test("awards already paid on an open verified listing no longer count against the wallet's balance", async () => {
+  const ed = generateKeyPairSync("ed25519");
+  const publicKey = (ed.publicKey.export({ format: "jwk" }) as { x: string }).x;
+  const { env, db } = makeEnv(publicKey);
+  const wallet = privateKeyToAccount(generatePrivateKey());
+  const expiry = NOW + 7 * 86400;
+  const signed = async (title: string) => {
+    const preimage = listingPreimage({ handle: FUNDER.handle, titleSha256: createHash("sha256").update(title).digest("hex"), amountAtomic: "3000000", verifierPriceAtomic: null, maxVerifiers: 0, chainId: 8453, token: BASE_USDC, expiry });
+    return { title, condition: CONDITION, amount_atomic: "3000000", expiry, funder_address: wallet.address, funder_signature: await wallet.signMessage({ message: preimage }), funding_mode: "verified" };
+  };
+  const fiveDollars = { readBalance: async () => ({ balanceAtomic: "5000000", blockNumber: 200, sources: 2 }) };
+  await createListing(env, FUNDER as never, await signed("First verified task"), fiveDollars);
+  await createSubmission(env, PAYEE as never, 1, { artifact: "https://example.invalid/pr/1" });
+  const nowMs = Date.now();
+  db.prepare(`INSERT INTO listing_awards (listing_id, submission_id, citizen_id, amount_atomic, state, awarded_by, awarded_by_citizen_id, awarded_at, payable_at, expires_at, payload_hash, commit_nonce, created_at)
+              VALUES (1, 1, 2, '3000000', 'payable', 'requester', 1, ?, ?, ?, 'award-hash-1', 'award-nonce-1', ?)`).run(nowMs, nowMs, nowMs + 86_400_000, nowMs);
+
+  // Owed but unpaid, the award is inside listing 1's maximum liability: $3 + $3 > $5.
+  await assert.rejects(
+    createListing(env, FUNDER as never, await signed("Second verified task"), fiveDollars),
+    (e: SocietyError) => e.status === 409 && /6000000/.test(e.message) && /listing 1/.test(e.message),
+  );
+
+  // Paid from the funder wallet: listing 1 (one award seat) owes nothing more,
+  // and the $5 read covers the new $3 listing on its own.
+  const bound = await createPayoutBinding(env, PAYEE as never, (await payeeBinding("listing-1", "3000000", ed, PAYEE)).body);
+  const receipt = db.prepare("INSERT INTO payout_receipts (funding_relationship, binding_id, submitter_id, tx_hash, source_address) VALUES ('independent', ?, 2, '0xabc', ?)").run(bound.id, wallet.address.toLowerCase());
+  db.prepare(`UPDATE listing_awards SET state = 'paid', receipt_id = ?, paid_at = ? WHERE id = 1`).run(Number(receipt.lastInsertRowid), nowMs - 1);
+  const second = await createListing(env, FUNDER as never, await signed("Second verified task"), fiveDollars) as Record<string, unknown>;
+  assert.equal(second.funding_mode, "verified");
+});
+
 test("withdraw: funder only, public reason, chained; stops submissions and bindings but existing ones stand", async () => {
   const ed = generateKeyPairSync("ed25519");
   const publicKey = (ed.publicKey.export({ format: "jwk" }) as { x: string }).x;
