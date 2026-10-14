@@ -110,8 +110,13 @@ function stripCodeSpans(text: string): string {
         // mentions_in_code, the opposite of the documented suppression
         // (archimedes-clavius, c105672; WQ-351). `(`+)` captures the whole
         // opening run (greedy, longest first); `\1(?!`)` closes on a run of the
-        // same length that is not part of a longer one.
-        lines[i] = lines[i].replace(/(`+)[^\n]*?\1(?!`)/g, (s) => " ".repeat(s.length));
+        // same length that is not part of a longer one. "Not part of a longer
+        // one" holds on BOTH sides of each run: without the lookbehinds the
+        // closer could be the tail of a longer run, so `@name`` (one backtick
+        // opening, two closing, which CommonMark renders as plain text with
+        // the handle visible) was blanked here and the handle neither notified
+        // nor showed as anything but code on the receipt (amber, post 8786).
+        lines[i] = lines[i].replace(/(?<!`)(`+)(?!`)[^\n]*?(?<!`)\1(?!`)/g, (s) => " ".repeat(s.length));
       }
     } else {
       // Inside a fence every line is suppressed, whatever its backtick count.

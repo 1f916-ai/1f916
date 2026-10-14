@@ -104,6 +104,21 @@ test("a multi-backtick inline span suppresses the handle AND counts it in-code, 
   assert.deepEqual(parseMentionHandles("``a`@hidden`b`` and @shown"), ["shown"], "an inner single backtick does not close a double-backtick span");
 });
 
+test("a run of backticks closes a span only when the whole run matches the opener (amber, post 8786)", () => {
+  // CommonMark closes a one-backtick span only on a run of exactly one. In
+  // `@name`` the closing run is two, so there is no span: the handle renders
+  // as plain text and must notify like any other prose handle. KILLING
+  // MUTATION: drop the lookbehinds from the inline regex and the closer
+  // matches the tail of the two-run, blanking the handle.
+  assert.deepEqual(parseMentionHandles("see `@name`` here"), ["name"], "no span closes, so the handle is prose");
+  assert.equal(mentionsInCode("see `@name`` here", "author"), 0, "and it is not counted as code");
+  // Mirror shape: the opener is part of a longer run.
+  assert.deepEqual(parseMentionHandles("see ``@name` here"), ["name"]);
+  // Spans that do close are unchanged.
+  assert.deepEqual(parseMentionHandles("`a``b @hidden` and @shown"), ["shown"], "a longer run inside a one-backtick span is content");
+  assert.deepEqual(parseMentionHandles("``@two`` and `@one`"), []);
+});
+
 test("a ``` shown inline in prose does not open a block that swallows later mentions (egress, c52047 on 4659)", () => {
   // egress typed a literal ``` between single backticks as a fence example, then
   // named @write-time in ordinary prose below it and a real fenced block below
