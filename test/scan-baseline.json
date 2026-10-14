@@ -324,16 +324,16 @@
         "ledger: SCAN ledger"
       ]
     },
-    "57964445094fff03": {
+    "8236005a08e17a73": {
       "status": "debt",
-      "sql": "SELECT id AS citizen_id, handle, model AS claimed_model, karma, COALESCE((SELECT n FROM citizen_vote_counts WHERE citizen_id = citizens.id), (SELECT COUNT(*) FROM votes v WHERE v.citizen_id = citizens.id)) AS votes_cast, created_at FROM citizens ORDER BY created_at ASC LIMIT ?",
+      "sql": "SELECT id AS citizen_id, handle, model AS claimed_model, model, karma, COALESCE((SELECT n FROM citizen_vote_counts WHERE citizen_id = citizens.id), (SELECT COUNT(*) FROM votes v WHERE v.citizen_id = citizens.id)) AS votes_cast, created_at FROM citizens ORDER BY created_at ASC LIMIT ?",
       "plan": [
         "citizens: SCAN citizens"
       ]
     },
-    "151a9abbd0ff88b2": {
+    "7e47c76e9d9a3e77": {
       "status": "debt",
-      "sql": "SELECT id AS citizen_id, handle, model AS claimed_model, karma, COALESCE((SELECT n FROM citizen_vote_counts WHERE citizen_id = citizens.id), (SELECT COUNT(*) FROM votes v WHERE v.citizen_id = citizens.id)) AS votes_cast, created_at FROM citizens WHERE created_at > ? ORDER BY created_at ASC LIMIT ?",
+      "sql": "SELECT id AS citizen_id, handle, model AS claimed_model, model, karma, COALESCE((SELECT n FROM citizen_vote_counts WHERE citizen_id = citizens.id), (SELECT COUNT(*) FROM votes v WHERE v.citizen_id = citizens.id)) AS votes_cast, created_at FROM citizens WHERE created_at > ? ORDER BY created_at ASC LI",
       "plan": [
         "citizens: SCAN citizens"
       ]
@@ -486,156 +486,156 @@
       ],
       "reason": "GET /api/offers?include_closed=1 (migrations/0064): the archive view, which by definition wants rows the live index range excludes -- withdrawn and expired offers. It is the only read of `offers` that scans, it is capped at 200 rows, and the DEFAULT read beside it (open offers) is index-driven on idx_offers_expiry(expiry, id) precisely so the common path never pays for this. The table is bounded in practice by the five-per-citizen-per-day cap, and if it ever stops being small the fix is a cursor on id, not an index, because this query deliberately has no selective predicate."
     },
-    "f6c39c52a357ca98": {
+    "d2d13b408ea9d0db": {
       "status": "debt",
-      "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS claimed_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SELECT COALESCE(SUM(MIN(N.N, MAX(N.N, (? - vc.created",
+      "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS claimed_model, COALESCE(p.author_model, c.model) AS author_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SE",
       "plan": [
         "posts: SCAN p USING INDEX idx_posts_created_id"
       ]
     },
-    "1cd7cf07a0ae6530": {
+    "7e6aec060215f8ad": {
       "status": "debt",
-      "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS claimed_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SELECT COALESCE(SUM(MIN(N.N, MAX(N.N, (? - vc.created",
+      "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS claimed_model, COALESCE(p.author_model, c.model) AS author_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SE",
       "plan": [
         "posts: SCAN p USING INDEX idx_posts_created_id"
       ]
     },
-    "e74cb3c854bc6473": {
+    "eb3a3ab651c4e5c7": {
       "status": "debt",
-      "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS claimed_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SELECT COALESCE(SUM(MIN(N.N, MAX(N.N, (? - vc.created",
+      "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS claimed_model, COALESCE(p.author_model, c.model) AS author_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SE",
       "plan": [
         "posts: SCAN p USING INDEX idx_posts_created_id"
       ]
     },
-    "06dc349e5edddfac": {
+    "ec233d6f459a6145": {
       "status": "debt",
-      "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS claimed_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SELECT COALESCE(SUM(MIN(N.N, MAX(N.N, (? - vc.created",
+      "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS claimed_model, COALESCE(p.author_model, c.model) AS author_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SE",
       "plan": [
         "posts: SCAN p USING INDEX idx_posts_created_id"
       ]
     },
-    "5ce3ff44cb2a3b3c": {
+    "edf565906803d725": {
       "status": "debt",
-      "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS claimed_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SELECT COALESCE(SUM(MIN(N.N, MAX(N.N, (? - vc.created",
+      "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS claimed_model, COALESCE(p.author_model, c.model) AS author_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SE",
       "plan": [
         "posts: SEARCH p USING INDEX idx_posts_created_id (created_at<?)"
       ]
     },
-    "ffac4bd8e5b90d44": {
+    "632ba8277223d6ca": {
       "status": "debt",
-      "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS claimed_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SELECT COALESCE(SUM(MIN(N.N, MAX(N.N, (? - vc.created",
+      "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS claimed_model, COALESCE(p.author_model, c.model) AS author_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SE",
       "plan": [
         "posts: SEARCH p USING INDEX idx_posts_created_id (created_at<?)"
       ]
     },
-    "11fb8b8669ad8c85": {
+    "96ecc51a78eee2bd": {
       "status": "debt",
-      "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS claimed_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SELECT COALESCE(SUM(MIN(N.N, MAX(N.N, (? - vc.created",
+      "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS claimed_model, COALESCE(p.author_model, c.model) AS author_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SE",
       "plan": [
         "posts: SEARCH p USING INDEX idx_posts_created_id (created_at<?)"
       ]
     },
-    "820a4ab3778b36a4": {
+    "162869484d46d37c": {
       "status": "debt",
-      "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS claimed_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SELECT COALESCE(SUM(MIN(N.N, MAX(N.N, (? - vc.created",
+      "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS claimed_model, COALESCE(p.author_model, c.model) AS author_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SE",
       "plan": [
         "posts: SEARCH p USING INDEX idx_posts_created_id (created_at<?)"
       ]
     },
-    "fb04757475d7df82": {
+    "b06cdddc95360bc8": {
       "status": "debt",
-      "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS claimed_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SELECT COALESCE(SUM(MIN(N.N, MAX(N.N, (? - vc.created",
+      "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS claimed_model, COALESCE(p.author_model, c.model) AS author_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SE",
       "plan": [
         "posts: SCAN p USING INDEX idx_posts_created_id"
       ]
     },
-    "4c3a108f51c8468e": {
+    "49490c9c92b12391": {
       "status": "debt",
-      "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS claimed_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SELECT COALESCE(SUM(MIN(N.N, MAX(N.N, (? - vc.created",
+      "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS claimed_model, COALESCE(p.author_model, c.model) AS author_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SE",
       "plan": [
         "posts: SCAN p USING INDEX idx_posts_created_id"
       ]
     },
-    "394a7beb7390d9a5": {
+    "0ecc11bae1cf885a": {
       "status": "debt",
-      "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS claimed_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SELECT COALESCE(SUM(MIN(N.N, MAX(N.N, (? - vc.created",
+      "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS claimed_model, COALESCE(p.author_model, c.model) AS author_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SE",
       "plan": [
         "posts: SCAN p USING INDEX idx_posts_created_id"
       ]
     },
-    "66ca10c4151943a2": {
+    "c2250f04ae96f0ff": {
       "status": "debt",
-      "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS claimed_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SELECT COALESCE(SUM(MIN(N.N, MAX(N.N, (? - vc.created",
+      "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS claimed_model, COALESCE(p.author_model, c.model) AS author_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SE",
       "plan": [
         "posts: SCAN p USING INDEX idx_posts_created_id"
       ]
     },
-    "466c741d0a452e42": {
+    "7b02fda48252e703": {
       "status": "debt",
-      "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS claimed_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SELECT COALESCE(SUM(MIN(N.N, MAX(N.N, (? - vc.created",
+      "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS claimed_model, COALESCE(p.author_model, c.model) AS author_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SE",
       "plan": [
         "posts: SCAN p USING INDEX idx_posts_created_id"
       ]
     },
-    "8df37f29b0bef016": {
+    "6d3ef4fbc7fa29bd": {
       "status": "debt",
-      "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS claimed_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SELECT COALESCE(SUM(MIN(N.N, MAX(N.N, (? - vc.created",
+      "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS claimed_model, COALESCE(p.author_model, c.model) AS author_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SE",
       "plan": [
         "posts: SCAN p USING INDEX idx_posts_created_id"
       ]
     },
-    "c6f918d35a261f62": {
+    "dffdf2e7f33043b7": {
       "status": "debt",
-      "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS claimed_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SELECT COALESCE(SUM(MIN(N.N, MAX(N.N, (? - vc.created",
+      "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS claimed_model, COALESCE(p.author_model, c.model) AS author_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SE",
       "plan": [
         "posts: SCAN p USING INDEX idx_posts_created_id"
       ]
     },
-    "8d34e7d19f0259bc": {
+    "155552018eff72d0": {
       "status": "debt",
-      "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS claimed_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SELECT COALESCE(SUM(MIN(N.N, MAX(N.N, (? - vc.created",
+      "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS claimed_model, COALESCE(p.author_model, c.model) AS author_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SE",
       "plan": [
         "posts: SEARCH p USING INTEGER PRIMARY KEY (rowid<?)"
       ]
     },
-    "98bfbcf4b84ccc39": {
+    "667f03904510ff24": {
       "status": "debt",
-      "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS claimed_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SELECT COALESCE(SUM(MIN(N.N, MAX(N.N, (? - vc.created",
+      "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS claimed_model, COALESCE(p.author_model, c.model) AS author_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SE",
       "plan": [
         "posts: SCAN p USING INDEX idx_posts_created_id"
       ]
     },
-    "3cb17c66d57ac920": {
+    "f4e3eb3e6f17927e": {
       "status": "debt",
-      "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS claimed_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SELECT COALESCE(SUM(MIN(N.N, MAX(N.N, (? - vc.created",
+      "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS claimed_model, COALESCE(p.author_model, c.model) AS author_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SE",
       "plan": [
         "posts: SCAN p USING INDEX idx_posts_created_id"
       ]
     },
-    "4509f58217e08fa6": {
+    "3f1f8b502e83b317": {
       "status": "debt",
-      "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS claimed_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SELECT COALESCE(SUM(MIN(N.N, MAX(N.N, (? - vc.created",
+      "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS claimed_model, COALESCE(p.author_model, c.model) AS author_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SE",
       "plan": [
         "posts: SCAN p USING INDEX idx_posts_created_id"
       ]
     },
-    "c65c11f7f0e29c1c": {
+    "a144d914e18fa711": {
       "status": "debt",
-      "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS claimed_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SELECT COALESCE(SUM(MIN(N.N, MAX(N.N, (? - vc.created",
+      "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS claimed_model, COALESCE(p.author_model, c.model) AS author_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SE",
       "plan": [
         "posts: SCAN p USING INDEX idx_posts_created_id"
       ]
     },
-    "b7c2eb188366308f": {
+    "da7710f7e0abb3d8": {
       "status": "debt",
-      "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS claimed_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SELECT COALESCE(SUM(MIN(N.N, MAX(N.N, (? - vc.created",
+      "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS claimed_model, COALESCE(p.author_model, c.model) AS author_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SE",
       "plan": [
         "posts: SCAN p USING INDEX idx_posts_created_id"
       ]
     },
-    "593eeaea0b4cd03c": {
+    "b32938bfe2f7c921": {
       "status": "debt",
-      "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS claimed_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SELECT COALESCE(SUM(MIN(N.N, MAX(N.N, (? - vc.created",
+      "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS claimed_model, COALESCE(p.author_model, c.model) AS author_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SE",
       "plan": [
         "posts: SCAN p USING INDEX idx_posts_created_id"
       ]

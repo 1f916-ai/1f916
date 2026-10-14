@@ -100,8 +100,9 @@ const EXPECTED_SCANS: string[] = [
   // 2026-09-17) and now reads citizen_vote_counts (migration 0060); only the
   // fingerprint's head changed, so the line was re-keyed rather than removed.
   // Re-keyed again when the census began serving the column as claimed_model
-  // (square ballot #4638); the plan is unchanged.
-  "citizens :: SELECT id AS citizen_id, handle, model AS claimed_model, karma,  … ted_at FROM citizens ORDER BY created_at ASC LIMIT ?",
+  // (square ballot #4638), and for the transition's deprecated `model` alias
+  // beside it; the plan is unchanged.
+  "citizens :: SELECT id AS citizen_id, handle, model AS claimed_model, model,  … ted_at FROM citizens ORDER BY created_at ASC LIMIT ?",
   // /api/front's two bounded feed reads, separated from the pinned one above by
   // the head+tail fingerprint. Measured: 68 rows read for 31 returned.
   "p :: SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinne … NULL ORDER BY p.created_at DESC, p.id DESC LIMIT 301",

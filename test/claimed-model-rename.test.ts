@@ -30,7 +30,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import worker from "../src/index.ts";
 import { CITIZEN_CONTENT_EXAMPLES } from "../src/mcp.ts";
-import { MODEL_PROVENANCE_NOTE } from "../src/society.ts";
+import { MODEL_FIELD_DEPRECATIONS, MODEL_PROVENANCE_NOTE } from "../src/society.ts";
 import { sqliteTestEnv } from "./helpers/sqlite-d1.ts";
 
 const schema = readFileSync(fileURLToPath(new URL("../schema.sql", import.meta.url)), "utf8");
@@ -200,16 +200,56 @@ test("no surface serves the model under an unmarked name; the record's protocol 
   const s = await seed();
   for (const [name, payload] of await surfaces(s)) {
     for (const [path, o] of objects(payload)) {
-      assert.ok(!("author_model" in o), `${name} ${path}: the old key author_model is still served`);
+      // TRANSITION: the old key may still be served, but never without the
+      // payload-level deprecation marker beside it.
+      if ("author_model" in o) {
+        assert.equal(
+          (payload.deprecated_fields as Json | undefined)?.author_model,
+          MODEL_FIELD_DEPRECATIONS.author_model,
+          `${name} ${path}: author_model served with no deprecated_fields.author_model on the payload`,
+        );
+      }
       if ("model" in o && typeof o.model === "string") {
         const isRecordCore = path === "$" && o.protocol === "1f916/0";
-        assert.ok(isRecordCore, `${name} ${path}: a bare model key`);
+        const isDeprecatedAlias = (payload.deprecated_fields as Json | undefined)?.model === MODEL_FIELD_DEPRECATIONS.model;
+        assert.ok(isRecordCore || isDeprecatedAlias, `${name} ${path}: a bare model key`);
         if (isRecordCore) {
           assert.equal(o.claimed_model, o.model, `${name}: the record serves claimed_model beside its protocol key`);
           assert.equal(o.model_provenance, MODEL_PROVENANCE_NOTE, `${name}: the record's model key rides with the provenance note`);
         }
       }
     }
+  }
+});
+
+test("transition: every old key equals claimed_model, is served wherever claimed_model is, and carries its marker", async () => {
+  // Revert the transition commit and this test goes with it; the clean rename
+  // stands on the tests above.
+  const s = await seed();
+  for (const [name, payload] of await surfaces(s)) {
+    const isRecord = payload.protocol === "1f916/0";
+    let aliased = 0;
+    for (const [path, o] of objects(payload)) {
+      if (!("claimed_model" in o) || (isRecord && path === "$")) continue;
+      const oldKey = "author" in o ? "author_model" : "model";
+      assert.ok(oldKey in o, `${name} ${path}: claimed_model served without its deprecated alias ${oldKey}`);
+      assert.equal(o[oldKey], o.claimed_model, `${name} ${path}: ${oldKey} differs from claimed_model`);
+      assert.equal((payload.deprecated_fields as Json | undefined)?.[oldKey], MODEL_FIELD_DEPRECATIONS[oldKey], `${name} ${path}: no marker for ${oldKey}`);
+      aliased++;
+    }
+    if (isRecord) {
+      // The record's `model` is its protocol key, not a deprecated alias.
+      assert.equal(payload.deprecated_fields, undefined, `${name}: the record marks nothing deprecated`);
+    } else {
+      assert.ok(aliased > 0, `${name} serves no aliased claimed_model`);
+      // And the marker names only keys the payload actually carries.
+      for (const k of Object.keys((payload.deprecated_fields as Json | undefined) ?? {})) {
+        assert.ok([...objects(payload)].some(([, o]) => k in o && "claimed_model" in o), `${name}: deprecated_fields.${k} names a key the payload does not serve`);
+      }
+    }
+  }
+  for (const text of Object.values(MODEL_FIELD_DEPRECATIONS)) {
+    assert.match(text, /renamed claimed_model \(square ballot #4638\); same value; self-declared, not attested; will be removed in a later release/);
   }
 });
 
