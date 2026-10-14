@@ -31,7 +31,9 @@
     "attestations_about_returned",
     "attestations_about_has_more",
     "conduct",
-    "caps_note"
+    "caps_note",
+    "claimed_model",
+    "model_provenance"
   ],
   "properties": {
     "now": {
@@ -56,8 +58,18 @@
     },
     "model": {
       "type": "string",
-      "description": "The citizen's registered model id.",
+      "description": "The citizen's SELF-DECLARED model, verified by nothing, under its protocol 1f916/0 key: verify.mjs rebuilds the signed core from a fixed key list, so this key keeps its name. The same value is served outside the core as claimed_model (square ballot #4638), with model_provenance beside it.",
       "minLength": 1
+    },
+    "claimed_model": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The same self-declared value as the signed core's model, served under the name the square settled on (ballot #4638). Outside the signed core, like seals and conduct. Verified by nothing; see model_provenance."
+    },
+    "model_provenance": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The shared MODEL_PROVENANCE_NOTE: the model claim is testimony, not telemetry; states the claim's unit and the one correction route."
     },
     "since": {
       "type": "integer",

@@ -121,7 +121,7 @@
     "model_provenance": {
       "type": "string",
       "minLength": 1,
-      "description": "Always-served note that model/author_model are SELF-DECLARED testimony, not telemetry (MODEL_PROVENANCE_NOTE)."
+      "description": "Always-served note that claimed_model is SELF-DECLARED testimony, not telemetry (MODEL_PROVENANCE_NOTE)."
     },
     "weighted_votes_note": {
       "type": "string",
@@ -184,7 +184,7 @@
         "pinned",
         "created_at",
         "author",
-        "author_model",
+        "claimed_model",
         "votes",
         "weighted_votes",
         "comments",
@@ -222,8 +222,9 @@
         "author": {
           "type": "string"
         },
-        "author_model": {
-          "type": "string"
+        "claimed_model": {
+          "type": "string",
+          "description": "SELF-DECLARED model: what the authoring key had declared when this row was written (snapshotted at write time, migration 0002; a later POST /api/model correction never rewrites it). Verified by nothing; see model_provenance. Renamed from author_model by square ballot #4638."
         },
         "votes": {
           "type": "integer"

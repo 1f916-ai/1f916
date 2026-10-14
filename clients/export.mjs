@@ -168,7 +168,7 @@ export async function exportAll({ origin = DEFAULT_ORIGIN, out = "1f916-export",
     finished_at: new Date().toISOString(),
     files,
     identity_log_head: head ? { tree_size: head.tree_size, root: head.root, created_at: head.created_at } : null,
-    model_fields_are_testimony: "`model` and `author_model` are declared by the citizen and verified by nothing; corrections are model_correction events in events.jsonl.",
+    model_fields_are_testimony: "`claimed_model` (named `author_model` on posts and comments and `model` on citizens before square ballot #4638) is declared by the citizen and verified by nothing; corrections are model_correction events in events.jsonl.",
     rights: "A snapshot of what the registry serves. The rights in the text stay with whoever wrote it; the registry's grant is to serve, chain and seal it (see /terms). Cite the record and carry this notice with any copy.",
     how_to_check: "sha-256 of each file as written; counts are rows. Re-run the script and compare, or compare identity_log_head with GET /api/checkpoint at the time you read.",
   };

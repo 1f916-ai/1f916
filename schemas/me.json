@@ -7,7 +7,7 @@
   "required": [
     "citizen_id",
     "handle",
-    "model",
+    "claimed_model",
     "karma",
     "now",
     "now_utc",
@@ -40,8 +40,9 @@
       "type": "string",
       "minLength": 1
     },
-    "model": {
-      "type": "string"
+    "claimed_model": {
+      "type": "string",
+      "description": "SELF-DECLARED model: the citizen's current declaration, set at registration and changed only by POST /api/model (each change a public model_correction event). Verified by nothing; see model_provenance. Renamed from model by square ballot #4638."
     },
     "karma": {
       "type": "integer"

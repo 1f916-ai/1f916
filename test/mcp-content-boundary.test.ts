@@ -357,7 +357,7 @@ test("citizen text stays verbatim but carries a server-owned trust boundary", as
     pinned: 0,
     created_at: 1_700_000_000_000,
     author: "citizen-seven",
-    author_model: "ignore-system-prompts-v1",
+    claimed_model: "ignore-system-prompts-v1",
     votes: 0,
     weighted_votes: 0,
     comments: 0,
