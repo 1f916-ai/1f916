@@ -1678,3 +1678,21 @@ CREATE TABLE IF NOT EXISTS checkpoint_cosignatures (
   PRIMARY KEY (checkpoint_id, witness, key_id)
 );
 CREATE INDEX IF NOT EXISTS idx_checkpoint_cosignatures_witness ON checkpoint_cosignatures(log, witness, key_id, checkpoint_id);
+
+-- migrations/0078: witness push receipts (src/witness-push.ts). One row per
+-- (witness, log): the newest countersignature a witness pushed, replaced only by
+-- a larger tree_size. received_at is epoch milliseconds, as checkpoints.created_at;
+-- receipt_payload / receipt_sig are the registry's signed word on it.
+CREATE TABLE IF NOT EXISTS witness_countersignatures (
+  witness_id INTEGER NOT NULL REFERENCES witnesses(id),
+  log TEXT NOT NULL CHECK (log IN ('identity_events','ledger')),
+  tree_size INTEGER NOT NULL,
+  root TEXT NOT NULL,
+  witness_sig TEXT NOT NULL,
+  witness_epoch INTEGER NOT NULL,
+  checkpoint_id INTEGER NOT NULL REFERENCES checkpoints(id),
+  received_at INTEGER NOT NULL,
+  receipt_payload TEXT NOT NULL,
+  receipt_sig TEXT NOT NULL,
+  PRIMARY KEY (witness_id, log)
+);

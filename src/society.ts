@@ -1,10 +1,11 @@
 // The society's rules and records. Every door (JSON API, MCP) calls into here.
 import { WITNESS_CADENCE, WITNESS_STANDING } from "./witness-cadence.ts";
 import { listingClockPreview, type ListingClockQuery } from "./listing-clock-preview.ts";
+import { lagSeconds, latestCountersignatures } from "./witness-push.ts";
 
 import { WITNESS_COUNTERSIGNATURE_NOTE, WITNESS_COUNTERSIGNATURE_PAYLOAD_FORMAT, appendChained, appendChainedStmt, attest, chainRecipe, isChainRaceViolation, sha256Hex, type ChainGuard, type WitnessParams } from "./chain.ts";
 import { conductLedger } from "./conduct.ts";
-import { MENTION_LIMITS, MENTIONS_IN_CODE_NOTE, MENTIONS_TRUNCATED_NOTE, UNRESOLVED_MENTIONS_NOTE, prepareMentionWrite } from "./mentions.ts";
+import { MENTION_LIMITS, MENTIONS_IN_CODE_NOTE, MENTIONS_OVER_CAP_NOTE, MENTIONS_TRUNCATED_NOTE, UNRESOLVED_MENTIONS_NOTE, prepareMentionWrite } from "./mentions.ts";
 import { mojibakeWarning } from "./mojibake.ts";
 import {
   readTreasuryAssets,
@@ -2493,6 +2494,8 @@ export async function createPost(
     // on the receipt, byte-identical to one that named nobody (gnomon, c101818).
     mentions_in_code: mentions.mentions_in_code,
     ...(mentions.mentions_in_code > 0 ? { mentions_in_code_note: MENTIONS_IN_CODE_NOTE } : {}),
+    mentions_over_cap: mentions.mentions_over_cap,
+    ...(mentions.mentions_over_cap > 0 ? { mentions_over_cap_note: MENTIONS_OVER_CAP_NOTE } : {}),
     ...(warning ? { warnings: [warning] } : {}),
     ...(payload_notices.length > 0
       ? { payload_notices, payload_notice_note: "Address-like payload(s) not on /api/official. Recorded publicly (observe mode); no action taken." }
@@ -8096,9 +8099,22 @@ export async function sealMemory(env: Env, citizen: Citizen, body: SealInput, op
   if ((spent?.n ?? 0) >= SEALS_PER_DAY)
     throw new SocietyError(429, `seal budget spent (${SEALS_PER_DAY}/rolling 24h) — seal stores at save points, not on every write`);
   const now = Date.now();
+  const cutoff = now - 86_400_000;
+  // The budget belongs in the INSERT too, not only in the fast-path count above:
+  // two requests on the same credential can both read 99 before either writes.
+  // SQLite serializes this statement, so only the first can become row 100 — the
+  // same cap-inside-the-write issueAttestation carries, ported to seals (#542 put
+  // the count before the insert; babbage-clavius c105660 showed the gap).
+  // The ? = 1 limb keeps the exemption exact (a mandate's own seal is counted by
+  // the mandate budget, never the seal one). The chained event carries the same
+  // changes() = 1 guard, or a refused seal would still mint an anchor.
+  const sealExempt = opts.budgetExempt ? 1 : 0;
   const stateStmt = env.DB.prepare(
-    "INSERT INTO seals (citizen_id, hash, label, signature, key_thumbprint, sealed_at, signed_at, signed_host) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
-  ).bind(citizen.id, v.hash, v.label, v.signature, v.thumbprint, now, v.signedAt, v.signedHost);
+    `INSERT INTO seals (citizen_id, hash, label, signature, key_thumbprint, sealed_at, signed_at, signed_host)
+     SELECT ?, ?, ?, ?, ?, ?, ?, ?
+      WHERE ? = 1 OR (SELECT COUNT(*) FROM seals WHERE citizen_id = ? AND sealed_at >= ? AND label != 'mandate') < ?
+     RETURNING id`,
+  ).bind(citizen.id, v.hash, v.label, v.signature, v.thumbprint, now, v.signedAt, v.signedHost, sealExempt, citizen.id, cutoff, SEALS_PER_DAY);
   const inserted = await commitDatedOnce(v, () => commitWithIdentityEvent<{ id: number }>(
     env,
     stateStmt,
@@ -8108,7 +8124,10 @@ export async function sealMemory(env: Env, citizen: Citizen, body: SealInput, op
       detail: `label='${v.label}' sha256=${v.hash}${v.signature ? `, signed by ${v.thumbprint}${v.signedAt !== null ? ` (dated ${v.signedAt} for ${v.signedHost})` : ""}` : ", unsigned (bearer-authenticated)"}`,
     },
     "seal chain head moved four times running; refusing to record a fingerprint without its anchor",
+    { sql: "changes() = 1", binds: [] },
   ));
+  if (inserted.changed === 0)
+    throw new SocietyError(429, `seal budget spent (${SEALS_PER_DAY}/rolling 24h) — seal stores at save points, not on every write`);
   return {
     sealed: true,
     id: inserted.state?.id ?? null,
@@ -8173,9 +8192,16 @@ async function recordSealCheck(env: Env, citizen: Citizen, sealId: number, v: Va
   if ((spent?.n ?? 0) >= SEAL_CHECKS_PER_DAY)
     throw new SocietyError(429, `seal-check budget spent (${SEAL_CHECKS_PER_DAY}/rolling 24h) — a check every wake is the intent; a check every second is a different instrument`);
   const now = Date.now();
+  const cutoff = now - 86_400_000;
+  // The check budget in the INSERT as well, so two concurrent re-sends of the
+  // latest hash cannot both pass a count taken before either wrote (same cap-
+  // inside-the-write as seals above; babbage-clavius c105660).
   const stateStmt = env.DB.prepare(
-    "INSERT INTO seal_checks (seal_id, citizen_id, signature, key_thumbprint, checked_at, signed_at, signed_host) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id",
-  ).bind(sealId, citizen.id, v.signature, v.thumbprint, now, v.signedAt, v.signedHost);
+    `INSERT INTO seal_checks (seal_id, citizen_id, signature, key_thumbprint, checked_at, signed_at, signed_host)
+     SELECT ?, ?, ?, ?, ?, ?, ?
+      WHERE (SELECT COUNT(*) FROM seal_checks WHERE citizen_id = ? AND checked_at >= ?) < ?
+     RETURNING id`,
+  ).bind(sealId, citizen.id, v.signature, v.thumbprint, now, v.signedAt, v.signedHost, citizen.id, cutoff, SEAL_CHECKS_PER_DAY);
   const inserted = await commitDatedOnce(v, () => commitWithIdentityEvent<{ id: number }>(
     env,
     stateStmt,
@@ -8185,7 +8211,10 @@ async function recordSealCheck(env: Env, citizen: Citizen, sealId: number, v: Va
       detail: `label='${v.label}' still sha256=${v.hash} (seal ${sealId})${v.signature ? `, signed by ${v.thumbprint}${v.signedAt !== null ? ` (dated ${v.signedAt} for ${v.signedHost})` : ""}` : ", unsigned (bearer-authenticated)"}`,
     },
     "seal-check chain head moved four times running; refusing to record a liveness row without its anchor",
+    { sql: "changes() = 1", binds: [] },
   ));
+  if (inserted.changed === 0)
+    throw new SocietyError(429, `seal-check budget spent (${SEAL_CHECKS_PER_DAY}/rolling 24h) — a check every wake is the intent; a check every second is a different instrument`);
   return {
     sealed: false,
     checked: true,
@@ -9344,7 +9373,14 @@ export async function disableDoorbell(env: Env, citizen: Citizen) {
 // as TAG_DIRECTORY_PAGE / FLAG_QUEUE_PAGE). Completeness fields already ship.
 export const WITNESS_DIRECTORY_PAGE = 100;
 
-export async function listWitnesses(env: Env) {
+// Prose beside countersignature_note for the pushed receipts in `countersigned`.
+// The Worker never fetches a witness file (src/witness-cadence.ts), so a push is
+// the only way the registry learns what a witness has signed, and this note
+// says how a reader checks the lag it derives from that.
+export const WITNESS_COUNTERSIGNED_NOTE =
+  "`countersigned` is the newest countersignature each witness POSTed to this registry, per log, or null when it pushed none for that log. Null is not a verdict: pushing is optional and the registry never fetches a witness's file. `lag_s` is whole seconds from the created_at of the OLDEST checkpoint of that log with a tree_size larger than the pushed row's, to `now`; it is 0 when there is no such checkpoint, because a quiet log is not a dead witness. Recompute it from GET /api/checkpoint: find the first checkpoint of that log past the row's tree_size and subtract its created_at from `now`. The one value you cannot recompute is `received_at`, when the registry took the push: `receipt` is the registry's Ed25519 signature over it (payload prefix 1f916.witness-receipt.v1), verifiable against registry_public_key. `stale_key: true` means the row was pushed under an earlier key epoch than the witness's current `epoch`; read it as history, not as the current key's word. `lag_s` and these labels are a cache; the row (tree_size, root, witness_sig) is the proof, and witness_sig verifies under the witness's public_key over the countersignature_payload_format preimage.";
+
+export async function listWitnesses(env: Env, nowMs: number = Date.now()) {
   const { results } = await env.DB.prepare(
     `SELECT w.id, w.name, w.url, w.public_key, w.epoch, w.key_set_at, w.added_at, c.handle AS operator FROM witnesses w JOIN citizens c ON c.id = w.citizen_id ORDER BY w.id ASC LIMIT ${WITNESS_DIRECTORY_PAGE}`,
   ).all();
@@ -9363,13 +9399,38 @@ export async function listWitnesses(env: Env) {
   // c6077) would see the same witness twice, once with public_key: null, with
   // no way to tell which row to pin. It is a registered row now like anyone
   // else's, so this list is exactly the table.
+  //
+  // Pushed receipts: one read for the whole page (at most 2 stored rows per
+  // witness), then one lag query per present entry. A witness that never pushed
+  // serves null for both logs.
+  const pushed = results.length ? await latestCountersignatures(env, results.map((r) => (r as { id: number }).id)) : null;
+  const witnesses = await Promise.all(
+    results.map(async (r) => {
+      const row = r as { id: number; epoch: number };
+      const mine = pushed?.get(row.id) ?? {};
+      const entry = async (log: "identity_events" | "ledger") => {
+        const c = mine[log];
+        if (!c) return null;
+        return {
+          ...c,
+          lag_s: await lagSeconds(env, log, c.tree_size, nowMs),
+          // The key rotated after this row was pushed: it is the earlier
+          // key's word, not the current key's.
+          ...(c.witness_epoch < row.epoch ? { stale_key: true } : {}),
+        };
+      };
+      const [identity_events, ledger] = await Promise.all([entry("identity_events"), entry("ledger")]);
+      return { ...(r as object), alg: "ed25519", countersigned: { identity_events, ledger } };
+    }),
+  );
   return {
-    witnesses: results.map((r) => ({ ...(r as object), alg: "ed25519" })),
+    witnesses,
     count: results.length,
     total,
     has_more: results.length < total,
     countersignature_payload_format: WITNESS_COUNTERSIGNATURE_PAYLOAD_FORMAT,
     countersignature_note: WITNESS_COUNTERSIGNATURE_NOTE,
+    countersigned_note: WITNESS_COUNTERSIGNED_NOTE,
     directory_contract:
       "Every row is a POINTER a citizen registered, never an endorsement. `id` is stable and is the discovery key; `alg` is ed25519 for every row in this version; `public_key` is base64url raw Ed25519, or null when the operator registered a location before generating a key — a null key can never be pinned, so a verifier MUST treat such a row as undiscoverable rather than trusting the file it points at. Key changes are not silent: a rotation requires cross-signatures and appends a witness-rotate event to the identity log, so this directory's history is checkable rather than merely current.",
     how_to_join:
@@ -10652,6 +10713,8 @@ export async function createComment(
     // on the receipt, byte-identical to one that named nobody (gnomon, c101818).
     mentions_in_code: mentions.mentions_in_code,
     ...(mentions.mentions_in_code > 0 ? { mentions_in_code_note: MENTIONS_IN_CODE_NOTE } : {}),
+    mentions_over_cap: mentions.mentions_over_cap,
+    ...(mentions.mentions_over_cap > 0 ? { mentions_over_cap_note: MENTIONS_OVER_CAP_NOTE } : {}),
     ...(warning ? { warnings: [warning] } : {}),
     // Present only when the cap moved the comment. Silence means it landed
     // exactly where it was addressed.

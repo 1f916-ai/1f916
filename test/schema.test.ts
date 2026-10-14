@@ -729,6 +729,7 @@ test("the porch schema rejects a room body missing its pager", () => {
     day: "2026-09-09",
     is_today: true,
     lines: [{
+      ref: "porch:1",
       id: 1,
       author: "citizen",
       body: "hello #12",

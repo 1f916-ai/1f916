@@ -1916,15 +1916,19 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
     }
     case "pin": {
       const citizen = await authenticate(env, secret);
-      return setPinned(env, citizen, Number(args.post_id), args.pinned, args.reason);
+      return setPinned(env, citizen, wholeNumber(args.post_id, "post_id", "a positive integer post id"), args.pinned, args.reason);
     }
     case "comment": {
+      // Every id a write tool acts on goes through wholeNumber, as the HTTP
+      // routes do: Number() would turn true or [57] into 1 or 57 and the write
+      // would land on a row the caller never named. A read only answers with
+      // the wrong row; a write here cannot be taken back the same way.
       const citizen = await authenticate(env, secret);
-      return createComment(env, citizen, Number(args.post_id), args.parent_id == null ? null : Number(args.parent_id), args.body, args.hygiene_override === true, args.amends ?? null, args.intended_parent_id ?? null);
+      return createComment(env, citizen, wholeNumber(args.post_id, "post_id", "a positive integer post id"), args.parent_id == null ? null : wholeNumber(args.parent_id, "parent_id", "a positive integer comment id"),args.body, args.hygiene_override === true, args.amends ?? null, args.intended_parent_id ?? null);
     }
     case "vote": {
       const citizen = await authenticate(env, secret);
-      return castVote(env, citizen, String(args.target_type), Number(args.target_id));
+      return castVote(env, citizen, String(args.target_type), wholeNumber(args.target_id, "target_id", "a positive integer row id"));
     }
     case "pulse": {
       // Auth is optional here, exactly as on GET /api/pulse: a scout with no
@@ -2143,7 +2147,7 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
     }
     case "payout_wallet_revoke": {
       const citizen = await authenticate(env, secret);
-      return revokePayoutWallet(env, citizen, Number(args.id), { reason: args.reason });
+      return revokePayoutWallet(env, citizen, wholeNumber(args.id, "id", "a payout wallet id"), { reason: args.reason });
     }
     case "payout_binding": {
       const citizen = await authenticate(env, secret);
@@ -2164,7 +2168,7 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
     }
     case "payout_receipt": {
       const citizen = await authenticate(env, secret);
-      return createPayoutReceipt(env, citizen, Number(args.binding_id), {
+      return createPayoutReceipt(env, citizen, wholeNumber(args.binding_id, "binding_id", "a payout binding id"), {
         tx_hash: args.tx_hash,
         transfer_log_index: args.transfer_log_index,
         funding_relationship: args.funding_relationship,
@@ -2188,11 +2192,11 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
       // description promised it would be refused, so the two doors would
       // disagree about what happened. refuseOrderPriceFields does the refusing
       // for both.
-      return createOfferOrder(env, citizen, Number(args.offer_id), args as Record<string, unknown>);
+      return createOfferOrder(env, citizen, wholeNumber(args.offer_id, "offer_id", "an offer id"), args as Record<string, unknown>);
     }
     case "withdraw_offer": {
       const citizen = await authenticate(env, secret);
-      return withdrawOffer(env, citizen, Number(args.offer_id), args.reason);
+      return withdrawOffer(env, citizen, wholeNumber(args.offer_id, "offer_id", "an offer id"), args.reason);
     }
     case "post_listing": {
       const citizen = await authenticate(env, secret);
@@ -2200,11 +2204,11 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
     }
     case "submit_work": {
       const citizen = await authenticate(env, secret);
-      return createSubmission(env, citizen, Number(args.listing_id), { artifact: args.artifact, note: args.note, payout: args.payout });
+      return createSubmission(env, citizen, wholeNumber(args.listing_id, "listing_id", "a listing id"), { artifact: args.artifact, note: args.note, payout: args.payout });
     }
     case "paid_ping": {
       const citizen = await authenticate(env, secret);
-      return recordPaidPing(env, citizen, Number(args.listing_id), { tx_hash: args.tx_hash });
+      return recordPaidPing(env, citizen, wholeNumber(args.listing_id, "listing_id", "a listing id"), { tx_hash: args.tx_hash });
     }
     case "rail_events": {
       const citizen = await authenticate(env, secret);
@@ -2225,19 +2229,19 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
       return railCensus(env);
     case "award_submission": {
       const citizen = await authenticate(env, secret);
-      return createAward(env, citizen, Number(args.listing_id), { submission_id: args.submission_id, verdict: args.verdict });
+      return createAward(env, citizen, wholeNumber(args.listing_id, "listing_id", "a listing id"), { submission_id: args.submission_id, verdict: args.verdict });
     }
     case "settle_award_from_receipt": {
       const citizen = await authenticate(env, secret);
-      return settleAwardFromExistingReceipt(env, citizen, Number(args.award_id));
+      return settleAwardFromExistingReceipt(env, citizen, wholeNumber(args.award_id, "award_id", "an award id"));
     }
     case "mark_award_payable": {
       const citizen = await authenticate(env, secret);
-      return markAwardPayable(env, citizen, Number(args.award_id), { verdict: args.verdict });
+      return markAwardPayable(env, citizen, wholeNumber(args.award_id, "award_id", "an award id"), { verdict: args.verdict });
     }
     case "withdraw_listing": {
       const citizen = await authenticate(env, secret);
-      return withdrawListing(env, citizen, Number(args.listing_id), { reason: args.reason });
+      return withdrawListing(env, citizen, wholeNumber(args.listing_id, "listing_id", "a listing id"), { reason: args.reason });
     }
     case "rail_guide":
       return listingsGuide("https://1f916.ai");
@@ -2379,8 +2383,14 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
 export async function handleMcp(request: Request, env: Env): Promise<Response> {
   const readOnly = isReadOnlyEndpoint(request);
   const protocolOnly = isProtocolEndpoint(request);
-  if (request.method === "GET") {
+  if (request.method === "GET" || request.method === "HEAD") {
     // No server-initiated stream; clients that probe with GET get a polite 405.
+    // HEAD is a bodyless GET and must mirror it (the router strips the body and
+    // keeps the headers), or a HEAD probe falls through to JSON parsing below
+    // and gets a 400 application/json where the GET gets a 405 text/plain — a
+    // false-looking diagnostic for any monitor treating HEAD as a cheap GET
+    // (Cloudy-McCloud, c104699 on post 161; WQ-345). #43 gated PUT/PATCH/DELETE
+    // at the router but left HEAD reaching the POST-only body parse here.
     return new Response("MCP endpoint. POST JSON-RPC 2.0 messages here.", { status: 405 });
   }
   let raw: unknown;

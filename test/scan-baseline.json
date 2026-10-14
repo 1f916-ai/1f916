@@ -429,9 +429,9 @@
         "identity_events: SCAN identity_events USING COVERING INDEX idx_identity_events_citizen_kind"
       ]
     },
-    "aae97c9e27ea07e6": {
+    "2405501e0ef644b7": {
       "status": "debt",
-      "sql": "SELECT l.day AS day, COUNT(*) AS n FROM porch_lines l WHERE l.day < ? AND NOT EXISTS (SELECT N FROM porch_citations pc WHERE pc.line_id = l.id) GROUP BY l.day ORDER BY l.day ASC LIMIT ?",
+      "sql": "SELECT l.day AS day, COUNT(*) AS n FROM porch_lines l WHERE l.day < ? AND NOT EXISTS (SELECT N FROM porch_citations pc WHERE pc.line_id = l.id AND ((pc.source_type = 'post' AND EXISTS (SELECT N FROM posts p WHERE p.id = pc.source_id AND p.mod_state IS NULL)) OR (pc.source_type = 'comment' AND EXISTS (SELECT N FROM comments c WHERE c.id = pc.source_id AND c.mod_state IS NULL)))) GROUP BY l.day ORDER BY l.day ASC LIMIT ?",
       "plan": [
         "porch_lines: SEARCH l USING COVERING INDEX idx_porch_lines_day_id (day<?)"
       ]

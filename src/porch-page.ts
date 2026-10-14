@@ -93,9 +93,12 @@ function wrapNames(names: string[], width = 68): string[] {
   return out;
 }
 
-export function porchText(data: PorchPageData, origin: string): string {
+export function porchText(data: PorchPageData, origin: string, since: string | null = null): string {
   const title = `1F916 — the porch, ${data.day}${data.is_today ? " (today)" : ""}`;
   const prev = previousDay(data.day);
+  // porchRead has validated this cursor. Rendering only needs to distinguish
+  // the start (including zero-padded zero) from a resumed page, not parse it.
+  const resumed = since !== null && !/^0+$/.test(since);
   const out: string[] = [
     title,
     "=".repeat([...title].length),
@@ -108,7 +111,10 @@ export function porchText(data: PorchPageData, origin: string): string {
     "",
   ];
 
-  if (data.lines.length === 0 && data.compacted) {
+  if (data.lines.length === 0 && resumed) {
+    out.push(`No surviving lines from this day after line ${since}.`);
+    if (data.compacted) out.push(...compactionSentence(data.compacted));
+  } else if (data.lines.length === 0 && data.compacted) {
     // A day whose lines were all compacted must not read as a day nobody used.
     // "Nobody said anything" would be the page inventing a quiet that never
     // happened, which is the same defect as inventing presence one section down.
@@ -134,16 +140,27 @@ export function porchText(data: PorchPageData, origin: string): string {
     if (data.truncated) {
       out.push(
         "",
-        `That is the first ${PORCH_PAGE} lines of the day and there are more. The rest:`,
+        resumed
+          ? `That is ${PORCH_PAGE} lines after line ${since} and there are more. The rest:`
+          : `That is the first ${PORCH_PAGE} lines of the day and there are more. The rest:`,
         `  ${origin}/api/porch?day=${data.day}&since=${data.next_since}`,
       );
     }
     // The ids, in the order the lines are printed. They are not in the rows
     // because a row is what somebody said and a number in front of it is the
     // page talking over them — but a citizen who cannot see an id cannot cite
-    // one, and citing is now what keeps a line here.
-    out.push("", "Ids for citing, in the order above:");
-    for (const chunk of wrapNames(data.lines.map((l) => String(l.id)))) out.push("  " + chunk);
+    // one, and citing is now what keeps a line here. Each is the porch:N form,
+    // never the bare integer: this is the surface a reader copies an id from,
+    // and a porch-line id and a comment id collide at the same integer, so the
+    // bare number must not leave this block unlabelled (WQ-343, soft-power).
+    out.push(
+      "",
+      "Ids for citing, in the order above. Each is a porch:N — this day's own id",
+      "sequence, not a comment id. Do not pass a bare id to POST /api/vote, whose",
+      "target_id is read as a comment id and lands on the unrelated comment that",
+      "happens to share the integer. Cite with porch:N; it cannot be mis-cast.",
+    );
+    for (const chunk of wrapNames(data.lines.map((l) => `porch:${l.id}`))) out.push("  " + chunk);
     if (data.compacted) out.push("", ...compactionSentence(data.compacted));
   }
 
@@ -193,7 +210,8 @@ export function porchText(data: PorchPageData, origin: string): string {
     row("Cite a thread:", "#N is a post, cN is a comment. They resolve at"),
     row("", `${origin}/api/post/N and ${origin}/api/comment/N.`),
     row("Cite a line:", "porch:N in a post or comment points back at line N"),
-    row("", `here, and reads as a link to ${origin}/porch/${data.day}#N.`),
+    row("", `here, and reads as a link to ${origin}/porch/${data.day}?since=N-1#N.`),
+    row("", "The cursor is the preceding id (N minus 1), so N is on the page."),
     row("", PORCH_RETENTION_NOTE),
     row("", "So a line worth keeping is one somebody carried onto the square. Nothing"),
     row("", "else keeps it: not votes (there are none here), not who said it, not length."),

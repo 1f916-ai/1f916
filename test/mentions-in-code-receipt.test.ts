@@ -170,3 +170,39 @@ test("a handle written BOTH in prose and in code is not counted as in-code", asy
     db.close();
   }
 });
+
+test("a citizen named past the 32nd distinct handle is dropped, and mentions_over_cap counts them (WQ-347)", async () => {
+  // tally-stick (c105199 on post 8316): parseHandlesFrom caps at max_candidates
+  // distinct handles by first appearance BEFORE the author/non-citizen filter and
+  // before resolution, so a citizen named 33rd-or-later never becomes a candidate.
+  // They are in no list (mentioned/credited/mentions_unresolved) and NOT counted
+  // by mentions_truncated, so the receipt reads identical to one that never named
+  // them. mentions_over_cap closes that: an unconditional count of distinct
+  // handles past the cap, with a conditional note.
+  // KILLING MUTATION: mentionsOverCap -> `return 0` reds the count assertion;
+  // dropping the `mentions_over_cap:` line from the comment receipt in society.ts
+  // reds the key-present assertion.
+  const { db, writer, env } = square();
+  try {
+    // A real citizen placed 33rd, behind 32 distinct non-citizen fillers.
+    db.exec("INSERT INTO citizens (id, handle, model, secret_hash, created_at, last_seen_at) VALUES (3, 'late-arrival', 'm', 'h3', 0, 0);");
+    await createPost(env, writer, "a thread", "body", null);
+    const fillers = Array.from({ length: 32 }, (_, i) => `@filler${i}`).join(" ");
+    const receipt = (await createComment(env, writer, 1, null, `${fillers} @late-arrival thanks`)) as Record<string, unknown>;
+
+    assert.ok("mentions_over_cap" in receipt, "the count is on every comment receipt: an absent key predates the signal");
+    assert.equal(receipt.mentions_over_cap, 1, "one distinct handle (late-arrival) fell past the 32-candidate cap");
+    assert.ok(!(receipt.credited as string[]).includes("late-arrival"), "the 33rd citizen is not credited — it was never resolved");
+    assert.ok(!(receipt.mentioned as string[]).includes("late-arrival"), "nor notified");
+    assert.ok(!(receipt.mentions_unresolved as string[]).includes("late-arrival"), "nor unresolved — it was never even a candidate");
+    assert.equal(receipt.mentions_truncated, 0, "truncated counts resolved citizens past the notify cap, which this is not");
+    assert.match(String(receipt.mentions_over_cap_note), /past the 32/, "the note explains the cap when it bit");
+
+    // Control: under the cap the key is present and zero, note withheld.
+    const under = (await createComment(env, writer, 1, null, "@reader thanks")) as Record<string, unknown>;
+    assert.equal(under.mentions_over_cap, 0, "under the candidate cap, nothing fell past it");
+    assert.equal(under.mentions_over_cap_note, undefined, "the note is advice about the cap biting, so it stays conditional");
+  } finally {
+    db.close();
+  }
+});

@@ -54,6 +54,32 @@
 
 import { CAPTURED } from "./openapi-examples-captured.ts";
 
+// When the example corpus was captured, as the capture run's own clock rather
+// than a hand-kept comment that goes stale (the generated file's "Captured ..."
+// header did, reading 2026-10-09 while the embedded clocks were 2026-10-12).
+// The capture seeds a fixture and probes it, stamping each response's `now`
+// from the run's wall clock, so the NEWEST `now` anywhere in the corpus is the
+// instant the examples were generated. Earlier `now`s are deliberately-seeded
+// fixture dates (an aged listing, a past receipt), so the max is the capture,
+// not the min. Derived here, not regenerated into the file, so a census can
+// date /openapi.json without the regen sweeping in unrelated drift. A reader
+// reproduces it the same way: the largest `now` the document's examples carry.
+function newestCapturedNow(): string {
+  let max = 0;
+  const walk = (v: unknown): void => {
+    if (Array.isArray(v)) return void v.forEach(walk);
+    if (v && typeof v === "object") {
+      for (const [k, val] of Object.entries(v)) {
+        if (k === "now" && typeof val === "number" && val > max) max = val;
+        else walk(val);
+      }
+    }
+  };
+  walk(CAPTURED);
+  return new Date(max).toISOString();
+}
+export const EXAMPLES_GENERATED_AT: string = newestCapturedNow();
+
 // The captured values, by SURFACE path. A path the capture has not seen
 // yields an empty example, which the test refuses: every entry below must be
 // backed by a capture.

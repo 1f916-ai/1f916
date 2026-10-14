@@ -35,6 +35,7 @@ function base(overrides: Record<string, unknown> = {}) {
     targets: {
       ots_calendars: ["https://alice.btc.calendar.opentimestamps.org"],
       base: true,
+      base_address: "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
       archive: "authenticated",
     },
     anchored_text: "1f916.checkpoint.v1:...",

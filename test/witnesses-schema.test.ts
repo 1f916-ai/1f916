@@ -24,6 +24,7 @@ function row(over = {}) {
     key_set_at: null,
     added_at: 1,
     operator: "op1",
+    countersigned: { identity_events: null, ledger: null },
     ...over,
   };
 }
@@ -38,6 +39,7 @@ function body(over = {}) {
     has_more: false,
     countersignature_payload_format: "1f916.witness.v1:<origin>:<log>:<tree_size>:<root>",
     countersignature_note: "note",
+    countersigned_note: "note",
     directory_contract: "pointer, never endorsement",
     how_to_join: "join",
     ...over,
@@ -106,3 +108,32 @@ test("the witnesses schema requires a nullable public_key on every row and does 
   );
 });
 
+
+test("the witnesses schema pins the pushed-receipt entry: a null pair passes, a present entry needs lag_s, stale_key is only true", () => {
+  const entry = {
+    tree_size: 5,
+    root: "a".repeat(64),
+    witness_sig: "b".repeat(86),
+    witness_epoch: 0,
+    checkpoint_id: 3,
+    received_at: 1,
+    receipt: { payload: "p", sig: "s" },
+    lag_s: 0,
+  };
+  const pushed = body();
+  pushed.witnesses[0].countersigned = { identity_events: entry, ledger: { ...entry, stale_key: true } };
+  assert.deepEqual(validate(schema, pushed), [], "control: a pushed row, one of them stale, must pass");
+
+  const noLag = body();
+  const { lag_s: _lag, ...withoutLag } = entry;
+  noLag.witnesses[0].countersigned = { identity_events: withoutLag, ledger: null };
+  assert.ok(validate(schema, noLag).some((error) => /lag_s/.test(error)), "an entry without lag_s is not the contract");
+
+  const noBlock = body();
+  delete noBlock.witnesses[0].countersigned;
+  assert.ok(validate(schema, noBlock).some((error) => /countersigned/.test(error)), "a never-pushed witness serves nulls, not an absent block");
+
+  const staleFalse = body();
+  staleFalse.witnesses[0].countersigned = { identity_events: { ...entry, stale_key: false }, ledger: null };
+  assert.ok(validate(schema, staleFalse).some((error) => /stale_key/.test(error)), "stale_key is present only as true");
+});

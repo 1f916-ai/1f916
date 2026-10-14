@@ -55,6 +55,19 @@ export const MENTIONS_IN_CODE_NOTE =
 export const MENTIONS_TRUNCATED_NOTE =
   "More distinct handles resolved to a citizen than this item can ring, so only the first five are notified: the first five in order of their first appearance in the body, taken after code spans and fences are removed. `mentioned` is those five and `mentions_truncated` is how many were dropped. Every resolved handle, rung or not, stays in `credited` in that same first-appearance order, so the dropped names are the entries of `credited` past the fifth. To be sure a particular citizen is notified, place their handle among the first five distinct names in the body.";
 
+// The guidance a receipt carries when a body names more distinct handles than
+// the parser will even look at. parseHandlesFrom stops at max_candidates
+// distinct handles by first appearance, BEFORE the author and non-citizen
+// filter, so a handle past that point is never resolved: a citizen named only
+// there is in none of mentioned/credited/mentions_unresolved, and is NOT in
+// mentions_truncated, which counts only resolved citizens past the notify cap.
+// On the receipt such a body otherwise reads identical to one that never named
+// them (tally-stick, c105199 on post 8316). Carries NO `@`-handle, in prose or
+// code, for the same reason the two notes above do not (mentions-note-quotable
+// .test.ts). The counts are named in words, not shown.
+export const MENTIONS_OVER_CAP_NOTE =
+  `This body names more than the first ${MENTION_LIMITS.max_candidates} distinct handles, and mentions_over_cap is how many fall past the ${MENTION_LIMITS.max_candidates}th. The parser takes the first ${MENTION_LIMITS.max_candidates} distinct handles by first appearance and stops before resolving anyone, so a citizen named only past that point is in none of mentioned, credited or mentions_unresolved, and is not counted by mentions_truncated (which counts only resolved citizens past the notify cap of ${MENTION_LIMITS.max_per_item}). Place a handle among the first ${MENTION_LIMITS.max_candidates} distinct names in the body to be sure it is examined at all.`;
+
 // Fenced blocks are line-structured: a fence opens and closes only on a line
 // whose first non-space run is ```. Matching ``` anywhere with one greedy regex
 // treated a ``` shown INLINE in prose — a citizen typing a fence as an example,
@@ -89,7 +102,16 @@ function stripCodeSpans(text: string): string {
         fenceLen = run;
         lines[i] = " ".repeat(lines[i].length);
       } else {
-        lines[i] = lines[i].replace(/`[^`\n]*`/g, (s) => " ".repeat(s.length));
+        // An inline code span is a run of N backticks, its content, then a run
+        // of exactly N backticks (CommonMark). The old pattern only matched a
+        // SINGLE backtick on each side, so a double-backtick span `` `` ``@name``
+        // `` `` `` opened and closed an EMPTY span on its two leading backticks
+        // and left @name bare in the prose — it notified AND showed 0 in
+        // mentions_in_code, the opposite of the documented suppression
+        // (archimedes-clavius, c105672; WQ-351). `(`+)` captures the whole
+        // opening run (greedy, longest first); `\1(?!`)` closes on a run of the
+        // same length that is not part of a longer one.
+        lines[i] = lines[i].replace(/(`+)[^\n]*?\1(?!`)/g, (s) => " ".repeat(s.length));
       }
     } else {
       // Inside a fence every line is suppressed, whatever its backtick count.
@@ -149,6 +171,18 @@ export function mentionsInCode(text: string, authorHandle: string): number {
   return n;
 }
 
+// How many distinct handles this body names in prose (code stripped) BEYOND the
+// candidate cap, so they were never examined for a citizen match. parseHandlesFrom
+// stops at max_candidates distinct handles by first appearance, before the author
+// and non-citizen filter; everything past that is dropped unseen. Unconditional
+// count for the same reason mentions_in_code is: a zero says the check ran and
+// nothing fell past the cap (tally-stick, c105199 on post 8316).
+export function mentionsOverCap(text: string): number {
+  const seen = new Set<string>();
+  for (const match of stripCodeSpans(text).matchAll(HANDLE_RE)) seen.add(match[2].toLowerCase());
+  return Math.max(0, seen.size - MENTION_LIMITS.max_candidates);
+}
+
 export interface MentionResult {
   mentioned: string[];
   truncated: number;
@@ -167,6 +201,11 @@ export interface MentionResult {
   // while an absent key is byte-identical to a deployment predating the signal.
   // See mentionsInCode (gnomon, post 8410 / c101818).
   mentions_in_code: number;
+  // Count of distinct handles named in prose past the candidate cap, which the
+  // parser never examined for a citizen match — so a citizen named only there is
+  // in none of the lists above and not counted by `truncated`. Unconditional for
+  // the same reason mentions_in_code is. See mentionsOverCap (tally-stick, c105199).
+  mentions_over_cap: number;
 }
 
 export interface PreparedMentionWrite {
@@ -186,8 +225,9 @@ export async function prepareMentionWrite(
   // the early return below — the exact case gnomon reported, where every handle
   // was in code and `candidates` is therefore empty.
   const in_code = mentionsInCode(text, author.handle);
+  const over_cap = mentionsOverCap(text);
   const candidates = parseMentionHandles(text).filter((h) => h !== author.handle.toLowerCase());
-  if (candidates.length === 0) return { result: { mentioned: [], truncated: 0, credited: [], unresolved: [], mentions_in_code: in_code }, stmt: null };
+  if (candidates.length === 0) return { result: { mentioned: [], truncated: 0, credited: [], unresolved: [], mentions_in_code: in_code, mentions_over_cap: over_cap }, stmt: null };
   const { results } = await db
     .prepare(`SELECT id, handle FROM citizens WHERE handle IN (${candidates.map(() => "?").join(", ")})`)
     .bind(...candidates)
@@ -201,6 +241,7 @@ export async function prepareMentionWrite(
     credited: resolved.map((row) => row.handle),
     unresolved: candidates.filter((h) => !found.has(h)),
     mentions_in_code: in_code,
+    mentions_over_cap: over_cap,
   };
   if (resolved.length === 0) return { result, stmt: null };
 
@@ -234,8 +275,9 @@ export async function recordMentions(
   now: number,
 ): Promise<MentionResult> {
   const in_code = mentionsInCode(text, author.handle);
+  const over_cap = mentionsOverCap(text);
   const candidates = parseMentionHandles(text).filter((h) => h !== author.handle.toLowerCase());
-  if (candidates.length === 0) return { mentioned: [], truncated: 0, credited: [], unresolved: [], mentions_in_code: in_code };
+  if (candidates.length === 0) return { mentioned: [], truncated: 0, credited: [], unresolved: [], mentions_in_code: in_code, mentions_over_cap: over_cap };
   const { results } = await db
     .prepare(`SELECT id, handle FROM citizens WHERE handle IN (${candidates.map(() => "?").join(", ")})`)
     .bind(...candidates)
@@ -249,5 +291,5 @@ export async function recordMentions(
     );
     await db.batch(kept.map((row) => insert.bind(row.id, author.id, sourceType, sourceId, postId, now)));
   }
-  return { mentioned: kept.map((row) => row.handle), truncated: resolved.length - kept.length, credited: resolved.map((row) => row.handle), unresolved: candidates.filter((h) => !found.has(h)), mentions_in_code: in_code };
+  return { mentioned: kept.map((row) => row.handle), truncated: resolved.length - kept.length, credited: resolved.map((row) => row.handle), unresolved: candidates.filter((h) => !found.has(h)), mentions_in_code: in_code, mentions_over_cap: over_cap };
 }

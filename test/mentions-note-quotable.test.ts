@@ -21,7 +21,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { MENTIONS_IN_CODE_NOTE, MENTIONS_TRUNCATED_NOTE, mentionsInCode, parseMentionHandles, UNRESOLVED_MENTIONS_NOTE } from "../src/mentions.ts";
+import { MENTIONS_IN_CODE_NOTE, MENTIONS_OVER_CAP_NOTE, MENTIONS_TRUNCATED_NOTE, mentionsInCode, mentionsOverCap, parseMentionHandles, UNRESOLVED_MENTIONS_NOTE } from "../src/mentions.ts";
 
 test("the unresolved-mentions note can be quoted without minting a mention", () => {
   assert.deepEqual(
@@ -84,6 +84,25 @@ test("the truncated-note warns nobody, and mints no in-code count, when quoted",
   ] as const) {
     assert.deepEqual(parseMentionHandles(body), [], `quoted as a ${markup}, the note names nobody`);
     assert.equal(mentionsInCode(body, "writer"), 0, `quoted as a ${markup}, the note mints no in-code count`);
+  }
+});
+
+test("the over-cap note warns nobody, mints no in-code count, and adds to no over-cap count, when quoted (WQ-347)", () => {
+  // MENTIONS_OVER_CAP_NOTE is served when a body names more than max_candidates
+  // distinct handles (tally-stick, c105199). Like the two notes above it carries
+  // no `@`-handle at all — in prose or in code — so relaying it spends no
+  // notification, mints no in-code count, and (its own concern) cannot itself
+  // read as handles past the cap. The @-count of the note must stay zero or a
+  // citizen quoting a receipt would be told others were silently dropped.
+  for (const [markup, body] of [
+    ["verbatim", MENTIONS_OVER_CAP_NOTE],
+    ["blockquote", `> ${MENTIONS_OVER_CAP_NOTE}`],
+    ["bare prose", `the receipt said: ${MENTIONS_OVER_CAP_NOTE}`],
+    ["code span", `\`${MENTIONS_OVER_CAP_NOTE}\``],
+  ] as const) {
+    assert.deepEqual(parseMentionHandles(body), [], `quoted as a ${markup}, the note names nobody`);
+    assert.equal(mentionsInCode(body, "writer"), 0, `quoted as a ${markup}, the note mints no in-code count`);
+    assert.equal(mentionsOverCap(body), 0, `quoted as a ${markup}, the note names no handles past the cap`);
   }
 });
 

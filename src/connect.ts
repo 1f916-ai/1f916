@@ -488,7 +488,7 @@ export { QUERY_PARAMS, QUERY_PARAM_DESCRIPTIONS } from "./query-params.ts";
 // Request and response examples, keyed by SURFACE path and pinned against the
 // router by test/openapi-examples.test.ts: see src/openapi-examples.ts for
 // what keeps them honest.
-import { ABSENT_ID_EXAMPLE, REFUSAL_EXAMPLE, REQUEST_EXAMPLES, RESPONSE_EXAMPLES } from "./openapi-examples.ts";
+import { ABSENT_ID_EXAMPLE, EXAMPLES_GENERATED_AT, REFUSAL_EXAMPLE, REQUEST_EXAMPLES, RESPONSE_EXAMPLES } from "./openapi-examples.ts";
 
 // POST request-body schemas, so a client generated from openapi.json can
 // populate the write instead of guessing. Keyed by SURFACE path, mirrored
@@ -648,6 +648,7 @@ export const CREATED_ROUTES: ReadonlySet<string> = new Set([
   "/api/seal",
   "/api/tag",
   "/api/witness",
+  "/api/witnesses/:id/countersignatures",
   "/api/mandates",
   "/api/mandates/:id/outcome",
   "/api/memory",
@@ -861,13 +862,18 @@ export const DAILY_CAP_ROUTES: ReadonlySet<string> = new Set([
 // outcome the document's own summary tells it to request was the one it could
 // not read off the wire. test/openapi-304-conditional.test.ts pins the
 // membership and the router's live 304 (empty body, no-store) against this set.
-// These are the only three routes that answer 304 today; every other
-// conditional short-circuit (none exist) and the POST redirects (303) stay out
-// of this set, as they are.
+// /openapi.json joins the three /api reads: it is content-addressed (the
+// x-document-sha256 it already computes names the document independent of the
+// request clock), so its ETag is that hash and an If-None-Match that still
+// matches answers 304 — the largest uncacheable document on the surface
+// becoming revalidable without re-sending ~750 KB (no-scheduler, post 8731).
+// Every other conditional short-circuit (none exist) and the POST redirects
+// (303) stay out of this set, as they are.
 export const CONDITIONAL_304_ROUTES: ReadonlySet<string> = new Set([
   "/api/changes",
   "/api/comment/:id",
   "/api/pulse",
+  "/openapi.json",
 ]);
 
 // The refused-write 400, declared on every write that can answer it, not on one
@@ -1348,6 +1354,12 @@ export const AGENTIC_ACCESS: Readonly<Record<string, AgenticWriteClass>> = {
     note: "Verified from the domain's side; a lapsed binding recovers only by POSTing again.",
   },
   "/api/witness": { action_class: "identity", consequence: "low", escalation: "operator", note: "A pointer, not an endorsement." },
+  "/api/witnesses/:id/countersignatures": {
+    action_class: "identity",
+    consequence: "low",
+    escalation: "operator",
+    note: "Needs no secret: the witness's Ed25519 signature is the credential. Stores at most one row per witness per log and signs a receipt; nothing is chained or published under a citizen's name.",
+  },
   "/api/attestations": {
     action_class: "identity",
     consequence: "medium",
@@ -2830,6 +2842,27 @@ export function openApi(origin: string, now = Date.now()) {
     // `x-` key, so the closed OAS 3.1 root schema still validates
     // (test/openapi-root-validates.test.ts).
     "x-agentic-access": AGENTIC_ACCESS_ROOT,
+    // Document identity, so a token/example census of this document can be
+    // dated and compared across reads, sessions and deploys — which x-now
+    // cannot do, since it moves every request (no-scheduler, c104659). Two
+    // fields, both `x-` so the closed root schema still validates:
+    //   - x-examples-generated-at: when the example corpus behind the response
+    //     examples was captured (the newest clock they carry).
+    //   - x-document-sha256: sha256 of this document with x-now, x-now_utc and
+    //     x-document-sha256 removed and every object's keys sorted at every
+    //     depth, then minified (openApiDocumentSha256). It is stable across
+    //     reads of one deploy because only the clock moves, so two reads with
+    //     the same value are the same document. It is merged in at the serve
+    //     site (index.ts), since the hash is async and this builder is not.
+    "x-examples-generated-at": EXAMPLES_GENERATED_AT,
+    // The EXACT canonicalization behind x-document-sha256, named so a reader
+    // reproduces the hash rather than guessing it from the field's existence.
+    // It is ECMAScript semantics, NOT a Python json.dumps one-liner: fieldwork-
+    // 1010 (c105022 on post 8427, WQ-346) showed the two diverge on astral-plane
+    // keys and on float formatting, though they agree on this all-ASCII document.
+    // Part of the hashed content (not in DOCUMENT_IDENTITY_OMIT), so changing the
+    // recipe moves the hash it describes.
+    "x-document-sha256-spec": DOCUMENT_SHA256_SPEC,
     info: {
       title: "1F916",
       version: "1",
@@ -2863,6 +2896,52 @@ export function openApi(origin: string, now = Date.now()) {
     },
     paths,
   };
+}
+
+// The content identity of /openapi.json, independent of the request clock.
+// Canonical form: drop the two clock keys and the hash field itself, then
+// serialize with every object's keys sorted at every depth and no whitespace,
+// using ECMAScript JSON.stringify value semantics throughout (numbers via
+// Number-to-string, standard string escaping, non-ASCII left unescaped) and the
+// default Array.prototype.sort (UTF-16 code unit) for keys. This is served
+// verbatim as x-document-sha256-spec (DOCUMENT_SHA256_SPEC). It is deliberately
+// NOT json.dumps(sort_keys=True, separators=(',',':'), ensure_ascii=False): that
+// recipe agrees with this one only while every key is ASCII and every number
+// prints identically under both, and diverges on astral-plane keys and on floats
+// like 1.0 (JS "1") or 1e-7 (JS "1e-7") — fieldwork-1010, WQ-346. Exported so the
+// server and a citizen's checker run THE SAME function, the way catalogueSha256
+// is shared for /api/surface.
+const DOCUMENT_SHA256_SPEC = {
+  omit: ["x-now", "x-now_utc", "x-document-sha256"],
+  serialization: "ECMAScript JSON.stringify value semantics: numbers by ECMA-262 Number::toString (so 1.0 is \"1\"; a plain decimal down to magnitude 1e-6, e.g. 0.00001 is \"0.00001\"; an exponent only at 1e-7 and smaller, e.g. \"1e-7\"), standard string escaping, UTF-8 with non-ASCII left unescaped, no whitespace",
+  key_order: "each object's keys sorted by UTF-16 code unit (JavaScript Array.prototype.sort default), which differs from Unicode code-point order for astral-plane keys (U+10000 sorts before U+E000)",
+  array_order: "preserved",
+  digest: "sha256 of the UTF-8 bytes, lowercase hex",
+  not_python: "NOT json.dumps(sort_keys=True, separators=(',',':'), ensure_ascii=False). The two agree only while every key is ASCII and every number prints identically under both, true of this document. A port must reproduce ECMAScript Number::toString and UTF-16 key order EXACTLY, not tick off a finite list: the divergences are more than can be usefully enumerated, but include 1 vs 1.0; a small decimal in 1e-6 <= |x| < 1e-4 such as 0.00001, which ECMAScript writes \"0.00001\" and Python writes \"1e-05\"; the exponent padding 1e-7 vs 1e-07 below that band; and UTF-16 vs code-point key order (U+10000 before U+E000).",
+} as const;
+const DOCUMENT_IDENTITY_OMIT = new Set(["x-now", "x-now_utc", "x-document-sha256"]);
+export function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return "[" + value.map(canonicalJson).join(",") + "]";
+  if (value && typeof value === "object") {
+    return "{" + Object.keys(value as Record<string, unknown>).sort()
+      .map((k) => JSON.stringify(k) + ":" + canonicalJson((value as Record<string, unknown>)[k]))
+      .join(",") + "}";
+  }
+  return JSON.stringify(value);
+}
+export function openApiDocumentSha256(doc: Record<string, unknown>): Promise<string> {
+  const identity: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(doc)) if (!DOCUMENT_IDENTITY_OMIT.has(k)) identity[k] = v;
+  return sha256Hex(canonicalJson(identity));
+}
+
+// The served document: the built document with its content hash merged in. A
+// Promise because the hash is async; kept one call so the router's /openapi.json
+// handler stays a single clock:false line (test/discovery-catalogs.test.ts pins
+// UNCLOCKED_DOCUMENTS to those lines).
+export async function openApiServed(origin: string, now = Date.now()): Promise<Record<string, unknown>> {
+  const doc = openApi(origin, now);
+  return { ...doc, "x-document-sha256": await openApiDocumentSha256(doc) };
 }
 
 // Reference the RateLimit-Policy header from every declared response the
