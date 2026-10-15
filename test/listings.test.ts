@@ -659,6 +659,65 @@ test("an award lapsed expired_unclaimed on an open verified listing no longer co
   assert.equal(second.funding_mode, "verified");
 });
 
+// A payable award whose claim window ran out before anyone ran the sweep: the
+// stored state still reads payable, and readiness decides what it is. Unready
+// (no payout destination), it lapsed expired_unclaimed and is owed no more;
+// ready (a live binding), it is an overdue debt and stays reserved. The balance
+// check must reach the verdict the listing read reaches, on both sides, for an
+// open listing and for a closed one. `closed` withdraws listing 1 first; `ready`
+// binds a payout destination before the clock runs out.
+async function lapsedPayableAward(closed: boolean, ready: boolean) {
+  const ed = generateKeyPairSync("ed25519");
+  const publicKey = (ed.publicKey.export({ format: "jwk" }) as { x: string }).x;
+  const { env, db } = makeEnv(publicKey);
+  const wallet = privateKeyToAccount(generatePrivateKey());
+  const expiry = NOW + 7 * 86400;
+  const signed = async (title: string) => {
+    const preimage = listingPreimage({ handle: FUNDER.handle, titleSha256: createHash("sha256").update(title).digest("hex"), amountAtomic: "3000000", verifierPriceAtomic: null, maxVerifiers: 0, chainId: 8453, token: BASE_USDC, expiry });
+    return { title, condition: CONDITION, amount_atomic: "3000000", expiry, funder_address: wallet.address, funder_signature: await wallet.signMessage({ message: preimage }), funding_mode: "verified" };
+  };
+  const fiveDollars = { readBalance: async () => ({ balanceAtomic: "5000000", blockNumber: 200, sources: 2 }) };
+  await createListing(env, FUNDER as never, await signed("First verified task"), fiveDollars);
+  await createSubmission(env, PAYEE as never, 1, { artifact: "https://example.invalid/pr/1" });
+  const nowMs = Date.now();
+  db.prepare(`INSERT INTO listing_awards (listing_id, submission_id, citizen_id, amount_atomic, state, awarded_by, awarded_by_citizen_id, awarded_at, payable_at, expires_at, payload_hash, commit_nonce, created_at)
+              VALUES (1, 1, 2, '3000000', 'payable', 'requester', 1, ?, ?, ?, 'award-hash-1', 'award-nonce-1', ?)`).run(nowMs, nowMs, nowMs + 86_400_000, nowMs);
+  if (ready) await createPayoutBinding(env, PAYEE as never, (await payeeBinding("listing-1", "3000000", ed, PAYEE)).body);
+  if (closed) await withdrawListing(env, FUNDER as never, 1, { reason: "the work is done; paying the award next" });
+  // The claim window ran out a second ago and no sweep has run.
+  db.prepare(`UPDATE listing_awards SET expires_at = ? WHERE id = 1`).run(nowMs - 1000);
+  assert.equal((db.prepare("SELECT state FROM listing_awards WHERE id = 1").get() as { state: string }).state, "payable");
+  return { env, signed, fiveDollars };
+}
+
+test("a payable award lapsed on its clock with no payout destination is not reserved on an open verified listing", async () => {
+  const { env, signed, fiveDollars } = await lapsedPayableAward(false, false);
+  const second = await createListing(env, FUNDER as never, await signed("Second verified task"), fiveDollars) as Record<string, unknown>;
+  assert.equal(second.funding_mode, "verified");
+});
+
+test("a payable award lapsed on its clock with a payout destination stays reserved on an open verified listing", async () => {
+  const { env, signed, fiveDollars } = await lapsedPayableAward(false, true);
+  await assert.rejects(
+    createListing(env, FUNDER as never, await signed("Second verified task"), fiveDollars),
+    (e: SocietyError) => e.status === 409 && /listing 1/.test(e.message) && /6000000/.test(e.message),
+  );
+});
+
+test("a payable award lapsed on its clock with no payout destination is not owed on a closed verified listing", async () => {
+  const { env, signed, fiveDollars } = await lapsedPayableAward(true, false);
+  const second = await createListing(env, FUNDER as never, await signed("Second verified task"), fiveDollars) as Record<string, unknown>;
+  assert.equal(second.funding_mode, "verified");
+});
+
+test("a payable award lapsed on its clock with a payout destination is still owed on a closed verified listing", async () => {
+  const { env, signed, fiveDollars } = await lapsedPayableAward(true, true);
+  await assert.rejects(
+    createListing(env, FUNDER as never, await signed("Second verified task"), fiveDollars),
+    (e: SocietyError) => e.status === 409 && /unpaid award/.test(e.message) && /listing 1/.test(e.message) && /6000000/.test(e.message),
+  );
+});
+
 test("withdraw: funder only, public reason, chained; stops submissions and bindings but existing ones stand", async () => {
   const ed = generateKeyPairSync("ed25519");
   const publicKey = (ed.publicKey.export({ format: "jwk" }) as { x: string }).x;

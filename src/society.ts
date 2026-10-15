@@ -3497,18 +3497,39 @@ export async function createListing(
       // is terminal, so it is never owed again, and the listing's own read
       // serves it as no part of maximum_remaining_liability_atomic. Reserving
       // it here would make this refusal name a debt the listing read says is
-      // zero. A stored state that lags its clock still reads payable, which
-      // stays reserved: the lag can only over-refuse.
+      // zero.
       // Verifier payments are still reserved at full price; that can only
       // over-refuse, never under-cover.
-      const { results: settledRows } = await env.DB.prepare(
-        `SELECT a.listing_id, a.amount_atomic
+      //
+      // THE LAPSE IS APPLIED HERE AS THE LISTING READ APPLIES IT. The stored
+      // state can lag its clock (the sweep runs on a poke), and which way a
+      // lapsed clock falls depends on readiness: a payee who had supplied a
+      // payout destination is owed an overdue debt (reserved), one who had not
+      // let the entitlement lapse expired_unclaimed (not reserved). Readiness is
+      // ready_at, or else a live worker binding on that listing, which is
+      // liveRoutesFor, the rule getListing uses. Taking every payee as ready
+      // instead refused a funder over a debt their own listing read served as
+      // zero, owed to a payee with no destination, so "pay what is owed" was
+      // advice nobody could follow. Only an award whose clock has run out with
+      // no readiness latched can fall either way, so only listings holding one
+      // cost a readiness query.
+      type AwardClock = { listing_id: number; citizen_id: number; state: AwardState; amount_atomic: string; expires_at: number | null; ready_at: number | null; paid_at: number | null };
+      const lapsedAsRead = async (rows: readonly AwardClock[]): Promise<AwardClock[]> => {
+        const undecided = rows.filter((a) => (a.state === "awarded" || a.state === "payable") && a.expires_at !== null && a.expires_at <= nowMs && a.ready_at == null);
+        const routes = new Map<number, Set<number>>();
+        for (const id of new Set(undecided.map((a) => a.listing_id))) routes.set(id, await liveRoutesFor(env, id, Math.floor(nowMs / 1000)));
+        return rows.flatMap((a) => lapseExpiredAwards([a as unknown as StoredAward], nowMs, routes.get(a.listing_id) ?? new Set<number>()) as unknown as AwardClock[]);
+      };
+      const { results: openAwardRows } = await env.DB.prepare(
+        `SELECT a.listing_id, a.citizen_id, a.state, a.amount_atomic, a.expires_at, a.ready_at, a.paid_at
            FROM listings l JOIN listing_awards a ON a.listing_id = l.id
           WHERE l.funder_address = ? AND l.token = ? AND l.chain_id = ? AND l.funding_mode = 'verified'
             AND l.expiry > ? AND l.withdrawn_at IS NULL AND l.mod_state IS NULL
-            AND ((a.state = 'paid' AND a.paid_at < ?) OR a.state = 'expired_unclaimed')`,
-      ).bind(wallet, listing.token, listing.chainId, Math.floor(nowMs / 1000), readStartedMs)
-        .all<{ listing_id: number; amount_atomic: string }>();
+          ORDER BY a.id ASC`,
+      ).bind(wallet, listing.token, listing.chainId, Math.floor(nowMs / 1000))
+        .all<AwardClock>();
+      const settledRows = (await lapsedAsRead(openAwardRows))
+        .filter((a) => (a.state === "paid" && a.paid_at !== null && a.paid_at < readStartedMs) || a.state === "expired_unclaimed");
       const paidByListing = new Map<number, bigint>();
       for (const p of settledRows) paidByListing.set(p.listing_id, (paidByListing.get(p.listing_id) ?? 0n) + BigInt(p.amount_atomic));
       const othersAtomic = others.reduce((sum, o) => {
@@ -3519,21 +3540,17 @@ export async function createListing(
       }, 0n);
       // Unpaid awards on the wallet's CLOSED verified listings. An open
       // listing's maximum liability above already includes its awards. The
-      // stored state can lag its clock (the sweep runs on a poke), so the
-      // lapse is applied here as the read paths apply it. Readiness is taken
-      // as latched for every payee, the stricter reading: a payable award
-      // past its claim window then counts as an overdue debt, not as expired.
+      // lapse is applied as the listing read applies it (lapsedAsRead above).
       const { results: owedRows } = await env.DB.prepare(
-        `SELECT a.listing_id, a.citizen_id, a.state, a.amount_atomic, a.expires_at, a.ready_at
+        `SELECT a.listing_id, a.citizen_id, a.state, a.amount_atomic, a.expires_at, a.ready_at, a.paid_at
            FROM listings l JOIN listing_awards a ON a.listing_id = l.id
           WHERE l.funder_address = ? AND l.token = ? AND l.chain_id = ? AND l.funding_mode = 'verified'
             AND NOT (l.expiry > ? AND l.withdrawn_at IS NULL AND l.mod_state IS NULL)
             AND a.state IN ('awarded', 'payable', 'overdue_unpaid')
           ORDER BY a.id ASC`,
       ).bind(wallet, listing.token, listing.chainId, Math.floor(nowMs / 1000))
-        .all<{ listing_id: number; citizen_id: number; state: AwardState; amount_atomic: string; expires_at: number | null; ready_at: number | null }>();
-      const owed = lapseExpiredAwards(owedRows as unknown as StoredAward[], nowMs, new Set(owedRows.map((r) => r.citizen_id)))
-        .filter((a) => isOutstanding(a.state));
+        .all<AwardClock>();
+      const owed = (await lapsedAsRead(owedRows)).filter((a) => isOutstanding(a.state));
       const owedAtomic = owed.reduce((sum, a) => sum + BigInt(a.amount_atomic), 0n);
       const owedListings = [...new Set(owed.map((a) => a.listing_id))];
       const combinedAtomic = othersAtomic + owedAtomic + BigInt(maxLiabilityAtomic);
