@@ -3492,18 +3492,25 @@ export async function createListing(
       // reserved. Only payments recorded before the balance read began are
       // subtracted, so a payment observed mid-check (whose transfer the read
       // may not yet reflect) stays reserved instead of being freed twice.
+      // An award that lapsed EXPIRED_UNCLAIMED is subtracted the same way: it
+      // keeps its seat (listingEconomics counts it in awarded_slots_used) and
+      // is terminal, so it is never owed again, and the listing's own read
+      // serves it as no part of maximum_remaining_liability_atomic. Reserving
+      // it here would make this refusal name a debt the listing read says is
+      // zero. A stored state that lags its clock still reads payable, which
+      // stays reserved: the lag can only over-refuse.
       // Verifier payments are still reserved at full price; that can only
       // over-refuse, never under-cover.
-      const { results: paidRows } = await env.DB.prepare(
+      const { results: settledRows } = await env.DB.prepare(
         `SELECT a.listing_id, a.amount_atomic
            FROM listings l JOIN listing_awards a ON a.listing_id = l.id
           WHERE l.funder_address = ? AND l.token = ? AND l.chain_id = ? AND l.funding_mode = 'verified'
             AND l.expiry > ? AND l.withdrawn_at IS NULL AND l.mod_state IS NULL
-            AND a.state = 'paid' AND a.paid_at < ?`,
+            AND ((a.state = 'paid' AND a.paid_at < ?) OR a.state = 'expired_unclaimed')`,
       ).bind(wallet, listing.token, listing.chainId, Math.floor(nowMs / 1000), readStartedMs)
         .all<{ listing_id: number; amount_atomic: string }>();
       const paidByListing = new Map<number, bigint>();
-      for (const p of paidRows) paidByListing.set(p.listing_id, (paidByListing.get(p.listing_id) ?? 0n) + BigInt(p.amount_atomic));
+      for (const p of settledRows) paidByListing.set(p.listing_id, (paidByListing.get(p.listing_id) ?? 0n) + BigInt(p.amount_atomic));
       const othersAtomic = others.reduce((sum, o) => {
         const awardsAtomic = BigInt(o.amount_atomic) * BigInt(o.max_awards ?? 1);
         const paidAtomic = paidByListing.get(o.id) ?? 0n;
@@ -3532,7 +3539,7 @@ export async function createListing(
       const combinedAtomic = othersAtomic + owedAtomic + BigInt(maxLiabilityAtomic);
       if ((others.length > 0 || owed.length > 0) && BigInt(read.balanceAtomic) < combinedAtomic) {
         const parts = [
-          others.length > 0 ? `what the ${others.length} open verified listing(s) already naming this wallet in this asset can still owe, their maximum liability less awards already paid (${others.map((o) => `listing ${o.id}`).join(", ")}, ${othersAtomic} between them)` : null,
+          others.length > 0 ? `what the ${others.length} open verified listing(s) already naming this wallet in this asset can still owe, their maximum liability less awards already paid or lapsed unclaimed (${others.map((o) => `listing ${o.id}`).join(", ")}, ${othersAtomic} between them)` : null,
           owed.length > 0 ? `${owed.length} unpaid award(s) still owed on its closed verified listing(s) (${owedListings.map((id) => `listing ${id}`).join(", ")}, ${owedAtomic} between them)` : null,
         ].filter((p) => p !== null).join(" and ");
         throw new SocietyError(409, `funder wallet holds ${read.balanceAtomic} atomic units of ${settlementAsset(listing.token)?.symbol ?? listing.token} at block ${read.blockNumber}, which covers this listing's maximum liability of ${maxLiabilityAtomic} on its own but not together with ${parts}: the combined figure is ${combinedAtomic}. One balance read cannot verify the same money twice. Fund the wallet up to the combined figure, withdraw an open listing to free its unearned share, pay what is owed, post this one as funding_mode promise, or name a different wallet.`);

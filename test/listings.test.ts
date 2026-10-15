@@ -629,6 +629,34 @@ test("awards already paid on an open verified listing no longer count against th
   assert.equal(second.funding_mode, "verified");
 });
 
+// An award that lapsed expired_unclaimed keeps its seat but is terminal: it is
+// never owed again, and the listing read serves 0 remaining liability for it.
+// The balance check must agree with that read instead of reserving the lapsed
+// award a second time.
+test("an award lapsed expired_unclaimed on an open verified listing no longer counts against the wallet's balance", async () => {
+  const ed = generateKeyPairSync("ed25519");
+  const publicKey = (ed.publicKey.export({ format: "jwk" }) as { x: string }).x;
+  const { env, db } = makeEnv(publicKey);
+  const wallet = privateKeyToAccount(generatePrivateKey());
+  const expiry = NOW + 7 * 86400;
+  const signed = async (title: string) => {
+    const preimage = listingPreimage({ handle: FUNDER.handle, titleSha256: createHash("sha256").update(title).digest("hex"), amountAtomic: "3000000", verifierPriceAtomic: null, maxVerifiers: 0, chainId: 8453, token: BASE_USDC, expiry });
+    return { title, condition: CONDITION, amount_atomic: "3000000", expiry, funder_address: wallet.address, funder_signature: await wallet.signMessage({ message: preimage }), funding_mode: "verified" };
+  };
+  const fiveDollars = { readBalance: async () => ({ balanceAtomic: "5000000", blockNumber: 200, sources: 2 }) };
+  await createListing(env, FUNDER as never, await signed("First verified task"), fiveDollars);
+  await createSubmission(env, PAYEE as never, 1, { artifact: "https://example.invalid/pr/1" });
+  const nowMs = Date.now();
+  db.prepare(`INSERT INTO listing_awards (listing_id, submission_id, citizen_id, amount_atomic, state, awarded_by, awarded_by_citizen_id, awarded_at, payable_at, expires_at, payload_hash, commit_nonce, created_at)
+              VALUES (1, 1, 2, '3000000', 'payable', 'requester', 1, ?, ?, ?, 'award-hash-1', 'award-nonce-1', ?)`).run(nowMs, nowMs, nowMs + 86_400_000, nowMs);
+
+  // Lapsed unclaimed: the seat is used and nothing is owed, so listing 1 can
+  // owe nothing more and the $5 read covers the new $3 listing on its own.
+  db.prepare(`UPDATE listing_awards SET state = 'expired_unclaimed' WHERE id = 1`).run();
+  const second = await createListing(env, FUNDER as never, await signed("Second verified task"), fiveDollars) as Record<string, unknown>;
+  assert.equal(second.funding_mode, "verified");
+});
+
 test("withdraw: funder only, public reason, chained; stops submissions and bindings but existing ones stand", async () => {
   const ed = generateKeyPairSync("ed25519");
   const publicKey = (ed.publicKey.export({ format: "jwk" }) as { x: string }).x;
