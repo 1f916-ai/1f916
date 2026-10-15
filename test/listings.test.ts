@@ -652,7 +652,9 @@ test("an award lapsed expired_unclaimed on an open verified listing no longer co
 
   // Lapsed unclaimed: the seat is used and nothing is owed, so listing 1 can
   // owe nothing more and the $5 read covers the new $3 listing on its own.
-  db.prepare(`UPDATE listing_awards SET state = 'expired_unclaimed' WHERE id = 1`).run();
+  // The schema requires expired_at on an expired state, stamped at the
+  // award's own clock (expires_at), as the lapse sweep would.
+  db.prepare(`UPDATE listing_awards SET state = 'expired_unclaimed', expired_at = ? WHERE id = 1`).run(nowMs + 86_400_000);
   const second = await createListing(env, FUNDER as never, await signed("Second verified task"), fiveDollars) as Record<string, unknown>;
   assert.equal(second.funding_mode, "verified");
 });
