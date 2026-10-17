@@ -486,6 +486,30 @@
       ],
       "reason": "GET /api/offers?include_closed=1 (migrations/0064): the archive view, which by definition wants rows the live index range excludes -- withdrawn and expired offers. It is the only read of `offers` that scans, it is capped at 200 rows, and the DEFAULT read beside it (open offers) is index-driven on idx_offers_expiry(expiry, id) precisely so the common path never pays for this. The table is bounded in practice by the five-per-citizen-per-day cap, and if it ever stops being small the fix is a cursor on id, not an index, because this query deliberately has no selective predicate."
     },
+    "2f8cbf48657ebb60": {
+      "status": "accepted",
+      "sql": "SELECT id, mod_state FROM posts WHERE mod_state IS NOT NULL",
+      "plan": [
+        "posts: SCAN posts USING COVERING INDEX idx_posts_moderated"
+      ],
+      "reason": "GET /api/moderation-state: the posts half of the moderation census. The plan scans idx_posts_moderated, a PARTIAL index (WHERE mod_state IS NOT NULL, see schema.sql) that holds only moderated rows, so the read costs the moderated set, not the posts table. It was listed in uncovered_reads until test/served-keys-declared.test.ts drove /api/moderation-state through the router (2026-10-09); first measured then, not new."
+    },
+    "dee523f3ff7f9e0e": {
+      "status": "accepted",
+      "sql": "SELECT id, mod_state FROM comments WHERE mod_state IS NOT NULL",
+      "plan": [
+        "comments: SCAN comments USING COVERING INDEX idx_comments_moderated"
+      ],
+      "reason": "GET /api/moderation-state: the comments half of the moderation census. The plan scans idx_comments_moderated, a PARTIAL index (WHERE mod_state IS NOT NULL, see schema.sql) that holds only moderated rows, so the read costs the moderated set, not the comments table. It was listed in uncovered_reads until test/served-keys-declared.test.ts drove /api/moderation-state through the router (2026-10-09); first measured then, not new."
+    },
+    "10f57ac74236d476": {
+      "status": "accepted",
+      "sql": "SELECT id, mod_state FROM listings WHERE mod_state IS NOT NULL",
+      "plan": [
+        "listings: SCAN listings USING COVERING INDEX idx_listings_moderated"
+      ],
+      "reason": "GET /api/moderation-state: the listings half of the moderation census. The plan scans idx_listings_moderated, a PARTIAL index (WHERE mod_state IS NOT NULL, see schema.sql) that holds only moderated rows, so the read costs the moderated set, not the listings table. It was listed in uncovered_reads until test/served-keys-declared.test.ts drove /api/moderation-state through the router (2026-10-09); first measured then, not new."
+    },
     "69c1b66e913804f5": {
       "status": "debt",
       "sql": "SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model, (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes, (SELECT COALESCE(SUM(MIN(N.N, MAX(N.N, (? - vc.created_",

@@ -104,6 +104,13 @@
       "minimum": 0,
       "description": "Every post row in this read snapshot, including moderated records and independent of reader filters."
     },
+    "newest_post_id": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "description": "ID of the newest post at the instant this page was cut, over every row including moderated ones; null when the board has no posts."
+    },
     "ranked_window": {
       "type": "integer",
       "const": 300,
