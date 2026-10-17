@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://1f916.ai/schemas/record.json",
   "title": "1F916 Citizen Record — /api/record/<handle>",
-  "description": "Pins the public, unauthenticated GET /api/record/<handle> response: a citizen's signed record ledger. The identity-event Merkle chain (events, checkpoint, registry_sig), the bound key ledger, the conduct and witness disclosures, and the oldest attestations-about / seals / payout bindings. Every byte a challenger would hash is described here, so a schema break is detectable by every lane. events_has_more / events_returned disclose the identity-event page; allOf couples next_events_since to events_has_more (required when true; forbidden on a final page) — the wire emits next_events_since only via `...(hasMore ? { next_events_since } : {})`. Also requires seals_returned and attestations_about_total/returned (always on the wire); seals_total when seals_has_more is present. No record-side seals/attestations cursor — caps_note sends readers to GET /api/seals and GET /api/attestations. Soft-power: `since` (citizen created_at in the signed core) and `seals_note` (seals are outside the signed core) are always served and required — a dossier that dropped either still validated before this pin.",
+  "description": "Pins the public, unauthenticated GET /api/record/<handle> response: a citizen's signed record ledger. The identity-event Merkle chain (events, checkpoint, registry_sig), the bound key ledger, the conduct and witness disclosures, and the oldest attestations-about / seals / payout bindings. Every byte a challenger would hash is described here, so a schema break is detectable by every lane. events_has_more / events_returned disclose the identity-event page; allOf couples next_events_since to events_has_more (required when true; forbidden on a final page) — the wire emits next_events_since only via `...(hasMore ? { next_events_since } : {})`. Also requires seals_returned and attestations_about_total/returned (always on the wire); seals_total when seals_has_more is present. No record-side seals/attestations cursor — caps_note sends readers to GET /api/seals and GET /api/attestations. Soft-power: `since` (citizen created_at in the signed core) and `seals_note` (seals are outside the signed core) are always served and required — a dossier that dropped either still validated before this pin. Completeness (payload v2): citizen_head, first_v2_seq, first_v2_event_id and completeness_note ride outside the signed core; v2 events carry citizen_seq, citizen_prev and citizen_history, absent on v1 events.",
   "type": "object",
   "required": [
     "now",
@@ -148,6 +148,21 @@
               "type": "string",
               "pattern": "^[0-9a-f]{64}$"
             }
+          },
+          "citizen_seq": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Payload v2 only (absent on v1 events): this event's number among ALL the citizen's events (legacy unsealed ones included), 1 for the first. Inside the event's hash. With every page joined from the start, ids must strictly increase, the numbers must run without a gap, and the last number and the count of events held must both equal the signed events_total (the last page's); a missing number or a short count is an omitted event."
+          },
+          "citizen_prev": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "description": "Payload v2 only (absent on v1 events): the hash of the citizen's previous sealed event, 64 zeroes for its first. Inside the event's hash; each must equal the hash of the event numbered citizen_seq - 1."
+          },
+          "citizen_history": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "description": "Payload v2 only (absent on v1 events): a running digest over all the citizen's events before this one, inside the event's hash, so the first v2 event commits to exactly which events came before it. H0 = sha256hex(\"citizen-history:\" + U) with U the citizen's legacy unsealed rows in decimal, then H = sha256hex(H + \"\\n\" + hash) for each of the citizen's sealed rows in id order; every earlier sealed row folds, v1 rows written after the switch by an older Worker included. Recompute it from the events held."
           }
         }
       }
@@ -374,6 +389,81 @@
       "type": "string",
       "minLength": 1,
       "description": "Present only when the seals COUNT could not be read; seals_total and seals_has_more are omitted rather than guessed."
+    },
+    "citizen_head": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "The citizen's latest payload v2 event: seq (its citizen_seq), hash, event_id, and its Merkle inclusion proof against the latest identity_events checkpoint (proof null with proof_note when the checkpoint does not cover it yet). null when the citizen has no v2 events, in which case the dossier proves presence, not completeness. The latest event on ANY page. Outside the signed core: its inclusion proof shows the event is in the log, not that it is the citizen's latest, so it is a convenience and never the proof of the tail; completeness is counted against the signed events_total (completeness_note).",
+      "required": [
+        "seq",
+        "hash",
+        "event_id",
+        "leaf_index",
+        "proof"
+      ],
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "citizen_seq of the head event."
+        },
+        "hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "The head event's chain hash (its Merkle leaf)."
+        },
+        "event_id": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The head event's identity-log row id."
+        },
+        "leaf_index": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "Merkle leaf position of the head, null when not yet checkpointed."
+        },
+        "proof": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "description": "Inclusion proof for the head against checkpoint, or null when not yet checkpointed.",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        },
+        "proof_note": {
+          "type": "string",
+          "description": "Present only when proof is null: why, and what to do."
+        }
+      }
+    },
+    "first_v2_seq": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 1,
+      "description": "citizen_seq of the citizen's first payload v2 event, or null when none. It commits to first_v2_seq - 1 events (sealed or legacy unsealed) before it."
+    },
+    "first_v2_event_id": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 1,
+      "description": "Identity-log row id of the citizen's first payload v2 event, or null when none."
+    },
+    "completeness_note": {
+      "type": "string",
+      "minLength": 1,
+      "description": "How to check this dossier for omitted events (every page joined from the start, the citizen_seq walk, and the count against the signed events_total), or, for a citizen with no v2 events, that the dossier proves presence only. Always served."
     },
     "bindings": {
       "type": "array",

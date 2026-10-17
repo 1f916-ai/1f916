@@ -16,6 +16,7 @@ import { MerkleTree } from "./merkle.ts";
 import { b64urlDecode, b64urlEncode } from "./keys.ts";
 import { SocietyError, type Env } from "./society.ts";
 import { conductLedger } from "./conduct.ts";
+import { readWithLinkColumns, servedChainRow } from "./chain.ts";
 
 export const RECORD_EVENTS_PAGE = 200;
 // Side lists on the dossier (attestations_about, seals). Honesty fields
@@ -81,18 +82,56 @@ export async function record(env: Env, handle: string, sinceEventId: number = Na
       );
     }
   }
-  const { results: events } = await env.DB.prepare(
-    "SELECT id, kind, detail, created_at, prev_hash, hash FROM identity_events WHERE citizen_id = ? AND id > ? ORDER BY id ASC LIMIT ?",
-  )
-    .bind(citizen.id, after, RECORD_EVENTS_PAGE + 1)
-    .all<{ id: number; kind: string; detail: string | null; created_at: number; prev_hash: string | null; hash: string | null }>();
+  // The events page, the citizen's event count (events_total, signed in the
+  // core), the latest checkpoint and, for payload v2, the citizen's first and
+  // latest v2 events, all in ONE batch, so they describe one snapshot. Read
+  // separately, an append landing between them would serve a head (or a
+  // total) past the page and read as a gap that never existed; and a
+  // checkpoint read after the events could cover an event of this citizen
+  // that the page and events_total do not count, so a verdict "complete as of
+  // that checkpoint" would be false. In the batch, every leaf below
+  // checkpoint.tree_size was committed before the snapshot was taken. The two v2 reads go through
+  // idx_identity_events_citizen_seq, one seek each. readWithLinkColumns:
+  // before migration 0077 the dossier still answers, with v1 events only and
+  // no head (no row can be v2 without the columns).
+  type EventRow = { id: number; kind: string; detail: string | null; created_at: number; prev_hash: string | null; hash: string | null; citizen_seq?: number | null; citizen_prev?: string | null; citizen_history?: string | null };
+  type V2Row = { id: number; citizen_seq: number; hash: string };
+  type CheckpointRow = { log: string; tree_size: number; root: string; sig: string; created_at: number };
+  const snapshot = await readWithLinkColumns(async (linkCols) => {
+    const stmts = [
+      env.DB.prepare(
+        `SELECT id, kind, detail, created_at, prev_hash, hash${linkCols} FROM identity_events WHERE citizen_id = ? AND id > ? ORDER BY id ASC LIMIT ?`,
+      ).bind(citizen.id, after, RECORD_EVENTS_PAGE + 1),
+      env.DB.prepare("SELECT COUNT(*) AS n FROM identity_events WHERE citizen_id = ?").bind(citizen.id),
+      env.DB.prepare(
+        "SELECT log, tree_size, root, sig, created_at FROM checkpoints WHERE log = 'identity_events' ORDER BY id DESC LIMIT 1",
+      ),
+      ...(linkCols
+        ? [
+            env.DB.prepare(
+              "SELECT id, citizen_seq, hash FROM identity_events WHERE citizen_id = ? AND citizen_seq IS NOT NULL ORDER BY citizen_seq DESC LIMIT 1",
+            ).bind(citizen.id),
+            env.DB.prepare(
+              "SELECT id, citizen_seq, hash FROM identity_events WHERE citizen_id = ? AND citizen_seq IS NOT NULL ORDER BY citizen_seq ASC LIMIT 1",
+            ).bind(citizen.id),
+          ]
+        : []),
+    ];
+    const [ev, total, cp, latest, first] = await env.DB.batch<Record<string, unknown>>(stmts);
+    return {
+      events: (ev.results ?? []) as unknown as EventRow[],
+      total: ((total.results ?? [])[0] as { n: number } | undefined) ?? null,
+      checkpoint: ((cp.results ?? [])[0] as CheckpointRow | undefined) ?? null,
+      head: ((latest?.results ?? [])[0] as V2Row | undefined) ?? null,
+      first: ((first?.results ?? [])[0] as V2Row | undefined) ?? null,
+    };
+  });
+  const events = snapshot.events;
   const hasMore = events.length > RECORD_EVENTS_PAGE;
   const page = events.slice(0, RECORD_EVENTS_PAGE);
-  const totalRow = await env.DB.prepare("SELECT COUNT(*) AS n FROM identity_events WHERE citizen_id = ?").bind(citizen.id).first<{ n: number }>();
+  const totalRow = snapshot.total;
 
-  const checkpoint = await env.DB.prepare(
-    "SELECT log, tree_size, root, sig, created_at FROM checkpoints WHERE log = 'identity_events' ORDER BY id DESC LIMIT 1",
-  ).first<{ log: string; tree_size: number; root: string; sig: string; created_at: number }>();
+  const checkpoint = snapshot.checkpoint;
 
   // One leaf-set read serves every proof in the page, and one tree over it
   // serves them without rehashing: the subtrees a proof needs are the same
@@ -108,7 +147,10 @@ export async function record(env: Env, handle: string, sinceEventId: number = Na
     tree = new MerkleTree(leaves);
   }
   const provenEvents = [];
-  for (const e of page) {
+  // v2 events carry citizen_seq/citizen_prev/citizen_history (their hash covers them); on v1
+  // events the two NULLs are dropped, so a dossier with no v2 event has the
+  // exact signed core it had before v2 existed.
+  for (const e of page.map(servedChainRow)) {
     if (!e.hash) {
       provenEvents.push({ ...e, proof: null, proof_note: "legacy_unsealed: predates sealing, no proof exists and none is claimed" });
       continue;
@@ -119,6 +161,24 @@ export async function record(env: Env, handle: string, sinceEventId: number = Na
       continue;
     }
     provenEvents.push({ ...e, leaf_index: index, proof: await tree!.inclusionProof(index, checkpoint.tree_size) });
+  }
+
+  // Completeness (payload v2): the citizen's latest v2 event (from the batch
+  // above) and its proof. Outside the signed core on purpose, like seals: a new
+  // core key breaks every verify.mjs already downloaded. It is a convenience,
+  // not the proof of the tail: its inclusion proof shows the event is in the
+  // log, not that it is the citizen's latest. The signed events_total is what
+  // a reader counts against (verifyCitizenEvents).
+  const headRow = snapshot.head;
+  const firstV2 = headRow ? snapshot.first : null;
+  let citizenHead: Record<string, unknown> | null = null;
+  if (headRow) {
+    const base = { seq: headRow.citizen_seq, hash: headRow.hash, event_id: headRow.id };
+    const index = checkpoint ? leaves.indexOf(headRow.hash) : -1;
+    citizenHead =
+      !checkpoint || index === -1 || index >= checkpoint.tree_size
+        ? { ...base, leaf_index: null, proof: null, proof_note: "not yet checkpointed: a later checkpoint will cover it. Until then this head is only the registry's word; completeness rests on the signed events_total either way" }
+        : { ...base, leaf_index: index, proof: await tree!.inclusionProof(index, checkpoint.tree_size) };
   }
 
   const { results: attestationsAbout } = await env.DB.prepare(
@@ -190,6 +250,12 @@ export async function record(env: Env, handle: string, sinceEventId: number = Na
   return {
     ...core,
     seals: seals.map((s) => ({ ...s, signed: s.signature !== null })),
+    citizen_head: citizenHead,
+    first_v2_seq: firstV2?.citizen_seq ?? null,
+    first_v2_event_id: firstV2?.id ?? null,
+    completeness_note: citizenHead
+      ? `This citizen's events from event ${firstV2?.id} on are payload v2: each carries, INSIDE its hash, citizen_seq (its number among ALL the citizen's events, legacy unsealed ones included), citizen_prev (the hash of the citizen's previous sealed event) and citizen_history (a running digest over every earlier event: H0 = sha256hex("citizen-history:" + U) with U the citizen's legacy unsealed rows, then H = sha256hex(H + newline + hash) for each earlier sealed event in id order; every earlier sealed event folds, v1 events written after the switch by an older Worker included, which also count toward citizen_seq). To check nothing was left out: read every page from the start (no events_since; follow next_events_since while events_has_more is true, ${RECORD_EVENTS_PAGE} events per page) and join them; count against the LAST page's events_total (an append between page reads raises it, which can fail an honest join but never pass a short one). Then (1) recompute each event's hash with citizen_id from this dossier (a v2 event hashes [citizen_id, kind, detail, created_at, citizen_seq, citizen_prev, citizen_history]; GET /api/events how_to_verify has the recipe); (2) ids must strictly increase, no hash or leaf_index may appear twice, and no unsealed event may follow a sealed one; (3) the events held must number exactly events_total, which is inside the registry-signed core; (4) walk the v2 fields: the first v2 event's citizen_seq minus one must equal the events before it, its citizen_prev must be the last sealed one (64 zeroes if none), and its citizen_history must equal the digest recomputed from the events held before it; every later number must be present, linked and folded, and the last citizen_seq must equal events_total; (5) every sealed event must carry an inclusion proof (an array, with an integer leaf_index) that verifies against the signed checkpoint, which verify.mjs checks; an event without one is undetermined, and could be made up, until a later checkpoint covers it. A missing number, a digest that does not recompute, or fewer events than events_total is an omitted event. The verdict is complete AS OF this dossier's checkpoint: leaving out the newest events takes a signed events_total that is false, and that is provable for an omitted event at or below checkpoint.tree_size (its own inclusion proof against that signed checkpoint, beside this signed dossier that does not count it). For events newer than the checkpoint a short total reads like events written after the read, and the registry chooses which checkpoint to serve: compare its tree_size and created_at with the independent witness files before relying on it. Legacy unsealed events enter only as a count: their contents were never hashed and are the registry's word. citizen_head is a convenience outside the signed core: its proof shows that event is in the log, not that it is the citizen's latest, so it is never the proof of the tail. A true verdict holds given two things outside this dossier: verify.mjs's inclusion-proof pass, and the global chain verifying under the v2 rules (verifyRows over GET /api/events from genesis), because a registry that wrote a citizen's first v2 event with a number, link or history skipping an earlier event is caught only by that walk; someone outside the registry should run it. Legacy unsealed events are committed only by their count, never by their contents. Reference check: verifyCitizenEvents in src/chain.ts, given events_total and the checkpoint.`
+      : "No payload v2 events for this citizen, so this dossier proves presence (each event it holds was in the log, by inclusion proof) and NOT completeness: an event left out of it would not show. v2 events, which carry a per-citizen citizen_seq, citizen_prev and citizen_history inside their hash, are written once the deployment turns them on (CHAIN_CITIZEN_SEQ); from then on citizen_head and first_v2_seq are served here.",
     // Emitted UNCONDITIONALLY, zeros included. An absent key on a new
     // deployment is byte-identical to an absent key on one that never had the
     // field, so the citizen with nothing to show — the case a reader most
@@ -209,7 +275,7 @@ export async function record(env: Env, handle: string, sinceEventId: number = Na
     seals_note: "convenience view, not part of the signed core — each seal's authoritative anchor is its 'memory.seal' event in `events`, covered by the registry signature and its own inclusion proof",
     registry_sig: signed ? { sig: signed.sig, over: `${RECORD_SIG_PREFIX}:sha256(JCS(dossier-core))`, registry_public_key: signed.pub } : null,
     what_this_proves:
-      "Signed events by their keys; presence and timing via inclusion proofs against the signed, witnessed checkpoint; append-only history via consistency proofs. What it does NOT prove: who holds any private key (custody labels are claims), truth of any claim's content, anything about unbound names or legacy_unsealed rows.",
+      "Signed events by their keys; presence and timing via inclusion proofs against the signed, witnessed checkpoint; append-only history via consistency proofs; completeness for a citizen on payload v2, with every page joined and counted against the signed events_total (see completeness_note). What it does NOT prove: completeness of a record with no v2 events (an omitted v1 event does not show), who holds any private key (custody labels are claims), truth of any claim's content, anything about unbound names or legacy_unsealed rows.",
     // The served instruction must name the flag that reaches a meaningful
     // verdict. The bare `--dossier` form lands on VERDICT: unanchored — the
     // verifier's own bottom rung, which checks the file's signatures against a
