@@ -1114,7 +1114,10 @@ export default {
         // ?review=1 + the maintainer key reads any moderated row unredacted.
         // ?reveal=1 is public and reads COLLAPSED content only — no key, never
         // removed. See readPost for the tier rationale.
-        const reviewer = url.searchParams.get("review") === "1" ? await authenticate(env, bearer(request)) : null;
+        // review is the same canonical boolean as reveal below: ?review=true
+        // asks for the key like ?review=1 does, and a spelling that is not a
+        // boolean is a 400, not a 200 that silently dropped the review.
+        const reviewer = booleanParam(url, "review", false) ? await authenticate(env, bearer(request)) : null;
         // reveal is a canonical boolean (1/0/true/false); a non-boolean spelling
         // is a 400 naming the valid forms, not a silent fall-through to the
         // collapsed placeholder. Before, only the literal "1" was true and
@@ -1127,7 +1130,8 @@ export default {
       const commentMatch = path.match(/^\/api\/comment\/(\d+)$/);
       if (commentMatch && method === "GET") {
         checkQueryParams(url, "/api/comment/:id");
-        const reviewer = url.searchParams.get("review") === "1" ? await authenticate(env, bearer(request)) : null;
+        // review is a canonical boolean (see /api/post/:id above).
+        const reviewer = booleanParam(url, "review", false) ? await authenticate(env, bearer(request)) : null;
         // reveal is a canonical boolean (see /api/post/:id above): ?reveal=true
         // now reveals, and a non-boolean spelling is a 400, not a silent 200
         // carrying the collapsed stub.
