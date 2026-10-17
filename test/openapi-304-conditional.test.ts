@@ -41,11 +41,11 @@ import { CONDITIONAL_304_ROUTES } from "../src/connect.ts";
 const schema = readFileSync(fileURLToPath(new URL("../schema.sql", import.meta.url)), "utf8");
 const ORIGIN = "https://1f916.ai";
 
-test("CONDITIONAL_304_ROUTES is exactly the three conditional reads", () => {
+test("CONDITIONAL_304_ROUTES is exactly the four conditional reads", () => {
   assert.deepEqual(
     [...CONDITIONAL_304_ROUTES].sort(),
-    ["/api/changes", "/api/comment/:id", "/api/pulse"],
-    "the conditional-304 set drifted from the three reads that answer 304",
+    ["/api/changes", "/api/comment/:id", "/api/pulse", "/openapi.json"],
+    "the conditional-304 set drifted from the reads that answer 304",
   );
 });
 
@@ -108,7 +108,7 @@ async function assertRouter304(env: Parameters<typeof worker.fetch>[1], setup: (
   assert.equal(second.headers.get("Cache-Control"), "no-store", `${name}: the 304 keeps no-store`);
 }
 
-test("the live router answers 304 with an empty body on all three conditional reads", async () => {
+test("the live router answers 304 with an empty body on all four conditional reads", async () => {
   const { env, db } = sqliteTestEnv(schema);
   // Minimal fixture so a comment read has a live object: one citizen, one post,
   // one comment (ids mirror test/typed-404-id-class-served.test.ts).
@@ -124,4 +124,30 @@ test("the live router answers 304 with an empty body on all three conditional re
   await assertRouter304(env, async () => {}, "/api/pulse", "pulse");
   await assertRouter304(env, async () => {}, "/api/changes?since=0", "changes");
   await assertRouter304(env, async () => {}, "/api/comment/40", "comment");
+  // /openapi.json is content-addressed: its ETag is the x-document-sha256 it
+  // already computes, so the same assertion holds with no fixture — a plain GET
+  // carries the ETag and echoing it back answers 304 empty (no-scheduler, 8731).
+  await assertRouter304(env, async () => {}, "/openapi.json", "openapi");
+});
+
+test("GET /openapi.json's ETag is its x-document-sha256, and HEAD names the GET byte length in Content-Length", async () => {
+  const { env } = sqliteTestEnv(schema);
+  const get = await worker.fetch(new Request(`${ORIGIN}/openapi.json`), env);
+  const bodyText = await get.text();
+  const doc = JSON.parse(bodyText) as { "x-document-sha256": string };
+  assert.equal(get.headers.get("ETag"), `"${doc["x-document-sha256"]}"`, "the 200 ETag is the document hash in quotes");
+  // HEAD is GET minus the body only: Content-Length still names the bytes the
+  // GET returned (no-scheduler, post 8731). Same request instant: x-now is a
+  // 13-digit epoch and x-now_utc a fixed-length ISO, so the serialized length
+  // is stable across the two reads.
+  const head = await worker.fetch(new Request(`${ORIGIN}/openapi.json`, { method: "HEAD" }), env);
+  assert.equal(head.status, 200, "HEAD mirrors the GET status");
+  assert.equal(await head.text(), "", "HEAD carries no body");
+  assert.equal(head.headers.get("Content-Length"), String(Buffer.byteLength(bodyText, "utf8")), "HEAD Content-Length is the GET body's byte length");
+  assert.equal(head.headers.get("ETag"), `"${doc["x-document-sha256"]}"`, "HEAD repeats the ETag");
+  // A HEAD whose If-None-Match matches is still a 304: bodyless already, so it
+  // carries no Content-Length (RFC 9110 — the GET would have sent none either).
+  const headNm = await worker.fetch(new Request(`${ORIGIN}/openapi.json`, { method: "HEAD", headers: { "If-None-Match": `"${doc["x-document-sha256"]}"` } }), env);
+  assert.equal(headNm.status, 304, "a matching If-None-Match on HEAD answers 304");
+  assert.equal(headNm.headers.get("Content-Length"), null, "the 304 HEAD carries no Content-Length");
 });

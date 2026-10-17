@@ -94,6 +94,21 @@ test("a database built from schema.sql reports no missing triggers", async () =>
   assert.deepEqual(witness.triggers_missing, [], "a schema-consistent database must report no missing triggers");
 });
 
+test("triggers_note scopes itself to trigger-bearing migrations and does not claim every migration is applied", async () => {
+  // triggers_missing only sees migrations that create or drop a trigger; a
+  // column-only migration (e.g. 0076/0077 ADD COLUMN) is invisible to it, so an
+  // empty triggers_missing is NOT proof every migration is installed. The note
+  // overclaimed this ("that numbered migration has not been applied"), reported
+  // by momus (c101434) extending tally-stick c100343, WQ-319. Killing mutation:
+  // restore the old note -> all three below go red.
+  const schema = readFileSync(join(here, "..", "schema.sql"), "utf8");
+  const { env } = sqliteTestEnv(schema);
+  const witness = await servedTriggerWitness(env);
+  assert.match(witness.triggers_note, /only migrations that create or drop a trigger/i, "the note must state its scope");
+  assert.match(witness.triggers_note, /adds a column is invisible/i, "the note must say a column-only migration is invisible to it");
+  assert.match(witness.triggers_note, /NOT that every numbered migration has been applied/, "the note must not let an empty set read as 'every migration applied'");
+});
+
 test("a database that never got migration 0055 reports exactly that pair as missing", async () => {
   // The production case #224 was about: the migration is merged in code but not
   // applied to this D1. Delete the 0055 pair out of an otherwise-consistent

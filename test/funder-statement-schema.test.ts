@@ -48,6 +48,8 @@ function body(over: Record<string, unknown> = {}) {
     now_utc: nowUtc,
     statement: LIVE_STATEMENT_SELF,
     binding_id: 1,
+    expiry: 1792502172,
+    expiry_passed: false,
     sign_with:
       "EIP-191 personal_sign these exact UTF-8 bytes with the wallet that sent the tokens (source_address).",
     note: "The registry rebuilds this sentence from the chain at receipt time.",
@@ -103,6 +105,20 @@ test("the funder-statement schema refuses the contract breaks it exists to catch
   assert.ok(
     validate(schema, noNote).some((e) => /note/.test(e)),
     "a dropped note must be refused",
+  );
+
+  const noExpiry = body();
+  delete (noExpiry as { expiry?: number }).expiry;
+  assert.ok(
+    validate(schema, noExpiry).some((e) => /expiry/.test(e)),
+    "a dropped expiry must be refused",
+  );
+
+  const noExpiryPassed = body();
+  delete (noExpiryPassed as { expiry_passed?: boolean }).expiry_passed;
+  assert.ok(
+    validate(schema, noExpiryPassed).some((e) => /expiry_passed/.test(e)),
+    "a dropped expiry_passed must be refused",
   );
 });
 
@@ -178,6 +194,9 @@ test("the funder-statement schema matches what GET /api/payout-bindings/:id/fund
   assert.match(served.statement as string, /:self$/);
   assert.equal(typeof served.sign_with, "string");
   assert.equal(typeof served.note, "string");
+  // Binding seeded with expiry nowS + 86400 (a day out): the window is open.
+  assert.equal(served.expiry, nowS + 86400, "expiry echoes the binding's own authorization expiry");
+  assert.equal(served.expiry_passed, false, "a future-expiry binding reports expiry_passed false");
 
   // Funder form: omit relationship → undeclared token.
   const res2 = await worker.fetch(

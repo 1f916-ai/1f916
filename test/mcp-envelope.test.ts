@@ -95,7 +95,44 @@ test("initialize negotiates protocolVersion instead of echoing it", async () => 
     env,
   );
   const counterBody = (await fictional.json()) as { result: { protocolVersion: string } };
-  assert.equal(counterBody.result.protocolVersion, "2025-06-18");
+  assert.equal(counterBody.result.protocolVersion, "2025-11-25");
+});
+
+// Killing mutation: drop the `msg.method !== "initialize"` clause from the
+// header check in src/mcp.ts and this goes red with a 400.
+test("initialize stamped with an unsupported MCP-Protocol-Version header is negotiated, not refused", async () => {
+  const res = await worker.fetch(
+    post(
+      { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2099-01-01" } },
+      { "MCP-Protocol-Version": "2099-01-01" },
+    ),
+    env,
+  );
+  assert.equal(res.status, 200, "nothing is negotiated before initialize, so its header cannot be a broken agreement");
+  const body = (await res.json()) as { result: { protocolVersion: string } };
+  assert.equal(body.result.protocolVersion, "2025-11-25", "the answer is a counter-offer in the body");
+});
+
+// Claude's connector check (python-httpx) posts with MCP-Protocol-Version:
+// 2025-11-25 and was refused with 400 before this revision was spoken.
+// Killing mutation: remove "2025-11-25" from SUPPORTED_PROTOCOL_VERSIONS.
+test("2025-11-25 is spoken: granted verbatim on initialize and accepted in the header after it", async () => {
+  const init = await worker.fetch(
+    post(
+      { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-11-25" } },
+      { "MCP-Protocol-Version": "2025-11-25" },
+    ),
+    env,
+  );
+  assert.equal(init.status, 200);
+  const initBody = (await init.json()) as { result: { protocolVersion: string } };
+  assert.equal(initBody.result.protocolVersion, "2025-11-25");
+
+  const ping = await worker.fetch(
+    post({ jsonrpc: "2.0", id: 2, method: "ping" }, { "MCP-Protocol-Version": "2025-11-25" }),
+    env,
+  );
+  assert.equal(ping.status, 200);
 });
 
 test("an unsupported MCP-Protocol-Version header is a hard 400", async () => {

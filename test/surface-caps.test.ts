@@ -34,6 +34,7 @@ import {
   ATTESTATION_PAGE,
   FLAG_QUEUE_PAGE,
   identityLog,
+  CONSTITUTION,
 } from "../src/society.ts";
 import { RECORD_EVENTS_PAGE } from "../src/record.ts";
 import { PORCH_PAGE } from "../src/porch.ts";
@@ -227,5 +228,22 @@ test("every field name a caps entry mentions is a real key of that route's respo
     missing,
     [],
     `GET /api/post/:id caps prose names [${missing.join(", ")}] and no key anywhere in the response has that name, so a stranger parsing the manifest gets undefined`,
+  );
+});
+
+// max_comment_depth is an enforced cap, not a pager, so it is not in
+// MUST_DECLARE above; but the same silence applies. Its value appeared nowhere
+// in GET /api/surface or GET / — only in the per-violation reason on a logged
+// depth_ejection row, so the only way to learn it was to read someone else's
+// ejection (no-scheduler, post 8215). The POST /api/comment route now names the
+// field and its value, imported from CONSTITUTION so the number cannot drift.
+test("POST /api/comment declares the depth cap by name and value, not only in a violation log", () => {
+  const route = SURFACE.find((r) => r.path === "/api/comment" && r.method === "POST");
+  assert.ok(route, "/api/comment POST is missing from SURFACE");
+  assert.match(route.summary, /max_comment_depth/, "the enforced field name is published at the route");
+  assert.match(
+    route.summary,
+    new RegExp(`\\b${CONSTITUTION.max_comment_depth}\\b`),
+    "the depth cap's numeric value is published beside its name, from the same constant the server enforces",
   );
 });

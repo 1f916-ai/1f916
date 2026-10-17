@@ -170,6 +170,21 @@ async function submitBase(env: Env, payload: string): Promise<string> {
   return client.sendTransaction({ to: account.address, value: 0n, data: baseCalldata(payload) });
 }
 
+// The anchoring wallet's address, derived the way submitBase derives the account.
+// It is the sender of every Base anchor, so it is public by construction, and
+// serving it is what lets a stranger scan the wallet for anchors (or for two
+// different heads at one tree size) instead of trusting this server's own table.
+// Null when no key is configured, or when the configured value is not a key.
+export async function baseWalletAddress(env: Env): Promise<string | null> {
+  if (!env.ANCHOR_BASE_KEY) return null;
+  try {
+    const { privateKeyToAccount } = await import("viem/accounts");
+    return privateKeyToAccount(env.ANCHOR_BASE_KEY as `0x${string}`).address;
+  } catch {
+    return null;
+  }
+}
+
 async function confirmBase(env: Env, txHash: string): Promise<"pending" | "confirmed" | "failed"> {
   const { createPublicClient, http } = await import("viem");
   const { base } = await import("viem/chains");
@@ -336,6 +351,7 @@ export async function listAnchors(env: Env, sinceId: number | undefined) {
           .all<Pick<AnchorRow, "checkpoint_id" | "kind" | "target" | "status" | "error" | "created_at" | "confirmed_at">>()
       ).results
     : [];
+  const baseAddress = await baseWalletAddress(env);
   return {
     contract: "1f916.anchors.v1",
     what_this_is:
@@ -345,12 +361,22 @@ export async function listAnchors(env: Env, sinceId: number | undefined) {
     targets: {
       ots_calendars: OTS_CALENDARS,
       base: Boolean(env.ANCHOR_BASE_KEY),
+      base_address: baseAddress,
       archive: (env.ARCHIVE_ORG_ACCESS && env.ARCHIVE_ORG_SECRET ? "authenticated, at most once every 55 minutes" : "anonymous, at most once every 55 minutes; refusals are recorded as failed rows") + "; one capture of GET /api/checkpoint per attempt, recorded against the identity log's head, never the ledger's",
     },
     anchored_text: "the checkpoint's signed payload, byte for byte: 1f916.checkpoint.v1:<log>:<tree_size>:<root>:<created_at>. GET /api/anchors/<id>.txt serves it.",
     how_to_verify: {
       ots: "GET /api/anchors/<id>.txt as payload.txt and /api/anchors/<id>.ots as payload.txt.ots, then `ots verify payload.txt.ots` with the standard OpenTimestamps client (opentimestamps.org). The registry serves the pending file it received and never upgrades it, so the row stays `status: pending` with a null `confirmed_at` here even after the calendar's Bitcoin transaction is mined; `ots upgrade payload.txt.ots` fetches the completed proof from the calendar and is how you confirm it yourself.",
-      base: "target is the Base transaction hash. Read the transaction's input data on any Base node or explorer and decode it as UTF-8: it is the payload text. The sender is the anchoring wallet, a dedicated pocket-change key that is not the treasury.",
+      base: "target is the Base transaction hash. Read the transaction's input data on any Base node or explorer and decode it as UTF-8: it is the payload text. The sender is the anchoring wallet, a dedicated pocket-change key that is not the treasury." +
+        (baseAddress
+          ? ` That wallet is ${baseAddress} (targets.base_address): list its outgoing transactions on any Base node or explorer and compare them with this table, so a checkpoint payload sent from it that is missing here, or two different payloads for one tree size, is visible without trusting this server.`
+          : env.ANCHOR_BASE_KEY
+            // targets.base stays true here: the anchoring pass keys off the
+            // configured value and still attempts Base anchors, which fail and
+            // are recorded as failed rows. Saying "no wallet is configured"
+            // would contradict both targets.base and those rows.
+            ? " An anchoring key is configured but cannot be read as a key (targets.base_address is null), so Base anchors are attempted and will fail, each recorded here as a failed row."
+            : " No anchoring wallet is configured right now (targets.base_address is null), so no Base anchor is being made."),
       archive: "target is the Wayback Machine capture URL of GET /api/checkpoint once the capture is confirmed. An authenticated capture starts as a job status URL with status pending; a later pass asks the archive how the job went and rewrites the row to the capture URL (confirmed) or records the archive's error (failed).",
     },
     latest_checkpoints: latest.map((c) => ({ checkpoint_id: c.id, log: c.log, tree_size: c.tree_size, root: c.root, payload: payloadOf(c), anchors: latestAnchors.filter((a) => a.checkpoint_id === c.id).map(({ checkpoint_id: _c, ...rest }) => rest) })),

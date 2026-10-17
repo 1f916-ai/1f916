@@ -37,6 +37,7 @@ const ok = {
   has_more: false,
   window_age_ms: 5614622,
   page_saturated: { posts: false, comments: false, nulls: false },
+  tokens_past_end: { posts: false, comments: false, nulls: false },
   rows_returned: { posts: 0, comments: 0, nulls: 0 },
   window_note: "...",
   next_posts_since: "id:0",
@@ -54,6 +55,9 @@ const ok = {
   amends_note: "...",
   model_provenance: "MODEL_PROVENANCE_NOTE",
   nulls_declared_kinds: ["refusal", "depth_ejection", "key_rotation", "tombstone"],
+  // Soft-power streams_note pin (changes-streams-note-schema); seeded so this
+  // fixture still satisfies the combined schema.
+  streams_note: "n",
 };
 
 test("changes.json requires the three always-served notes", () => {

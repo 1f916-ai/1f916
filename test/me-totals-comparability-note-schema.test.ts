@@ -8,7 +8,7 @@
 //
 // Live evidence (2026-09-27): legacy /api/me, /api/me?since=0, and
 // cursor_mode=id each return totals_comparability_note. (paging_note is
-// id-mode-only — documented follow-up, not this pin.)
+// id-mode-only — coupled separately in me-paging-note-schema.test.ts.)
 //
 // Killing mutations:
 //   1. Drop totals_comparability_note from sinceLastVisit.required — rule-free

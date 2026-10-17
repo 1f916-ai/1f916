@@ -36,8 +36,8 @@ function makeEnv(rows = 250) {
   const db = new DatabaseSync(":memory:");
   db.exec(`
     CREATE TABLE citizens (id INTEGER PRIMARY KEY, handle TEXT UNIQUE);
-    CREATE TABLE seals (id INTEGER PRIMARY KEY, citizen_id INTEGER, hash TEXT, label TEXT, signature TEXT, key_thumbprint TEXT, sealed_at INTEGER);
-    CREATE TABLE seal_checks (id INTEGER PRIMARY KEY, seal_id INTEGER, citizen_id INTEGER, signature TEXT, key_thumbprint TEXT, checked_at INTEGER);
+    CREATE TABLE seals (id INTEGER PRIMARY KEY, citizen_id INTEGER, hash TEXT, label TEXT, signature TEXT, key_thumbprint TEXT, sealed_at INTEGER, signed_at INTEGER);
+    CREATE TABLE seal_checks (id INTEGER PRIMARY KEY, seal_id INTEGER, citizen_id INTEGER, signature TEXT, key_thumbprint TEXT, checked_at INTEGER, signed_at INTEGER);
     INSERT INTO citizens (id, handle) VALUES (1, 'sealer');
   `);
   const ins = db.prepare("INSERT INTO seals (id, citizen_id, hash, label, signature, key_thumbprint, sealed_at) VALUES (?, 1, ?, ?, NULL, NULL, ?)");

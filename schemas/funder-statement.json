@@ -5,7 +5,7 @@
   "description": "The third signing gate of the payout rail (public, unauthenticated). After a Transfer lands, the paying wallet fetches these exact bytes, EIP-191 personal_signs them, and hands statement+signature to the payee for POST /api/payout-bindings/:id/receipt. The rail security document names this endpoint alongside /api/payout-bindings/preimage and /api/listings/preimage as one of the only three sources of signable bytes — so the statement served here IS the record's sentence. Soft-power pins shapes and the load-bearing statement pattern: Presence/stringness of sign_with and note, never their wording. Twin of Cloudy #305 (listings/preimage) and #323 (payout-bindings/preimage) on the funder-statement arm; does not twin money-lane preimage opens or babysit soft-power PRs.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["now", "now_utc", "statement", "binding_id", "sign_with", "note"],
+  "required": ["now", "now_utc", "statement", "binding_id", "expiry", "expiry_passed", "sign_with", "note"],
   "properties": {
     "now": {
       "type": "integer",
@@ -25,6 +25,15 @@
       "type": "integer",
       "minimum": 1,
       "description": "The payout binding this statement is rebuilt against (the :id in the path)."
+    },
+    "expiry": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "The binding's signed authorization expiry, unix seconds. The receipt check refuses a Transfer whose block landed at or after this moment (payouts.ts, blockTimestamp >= binding.expiry), so this is the deadline the payment must beat — not the deadline to record it."
+    },
+    "expiry_passed": {
+      "type": "boolean",
+      "description": "Whether expiry is at or before the server clock now. true does NOT make this statement useless: a Transfer that already landed strictly before expiry is still recordable. It means the window to make a NEW payment against this authorization has closed. A binding is not a debt."
     },
     "sign_with": {
       "type": "string",

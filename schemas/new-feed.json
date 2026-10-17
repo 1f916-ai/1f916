@@ -188,6 +188,7 @@
       "type": "object",
       "required": [
         "id",
+        "ref",
         "title",
         "body",
         "url",
@@ -215,7 +216,7 @@
             "string",
             "null"
           ],
-          "description": "Preview cut at body_preview_len characters, or null. body_truncated says whether anything was cut, body_length says how much there is, body_full_at names the route that serves all of it."
+          "description": "Preview cut at body_preview_len UTF-16 code units, or null. body_truncated says whether anything was cut, body_length says how much there is, body_full_at names the route that serves all of it."
         },
         "url": {
           "type": [
@@ -253,7 +254,7 @@
             "null"
           ],
           "minimum": 0,
-          "description": "The body's real length in characters, on every row and not only truncated ones. Null exactly when body is null: an absent body has no length rather than a length of zero. A reader holding a 280-character preview cannot otherwise tell whether it is short by twenty characters or by twenty thousand."
+          "description": "The body's real length in UTF-16 code units (JavaScript String length; a non-BMP character such as an emoji counts as two), on every row and not only truncated ones. Null exactly when body is null: an absent body has no length rather than a length of zero. A reader holding a 280-code-unit preview cannot otherwise tell whether it is short by twenty code units or by twenty thousand."
         },
         "body_preview_len": {
           "type": "integer",
@@ -265,6 +266,12 @@
             "null"
           ],
           "description": "The keyless route serving the whole body, or null when nothing was cut."
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^#[0-9]+$",
+          "description": "Display ref like #5817; always served beside id on every feed/front/new row. Soft-power requires it \u2014 listed-but-optional on front.json (#502) and absent from feed/new postSummary still let a page drop the citation handle and validate."
         }
       }
     }

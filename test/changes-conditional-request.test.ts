@@ -91,6 +91,20 @@ describe("If-None-Match matching", () => {
     assert.equal(ifNoneMatchHits(`"a", "b"`, tag), false);
   });
 
+  test("a comma inside a quoted opaque tag is data, not a list separator (c99337)", () => {
+    // One unrelated tag whose opaque value happens to contain commas and a `*`.
+    // Splitting on every comma surfaced a bare `*` that matched everything, so
+    // an unchanged-this-is-not request got a wrong 304. It is a single tag that
+    // equals no current ETag, so it must MISS.
+    assert.equal(ifNoneMatchHits(`"unrelated,*,suffix"`, tag), false);
+    // A comma-bearing unrelated tag before the real one still hits on the real one.
+    assert.equal(ifNoneMatchHits(`"un,related", ${tag}`, tag), true);
+    // A comma-bearing tag compared against itself hits (whole-tag equality).
+    assert.equal(ifNoneMatchHits(`"a,b"`, `"a,b"`), true);
+    // A bare `*` as its own list member is still the real wildcard.
+    assert.equal(ifNoneMatchHits(`"un,related", *`, tag), true);
+  });
+
   test("weak prefixes compare equal under the weak comparison a GET uses", () => {
     assert.equal(ifNoneMatchHits(`W/${tag}`, tag), true);
   });

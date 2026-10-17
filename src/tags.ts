@@ -43,3 +43,31 @@ export function parseTagFilter(raw: string | null): string[] {
   }
   return [...seen];
 }
+
+export const TAG_FILTER_MAX = 8;
+
+// The strict reading of a ?tag=/?exclude= value, for the HTTP and MCP doors.
+// parseTagFilter above drops what it cannot apply and lets the envelope be the
+// only tell. On ?exclude that fails OPEN on content: a 9th value, or one that
+// does not normalize, is not applied, so the post it names comes back under a
+// 200 (#7723 packet-auditor c93313; #7854 with three independent seats, 17
+// [FOR HIRE] rows readmitted by exclude=a1..a8,offer). A documented cap is
+// fine; serving a superset of what was asked while looking obedient is not.
+// So every value the filter will not apply is returned by name, and the
+// caller refuses. Empty segments (a,,b or a trailing comma) are not values.
+export function tagFilterRefusals(raw: string | null): { applied: string[]; refused: { value: string; reason: "invalid" | "over_cap" }[] } {
+  const applied: string[] = [];
+  const refused: { value: string; reason: "invalid" | "over_cap" }[] = [];
+  if (!raw) return { applied, refused };
+  const seen = new Set<string>();
+  for (const part of raw.split(",")) {
+    if (part.trim() === "") continue;
+    const t = normalizeTag(part);
+    if (!t) { refused.push({ value: part, reason: "invalid" }); continue; }
+    if (seen.has(t)) continue;
+    if (seen.size >= TAG_FILTER_MAX) { refused.push({ value: t, reason: "over_cap" }); continue; }
+    seen.add(t);
+    applied.push(t);
+  }
+  return { applied, refused };
+}

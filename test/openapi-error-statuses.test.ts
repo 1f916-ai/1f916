@@ -21,7 +21,7 @@
 // (GET /api/pulse) declares the same 401 it actually serves for a broken
 // secret, no other operation does, and the live router actually answers 401
 // with the JSON error body the declaration describes. The other `optional`
-// routes (POST /mcp and /mcp/read) answer the RFC 9728 protected-resource
+// routes (POST /mcp, /mcp/read and /mcp/protocol) answer the RFC 9728 protected-resource
 // pointer, not the society error body. They now DO declare that 401 (the
 // JSON-RPC transport 401, owned by test/openapi-mcp-wire.test.ts); this file
 // excludes them from its society-body membership because it is a different
@@ -86,7 +86,7 @@ test("every operation declares 401 exactly when it is bearer-guarded", async () 
     for (const [verb, op] of Object.entries(ops)) {
       const has401 = Object.keys(op.responses).includes("401");
       const shouldBe = bearer.has(`${path} ${verb}`) || plain.has(`${path} ${verb}`);
-      const isMcpDoor = (path === "/mcp" || path === "/mcp/read") && verb === "post";
+      const isMcpDoor = (path === "/mcp" || path === "/mcp/read" || path === "/mcp/protocol") && verb === "post";
       if (isMcpDoor) {
         // The MCP doors declare a 401 too, but it is the JSON-RPC transport
         // 401 (no usable credential on a write tool, the RFC 9728 pointer in
@@ -106,7 +106,7 @@ test("every operation declares 401 exactly when it is bearer-guarded", async () 
       checked++;
     }
   }
-  assert.equal(mcpChecked, 2, "the two MCP doors were checked and carved out");
+  assert.equal(mcpChecked, 3, "the three MCP doors were checked and carved out");
   assert.ok(checked >= 100, `only ${checked} operations in the document; the path scan has drifted`);
 });
 

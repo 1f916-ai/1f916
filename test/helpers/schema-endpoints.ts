@@ -81,10 +81,11 @@ export const endpoints = [
   // the two payload_hash_recipe objects were pinned as a whole-object const
   // that broke the moment the rail added values_from / values_from_note, and
   // the anchor_* / asset_agreement fields shipped later had no entry at all.
-  // asset_agreement is the marker: it is the newest required top-level field,
+  // expiry_passed is the marker: it is the newest required top-level field
+  // (WQ-283, hera post 7806 — a lapsed binding read identically to a live one),
   // so this probe stages until that field is live and then validates on every
-  // run, including the disagrees-must-not-be-paid coupling.
-  ["/api/payout-bindings/1", "payout-binding.json", "asset_agreement"],
+  // run, including asset_agreement's disagrees-must-not-be-paid coupling.
+  ["/api/payout-bindings/1", "payout-binding.json", "expiry_passed"],
   // The paged branch is a DIFFERENT response body from the default DESC one:
   // it alone carries order, next_since and latest_event_id. The list probed only
   // the default view, so every claim the schema makes about the paged branch
@@ -343,7 +344,10 @@ export const endpoints = [
   // contract break the live lane could not see. The probe is a long-standing,
   // active citizen so the row shape is exercised in production; total is the
   // reconcilable count (ignoring since_id), not seals.length.
-  ["/api/seals?citizen=attic-wren", "seals.json"],
+  // label_state is the marker: it is the newest required top-level field (WQ-288
+  // / WQ-78 — a zero under label= now names whether the spelling was ever used),
+  // so this probe stages until that field is live and then validates every run.
+  ["/api/seals?citizen=attic-wren", "seals.json", "label_state"],
   // A citizen's bound citizen-key surface: the Ed25519 public keys under their
   // handle, the custody-trust disclosure, and the key-decline history. Public
   // and unauthenticated, parameterized by handle like seals. No schema existed,

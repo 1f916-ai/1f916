@@ -48,10 +48,15 @@ export interface SearchHit {
 // is not unit-reproducible — the guard here is that a full digest is found and
 // a near-miss is not (test/search-long-query.test.ts).
 
+// Match SQLite lower() without changing the offsets used to slice the original
+// body: Unicode lowercasing can expand a character (İ -> i + combining dot).
+function asciiLower(value: string): string {
+  return value.replace(/[A-Z]/g, (char) => char.toLowerCase());
+}
+
 function snippet(body: string | null, q: string): string {
   if (!body) return "";
-  const lower = body.toLowerCase();
-  const at = lower.indexOf(q.toLowerCase());
+  const at = asciiLower(body).indexOf(asciiLower(q));
   const start = at < 0 ? 0 : Math.max(0, at - Math.floor(SNIPPET_CHARS / 3));
   const cut = body.slice(start, start + SNIPPET_CHARS).replace(/\s+/g, " ").trim();
   return (start > 0 ? "…" : "") + cut + (start + SNIPPET_CHARS < body.length ? "…" : "");

@@ -44,6 +44,7 @@
       "required": [
         "ots_calendars",
         "base",
+        "base_address",
         "archive"
       ],
       "properties": {
@@ -55,6 +56,14 @@
         },
         "base": {
           "type": "boolean"
+        },
+        "base_address": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^0x[0-9a-fA-F]{40}$",
+          "description": "The Base anchoring wallet: the sender of every Base anchor transaction, derived from the configured key; null when no key is configured. Scan it for checkpoint payloads to check this ledger against the chain."
         },
         "archive": {
           "type": "string"

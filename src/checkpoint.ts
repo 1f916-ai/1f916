@@ -20,6 +20,9 @@ import { b64urlDecode, b64urlEncode } from "./keys.ts";
 import { consistencyProof, inclusionProof, merkleRoot } from "./merkle.ts";
 import { SocietyError, type Env } from "./society.ts";
 import { WITNESS_COUNTERSIGNATURE_NOTE, WITNESS_COUNTERSIGNATURE_PAYLOAD_FORMAT } from "./chain.ts";
+import { NOTE_KEY_NAME, checkpointBody, noteFromField, noteKeyId, originOf, signatureField, verifierKey } from "./note.ts";
+import { WITNESS_CADENCE, WITNESS_STANDING, WITNESS_TRIGGER_NEVER_NOTE, WITNESS_TRIGGER_RETIRED_NOTE } from "./witness-cadence.ts";
+import { cosignaturesFor, witnessView } from "./witness-network.ts";
 
 export const CHECKPOINT_PAYLOAD_PREFIX = "1f916.checkpoint.v1";
 const LOGS = ["identity_events", "ledger"] as const;
@@ -107,8 +110,32 @@ export async function makeCheckpoints(env: Env): Promise<{ log: string; tree_siz
       .bind(log, leaves.length, root, sig, now)
       .run();
     out.push({ log, tree_size: leaves.length, root, ...(r.meta.changes === 0 ? { skipped: true } : {}) });
+    // The stamp above is written. The note only adds to it, so a failure here
+    // is logged and never costs the stamp.
+    await signNoteFor(env, log, leaves.length).catch((e) => console.error(`checkpoint: note not signed for ${log} at ${leaves.length}: ${String(e)}`));
   }
   return out;
+}
+
+// The stamp, signed a second time in the format the certificate logs use
+// (src/note.ts). This is the ONLY place a note is signed: by the stamping job,
+// on its schedule, for the stamp at the size the log has now. A reader's
+// request never reaches the key; it is served what was stored here.
+//
+// What is signed is the STORED row, not what this run computed, so a note can
+// never state a size or a root that the stamp beside it does not. The stamp's
+// row is never written: the note goes in its own table, once.
+async function signNoteFor(env: Env, log: CheckpointLog, treeSize: number): Promise<void> {
+  const row = await env.DB.prepare(
+    "SELECT c.id, c.tree_size, c.root, n.signature FROM checkpoints c LEFT JOIN checkpoint_notes n ON n.checkpoint_id = c.id WHERE c.log = ? AND c.tree_size = ?",
+  )
+    .bind(log, treeSize)
+    .first<{ id: number; tree_size: number; root: string; signature: string | null }>();
+  if (!row || row.signature !== null) return;
+  const body = checkpointBody(originOf(log), row.tree_size, row.root);
+  const pub = b64urlDecode(await checkedPublicKey(env));
+  const field = signatureField(await noteKeyId(NOTE_KEY_NAME, pub), b64urlDecode(await signPayload(env, body)));
+  await env.DB.prepare("INSERT OR IGNORE INTO checkpoint_notes (checkpoint_id, signature, created_at) VALUES (?, ?, ?)").bind(row.id, field, Date.now()).run();
 }
 
 export interface WitnessDispatchRow {
@@ -118,19 +145,9 @@ export interface WitnessDispatchRow {
   last_ok_at: number | null;
 }
 
-// Cron entry: write down how the witness dispatch went, success or not. The
-// 53-hour silent failure (#1264) happened because the only record of a failed
-// dispatch was a console line; this row is what GET /api/checkpoint serves.
-export async function recordWitnessDispatch(env: Env, at: number, status: number | null, error: string | null): Promise<void> {
-  const ok = status !== null && status >= 200 && status < 300;
-  await env.DB.prepare(
-    "INSERT INTO witness_dispatch (id, last_attempt_at, last_status, last_error, last_ok_at) VALUES (1, ?1, ?2, ?3, ?4) " +
-      "ON CONFLICT(id) DO UPDATE SET last_attempt_at = ?1, last_status = ?2, last_error = ?3, last_ok_at = COALESCE(?4, last_ok_at)",
-  )
-    .bind(at, status, error, ok ? at : null)
-    .run();
-}
-
+// The row the registry's own trigger wrote, one attempt over the last. The
+// trigger was removed on 2026-09-29 (src/witness-cadence.ts), so nothing
+// writes this row any more; it is read as history.
 // Read the single dispatch row. A deploy can serve this code before migration
 // 0034 has been applied; a missing table degrades to "nothing recorded" so the
 // surface external witnesses poll never 500s over its own telemetry.
@@ -146,41 +163,29 @@ export async function readWitnessDispatch(env: Env): Promise<WitnessDispatchRow 
 
 // Pure view over the row, ages computed at render time so the surface cannot
 // hold a stale figure (hemei, c12182: make the surface a function of the
-// record). No instants in prose — the numbers ARE the observation.
+// record). The row no longer moves, so the ages only grow, and `retired` says
+// why: a reader who alarms on a growing age is told in a field, not in prose,
+// that this is the end of the trigger and not an outage of it.
 export function witnessDispatchView(row: WitnessDispatchRow | null, now: number) {
-  if (!row) {
-    return {
-      recorded: false,
-      note: "no dispatch attempt recorded yet — either the cron has not fired since this surface shipped or the dispatch token is unset; GitHub's hourly schedule is the backstop either way, and the witness day files record what actually landed",
-    };
-  }
-  const ok = row.last_status !== null && row.last_status >= 200 && row.last_status < 300;
+  if (!row) return { recorded: false, retired: true, note: WITNESS_TRIGGER_NEVER_NOTE };
   return {
     recorded: true,
+    retired: true,
     last_attempt_at: row.last_attempt_at,
     last_attempt_age_seconds: Math.max(0, Math.round((now - row.last_attempt_at) / 1000)),
     last_status: row.last_status,
     last_error: row.last_error,
     last_ok_at: row.last_ok_at,
     last_ok_age_seconds: row.last_ok_at === null ? null : Math.max(0, Math.round((now - row.last_ok_at) / 1000)),
-    note: ok ? DISPATCH_OK_NOTE : DISPATCH_FAILED_NOTE,
+    note: WITNESS_TRIGGER_RETIRED_NOTE,
   };
 }
-
-// The served notes about liveness, kept together so they are edited together:
-// each one says what its number proves and points at the number that proves
-// the next thing.
-const DISPATCH_OK_NOTE =
-  "the latest dispatch attempt was accepted; acceptance queues a workflow run, it does not prove a witness line landed — the day file's own `at` timestamps are the record. Nor does it prove the checkpoint step ran: the dispatch leg runs after makeCheckpoints in the same scheduled handler and survives its failure, so checkpoint_sequence is that step's own record";
-
-const DISPATCH_FAILED_NOTE =
-  "the latest dispatch attempt FAILED (status/error above); GitHub's hourly schedule is the backstop, so the witness degrades to hourly rather than stopping — the day file's own `at` timestamps are the record";
 
 const SEQUENCE_UNREAD_NOTE =
   "sqlite_sequence has no readable entry for the checkpoints table on this deployment (the read was refused, or nothing has ever been written); fall back to comparing checkpoints[].id across two reads, remembering that on a quiet log it does not move until the next written row";
 
 const SEQUENCE_NOTE =
-  "head is the checkpoints table's AUTOINCREMENT sequence. Every execution of the checkpoint step consumes attempts_per_pass values (one INSERT OR IGNORE per log), written or ignored, so head advances on a quiet log where checkpoints[].id and created_at do not. Δhead / attempts_per_pass is the number of executions between two reads, whoever ran them: the cron (attempted_pass_cron) or a manual crank (POST /api/checkpoint, maintainer only), which consumes the same values and is recorded nowhere a reader can see. So over one cron interval a Δhead of attempts_per_pass proves the step ran once, not that the cron ran it, and a crank inside the interval can stand in for a slot that never fired: measured against Δt / the cron interval, an excess is cranks, a shortfall is missed or failed passes, and only the shortfall is provable from here. witness_dispatch.last_attempt_at is written by a later leg of the same handler and survives this step throwing, so it proves the handler ran; read the two together to sort a frozen head. Dispatch not advancing: the handler did not run. Dispatch advancing with Δhead 0: the handler ran and this step consumed nothing, so its first leg threw before its insert or it was never entered (REGISTRY_SEED unset). Δhead of attempts_per_pass − 1: the first leg wrote or ignored and the next threw before its insert (there is no per-leg try, so the execution ends there).";
+  "head is the checkpoints table's AUTOINCREMENT sequence. Every execution of the checkpoint step consumes attempts_per_pass values (one INSERT OR IGNORE per log), written or ignored, so head advances on a quiet log where checkpoints[].id and created_at do not. Δhead / attempts_per_pass is the number of executions between two reads, whoever ran them: the cron (attempted_pass_cron) or a manual crank (POST /api/checkpoint, maintainer only), which consumes the same values and is recorded nowhere a reader can see. So over one cron interval a Δhead of attempts_per_pass proves the step ran once, not that the cron ran it, and a crank inside the interval can stand in for a slot that never fired: measured against Δt / the cron interval, an excess is cranks, a shortfall is missed or failed passes, and only the shortfall is provable from here. Nothing served here proves the handler ran when this step did not. Until 2026-09-29 witness_dispatch.last_attempt_at did, being written by a later leg of the same handler; that leg was removed (witness_dispatch.retired) and the field will not move again, so it says nothing about any pass after it. A frozen head therefore reads one way only. Δhead 0 over a cron interval: this step consumed nothing, because the handler did not run, or it ran and the step's first leg threw before its insert, or the step was never entered (REGISTRY_SEED unset), and these cannot be told apart from here. Δhead of attempts_per_pass − 1: the first leg wrote or ignored and the next threw before its insert (there is no per-leg try, so the execution ends there).";
 
 // wrangler.jsonc triggers.crons, the ATTEMPTED cadence of the checkpoint
 // step; test/checkpoint-sequence-head.test.ts refuses a drift between the two.
@@ -203,12 +208,12 @@ const SEQUENCE_SQL = "SELECT seq FROM sqlite_sequence WHERE name = 'checkpoints'
 // change shows it), so this number moves by LOGS.length per checkpointer pass
 // whether or not any tree grew, while the served checkpoints[].id and
 // created_at freeze on a quiet log (ORDER BY id DESC LIMIT 1 returns the last
-// WRITTEN row). It is the checkpointer's own liveness signal:
-// witness_dispatch.last_attempt_at is written by a later leg of the same cron
-// handler and survives a makeCheckpoints failure (index.ts scheduled(): the
-// try/catch around it logs and continues), so it proves the handler ran, not
-// that this step did. D1 may refuse a read of sqlite_sequence; degrade to null
-// rather than 500 the endpoint, as readWitnessDispatch does.
+// WRITTEN row). It is the checkpointer's own liveness signal, and since
+// 2026-09-29 the only one served: witness_dispatch.last_attempt_at used to
+// prove the handler ran even when this step threw, and the leg that wrote it
+// was removed with the witness trigger. D1 may refuse a read of
+// sqlite_sequence; degrade to null rather than 500 the endpoint, as
+// readWitnessDispatch does.
 export async function readCheckpointSequenceHead(env: Env): Promise<number | null> {
   try {
     const row = await env.DB.prepare(SEQUENCE_SQL).first<SequenceRow>();
@@ -259,6 +264,11 @@ export async function latestCheckpoints(env: Env) {
   }
   const sequenceHead = await readCheckpointSequenceHead(env);
   const dispatchRow = await readWitnessDispatch(env);
+  // Independent witnesses' cosignatures of these stamps (src/witness-network.ts).
+  // Absent, not empty, when no witness is configured, so an unconfigured
+  // deployment serves exactly what it did before. Only configured witnesses'
+  // lines are served.
+  const witnesses = await witnessView(env, rows);
   return {
     contract: CHECKPOINT_PAYLOAD_PREFIX,
     registry_public_key: { kty: "OKP", crv: "Ed25519", x: pub },
@@ -267,11 +277,58 @@ export async function latestCheckpoints(env: Env) {
     countersignature_payload_format: WITNESS_COUNTERSIGNATURE_PAYLOAD_FORMAT,
     countersignature_note: WITNESS_COUNTERSIGNATURE_NOTE,
     checkpoints: rows,
+    note: await noteFacts(env),
     checkpoint_sequence: checkpointSequenceView(sequenceHead, rows),
     leaves_are: "the sealed rows' `hash` column values (lowercase hex, as UTF-8 bytes), in id order — the same hashes the linear chain and GET /api/attest already publish",
     tree: "RFC 6962: leaf = SHA-256(0x00 || leaf), node = SHA-256(0x01 || l || r)",
     how_to_verify:
-      "Check sig over the payload format above with registry_public_key. Then GET /api/proof?log=&event= for inclusion, /api/checkpoint/consistency?log=&from=&to= for append-only-ness. The witness records checkpoints at github.com/1f916-ai/1f916 under witness/ — dispatch is attempted every five minutes since 2026-08-12T03:41Z with GitHub's hourly schedule as the backstop, hourly-only before that, and the achieved cadence is whatever the day file's own `at` timestamps show (the five-minute leg has failed for days at a stretch while the backstop held, #1264). Compare roots there before believing ours.",
+      "Check sig over the payload format above with registry_public_key. Then GET /api/proof?log=&event= for inclusion, /api/checkpoint/consistency?log=&from=&to= for append-only-ness. The witness records checkpoints at github.com/1f916-ai/1f916 under witness/. " +
+      `${WITNESS_CADENCE}. ${WITNESS_STANDING}. ` +
+      "The achieved cadence is whatever the day file's own `at` timestamps show (the dispatch attempt failed for days at a stretch while GitHub's own schedule held, #1264). Compare roots there before believing ours.",
+    ...(witnesses ?? {}),
+  };
+}
+
+// One stamp, said again in the format the certificate logs use (src/note.ts).
+// It states nothing the stamp did not already state: the log, the size and the
+// root are read from the stored row, and the signature beside them was made by
+// the stamping job (signNoteFor) and stored. Nothing is signed here, and no key
+// is read here. The stamp's own time is not in the note, because the format
+// has no line for it; it stays in the stamp at GET /api/checkpoint.
+export function noNoteSentence(log: string, treeSize: number): string {
+  return `the stamp at tree_size=${treeSize} for log ${log} has no note. A note is written by the stamping job, never on request; the stamp itself is at GET /api/checkpoint`;
+}
+
+export async function checkpointNote(env: Env, logParam: string | null, sizeParam: number | undefined): Promise<string> {
+  const log = assertLog(logParam);
+  const wanted = typeof sizeParam === "number" && Number.isFinite(sizeParam) ? sizeParam : null;
+  type NoteRow = { id: number; tree_size: number; root: string; signature: string | null };
+  const row =
+    wanted === null
+      ? await env.DB.prepare("SELECT c.id, c.tree_size, c.root, n.signature FROM checkpoints c LEFT JOIN checkpoint_notes n ON n.checkpoint_id = c.id WHERE c.log = ? ORDER BY c.id DESC LIMIT 1").bind(log).first<NoteRow>()
+      : await env.DB.prepare("SELECT c.id, c.tree_size, c.root, n.signature FROM checkpoints c LEFT JOIN checkpoint_notes n ON n.checkpoint_id = c.id WHERE c.log = ? AND c.tree_size = ?").bind(log, wanted).first<NoteRow>();
+  if (!row) throw new SocietyError(404, wanted === null ? `no checkpoint yet for log ${log}` : `no checkpoint at tree_size=${wanted} for log ${log}; a note exists only for a size a stamp landed on`);
+  if (row.signature === null) throw new SocietyError(404, noNoteSentence(log, row.tree_size));
+  const note = noteFromField(checkpointBody(originOf(log), row.tree_size, row.root), NOTE_KEY_NAME, row.signature);
+  // Witnesses' cosignatures follow the registry's line, as C2SP tlog-cosignature
+  // lays them out: more signature lines on the same note. Each was verified
+  // against its witness's key before it was kept, and is served only while
+  // that witness is still configured (src/witness-network.ts).
+  const cosigned = await cosignaturesFor(env, row.id);
+  return note + cosigned.map((c) => c.line + "\n").join("");
+}
+
+export async function noteFacts(env: Env) {
+  const pub = b64urlDecode(await checkedPublicKey(env));
+  return {
+    format: "A signed note whose text is a checkpoint, as the transparency logs publish them (C2SP signed-note and tlog-checkpoint): origin, tree size, base64 root, a blank line, then the signature line.",
+    key_name: NOTE_KEY_NAME,
+    verifier_key: await verifierKey(NOTE_KEY_NAME, pub),
+    origins: Object.fromEntries(LOGS.map((l) => [l, originOf(l)])),
+    url: "/api/checkpoint/note/<log>",
+    same_key: "A note is signed by the same registry key as its stamp, over that stamp's own log, size and root.",
+    cosignatures: "When independent witnesses are configured, each one's verified cosignature/v1 line (C2SP tlog-cosignature) follows the registry's signature line, one line per witness. A verifier that pins only the registry key ignores them, as the signed-note format says; one that pins a witness's key (GET /api/checkpoint, cosigning_witnesses) checks it.",
+    signed_when: "By the stamping job when it runs, for the stamp at the size the log has then. Never on a reader's request: the endpoint serves what was stored. A stamp that was already behind the log when notes began has none.",
   };
 }
 

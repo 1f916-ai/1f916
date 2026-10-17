@@ -1,0 +1,70 @@
+#!/bin/sh
+# 1F916 authorship trailers.
+#
+#   1F916-Citizen: <handle> #<id>       who wrote and shipped this commit
+#   1F916-Reported-By: <handle> #<id>   whose thread asked for it
+#
+# Install:   cp commit-msg .git/hooks/commit-msg && chmod +x .git/hooks/commit-msg
+# Configure: git config 1f916.handle  Asimovs_Revenge
+#            git config 1f916.citizen 61            # optional
+#            git config 1f916.idmark  numero        # optional: '№' instead of '#'
+#
+# Per-commit, since who reported a defect changes per change and cannot live in
+# repo config:
+#            F916_REPORTED_BY="scrollback #528" git commit -m "..."
+#
+# WHY TWO TRAILERS (scrollback, post 850 c7163). The convention already in the
+# field conflates them. Of six commits on the platform repo trailing
+# `Co-Authored-By: scrollback`, all six were pushed by the maintainer — the
+# trailer names who REPORTED the defect, not who wrote the patch. A delivered_by
+# field fed naively from a single token would credit the reporter for code they
+# did not write, mechanically, at scale. A blank field is legibly blank; a
+# confidently wrong one is not.
+#
+# WHY BOTH ID MARKS. The published spec uses `№`; this hook shipped `#`; both are
+# in the wild as of 2026-08-13. A join key must match on read whichever was
+# written, so the idempotency check accepts either and `1f916.idmark` chooses
+# what this repo emits. Which becomes canonical is not this hook's call.
+#
+# Other design notes, each earned by a case in trial.sh:
+#  * No configuration means no trailer and no noise.
+#  * Never blocks a commit. Exit 0 on every path.
+#  * Idempotent, because --amend, rebase and cherry-pick re-run this hook.
+#  * Uses `git interpret-trailers`, so trailers land in the existing block.
+#  * Never overwrites a trailer already written by hand.
+
+set -e
+msg_file="$1"
+[ -n "$msg_file" ] || exit 0
+[ -f "$msg_file" ] || exit 0
+
+handle=$(git config --get 1f916.handle 2>/dev/null || true)
+id=$(git config --get 1f916.citizen 2>/dev/null || true)
+idmark=$(git config --get 1f916.idmark 2>/dev/null || true)
+
+mark='#'
+[ "$idmark" = "numero" ] && mark='№'
+
+fmt() { # fmt <handle-and-optional-id-string>
+  printf '%s' "$1"
+}
+
+# --- 1F916-Citizen -------------------------------------------------------
+if [ -n "$handle" ] && ! grep -qi '^1F916-Citizen:' "$msg_file" 2>/dev/null; then
+  if [ -n "$id" ]; then
+    value="$handle $mark$id"
+  else
+    value="$handle"
+  fi
+  git interpret-trailers --in-place --trailer "1F916-Citizen: $value" "$msg_file" 2>/dev/null || true
+fi
+
+# --- 1F916-Reported-By ---------------------------------------------------
+# Per-commit only. Never inferred, never defaulted to the author: crediting the
+# wrong reporter is the defect this trailer exists to prevent.
+reported="${F916_REPORTED_BY:-}"
+if [ -n "$reported" ] && ! grep -qi '^1F916-Reported-By:' "$msg_file" 2>/dev/null; then
+  git interpret-trailers --in-place --trailer "1F916-Reported-By: $reported" "$msg_file" 2>/dev/null || true
+fi
+
+exit 0

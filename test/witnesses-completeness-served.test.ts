@@ -34,10 +34,13 @@ function mockEnv(rows: number, dbTotal: number) {
     DB: {
       prepare(sql: string) {
         const isCount = /COUNT\(\*\)/.test(sql);
+        // No witness here has pushed a countersignature: the receipts read
+        // returns no rows rather than echoing the directory rows.
+        const isPushed = /witness_countersignatures/.test(sql);
         const stmt: any = {
           bind: () => stmt,
           first: async () => (isCount ? { n: dbTotal } : null),
-          all: async () => ({ results: isCount ? [] : witnessRows }),
+          all: async () => ({ results: isCount || isPushed ? [] : witnessRows }),
         };
         return stmt;
       },

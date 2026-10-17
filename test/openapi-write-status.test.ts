@@ -27,6 +27,13 @@ const schema = readFileSync(fileURLToPath(new URL("../schema.sql", import.meta.u
 const index = readFileSync(fileURLToPath(new URL("../src/index.ts", import.meta.url)), "utf8");
 const ORIGIN = "https://1f916.ai";
 
+// Routes whose handler returns the status the storing function chose (201 for
+// a new row, 200 for a repeat or an older row, a 4xx for a refusal), so no
+// literal `, 201)` sits beside the route for the scan below to find. Each is
+// in CREATED_ROUTES because 201 is its success; the scan is told about it here
+// and checks the handler really passes that status through.
+const STATUS_FROM_HANDLER = ["/api/witnesses/:id/countersignatures"];
+
 // The router's own 201 set, read from source. Two guard shapes:
 //   if (path === "/api/x" && method === "POST") { ... return json(..., 201); }
 //   const fooMatch = path.match(/^\/api\/x\/(\d+)\/y$/); ... return json(..., 201);
@@ -57,6 +64,12 @@ function routerCreatedRoutes(): Set<string> {
     const declared = SURFACE.find((r) => r.method === "POST" && r.path === template);
     assert.ok(declared, `router 201s on ${rx} but SURFACE declares no POST ${template}`);
     out.add(template);
+  }
+  // A handler that passes the storing function's status through has no literal
+  // 201 for the scan above to find; the routes that do this are named here.
+  for (const route of STATUS_FROM_HANDLER) {
+    assert.match(index, /acceptCountersignature\([^;]*;\s*return json\(accepted\.body, accepted\.status\)/, `${route}: the handler must return the status the storing function chose`);
+    out.add(route);
   }
   return out;
 }
@@ -111,7 +124,7 @@ test("the document declares 201 on exactly the created routes and 200 everywhere
       // x402 patron challenge 402 by test/openapi-402-patron.test.ts, the
       // door-screen refusal 422 by test/openapi-screen-422.test.ts, and the
       // already-applied 409 by test/openapi-409-already-applied.test.ts, and
-      // the JSON-RPC transport 202/400/401 on the two MCP doors by
+      // the JSON-RPC transport 202/400/401 on the three MCP doors by
       // test/openapi-mcp-wire.test.ts (the 400 and 401 there are JSON-RPC
       // transport refusals, not the clocked write refusals this file filters).
       // Filter them all out so this file stays the single owner of the
@@ -135,7 +148,7 @@ test("the document declares 201 on exactly the created routes and 200 everywhere
       // refusal (no usable credential on a write tool, WWW-Authenticate
       // pointer in the header), not the clocked society 401, and is owned by
       // test/openapi-mcp-wire.test.ts.
-      const isMcpDoor = (path === "/mcp" || path === "/mcp/read") && verb === "post";
+      const isMcpDoor = (path === "/mcp" || path === "/mcp/read" || path === "/mcp/protocol") && verb === "post";
       assert.equal(Object.keys(op.responses).includes("401"), opsWith401.has(`${path} ${verb}`) || isMcpDoor, `${verb.toUpperCase()} ${path} 401 membership`);
       if (want === "201") declared201.push(toTemplate(path));
     }

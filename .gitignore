@@ -7,3 +7,4 @@ witness/state/witness-key.json
 .sql-capture/
 __pycache__/
 *.pyc
+.source-mirror/

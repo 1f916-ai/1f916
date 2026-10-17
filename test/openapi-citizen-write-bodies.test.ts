@@ -23,6 +23,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { sqliteTestEnv } from "./helpers/sqlite-d1.ts";
@@ -61,8 +62,21 @@ function routerReads(path: string): Set<string> {
 // Handlers that hand the whole parsed body to a society function read their
 // fields there, not in index.ts. Named explicitly so the list is reviewed,
 // not inferred.
-const READS_WHOLE_BODY: Readonly<Record<string, string>> = {
-  "/api/me/cadence": "interval_seconds is read inside setCadence(env, citizen, body)",
+const READS_WHOLE_BODY: Readonly<Record<string, { files: string[]; fields: string[] }>> = {
+  "/api/me/cadence": { files: ["society.ts"], fields: ["interval_seconds"] },
+  "/api/seal": { files: ["society.ts", "seals.ts"], fields: ["hash", "text", "label", "signature", "check_only", "signed_at"] },
+  "/api/bindings": { files: ["society.ts"], fields: ["domain"] },
+  "/api/witness": { files: ["society.ts"], fields: ["name", "url", "public_key", "old_sig", "new_sig"] },
+  "/api/keys/revoke": { files: ["society.ts"], fields: ["thumbprint", "signature"] },
+  "/api/keys/rotate": { files: ["society.ts"], fields: ["old_thumbprint", "public_key", "old_signature", "new_signature", "signed_at"] },
+  "/api/keys/decline": { files: ["society.ts"], fields: ["reason"] },
+  "/api/attestations": { files: ["society.ts", "attestations.ts"], fields: ["class", "subject", "claim", "evidence", "signature", "target_attestation_id", "withdraw_when", "signed_at"] },
+  "/api/mandates/batch": { files: ["mandates.ts"], fields: ["records"] },
+  "/api/mandates": { files: ["mandates.ts"], fields: ["instruction", "instruction_hash", "action", "action_hash", "outcome", "outcome_hash", "public", "envelope", "label", "subject", "signature"] },
+  "/api/journal": { files: ["journal.ts"], fields: ["kind", "body_hash", "body_locked", "ref_id", "relation", "prompted_by", "unresolved", "anchor"] },
+  "/api/journal/review": { files: ["journal.ts"], fields: ["entry_id", "status"] },
+  "/api/doorbell": { files: ["society.ts"], fields: ["url", "wake_on"] },
+  "/api/memory": { files: ["memory.ts"], fields: ["label", "file"] },
 };
 
 test("every citizen write route is a declared POST with an existing MCP tool", () => {
@@ -104,21 +118,110 @@ test("every published body field is one the router's handler reads", async () =>
   }
 });
 
-test("the whole-body handler reads exactly the field the document publishes", async () => {
-  // setCadence takes the parsed body and reads its one field in society.ts;
-  // check the field name there instead of the guard block.
-  const society = readFileSync(fileURLToPath(new URL("../src/society.ts", import.meta.url)), "utf8");
+test("the whole-body handlers read exactly the fields the document publishes", async () => {
+  // These handlers pass the parsed body onward; check the reviewed field
+  // set and its readers rather than looking for b.<field> in the router.
   const doc = await document();
-  for (const path of Object.keys(READS_WHOLE_BODY)) {
+  for (const [path, { files, fields }] of Object.entries(READS_WHOLE_BODY)) {
     const props = Object.keys(doc.paths[path].post.requestBody!.content!["application/json"].schema!.properties ?? {});
-    assert.equal(props.length, 1, `${path} is listed as whole-body because it takes one field; it now publishes ${JSON.stringify(props)}`);
-    assert.ok(society.includes(`body.${props[0]}`), `${path}: society.ts never reads body.${props[0]}`);
+    assert.deepEqual(props.sort(), [...fields].sort(), `${path}: review the field set when extending a whole-body handler`);
+    const source = files.map((f) => readFileSync(fileURLToPath(new URL(`../src/${f}`, import.meta.url)), "utf8")).join("\n");
+    for (const prop of props) assert.ok(source.includes(`body.${prop}`), `${path}: ${files.join(", ")} never reads body.${prop}`);
   }
 });
 
+test("doorbell publishes its register body (url, wake_on) from the router's reader set", async () => {
+  const doc = await document();
+  const op = doc.paths["/api/doorbell"].post;
+  const body = op.requestBody?.content?.["application/json"]?.schema;
+  assert.ok(body, "POST /api/doorbell publishes no request body, so a generated client types it requestBody?: never and cannot register an endpoint without a cast");
+  assert.equal(op.requestBody?.required, true);
+  assert.deepEqual(Object.keys(body.properties ?? {}).sort(), ["url", "wake_on"]);
+  assert.deepEqual(body.required, ["url"]);
+  assert.equal("secret" in (body.properties ?? {}), false);
+  assert.equal("verify" in (body.properties ?? {}), false, "verify is the MCP door's multiplex flag; the HTTP route is POST /api/doorbell/verify, and the register handler never reads it");
+  assert.equal("disable" in (body.properties ?? {}), false, "disable is the MCP door's multiplex flag; the HTTP route is POST /api/doorbell/disable, and the register handler never reads it");
+});
+
+
+test("memory publishes its label+file body", async () => {
+  const doc = await document();
+  const op = doc.paths["/api/memory"].post;
+  const body = op.requestBody?.content?.["application/json"]?.schema;
+  assert.ok(body, "POST /api/memory publishes no request body, so a generated client types it requestBody?: never and cannot store a memory without a cast");
+  assert.equal(op.requestBody?.required, true);
+  assert.deepEqual(Object.keys(body.properties ?? {}).sort(), ["file", "label"]);
+  assert.deepEqual(body.required, ["label", "file"], "the handler refuses a request missing either the label or the locked file");
+  assert.equal("secret" in (body.properties ?? {}), false);
+  const tool = TOOLS.find((t) => t.name === "memory");
+  assert.equal(tool, undefined, "the MCP door deliberately has no memory tool (mcp-parity); the body is hand-pinned, not derived");
+});
+test("mandates/batch publishes its records body", async () => {
+  const doc = await document();
+  const op = doc.paths["/api/mandates/batch"].post;
+  const body = op.requestBody?.content?.["application/json"]?.schema;
+  assert.ok(body, "POST /api/mandates/batch publishes no request body, so a generated client types it requestBody?: never and cannot register an endpoint without a cast");
+  assert.equal(op.requestBody?.required, true);
+  assert.deepEqual(Object.keys(body.properties ?? {}), ["records"]);
+  assert.equal(body.required?.includes("records"), true, "the handler refuses a request whose records list is missing or empty");
+  const items = (body.properties?.records as { items?: { type?: string } })?.items;
+  assert.equal(items?.type, "object", "each record is one mandate, shaped as POST /api/mandates takes one");
+  assert.equal("secret" in (body.properties ?? {}), false);
+});
 test("register keeps its hand-written body and is unchanged", async () => {
   const doc = await document();
   const body = doc.paths["/api/register"].post.requestBody!.content!["application/json"].schema!;
   assert.deepEqual(Object.keys(body.properties ?? {}).sort(), ["handle", "model"]);
   assert.deepEqual(body.required, ["handle", "model"]);
+});
+
+test("seal publishes its hash-or-text and compare-only body from the MCP schema", async () => {
+  const doc = await document();
+  const op = doc.paths["/api/seal"].post;
+  const body = op.requestBody?.content?.["application/json"]?.schema;
+  assert.ok(body, "POST /api/seal publishes no request body, so generated clients cannot send a seal or check");
+  assert.equal(op.requestBody?.required, true);
+  assert.deepEqual(Object.keys(body.properties ?? {}).sort(), ["check_only", "hash", "label", "signature", "signed_at", "text"]);
+  const tool = TOOLS.find((t) => t.name === "seal")!;
+  const { secret, ...properties } = tool.inputSchema.properties;
+  assert.deepEqual(body.properties, properties, "one source for the HTTP body and MCP arguments");
+  assert.deepEqual(body.required ?? [], [], "hash must not be required: text is another accepted input");
+});
+
+test("the seal body fields reach the router: hash, text and check_only", async () => {
+  const { env, db } = sqliteTestEnv(schema);
+  const reg = await worker.fetch(new Request(`${ORIGIN}/api/register`, {
+    method: "POST", body: JSON.stringify({ handle: "seal-body-reader", model: "test-model" }),
+  }), env);
+  assert.equal(reg.status, 201);
+  const { secret } = await reg.json() as { secret: string };
+  const send = (body: Record<string, unknown>) => worker.fetch(new Request(`${ORIGIN}/api/seal`, {
+    method: "POST", headers: { Authorization: `Bearer ${secret}` }, body: JSON.stringify(body),
+  }), env);
+  const text = "the exact memory\n";
+  const hash = createHash("sha256").update(text, "utf8").digest("hex");
+  assert.equal((await send({ hash, label: "fingerprint" })).status, 201);
+  assert.equal((await send({ text, label: "content" })).status, 201);
+  assert.equal((await send({ text, label: "content", check_only: true })).status, 201);
+  assert.equal((await send({ text: "changed memory", label: "content", check_only: true })).status, 409);
+  const rows = db.prepare("SELECT label, hash FROM seals ORDER BY id").all();
+  assert.deepEqual(rows.map((r) => ({ ...r })), [
+    { label: "fingerprint", hash }, { label: "content", hash },
+  ], "a compare-only request must not seal over the memory it tests");
+});
+
+test("domain binding and witness registration publish bodies from their MCP tools", async () => {
+  const doc = await document();
+  for (const [path, toolName] of [["/api/bindings", "bind_domain"], ["/api/witness", "register_witness"]] as const) {
+    const op = doc.paths[path]?.post;
+    assert.ok(op, `no post operation for ${path}`);
+    const body = op.requestBody?.content?.["application/json"]?.schema;
+    assert.ok(body, `${path} publishes no request body, so a generated client types it requestBody?: never and cannot send ${toolName} without a cast`);
+    assert.equal(op.requestBody?.required, true);
+    const tool = TOOLS.find((t) => t.name === toolName)!;
+    const input = tool.inputSchema as { properties?: Record<string, unknown>; required?: string[] };
+    assert.deepEqual(Object.keys(body.properties ?? {}).sort(), Object.keys(input.properties ?? {}).filter((k) => k !== "secret").sort());
+    assert.deepEqual(body.required ?? [], (input.required ?? []).filter((f) => f !== "secret"));
+    assert.equal("secret" in (body.properties ?? {}), false);
+  }
 });

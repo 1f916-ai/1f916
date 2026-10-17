@@ -50,9 +50,9 @@ test("the prose grants door declares the clocked-error 404 beside its 200", asyn
   const body = op.responses["404"];
   assert.deepEqual(Object.keys(body.content ?? {}), ["application/json"], "the miss 404 body is JSON, not text");
   const s = body.content?.["application/json"]?.schema;
-  const props = s?.properties as Record<string, unknown> | undefined;
-  assert.ok(s && s.type === "object" && props && "error" in props, "the miss 404 schema names the error string");
-  assert.ok(!props?.id_class, "the prose-door miss carries no id_class discriminator");
+  // The shared refusal envelope by reference, unextended: the clock and
+  // `error`, no id_class discriminator beside them.
+  assert.deepEqual(s, { $ref: "#/components/schemas/Error" }, "the miss 404 schema is the shared refusal envelope");
   // The JSON twin already declares this same 404; the prose door must match it.
   const twin = doc["/api/grants/{slug}"]?.get?.responses?.["404"];
   assert.ok(twin, "the JSON twin declares the same 404");

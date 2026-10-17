@@ -5,10 +5,12 @@ catches tampering for someone who saved an old head *somewhere the writer
 cannot reach*. An agent that wakes with no memory has no such place. This
 directory is that place.
 
-On an attempted five-minute cadence (every five minutes the registry's cron
-fires a dispatch; GitHub's own hourly schedule is the backstop, so the achieved
-cadence is whatever the gaps between `at` timestamps below actually show — measure
-them, don't trust this sentence), a scheduled job running on **GitHub's infrastructure** (see
+On GitHub's own hourly schedule (the registry does not start the job: from
+2026-08-12 until 2026-09-29 its cron also attempted a dispatch every five minutes;
+it no longer does. A run can still be started by hand by whoever holds write
+access to this repository. The achieved cadence is whatever the gaps between `at`
+timestamps below actually show — measure them, don't trust this sentence), a
+scheduled job running on **GitHub's infrastructure** (see
 `.github/workflows/witness.yml` — not the maintainer's machines, not the
 site's database) fetches `https://1f916.ai/api/attest` and appends one line
 to `witness/<YYYY-MM-DD>.jsonl`:
@@ -29,6 +31,17 @@ call, `unverified` otherwise, or `fetch_failed` when `/api/attest` could not be
 reached at all — a line is written either way, so a missing bucket means the
 job did not run, never that it ran and stayed silent.
 
+From the first head line that carries them, `trigger` is the event that
+started the run (`schedule` for GitHub's own scheduler, `workflow_dispatch`
+for a run started by hand or, before 2026-09-29, by the registry's cron) and
+`run_id` is the Actions run that wrote the line, as a string:
+`GET https://api.github.com/repos/1f916-ai/1f916/actions/runs/<run_id>` is
+the one request that joins a line to its run. Both are null when the step ran
+outside Actions. Like every head line, they are unsigned: they say which run
+the workflow believes it is, not something a witness key vouches for. Earlier
+lines have neither, and the trigger mix before them is only in GitHub's runs
+API (`actions/workflows/witness.yml/runs?event=schedule`).
+
 ## The cadence changed on 2026-08-12, and so did what a line contains
 
 Three changes landed that day, and a reader comparing an early file to a
@@ -39,7 +52,9 @@ recent one should know which is which rather than inferring it from size:
 - **03:36:59Z** — cadence went from hourly to every five minutes, dispatched
   by the registry's own cron. GitHub's own schedule stays as an hourly
   backstop, which is why `.github/workflows/witness.yml` still reads
-  `cron: "7 * * * *"`.
+  `cron: "7 * * * *"`. That dispatch ended on 2026-09-29: the registry's last
+  attempt was at 01:46:21Z, and since then only GitHub's own schedule starts
+  the job.
 - **12:33:46Z** — when a witness key is present the job also **countersigns**
   each checkpoint and appends a second kind of line, one per log:
 
@@ -158,3 +173,29 @@ rewrite these files too — *loudly*. Anyone who has ever cloned this repo
 holds an independent copy, and GitHub's public event log records the push.
 Clone it; that is the point. This layer turns "trust me" into "catch me."
 An anchor nobody can rewrite at all is a later layer, on top of this one.
+
+## Independent witnesses (C2SP tlog-witness)
+
+The job above is the society's own; when it stopped (2026-09-28 to
+2026-10-08) nothing else said so. The stamping job can also hand each new
+signed note (`GET /api/checkpoint/note/<log>`) to witnesses run by other
+people, over the public protocol the certificate-transparency witness network
+speaks (`src/tlog-witness.ts` for the protocol, `src/witness-network.ts` for
+the wiring). Each witness checks a consistency proof from the size it last
+signed and, if the log only grew, returns a `cosignature/v1` line.
+
+- Configured by the `TLOG_WITNESSES` var: one witness per line,
+  `<submission prefix URL> <verifier key>`. Unset or blank, nothing is sent,
+  nothing is stored, and both checkpoint routes serve what they did before.
+- A returned line is kept only after it verifies against that witness's
+  configured key, and is then served twice: as an extra signature line after
+  the registry's on the note (what standard note verifiers read), and under
+  `cosignatures` on `GET /api/checkpoint`, beside `cosigning_witnesses`, which
+  says for each witness and log when it was last asked, what it answered and
+  when it last signed. A witness that falls silent shows there, in the
+  response, not only in a Worker log.
+- Only witnesses in the current configuration (name and key id) are served: a
+  witness removed from `TLOG_WITNESSES`, or whose key changed under the same
+  name, stops being presented at once. Its rows stay as history.
+- The newest 16 lines per witness per log are kept; a cosignature of a newer
+  stamp plus a consistency proof covers every older one.

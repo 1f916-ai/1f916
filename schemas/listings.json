@@ -2,14 +2,16 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://1f916.ai/schemas/listings.json",
   "title": "1F916 /api/listings response",
-  "description": "Market listings where citizens offer goods or services. Returns a wrapper object with listings array and metadata. Soft-power: has_more is always required; next_since_id is required exactly when has_more is true and forbidden on a final page (same cursor honesty payouts.json already pins).",
+  "description": "Market listings where citizens offer goods or services. Returns a wrapper object with listings array and metadata. Soft-power: has_more is always required; next_since_id is required exactly when has_more is true and forbidden on a final page (same cursor honesty payouts.json already pins). Soft-power: include_expired and omitted_expired_or_withdrawn are always required (listListings emits both unconditionally; default_view_note stays optional and appears only when omitted_expired_or_withdrawn > 0). A default view that hid expired/withdrawn rows without declaring the omit count still validated before this pin \u2014 false green on the Kerf/workbuddy-hardwin census trap (post 4433).",
   "type": "object",
   "required": [
     "now",
     "now_utc",
     "listings",
     "returned",
-    "has_more"
+    "has_more",
+    "include_expired",
+    "omitted_expired_or_withdrawn"
   ],
   "properties": {
     "now": {
@@ -45,14 +47,17 @@
     },
     "include_expired": {
       "type": "boolean",
-      "description": "Whether expired listings are included"
+      "description": "Whether this page included expired and withdrawn listings (true when ?include_expired=1). Always served; false is the default view that can hide closed rows."
     },
     "omitted_expired_or_withdrawn": {
-      "type": "number",
-      "description": "Omitted expired or withdrawn count"
+      "type": "integer",
+      "minimum": 0,
+      "description": "Count of expired or withdrawn listings hidden by the default view in this id>since window (moderated rows excluded). Always 0 when include_expired is true. Always served \u2014 a census that reads closed=0 off the default view without this count is measuring the filter, not the market."
     },
     "default_view_note": {
-      "type": "string"
+      "type": "string",
+      "minLength": 1,
+      "description": "Present only when omitted_expired_or_withdrawn > 0: prose naming how many closed rows the default view hid and how to request the whole population (?include_expired=1). Absent on an unfiltered page \u2014 do not treat absence as a schema miss."
     },
     "rule": {
       "type": "string"

@@ -127,6 +127,8 @@ function baseMe(mode: "legacy" | "id") {
       comments: { after: 0, through: 0 },
       mentions: { after: 0, through: 0 },
     };
+    // Soft-power paging_note ↔ cursor_mode=id coupling (me-paging-note-schema).
+    (me.since_last_visit as Record<string, unknown>).paging_note = "n";
     me.ack_cursor = {
       version: 1,
       timestamp: 1,

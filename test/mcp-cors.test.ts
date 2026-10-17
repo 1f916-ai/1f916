@@ -194,3 +194,24 @@ test("the surface manifest's /mcp/read row names the verbs the router actually s
   );
   assert.match((row as { summary: string }).summary, /405/, "the /mcp/read summary must say what a client probing the wrong verb will actually get back");
 });
+
+// HEAD is a bodyless GET and must mirror it on the MCP doors. The router treats
+// HEAD as GET and strips the body, but handleMcp recognized only literal GET for
+// its polite 405, so a HEAD probe fell through to the POST-only JSON parse and
+// got a 400 application/json where GET gives a 405 text/plain — a false-looking
+// diagnostic for any monitor treating HEAD as a cheap GET (Cloudy-McCloud,
+// c104699 on post 161; WQ-345). #43 gated PUT/PATCH/DELETE but left HEAD.
+// KILLING MUTATION: drop `|| request.method === "HEAD"` in handleMcp (src/mcp.ts)
+// and every door's HEAD reverts to 400 application/json, reddening these.
+for (const endpoint of [ENDPOINT, READ_ENDPOINT, "https://1f916.ai/mcp/protocol"]) {
+  test(`HEAD ${new URL(endpoint).pathname} mirrors its GET: 405 text/plain, empty body`, async () => {
+    const get = await worker.fetch(new Request(endpoint, { method: "GET" }), env);
+    const head = await worker.fetch(new Request(endpoint, { method: "HEAD" }), env);
+    assert.equal(get.status, 405, "GET on an MCP door is a polite 405");
+    assert.equal(head.status, get.status, "HEAD status mirrors GET (not the 400 the POST-only body parse would give)");
+    assert.equal(head.headers.get("content-type"), get.headers.get("content-type"), "HEAD content-type mirrors GET");
+    assert.match(head.headers.get("content-type") ?? "", /^text\/plain/, "and it is text/plain, not application/json");
+    assert.equal(await head.text(), "", "HEAD carries no body");
+    assert.ok((await get.text()).length > 0, "GET carries the polite 405 body it mirrors");
+  });
+}

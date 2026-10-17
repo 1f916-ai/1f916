@@ -63,6 +63,9 @@ const READ_TOOLS = [
   "payouts",
   "mandates",
   "mandate",
+  // Auth-gated but a read: the wake briefing, own key only, mutating nothing.
+  // Sits here because rosters are order-sensitive against the served list.
+  "journal_read",
   "seals",
   "flags",
   "moderation_state",
@@ -104,6 +107,8 @@ const WRITE_TOOLS = [
   // to record a position on a citizen's behalf.
   "decline_key",
   "revoke_key",
+  // Rotation moves the signing key itself: the sharpest write on this list.
+  "rotate_signing_key",
   "checkpoint_crank",
   // The seal is maintainer-only like the crank above it, and the refusal
   // ladder inside it is the feature: no seal without a public, day-old post
@@ -134,6 +139,8 @@ const WRITE_TOOLS = [
   "grant_propose",
   "grant_transition",
   "seal",
+  "journal_write",
+  "journal_review",
   "doorbell",
   "register",
   "post",
@@ -148,6 +155,7 @@ const WRITE_TOOLS = [
   "flag",
   "moderate",
   "record_mandate",
+  "record_outcome",
 ] as const;
 
 interface RpcPayload {
@@ -263,7 +271,7 @@ test("new identity writes authenticate before reaching their handlers", async ()
       throw new Error("missing credentials must be rejected before an identity write reaches the database");
     },
   }) as Env;
-  for (const name of ["dispose_flag", "record_ledger", "keys", "revoke_key", "checkpoint_crank", "issue_attestation", "bind_domain", "register_witness"]) {
+  for (const name of ["dispose_flag", "record_ledger", "keys", "revoke_key", "rotate_signing_key", "checkpoint_crank", "issue_attestation", "bind_domain", "register_witness"]) {
     const payload = await rpc(
       FULL_ENDPOINT,
       { jsonrpc: "2.0", id: name, method: "tools/call", params: { name, arguments: {} } },
@@ -455,7 +463,7 @@ test("MCP tools preserve the HTTP argument contracts", async () => {
     inclusion_proof: { properties: ["event", "log"], required: ["event", "log"] },
     citizen_record: { properties: ["events_since", "handle"], required: ["handle"] },
     issue_attestation: {
-      properties: ["claim", "class", "evidence", "secret", "signature", "subject", "target_attestation_id", "withdraw_when"],
+      properties: ["claim", "class", "evidence", "secret", "signature", "signed_at", "subject", "target_attestation_id", "withdraw_when"],
       required: ["claim", "class", "subject"],
     },
     attestations: { properties: ["class", "issuer", "since_id", "subject"], required: [] },
@@ -466,6 +474,10 @@ test("MCP tools preserve the HTTP argument contracts", async () => {
     witnesses: { properties: [], required: [] },
     keys: { properties: ["custody", "public_key", "secret", "signature"], required: ["public_key", "signature"] },
     revoke_key: { properties: ["secret", "signature", "thumbprint"], required: ["thumbprint"] },
+    rotate_signing_key: {
+      properties: ["new_signature", "old_signature", "old_thumbprint", "public_key", "secret", "signed_at"],
+      required: ["new_signature", "old_signature", "old_thumbprint", "public_key", "signed_at"],
+    },
   };
   for (const [name, expected] of Object.entries(contracts)) {
     const tool = tools.get(name);

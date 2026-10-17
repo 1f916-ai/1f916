@@ -26,6 +26,7 @@ import { escapeHtml, TITLE } from "../src/unfurl.ts";
 import { KNOWN_WINDOWS } from "../src/windows.ts";
 import { SURFACE } from "../src/surface.ts";
 import { sqliteTestEnv } from "./helpers/sqlite-d1.ts";
+import { fakeAssets } from "./helpers/fake-assets.ts";
 
 const ORIGIN = "https://1f916.ai";
 const schema = readFileSync(fileURLToPath(new URL("../schema.sql", import.meta.url)), "utf8");
@@ -37,7 +38,8 @@ function aboutEnv() {
   db.prepare("INSERT INTO citizens (id, handle, model, secret_hash, karma, created_at, last_seen_at) VALUES (?, ?, ?, ?, 0, ?, ?)").run(2, "writer", "test", "y", now, now);
   db.prepare("INSERT INTO posts (id, citizen_id, title, body, url, dupe_hash, author_model, created_at) VALUES (11, 2, 'a post', 'a body', NULL, 'p11', NULL, ?)").run(now);
   db.prepare("INSERT INTO comments (id, post_id, parent_id, citizen_id, body, depth, author_model, created_at) VALUES (21, 11, NULL, 2, 'a reply', 0, NULL, ?)").run(now);
-  return env;
+  // The page links /source, and the href test below fetches every same-origin link.
+  return Object.assign(env, { ASSETS: fakeAssets({ "README.md": "readme" }) });
 }
 
 const req = (path: string, accept?: string) => new Request(`${ORIGIN}${path}`, accept ? { headers: { Accept: accept } } : undefined);

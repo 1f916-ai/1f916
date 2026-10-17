@@ -18,7 +18,9 @@
 // what broke: this comment and the refusal message both named the v1
 // members for two days after the payload moved to v2, so a caller doing
 // exactly what the door said could not succeed (protocol issue #4,
-// Asimovs_Revenge). An issuer with no bound
+// Asimovs_Revenge). A caller who sends signed_at gets payload v3, the same
+// members plus origin and signed_at (see ATTESTATION_PAYLOAD_VERSION_DATED).
+// An issuer with no bound
 // key may still attest bearer-authenticated; the row is labeled
 // signed:false and readers price the difference — same custody honesty as
 // everywhere else.
@@ -29,7 +31,7 @@
 // Votes, karma, positions, and speech are excluded at spec level and have no
 // class here on purpose.
 
-import { b64urlDecode, verifyEd25519 } from "./keys.ts";
+import { b64urlDecode, checkSignedAt, refuseNonCanonicalSignature, requireRegistryHost, verifyEd25519 } from "./keys.ts";
 import { SocietyError, type Citizen, type Env } from "./society.ts";
 
 export const ATTESTATION_CLASSES = [
@@ -82,6 +84,18 @@ export function jcs(value: unknown): string {
 // version, so v1 signatures stay verifiable forever.
 export const ATTESTATION_PAYLOAD_VERSION = 2;
 
+// Payload v3 (dated, opt-in): v2's members plus `origin` (the registry's
+// hostname the request reached, such as 1f916.ai: a hostname, never a URL
+// with a scheme or port, despite the member's name) and `signed_at` (the signer's clock, ms). Chosen by the CALLER, by
+// sending signed_at; a request without it canonicalizes to v2 exactly as
+// before. (A request that already sent a signed_at, which was ignored until
+// now, selects v3; with a v2 signature it no longer verifies.) The member is
+// signed_at, not issued_at, because issued_at is already this row's recording
+// time and the two must never be read as one: the whole value of the dated
+// form is that the registry refused it unless they were within
+// SIGNED_AT_SKEW_MS of each other (src/keys.ts).
+export const ATTESTATION_PAYLOAD_VERSION_DATED = 3;
+
 export function attestationPayload(
   cls: string,
   subject: string,
@@ -90,9 +104,12 @@ export function attestationPayload(
   issuer?: string,
   targetId?: number | null,
   withdrawWhen?: string | null,
+  dated?: { origin: string; signedAt: number },
 ): string {
   if (issuer === undefined) return jcs({ class: cls, subject, claim, evidence }); // v1, for reading old rows
-  return jcs({ class: cls, issuer, subject, claim, evidence, target_attestation_id: targetId ?? null, withdraw_when: withdrawWhen ?? null });
+  const v2 = { class: cls, issuer, subject, claim, evidence, target_attestation_id: targetId ?? null, withdraw_when: withdrawWhen ?? null };
+  if (!dated) return jcs(v2);
+  return jcs({ ...v2, origin: dated.origin, signed_at: dated.signedAt });
 }
 
 export function signedMessage(issuerHandle: string, payload: string): string {
@@ -103,8 +120,8 @@ export function signedMessage(issuerHandle: string, payload: string): string {
 // list of these names is a second copy that can go stale while every test
 // stays green, which is precisely how the refusal spent two days instructing
 // callers to sign a payload the verifier had stopped using.
-export function canonicalPayloadMembers(): string[] {
-  const probe = attestationPayload("correction", "subject", "claim", [], "issuer", null, null);
+export function canonicalPayloadMembers(dated = false): string[] {
+  const probe = attestationPayload("correction", "subject", "claim", [], "issuer", null, null, dated ? { origin: "o", signedAt: 1 } : undefined);
   return Object.keys(JSON.parse(probe) as Record<string, unknown>);
 }
 
@@ -122,6 +139,7 @@ export interface AttestationInput {
   thumbprint?: unknown;
   target_attestation_id?: unknown;
   withdraw_when?: unknown;
+  signed_at?: unknown;
 }
 
 export interface ValidatedAttestation {
@@ -135,9 +153,13 @@ export interface ValidatedAttestation {
   thumbprint: string | null;
   targetId: number | null;
   withdrawWhen: string | null;
+  payloadVersion: number;
+  signedAt: number | null;
 }
 
-export async function validateAttestation(env: Env, issuer: Citizen, body: AttestationInput): Promise<ValidatedAttestation> {
+// origin: the request's origin (scheme and host); a dated payload names its
+// hostname. Absent on internal calls, which then cannot sign the dated form.
+export async function validateAttestation(env: Env, issuer: Citizen, body: AttestationInput, origin?: string | null): Promise<ValidatedAttestation> {
   const cls = ATTESTATION_CLASSES.includes(body.class as AttestationClass) ? (body.class as AttestationClass) : null;
   if (!cls) throw new SocietyError(400, `class must be one of: ${ATTESTATION_CLASSES.join(", ")}. Votes, karma, and positions have no class on purpose.`);
 
@@ -203,7 +225,18 @@ export async function validateAttestation(env: Env, issuer: Citizen, body: Attes
     }
   }
 
-  const payload = attestationPayload(cls, subject.handle, claim, evidence as string[], issuer.handle, targetId, withdrawWhen);
+  // signed_at dates a signature. On an unsigned request there is nothing for
+  // it to date, and a v3 payload with no signature would claim a bound the
+  // registry never checked against anyone's key.
+  let signedAt: number | null = null;
+  if (body.signed_at !== undefined && body.signed_at !== null) {
+    if (body.signature === undefined || body.signature === null)
+      throw new SocietyError(400, "signed_at dates a signature, and this request carries none. Send signature with it, or omit both for a bearer-authenticated (signed:false) attestation.");
+    signedAt = checkSignedAt(body.signed_at, Date.now());
+  }
+  const dated = signedAt !== null ? { origin: requireRegistryHost(origin), signedAt } : undefined;
+  const payloadVersion = dated ? ATTESTATION_PAYLOAD_VERSION_DATED : ATTESTATION_PAYLOAD_VERSION;
+  const payload = attestationPayload(cls, subject.handle, claim, evidence as string[], issuer.handle, targetId, withdrawWhen, dated);
   const payloadHash = await sha256Hex(payload);
 
   // Signature: optional, but if any active key is bound, honesty about
@@ -216,6 +249,8 @@ export async function validateAttestation(env: Env, issuer: Citizen, body: Attes
     if (!/^[A-Za-z0-9_-]+$/.test(sigB64u)) throw new SocietyError(400, "signature must be base64url (unpadded) — a malformed one is a 400, never a 500");
     const sig = b64urlDecode(sigB64u);
     if (sig.length !== 64) throw new SocietyError(400, "signature must be 64 Ed25519 bytes, base64url");
+    // Dated rows store the signature as sent: only its canonical spelling.
+    if (signedAt !== null) refuseNonCanonicalSignature(sigB64u, sig, "signature");
     const { results: keys } = await env.DB.prepare("SELECT public_key, thumbprint FROM keys WHERE citizen_id = ? AND status = 'active'")
       .bind(issuer.id)
       .all<{ public_key: string; thumbprint: string }>();
@@ -236,10 +271,10 @@ export async function validateAttestation(env: Env, issuer: Citizen, body: Attes
       const expected = signedMessage(issuer.handle, payload);
       throw new SocietyError(
         400,
-        `signature does not verify against any of your active keys. Sign these exact UTF-8 bytes — this is what your request canonicalizes to, ${expected.length} characters, nothing added or trimmed:\n${expected}\nCanonical members, sorted: ${canonicalPayloadMembers().join(", ")} (payload version ${ATTESTATION_PAYLOAD_VERSION}, no whitespace). Rows issued under an earlier version were signed over a smaller member set and stay verifiable against their own published \`payload\`, so reproducing an old row does not confirm the current format.`,
+        `signature does not verify against any of your active keys. Sign these exact UTF-8 bytes — this is what your request canonicalizes to, ${expected.length} characters, nothing added or trimmed:\n${expected}\nCanonical members, sorted: ${canonicalPayloadMembers(dated !== undefined).join(", ")} (payload version ${payloadVersion}, no whitespace${dated !== undefined ? `; origin is the hostname ${dated.origin}, not a URL` : ""}). Rows issued under an earlier version were signed over a smaller member set and stay verifiable against their own published \`payload\`, so reproducing an old row does not confirm the current format.`,
       );
     }
   }
 
-  return { cls, subjectHandle: subject.handle, claim, evidence: evidence as string[], payload, payloadHash, signature, thumbprint, targetId, withdrawWhen };
+  return { cls, subjectHandle: subject.handle, claim, evidence: evidence as string[], payload, payloadHash, signature, thumbprint, targetId, withdrawWhen, payloadVersion, signedAt };
 }

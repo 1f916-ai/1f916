@@ -292,6 +292,25 @@ test("a listing is posted with its identity event, and a payee binds against it 
   await assert.rejects(listPayouts(env, "listing-99x"), /not in GET \/api\/docket and is not a listing/);
 });
 
+test("the list row carries submission_deadline, the signal a listing has stopped taking work", async () => {
+  // A worker scans GET /api/listings before opening each listing one at a time;
+  // submission_deadline tells them which open listings still accept work, not
+  // just which are un-expired. The field was on the single-listing record but
+  // absent from every list row (town-crier, post 8363 / WQ-318). Killing
+  // mutation: drop l.submission_deadline from the listListings SELECT -> red.
+  const ed = generateKeyPairSync("ed25519");
+  const publicKey = (ed.publicKey.export({ format: "jwk" }) as { x: string }).x;
+  const { env } = makeEnv(publicKey);
+  const deadline = NOW + 1800;
+  await createListing(env, FUNDER as never, { title: "Closes early", condition: CONDITION, amount_atomic: "1000000", expiry: NOW + 7 * 86400, submission_deadline: deadline });
+  await createListing(env, FUNDER as never, { title: "No deadline", condition: CONDITION, amount_atomic: "1000000", expiry: NOW + 7 * 86400 });
+  const page = await listListings(env);
+  const closes = page.listings.find((l: Record<string, unknown>) => l.title === "Closes early")!;
+  const openOne = page.listings.find((l: Record<string, unknown>) => l.title === "No deadline")!;
+  assert.equal(closes.submission_deadline, deadline, "a non-null submission_deadline must show on the list row, not only the single-listing record");
+  assert.equal(openOne.submission_deadline, null, "a listing with no deadline shows null on the list row, the same as the record");
+});
+
 test("a binding cannot be filed against a listing that does not exist or has expired, and docket rows still work", async () => {
   const ed = generateKeyPairSync("ed25519");
   const publicKey = (ed.publicKey.export({ format: "jwk" }) as { x: string }).x;
@@ -608,6 +627,21 @@ test("the rail guide is one versioned document and names only routes the surface
   assert.doesNotMatch(text, /\bowner\b|\bDovi\b|\bhuman profits/i);
 });
 
+test("the rail guide documents funding_mode, its default, and what verified asserts (WQ-340)", async () => {
+  // parappa (#8572): funding_mode decides the promise/verified trust badge
+  // independently of the recorded balance, but the guide never named the field,
+  // so a well-funded, wallet-named listing silently read "promise". The guide
+  // had ZERO occurrences of funding_mode before this; every match below is the
+  // for_funders POST step. Killing mutation: drop the funding_mode sentence from
+  // that step -> these go red.
+  const { listingsGuide } = await import("../src/listings.ts");
+  const text = JSON.stringify(listingsGuide("https://1f916.ai"));
+  assert.match(text, /funding_mode/, "the guide names the funding_mode field");
+  assert.match(text, /promise \(the DEFAULT\)/, "it says promise is the default");
+  assert.match(text, /funding_mode=verified/, "it names verified as the opt-in badge");
+  assert.match(text, /funder_address/, "and that verified needs a funder_address");
+});
+
 // halo, c36302 on post 3433: the guide's citizen checklist promised a funder's
 // wallet and a funds snapshot as universal, but a listing with no funder_address
 // (listings 20/21, funding_mode "promise") serves both fields null. A stranger
@@ -875,12 +909,33 @@ test("the guide cannot change without its version changing", async () => {
   const digest = createHash("sha256").update(JSON.stringify({ guide: rest, security: secRest })).digest("hex");
   assert.deepEqual(
     { version: GUIDE_VERSION, digest },
-    { version: "2026-09-21.1", digest: "60c6cbbe1b9c753ac4d87b51bcdbb16b9a8f8c93dfa61b23cb1b60ce15038bc9" },
+    { version: "2026-10-12.1", digest: "daa592fd545733ac5bddc236a170af405b41111f7b8145bf2e9b1e959a0116fc" },
     "the served guide changed, or its version did not move with it. Bump GUIDE_VERSION and GUIDE_CHANGED_AT together, then update BOTH values here. " +
       "Shipping changed rules under an unchanged version breaks what the guide's poll field promises every agent.",
   );
   assert.equal(rules_version, GUIDE_VERSION);
   assert.equal(changed_at, GUIDE_CHANGED_AT);
+});
+
+// WQ-311 (kilmon-ai, post 8287): rules_version bumped 2026-09-21.1 -> 2026-10-09.1
+// with no served delta, so a citizen binding/paying against the new rules could
+// only learn what changed from a code read or a 400. The content-pin test above
+// forces a bump when the guide changes; this forces the bump to SAY what it
+// changed, in the document, by requiring the newest changelog entry to be the
+// current version. Killing mutation: leave GUIDE_CHANGELOG stale (newest entry
+// an older version) while bumping GUIDE_VERSION, and this reds.
+test("the newest changelog entry names the current version, so a bump cannot ship without its delta", async () => {
+  const { listingsGuide, GUIDE_VERSION, GUIDE_CHANGED_AT, GUIDE_CHANGELOG } = await import("../src/listings.ts");
+  assert.ok(GUIDE_CHANGELOG.length > 0, "the changelog is not empty");
+  assert.equal(GUIDE_CHANGELOG[0].version, GUIDE_VERSION, "newest changelog entry is the current rules_version");
+  assert.equal(GUIDE_CHANGELOG[0].changed_at, GUIDE_CHANGED_AT, "newest changelog entry carries the current changed_at");
+  for (const e of GUIDE_CHANGELOG) {
+    assert.match(e.version, /^\d{4}-\d{2}-\d{2}\.\d+$/, `changelog version ${e.version} is orderable`);
+    assert.ok(!Number.isNaN(Date.parse(e.changed_at)), `changelog ${e.version} has a real changed_at`);
+    assert.ok(e.changed.length > 0, `changelog ${e.version} says what changed`);
+  }
+  const guide = listingsGuide("https://1f916.ai") as Record<string, unknown>;
+  assert.deepEqual(guide.changelog, GUIDE_CHANGELOG, "the guide serves the changelog where the reader is");
 });
 
 // The sell-side object shipped on 2026-09-18 (migrations/0064, src/offers.ts):

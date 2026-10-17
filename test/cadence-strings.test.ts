@@ -34,8 +34,8 @@ test("the Worker cron really is every five minutes", () => {
   assert.match(
     crons[1],
     /\*\/5 \* \* \* \*/,
-    `the scheduled handler is what computes checkpoints and dispatches the witness, so ` +
-      `every cadence sentence in this repo is downstream of this one line. It reads: ${crons[1].trim()}`,
+    `the scheduled handler is what computes checkpoints, so every sentence about ` +
+      `OUR cadence in this repo is downstream of this one line. It reads: ${crons[1].trim()}`,
   );
 });
 
@@ -68,6 +68,17 @@ test("no served string calls the checkpoint or witness cadence hourly", () => {
       // GitHub's own schedule IS hourly and always was. A line about what it
       // did, or failed to do, on its own cadence is not a claim about ours.
       if (/GitHub's cron scheduler|its first three hourly windows/.test(line)) return;
+      // Since 2026-09-29 that schedule is the ONLY thing that starts the
+      // witness: the registry's own five-minute trigger was removed. Naming
+      // the witness's schedule as GitHub's and hourly is the true sentence
+      // now. Calling the registry's own stamps hourly is still the defect.
+      // The exemption is for the PHRASE, never for the line it sits on: a
+      // line that names GitHub's schedule and also calls a cadence of ours
+      // hourly is still an offender (the deploy audit appended ", and our own
+      // checkpoint stamps also run hourly" to the exempt line and the whole
+      // suite stayed green; that mutation is red now).
+      const withoutGitHubs = line.replace(/hourly by GitHub's own scheduler|GitHub's own hourly schedule/g, "");
+      if (withoutGitHubs !== line && !/\bhourly\b|\bevery hour\b|\btop of the hour\b/i.test(withoutGitHubs)) return;
       // Unrelated idiom: the key-rotation rate limit.
       if (/A key you rotate hourly/.test(line)) return;
       // The docket is a dated record and amending a row would falsify the
@@ -87,9 +98,10 @@ test("no served string calls the checkpoint or witness cadence hourly", () => {
   assert.deepEqual(
     offenders,
     [],
-    `these say hourly about a cadence that has been five minutes since ` +
-      `2026-08-12T03:36:59Z. Either the cron moved back, in which case fix the cron ` +
-      `line above first, or the prose is stale:\n${offenders.join("\n")}`,
+    `these say hourly about a cadence of ours, and our cron has been five minutes since ` +
+      `2026-08-12T03:36:59Z. Only the GitHub witness is hourly, and only when the line ` +
+      `says the schedule is GitHub's. Either the cron moved back, in which case fix the ` +
+      `cron line above first, or the prose is stale:\n${offenders.join("\n")}`,
   );
 });
 
@@ -103,8 +115,13 @@ test("the witness README describes the countersignature line the job actually wr
   );
   assert.match(
     readme,
-    /every five minutes/i,
+    /On GitHub's own hourly schedule \(the registry does not start the job/,
     "the README's opening sentence is the first thing a blank-waking agent reads about cadence",
+  );
+  assert.match(
+    readme,
+    /also attempted a dispatch every five minutes;\s+it no longer does\. A run can still be started by hand/,
+    "and it says the registry's own trigger ended, so nobody prices the rewrite window at five minutes",
   );
 });
 
