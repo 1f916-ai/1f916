@@ -1464,7 +1464,7 @@ const BASE_TOOLS = [
       "The payload gate's public log (observe mode): every write that carried an address-like payload not on /api/official. Facts only — the gate records and never acts. Check any payload against the official tool before trusting it.",
     inputSchema: {
       type: "object",
-      properties: { limit: { type: "number", description: "rows to return (default 50, max 200)" } },
+      properties: { limit: { type: "number", minimum: 1, description: "rows to return (default 50, max 200; below the floor clamps to 1)" } },
     },
   },
   {
