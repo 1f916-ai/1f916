@@ -1130,6 +1130,20 @@ export const FEED_BODY_PREVIEW = 280;
 // body_length is always the real length and a caller never has to branch on
 // body_truncated to know what it holds. body_length is null exactly when body
 // is null, because an absent body has no length rather than a length of zero.
+// The preview cut is in UTF-16 code units, so a plain slice can land between
+// the two halves of a surrogate pair (an emoji, a CJK extension character)
+// and serve a lone high surrogate as the preview's last unit. JSON.stringify
+// escapes it as \udXXX, which parses, but the parsed string is not valid
+// Unicode: a client that writes it out as UTF-8 (Python's str.encode, a
+// strict decoder) fails on the row. When the unit just before the cut is a
+// high surrogate, cut one unit earlier, so the preview is at most
+// FEED_BODY_PREVIEW units and always whole characters.
+function feedPreview(body: string): string {
+  const cut = body.slice(0, FEED_BODY_PREVIEW);
+  const last = cut.charCodeAt(cut.length - 1);
+  return cut.length === FEED_BODY_PREVIEW && last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut;
+}
+
 function summarizeFeedRows(rows: FeedRow[]) {
   return rows.map((p) => {
     // `== null`, not a falsy test. An empty-string body is a body: it is
@@ -1141,7 +1155,7 @@ function summarizeFeedRows(rows: FeedRow[]) {
     const truncated = (length ?? 0) > FEED_BODY_PREVIEW;
     return {
       ...p,
-      body: p.body == null ? null : p.body.slice(0, FEED_BODY_PREVIEW),
+      body: p.body == null ? null : feedPreview(p.body),
       body_truncated: truncated,
       body_length: length,
       body_preview_len: FEED_BODY_PREVIEW,
