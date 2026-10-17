@@ -2570,8 +2570,13 @@ export async function setPinned(env: Env, citizen: Citizen, postId: number, pinn
 // the chain head moves before the batch commits, the UNIQUE index rejects the
 // log INSERT, the whole batch rolls back, and we re-prepare against the new
 // head. The completeness guarantee stops being "nothing has failed yet."
-async function commitWithModLog(env: Env, stateStmt: D1PreparedStatement, actorId: number, detail: string) {
-  await commitWithModLogReturning(env, stateStmt, actorId, detail);
+//
+// `guard` is commitWithIdentityEvent's: a predicate the state statement also
+// carries in its WHERE, applied to the log insert so a write that moved no row
+// records no act. The return is the state statement's changed-row count, which
+// is how a guarded caller learns the guard failed.
+async function commitWithModLog(env: Env, stateStmt: D1PreparedStatement, actorId: number, detail: string, guard?: ChainGuard): Promise<number> {
+  return (await commitModLog(env, stateStmt, actorId, detail, [], guard)).changed;
 }
 
 // Same guarantee, but hands back the state statement's rows.
@@ -2596,14 +2601,27 @@ async function commitWithModLogReturning<T>(
   detail: string,
   companions: D1PreparedStatement[] = [],
 ): Promise<T | null> {
-  const { state } = await commitWithIdentityEvent<T>(
+  return (await commitModLog<T>(env, stateStmt, actorId, detail, companions)).state;
+}
+
+async function commitModLog<T>(
+  env: Env,
+  stateStmt: D1PreparedStatement,
+  actorId: number,
+  detail: string,
+  companions: D1PreparedStatement[] = [],
+  guard?: ChainGuard,
+): Promise<{ state: T | null; changed: number }> {
+  const { state, changed } = await commitWithIdentityEvent<T>(
     env,
     stateStmt,
     { citizen_id: actorId, kind: "moderation", detail },
     "moderation-log chain head moved four times running; refusing to commit power without its record",
-    undefined,
+    guard,
     companions,
   );
+  // A guard that failed committed nothing, so there is no removal to record.
+  if (guard && changed === 0) return { state, changed };
   // docket:log-the-null — a tombstone deletes its content, so after the commit
   // the reason for the removal lives only in the prose detail string above.
   // Give it its own row: what was removed and why, from the same string the
@@ -2625,7 +2643,7 @@ async function commitWithModLogReturning<T>(
       now: Date.now(),
     });
   }
-  return state;
+  return { state, changed };
 }
 
 // The same guarantee, generalized, because the invariant was never about
@@ -9698,14 +9716,33 @@ export async function moderateContent(
   }
   const table = type === "post" ? "posts" : type === "comment" ? "comments" : type === "offer" ? "offers" : "listings";
   const nextState = act === "restore" ? null : act === "collapse" ? "collapsed" : "removed";
-  const exists = await env.DB.prepare(`SELECT id FROM ${table} WHERE id = ?`).bind(id).first();
+  const exists = await env.DB.prepare(`SELECT id, mod_state FROM ${table} WHERE id = ?`).bind(id).first<{ id: number; mod_state: string | null }>();
   if (!exists) throw new SocietyError(404, `${type} ${id} does not exist`);
-  const update = env.DB.prepare(`UPDATE ${table} SET mod_state = ? WHERE id = ?`).bind(nextState, id);
+  // A withdrawal receipt promises redaction on every read path, and ?reveal
+  // reads collapsed rows. Collapsing a withdrawn row would trade the author's
+  // takedown for a state anyone can ask to read, so the only way up from
+  // withdrawn is remove (or an explicit restore).
+  if (act === "collapse" && exists.mod_state === "withdrawn") {
+    throw new SocietyError(409, `${type} ${id} is withdrawn by its author, and a collapse would make it readable through ?reveal. Use remove if it must stay hidden from everyone.`);
+  }
+  // The check above reads a snapshot; the author can withdraw between it and
+  // the write. So a collapse also carries the condition in its own WHERE, and
+  // the moderation event is appended only if that UPDATE moved the row
+  // (changes() = 1 in the same batch): a withdrawal that wins the race leaves
+  // the row withdrawn and the chain with no record of a collapse that never
+  // happened.
+  const collapseGuard = act === "collapse";
+  const update = env.DB.prepare(
+    `UPDATE ${table} SET mod_state = ? WHERE id = ?${collapseGuard ? " AND mod_state IS NOT 'withdrawn'" : ""}`,
+  ).bind(nextState, id);
   const detail =
     act === "restore"
       ? `restored ${type} ${id} to visible: ${(reason as string).trim().slice(0, 1000)}`
       : `${act === "remove" ? "removed" : "collapsed"} ${type} ${id}: ${(reason as string).trim().slice(0, 1000)}`;
-  await commitWithModLog(env, update, citizen.id, detail);
+  const changed = await commitWithModLog(env, update, citizen.id, detail, collapseGuard ? { sql: "changes() = 1", binds: [] } : undefined);
+  if (collapseGuard && changed === 0) {
+    throw new SocietyError(409, `${type} ${id} was withdrawn by its author while this request ran, and a collapse would make it readable through ?reveal. Use remove if it must stay hidden from everyone.`);
+  }
   // A removal resolves any open hygiene notice on the target: once the content
   // is gone, its notice row becomes safe to publish per-target (the log stops
   // being a map to a live exposure and becomes a record of a handled one).
