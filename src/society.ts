@@ -4698,14 +4698,14 @@ export async function getListing(env: Env, id: number, deps: { escrowReader?: Es
   // paid:true rows against one receipted binding, so a reader counting paid
   // rows instead of receipts overstated payments on that listing sixfold.
   //
-  // THE REPAIR IS A COUNT, NOT A GUESS AT WHICH ROW, because the record cannot
-  // support a guess. payout_receipts.submitter_id references citizens(id), and
-  // no binding and no receipt names a submission: this rail records WHO was
-  // paid and never WHICH submission the money was for. So the honest invariant
-  // available here is the count. A payee's paid rows number exactly their
-  // worker receipts on this listing, marked earliest first, and
-  // submissions_paid_note beside the rows states that the choice of row is this
-  // page's ordering rather than a record of what the funder was paying for.
+  // THE REPAIR IS A COUNT, NOT A GUESS AT WHICH ROW. payout_receipts.submitter_id
+  // references citizens(id), and no binding and no receipt names a submission,
+  // so a receipt alone records WHO was paid, never WHICH submission. The honest
+  // invariant is the count: a payee's paid rows number exactly their worker
+  // receipts on this listing. Which rows carry the flag is decided below, once
+  // the award ledger is read: an award settled `paid` DOES name its submission,
+  // so those rows are marked first and only the receipts left over fall back to
+  // earliest-first.
   //
   // An earlier version of this repair marked exactly ONE row per payee, on the
   // premise that a citizen can hold only one worker binding per listing. The
@@ -4722,16 +4722,6 @@ export async function getListing(env: Env, id: number, deps: { escrowReader?: Es
   for (const r of workerReceipts) {
     const handle = String(r.handle);
     receiptsOwedByHandle.set(handle, (receiptsOwedByHandle.get(handle) ?? 0) + 1);
-  }
-  // Rows arrive id ascending, so this marks the earliest N per handle.
-  const markedRows = new Set<number>();
-  for (const r of submissions.results) {
-    const handle = String(r.handle);
-    const left = receiptsOwedByHandle.get(handle) ?? 0;
-    if (left > 0) {
-      markedRows.add(Number(r.id));
-      receiptsOwedByHandle.set(handle, left - 1);
-    }
   }
   // A completeness denominator for the two capped lists below. Both queries
   // bind LIMIT 200, and until now this body served bindings and submissions as
@@ -4857,6 +4847,26 @@ export async function getListing(env: Env, id: number, deps: { escrowReader?: Es
   // and it refuses to serve rather than do that.
   assertLiabilityInvariant(economics);
   const awardBySubmission = new Map(awardRows.map((a) => [a.submission_id, a]));
+  // Which of a payee's rows carry `paid` / `paid_by_third_party`, up to their
+  // receipt count. Pass 1: a row whose award settled `paid` is the submission
+  // that money was for, so it is marked first. Marking earliest-first alone put
+  // the flag on a payee's earlier not_selected row while the awarded row beside
+  // it read paid false (listings 38 and 51). Pass 2: receipts not matched to a
+  // paid award (paid without an award, or a pre-award listing) mark the earliest
+  // unmarked rows, as before. Rows arrive id ascending.
+  const markedRows = new Set<number>();
+  const take = (r: Record<string, unknown>) => {
+    const handle = String(r.handle);
+    const left = receiptsOwedByHandle.get(handle) ?? 0;
+    if (left > 0 && !markedRows.has(Number(r.id))) {
+      markedRows.add(Number(r.id));
+      receiptsOwedByHandle.set(handle, left - 1);
+    }
+  };
+  for (const r of submissions.results) {
+    if (awardBySubmission.get(Number(r.id))?.state === "paid") take(r);
+  }
+  for (const r of submissions.results) take(r);
   const state = listing.mod_state
     ? listing.mod_state
     : listing.withdrawn_at !== null
@@ -5058,7 +5068,7 @@ export async function getListing(env: Env, id: number, deps: { escrowReader?: Es
     // because the flag was serving an overstatement with nothing beside it to
     // say how to check: six paid rows against one receipt on listing 6.
     submissions_paid_note:
-      "paid and paid_by_third_party mark a payee's rows on this page up to the number of worker receipts they hold on this listing, earliest row first. Read it as an upper bound, never as an equality: marked rows can be FEWER than that payee's receipted bindings below, and three reachable cases make it so. A citizen may be paid without filing any submission at all, which the listing rule expressly allows (a funder may pay any citizen who filed a binding, whether or not they handed in work), so a receipt can exist with no row to mark. A payee can hold more receipts than rows they filed. And this page's submissions are capped at 200, so a row past the cap cannot be marked while its receipt is still counted below. What the flags never mean is that the funder was paying for that particular artifact: this rail records who was paid and never which submission the money was for, because payout_receipts names the payee, the binding and the on-chain transfer, and nothing in a binding or a receipt names a submission id. So an unmarked row from a paid citizen is not a statement that their work was rejected, and a marked row is not a statement that it was accepted. Nothing here judges work. The bindings below, with their receipt_id, are the payment record; these flags are this page's ordering of it. next_actions on each row is the same shape: it is that CITIZEN\'s ladder on this listing, resolved per citizen and repeated on every row they filed.",
+      "paid and paid_by_third_party mark a payee's rows on this page up to the number of worker receipts they hold on this listing: first any row whose award settled paid (award_id names that award), then the earliest remaining rows. Read it as an upper bound, never as an equality: marked rows can be FEWER than that payee's receipted bindings below, and three reachable cases make it so. A citizen may be paid without filing any submission at all, which the listing rule expressly allows (a funder may pay any citizen who filed a binding, whether or not they handed in work), so a receipt can exist with no row to mark. A payee can hold more receipts than rows they filed. And this page's submissions are capped at 200, so a row past the cap cannot be marked while its receipt is still counted below. An award is the one record that names a submission, so a marked row whose economic_state is paid is the submission that award paid for. On any other marked row the flag never means the funder was paying for that particular artifact: a receipt with no award behind it records who was paid and never which submission, because payout_receipts names the payee, the binding and the on-chain transfer, and nothing in a binding or a receipt names a submission id. So an unmarked row from a paid citizen is not a statement that their work was rejected, and a marked row is not a statement that it was accepted. Nothing here judges work. The bindings below, with their receipt_id, are the payment record; these flags are this page's ordering of it. next_actions on each row is the same shape: it is that CITIZEN\'s ladder on this listing, resolved per citizen and repeated on every row they filed.",
     // count is rows on this page, total is a real COUNT over the whole listing,
     // has_more is false only when this page holds every submission — so a short
     // submissions list here is provably whole rather than clipped at LIMIT 200.
