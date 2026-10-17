@@ -391,7 +391,7 @@ class Anonymous:
         value, not 0. A real count only while a legacy `snap:` token is still
         draining under the old timestamp filter. The two absence values name
         different states: read `null` as "no loss priced on this request", not
-        as 0 (src/society.ts:13400, the served `cursor_note`; live 2026-09-22,
+        as 0 (src/society.ts, changes()'s served `cursor_note`; live 2026-09-22,
         legacy since alone is null/null, the lossless init is 0/0).
         """
         return self.get(
@@ -461,16 +461,16 @@ class Anonymous:
         `cursor` / `offset` / `page` are 400. Live 2026-09-21: limit is
         400 (Supported: since); since=init and since=1:2 are 400.
 
-        `has_more` is "rows remain" (src/society.ts:11733): the page
-        over-fetches one row past `CITIZEN_PAGE` (1000) so the flag
+        `has_more` is "rows remain" (src/society.ts, citizenDirectory()):
+        the page over-fetches one row past `CITIZEN_PAGE` (1000) so the flag
         measures a remainder, not page fullness. Measured in-process
         2026-09-24: 999 rows -> returned 999 / total 999 / has_more
         false; **1000 rows -> returned 1000 / total 1000 / has_more
         FALSE** with no `next_since`, and that page is the whole census.
         On a static census `returned == total` and `has_more` cannot
-        both be true. `total` is the honest half; prefer `returned <
-        total` over the flag, and never render `has_more` to a human as
-        "more exist".
+        both be true. The flag describes the remainder after this cursor;
+        `total` describes the whole census, not this page's remainder.
+        Keep the walk's total reconciliation as a separate completeness check.
         """
         return self.get("/api/citizens", since=since)
 
@@ -485,8 +485,8 @@ class Anonymous:
         boundary millisecond off the page, so the next page re-collects
         that whole millisecond from below it. The walk stays disjoint
         and loses nothing, and `next_since` stays a `created_at`
-        (src/society.ts:11747, issue #463). A page-boundary tie is
-        therefore served exactly once, on the next page. The check
+        (src/society.ts, citizenDirectory()'s boundary trim, issue #463).
+        A page-boundary tie is therefore served exactly once, on the next page. The check
         against `total` is still there because `total` is recomputed on
         every request and there is no snapshot token: a `walked <
         total` is concurrent registration movement (a citizen joined
@@ -556,8 +556,8 @@ class Anonymous:
         else is 400.
 
         `has_more` is `results.length > ATTESTATION_PAGE`
-        (src/society.ts:7890), the over-fetch-then-test "rows remain"
-        variant — the page over-fetches one row past 200 so the flag
+        (src/society.ts, listAttestations()), the over-fetch-then-test
+        "rows remain" variant — the page over-fetches one row past 200 so the flag
         measures a remainder, not page fullness (1571ef34a). It is true
         only when a next page exists, and `next_since_id` (the last row's
         id) rides the same condition, so a walk may stop on `has_more`
@@ -571,9 +571,10 @@ class Anonymous:
         exact-200 store reads has_more false and the extra empty call is
         gone.
 
-        So a client should page until an empty page (the rule that always
-        terminates) and never render `has_more` to a human as "more
-        exist". Live 2026-09-26: 179 of 179, has_more false, no
+        A caller may stop when `has_more` is false; this client instead
+        makes a final empty read using the last row's id. That is an
+        implementation choice, not a requirement of the rows-remain contract.
+        Live 2026-09-26: 179 of 179, has_more false, no
         next_since_id; since_id=179 (the tip) is 200 / count 0;
         since_id=180 is 400.
         """
@@ -585,11 +586,11 @@ class Anonymous:
     def walk_attestations(self, **filters: Any) -> list[dict[str, Any]]:
         """Every attestation under `filters`, oldest first.
 
-        Stops on an empty page rather than on `has_more`, which is the
-        only rule that terminates on a store holding an exact multiple of
-        200 rows. `next_since_id` is not trusted to exist: it is emitted
-        under the same full-page condition as `has_more`, so the last
-        row's own id is the cursor.
+        Uses the last row's id as a strict `id >` cursor and stops on an
+        empty page. This makes one extra empty read after the last nonempty
+        page, even at exactly 200 rows. Stopping on `has_more` false would
+        also be valid: `next_since_id` is present only while rows remain,
+        not merely when the page is full.
         """
         rows: list[dict[str, Any]] = []
         since = filters.pop("since_id", None)
@@ -628,7 +629,7 @@ class Anonymous:
         `docket` (filter by the anchor row the binding names, e.g.
         "listing-25") and `since_id`; anything else, including `limit`, is
         400. `has_more` here is the honest variant: `results.length > 50`
-        (src/society.ts:5514), i.e. "rows remain", not "the page is full".
+        (src/society.ts, listPayouts()), i.e. "rows remain", not "the page is full".
         It is true only when a next page exists, and `next_since_id`
         (last row's id) is emitted under the same condition, so it is
         absent exactly when `has_more` is false. Live 2026-09-22: 515
@@ -651,9 +652,9 @@ class Anonymous:
 
         Carries the last row's own id forward each pass (the cursor is a
         strict `id >`, so the boundary row is never re-returned) and stops
-        on an empty page. This is the safe stop, not `has_more`: the page
-        is capped at 50, so a full boundary page still has `has_more`
-        false, and only the next, empty pass proves the walk is done.
+        on an empty page. That final read is this walker's choice; the
+        rows-remain contract also permits stopping on `has_more` false,
+        including at an exactly full final page of 50 rows.
         """
         rows: list[dict[str, Any]] = []
         since = filters.pop("since_id", None)
@@ -676,8 +677,8 @@ class Anonymous:
         `label`, `since_id`; anything else, including `limit`, is 400.
 
         `has_more` here is the honest variant, `rows == 200 AND rows remain`
-        (`src/society.ts:7757`, fixed by #368): it is true only when a next
-        page exists, and `next_since_id` (last row's id) is absent exactly
+        (`src/society.ts`, listSeals()'s plain listing, fixed by #368): it is
+        true only when a next page exists, and `next_since_id` (last row's id) is absent exactly
         when `has_more` is false, so a walk may stop on `has_more` false.
         `total` is the citizen's seal count under the same `citizen` /
         `label`, ignoring `since_id`: the same number on every page of a
@@ -706,8 +707,8 @@ class Anonymous:
         (`since_check_id is the pagination cursor for checks_of`).
 
         `has_more` here is the honest "rows remain" variant,
-        `rows == 200 AND rows remain` (`src/society.ts:7626`, the same
-        remaining-based guard the seals listing uses), the SAME
+        `rows == 200 AND rows remain` (`src/society.ts`, listSeals()'s
+        checks_of branch, the same remaining-based guard the seals listing uses), the SAME
         answer the plain seals listing gives on the same door, after the
         checks_of branch of the full-page bug was fixed to the remaining
         guard (#376, 2620ac14). So a full boundary page now reads
@@ -727,10 +728,10 @@ class Anonymous:
     def walk_seals(self, citizen: str, *, label: str | None = None, since_id: int | None = None) -> list[dict[str, Any]]:
         """Every seal under `citizen` / `label`, oldest first, deduped.
 
-        Stops on an empty page rather than on `has_more`: the page is capped
-        at 200, and although this door's `has_more` is the honest "rows
-        remain" variant, the strict `id >` cursor never re-returns the
-        boundary row, so only the empty pass proves the walk is done.
+        Uses a strict `id >` cursor and stops on an empty page, making one
+        extra read after the last nonempty page without re-returning its
+        boundary row. Stopping on this door's rows-remain `has_more` false
+        would also be valid, including at exactly 200 rows.
         """
         rows: list[dict[str, Any]] = []
         seen: set[int] = set()
@@ -749,11 +750,10 @@ class Anonymous:
     def walk_seal_checks(self, citizen: str, seal_id: int, *, since_check_id: int | None = None) -> list[dict[str, Any]]:
         """Every check row for `seal_id`, oldest first, deduped.
 
-        Stops on an empty page rather than on `has_more`: the page is
-        capped at 200, and although this door's `has_more` is the honest
-        "rows remain" variant (fixed by #376), only the empty pass proves
-        the walk is done. The strict `id >` cursor never re-returns the
-        boundary row.
+        Uses a strict `id >` cursor and makes a final empty read without
+        re-returning the boundary row. That is an implementation choice:
+        the rows-remain `has_more` (fixed by #376) also permits stopping
+        on false, including at exactly 200 checks.
         """
         rows: list[dict[str, Any]] = []
         seen: set[int] = set()
@@ -890,10 +890,11 @@ class Citizen(Anonymous):
         votes/tags page on an insertion sequence (`rowid` / `id`), which is
         lossless: resume strictly after the seq you hold. posts/comments
         page on a `created_at` millisecond with a strict `>` and no
-        secondary key (`src/society.ts:11542`, `:11559`). Since d10b843dc
+        secondary key (`src/society.ts`, history()'s posts/comments queries).
+        Since d10b843dc
         (WQ-67, the #463 family) that is lossless too: the page trims every
         trailing row sharing the boundary millisecond off before the token
-        is taken (`src/society.ts:11608`-`:11615`), so the next strict-`>`
+        is taken (history()'s boundary trims), so the next strict-`>`
         page re-collects that whole millisecond from below it instead of
         skipping it. The client derives its own cursor from the last served
         row's `created_at` and gets the same lossless value.
@@ -989,12 +990,12 @@ class Citizen(Anonymous):
                 break
             # The server emits next_posts_since / next_comments_since only while
             # the stream has more rows; the token is the last served row's
-            # created_at millisecond (src/society.ts:11661, :11662). Before
+            # created_at millisecond (src/society.ts, history()'s next_*_since). Before
             # d10b843dc the page was taken from the raw query, so the token
             # pointed at the boundary millisecond and the next strict-`>` page
             # skipped the rest of a tie. The server now trims trailing rows
-            # sharing that millisecond off the page before the token (society.ts
-            # :11608-:11615), so the token points just below the tie and the
+            # sharing that millisecond off the page before the token (history()'s
+            # boundary trims), so the token points just below the tie and the
             # next page re-collects it. The client derives its own cursor from
             # the last served row's created_at and gets the same lossless value.
             nxt = batch[-1]["created_at"]

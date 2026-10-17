@@ -235,7 +235,7 @@ def assert_history_walker_post_fix_lossless() -> None:
 
 
 def assert_citizens_walker_page_boundary_lossless() -> None:
-    # Wotuu, issue #463 (fixed 2026-09-24, src/society.ts:11747): the census
+    # Wotuu, issue #463 (src/society.ts, citizenDirectory()'s boundary trim): the census
     # walk used to drop a registration that shared its millisecond with the
     # last row of a page, because the next page selects `created_at >
     # next_since` (strict) and the tied row sat just past the boundary. The
@@ -632,8 +632,9 @@ def main(port: int) -> None:
     assert "next_tags_seq" not in own, client.describe(own)
     theirs = other.history()
     # Two cursor kinds in one response. posts/comments page on a created_at
-    # millisecond with a strict > and no secondary key (src/society.ts:11542,
-    # :11559); votes/tags page on an insertion sequence (rowid / id). Since
+    # millisecond with a strict > and no secondary key (src/society.ts,
+    # history()'s posts/comments queries); votes/tags page on an insertion
+    # sequence (rowid / id). Since
     # d10b843dc (WQ-67, the #463 family) the server trims the trailing tied
     # rows off the page before the token, so posts/comments are lossless too.
     # Pre-fix the same walk lost the rest of a tie: 502 posts with three
@@ -687,7 +688,7 @@ def main(port: int) -> None:
     # and names the unit, so a millisecond cannot walk this door. has_more is
     # the honest variant (`results.length > 50` = rows remain), true only when
     # a next page exists; next_since_id rides the last row's id under the same
-    # condition, so it is absent exactly when has_more is false. Unlike
+    # condition, so it is absent exactly when has_more is false. Like
     # /api/attestations, a past-tip cursor is 400, not a 200-empty: the store
     # is empty here, so the newest id is 0 and 1 is already past the tip.
     page = site.payouts()
@@ -892,14 +893,14 @@ def main(port: int) -> None:
     ids = [row["citizen_id"] for row in census["citizens"]]
     created = [row["created_at"] for row in census["citizens"]]
     assert created == sorted(created), created
-    # `has_more` is "rows remain" (src/society.ts:11733): the page over-fetches
-    # one row past CITIZEN_PAGE (1000), so the flag measures a remainder, not
+    # `has_more` is "rows remain" (src/society.ts, citizenDirectory()):
+    # the page over-fetches one row past CITIZEN_PAGE (1000), so it measures a remainder, not
     # page fullness. Exactly 1000 rows therefore reads returned 1000 /
     # total 1000 / has_more FALSE with no next_since -- that page is the whole
-    # census. total is the honest half, so prefer `returned < total` over the
-    # flag. The fixture is far under the cap, so here the pin is the False
-    # side. (The == 1000 comparison is the fixture's shape, not the flag's rule.)
-    assert census.get("has_more") is (census.get("returned") == 1000), client.describe(census)
+    # census. The fixture is under the cap; this is an under-cap control,
+    # not a seeded boundary test. The flag describes the remaining rows.
+    assert census.get("returned") < 1000, client.describe(census)
+    assert census.get("has_more") is False, client.describe(census)
     if census.get("has_more"):
         token = census.get("next_since")
         assert isinstance(token, int), client.describe(census)
@@ -913,7 +914,7 @@ def main(port: int) -> None:
     # pages to an empty page and then checks the walk against `total`. A
     # page-boundary created_at tie is not dropped: the server trims the
     # trailing tied rows off the page so the next page re-collects that
-    # millisecond from below it (src/society.ts:11747, issue #463), so the
+    # millisecond from below it (src/society.ts, citizenDirectory(), issue #463), so the
     # strict `created_at >` walk stays disjoint and loses nothing. The check
     # against `total` is still there because `total` is recomputed on every
     # request with no snapshot token: a walked < total is concurrent
@@ -1031,18 +1032,19 @@ def main(port: int) -> None:
 
     # GET /api/attestations pages on `since_id` (`id >`), oldest-first,
     # LIMIT 200. `has_more` is the over-fetch-then-test "rows remain"
-    # variant (src/society.ts:7890, 1571ef34a), NOT "the page is full": the
-    # page over-fetches one row past 200, so a store holding exactly 200
+    # variant (src/society.ts, listAttestations(), 1571ef34a), NOT fullness:
+    # the page over-fetches one row past 200, so a store holding exactly 200
     # reads has_more false (pre-fix it read true with nothing behind it and
-    # handed a next_since_id that paged an empty result). The fixture is far
-    # under the cap, so a fresh dev store has no attestations: page_n 0,
-    # has_more false, and no next_since_id.
+    # handed a next_since_id that paged an empty result). This fresh dev store
+    # has no attestations: this is an empty-ledger control, not a boundary
+    # discriminator. The seeded exact-200/201/tail controls are independently
+    # exercised in test/attestations.test.ts.
     ledger = site.attestations()
     assert isinstance(ledger.get("attestations"), list), client.describe(ledger)
     page_n = ledger.get("count")
     assert isinstance(page_n, int) and page_n == len(ledger["attestations"]), client.describe(ledger)
-    # "Rows remain", not fullness: under the cap the flag is false even
-    # though a full page could never be served.
+    assert page_n == 0, client.describe(ledger)
+    # Both the old fullness and current rows-remain rules are false at zero.
     assert ledger.get("has_more") is False, client.describe(ledger)
     # next_since_id rides the SAME "rows remain" condition as has_more, so it
     # is present only when has_more is true: a client must not require it to
@@ -1074,20 +1076,6 @@ def main(port: int) -> None:
     except client.ApiError as e:
         assert e.status == 400, client.describe(e.body)
         assert "does not support query parameter" in str(e.body.get("error", "")), client.describe(e.body)
-    # Boundary discriminator: the old fullness contract read has_more true at
-    # exactly 200 rows (with nothing behind it); the new rows-remain contract
-    # reads false at exactly 200 (no remainder). We verify this with a
-    # lightweight register-and-ask (the attestation-create path is gated by
-    # per-day caps and class-specific validation, so we stress the list side
-    # instead of the write side — same contract, cheaper test).
-    att_seat, _ = client.register("att-test", "test-model", origin=origin)
-    boundary = att_seat.attestations()
-    assert boundary.get("count") == 0, client.describe(boundary)
-    assert boundary.get("has_more") is False, client.describe(boundary)
-    assert "next_since_id" not in boundary, client.describe(boundary)
-    # The pin holds at zero; it also holds when the ledger is under the cap.
-    # Fullness-at-200 was the old (broken) invariant; rows-remain is the new
-    # (correct) one — the seals docstring-anchor fix (#368) proved the shift.
 
     # GET /api/seals: a citizen's seal ledger plus, on a sub-surface, that
     # seal's checks. Both sub-surfaces give the SAME honest has_more answer:
