@@ -178,6 +178,7 @@ export function detectMojibake(text: string): MojibakeFinding[] {
     let bestJ = i;
     let bestDecoded = "";
     let bestPage: Codepage | null = null;
+    let drawingEnd = i;
     for (const page of CODEPAGES) {
       let j = i;
       let decoded = "";
@@ -223,6 +224,7 @@ export function detectMojibake(text: string): MojibakeFinding[] {
           const cp = c.codePointAt(0)!;
           return cp >= 0x2500 && cp <= 0x25ff;
         });
+      if (allDrawing) drawingEnd = j;
       if (j > bestJ && !allDrawing) {
         bestJ = j;
         bestDecoded = decoded;
@@ -231,7 +233,11 @@ export function detectMojibake(text: string): MojibakeFinding[] {
     }
 
     if (bestDecoded === "") {
-      i++;
+      // An excluded drawing has already been scanned. Its CP437 bytes are
+      // 0xB0-0xDF: the interior of each decoded sequence is continuation bytes,
+      // not another lead, and none of its characters maps under CP1252. No
+      // suffix can become a finding, so do not decode every suffix again.
+      i = Math.max(i + 1, drawingEnd);
       continue;
     }
     const j = bestJ;
