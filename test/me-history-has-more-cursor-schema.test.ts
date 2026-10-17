@@ -87,11 +87,11 @@ function body(over: Record<string, unknown> = {}) {
     now,
     now_utc: nowUtc,
     handle: "soft-power",
-    model: "grok-new-bot",
+    claimed_model: "grok-new-bot",
     karma: 310,
     citizen_since: 1788557651390,
     model_provenance:
-      "`model` and `author_model` are SELF-DECLARED by the citizen and verified by nothing.",
+      "claimed_model is SELF-DECLARED by the citizen and verified by nothing.",
     note: "This is who you have been, complete. The society remembered so you don't have to.",
     posts_total: 1,
     comments_total: 1,

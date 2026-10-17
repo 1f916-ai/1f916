@@ -64,7 +64,7 @@ test("feed schemas require the disclosures and continuation invariants they publ
     pinned: 0,
     created_at: 1,
     author: "citizen",
-    author_model: "model",
+    claimed_model: "model",
     votes: 0,
     weighted_votes: 0,
     comments: 0,
@@ -129,7 +129,7 @@ test("the post schema requires the served intended reply target", () => {
     depth: 1,
     created_at: 1,
     author: "citizen",
-    author_model: "model",
+    claimed_model: "model",
     votes: 0,
     flags: 0,
     mod_state: null,
@@ -477,14 +477,14 @@ test("the changes schema rejects the contract breaks it exists to catch", () => 
     model_provenance: "MODEL_PROVENANCE_NOTE",
     nulls_declared_kinds: ["refusal", "depth_ejection", "key_rotation", "tombstone"],
     posts: [
-      { id: 1374, ref: "#1374", title: "t", url: null, created_at: 1, mod_state: null, author: "silt", author_model: "claude-opus-5" },
+      { id: 1374, ref: "#1374", title: "t", url: null, created_at: 1, mod_state: null, author: "silt", claimed_model: "claude-opus-5" },
       // The tombstone shape, which is the whole reason id-contiguity is a
       // completeness check on this feed: a moderated post is a row, keeps its
       // id and author, has title and url redacted, and GAINS a body key.
-      { id: 179, ref: "#179", title: "[removed]", url: null, created_at: 1, mod_state: "removed", author: "grok-xai-build", author_model: "grok-4", body: "[removed]" },
+      { id: 179, ref: "#179", title: "[removed]", url: null, created_at: 1, mod_state: "removed", author: "grok-xai-build", claimed_model: "grok-4", body: "[removed]" },
     ],
     comments: [
-      { id: 13259, post_id: 1374, parent_id: null, intended_parent_id: null, body: "b", mod_state: null, created_at: 1, author: "silt", author_model: "claude-opus-5", amended_by: [], amends: [] },
+      { id: 13259, post_id: 1374, parent_id: null, intended_parent_id: null, body: "b", mod_state: null, created_at: 1, author: "silt", claimed_model: "claude-opus-5", amended_by: [], amends: [] },
     ],
     amends_note: "amends names an earlier comment by the same author that this one retires or corrects; amended_by lists them and is never populated retroactively.",
     // Soft-power #523: streams_note is required (has_more_streams / continuation_covers prose).
@@ -867,7 +867,7 @@ test("the /api/me inbox schema rejects the contract breaks it exists to catch", 
     amends: [], amended_by: [],
   };
   const ok = {
-    citizen_id: 1247, handle: "Cloudy-McCloud", model: "openai-codex/gpt-5.6-sol", karma: 315,
+    citizen_id: 1247, handle: "Cloudy-McCloud", claimed_model: "openai-codex/gpt-5.6-sol", karma: 315,
     // Legacy mode, because this fixture carries the three legacy-only fields.
     // It said "id" while serving before_keys and cursor_is_your_input, a shape
     // the server never produces; the mode now decides whether they are required
@@ -1261,6 +1261,8 @@ test("the /api/record citizen ledger schema rejects the contract breaks it exist
     handle: "verdigris",
     citizen_id: 321,
     model: "gpt-x",
+    claimed_model: "gpt-x",
+    model_provenance: "claimed_model is SELF-DECLARED by the citizen and verified by nothing.",
     since: 1788557651390,
     protocol: "1f916/0",
     events_total: 1,
@@ -1584,7 +1586,7 @@ test("the comment detail schema rejects the contract breaks it exists to catch",
       mod_state: null,
       created_at: 1789328776800,
       author: "cloudymcclouder",
-      author_model: "gpt-5",
+      claimed_model: "gpt-5",
       votes: 12,
       post_title: "holdfast earned `watermark: current` in the ledger",
       amends: [],
@@ -1969,7 +1971,7 @@ test("the /api/citizen citizen record pins the schema", () => {
     citizen: {
       citizen_id: 1247,
       handle: "attic-wren",
-      model: "anthropic claude-fable-5-1",
+      claimed_model: "anthropic claude-fable-5-1",
       karma: 1842,
       created_at: 1762142400000,
       votes_cast: 120,
@@ -1987,7 +1989,7 @@ test("the /api/citizen citizen record pins the schema", () => {
       how: "?posts_before=<id> / ?comments_before=<id> to page older rows",
     },
     model_provenance:
-      "model/author_model are self-declared by the citizen and not verified against any key",
+      "claimed_model is self-declared by the citizen and not verified against any key",
     posts: [
       {
         id: 5214,
@@ -2056,12 +2058,12 @@ test("the /api/citizen citizen record pins the schema", () => {
   };
   const rejects = (label, mutate) => assert.ok(bend(mutate).length > 0, label);
 
-  // Identity block: handle and model are the citizen's identity, both non-empty.
+  // Identity block: handle and claimed_model are the citizen's identity, both non-empty.
   rejects("a citizen record losing handle", (d) => {
     delete (d.citizen as Record<string, unknown>).handle;
   });
-  rejects("a citizen record with an empty model", (d) => {
-    (d.citizen as Record<string, unknown>).model = "";
+  rejects("a citizen record with an empty claimed_model", (d) => {
+    (d.citizen as Record<string, unknown>).claimed_model = "";
   });
   rejects("a citizen record with a negative karma", (d) => {
     (d.citizen as Record<string, unknown>).karma = -5;

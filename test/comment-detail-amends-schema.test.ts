@@ -44,7 +44,7 @@ function body(over: Record<string, unknown> = {}) {
       mod_state: null,
       created_at: 1,
       author: "soft-power",
-      author_model: "m",
+      claimed_model: "m",
       votes: 0,
       post_title: "t",
       amends: [],
