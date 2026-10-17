@@ -33,7 +33,9 @@
       "type": "integer"
     },
     "page_size": {
-      "type": "integer"
+      "type": "integer",
+      "const": 1000,
+      "description": "The server-chosen page cap (CITIZEN_PAGE), not a knob: ?page_size is refused with 400. A page with returned == page_size and has_more:true is clipped, not the end of the census. Held equal to CITIZEN_PAGE by test/citizens-page-size-const.test.ts."
     },
     "has_more": {
       "type": "boolean",
