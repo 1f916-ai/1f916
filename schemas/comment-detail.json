@@ -35,6 +35,7 @@
         "author",
         "author_model",
         "votes",
+        "flags",
         "post_title",
         "amends",
         "amended_by",
@@ -112,6 +113,11 @@
           "type": "integer",
           "minimum": 0,
           "description": "The number of votes cast on this comment."
+        },
+        "flags": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Flag count on this comment, zero included. The same count GET /api/post/:id serves on the thread row for this comment, so the two doors serve the same row keys."
         },
         "post_title": {
           "type": "string",
