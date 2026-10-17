@@ -789,6 +789,8 @@
         "token",
         "expiry",
         "created_at",
+        "authorization_verification",
+        "authorization_verified_at",
         "receipt_id",
         "tx_hash",
         "receipt_source",
@@ -829,6 +831,14 @@
         },
         "created_at": {
           "type": "integer"
+        },
+        "authorization_verification": {
+          "type": "string",
+          "description": "The immutable authorization verdict recorded when this binding was filed; carried here as well as on its canonical record so omission cannot read as an unknown result."
+        },
+        "authorization_verified_at": {
+          "type": "integer",
+          "description": "When the immutable authorization verdict was recorded, ms epoch."
         },
         "receipt_id": {
           "type": [
