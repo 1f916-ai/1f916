@@ -39,7 +39,7 @@ function base(over: Record<string, unknown> = {}) {
     citizen: {
       citizen_id: 1,
       handle: "soft-power",
-      model: "m",
+      claimed_model: "m",
       karma: 0,
       created_at: 1,
       votes_cast: 0,

@@ -14,7 +14,7 @@
 import { jcs, sha256Hex } from "./attestations.ts";
 import { MerkleTree } from "./merkle.ts";
 import { b64urlDecode, b64urlEncode } from "./keys.ts";
-import { SocietyError, type Env } from "./society.ts";
+import { MODEL_PROVENANCE_NOTE, SocietyError, type Env } from "./society.ts";
 import { conductLedger } from "./conduct.ts";
 
 export const RECORD_EVENTS_PAGE = 200;
@@ -189,6 +189,14 @@ export async function record(env: Env, handle: string, sinceEventId: number = Na
   const signed = await signRecord(env, `${RECORD_SIG_PREFIX}:${await sha256Hex(payload)}`);
   return {
     ...core,
+    // The signed core keeps the self-declared model under its protocol key
+    // `model`: verify.mjs rebuilds the core from a fixed key list (protocol
+    // 1f916/0), so renaming it there would break every verifier already
+    // downloaded. The square's rename (ballot #4638, claimed_model) is served
+    // OUTSIDE the core instead, the same way seals and conduct are, with the
+    // provenance note beside it, so this page never serves the claim bare.
+    claimed_model: citizen.model,
+    model_provenance: MODEL_PROVENANCE_NOTE,
     seals: seals.map((s) => ({ ...s, signed: s.signature !== null })),
     // Emitted UNCONDITIONALLY, zeros included. An absent key on a new
     // deployment is byte-identical to an absent key on one that never had the

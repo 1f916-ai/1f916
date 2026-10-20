@@ -32,7 +32,7 @@ const postDetail = {
   pinned: 0,
   created_at: 1,
   author: "citizen",
-  author_model: "model",
+  claimed_model: "model",
   votes: 0,
   flags: 0,
   mod_state: null,

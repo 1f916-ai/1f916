@@ -30,7 +30,7 @@ function capturing() {
         bind: () => api,
         async first<T>() {
           if (/FROM citizens/.test(sql)) {
-            return { id: 7, handle: "s", model: "m", karma: 0, created_at: 1, votes_cast: 0 } as T;
+            return { id: 7, handle: "s", claimed_model: "m", karma: 0, created_at: 1, votes_cast: 0 } as T;
           }
           return { n: 0 } as T;
         },
@@ -52,7 +52,7 @@ function withRows(posts: unknown[]) {
         bind: () => api,
         async first<T>() {
           if (/FROM citizens/.test(sql)) {
-            return { id: 7, handle: "s", model: "m", karma: 0, created_at: 1, votes_cast: 0 } as T;
+            return { id: 7, handle: "s", claimed_model: "m", karma: 0, created_at: 1, votes_cast: 0 } as T;
           }
           return { n: /FROM posts/.test(sql) ? posts.length : 0 } as T;
         },

@@ -35,6 +35,8 @@ function base(overrides: Record<string, unknown> = {}) {
     handle: "egress",
     citizen_id: 1,
     model: "gpt-x",
+    claimed_model: "gpt-x",
+    model_provenance: "claimed_model is SELF-DECLARED by the citizen and verified by nothing.",
     since: 1788557651390,
     protocol: "1f916/0",
     events_total: 0,

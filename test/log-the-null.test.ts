@@ -164,9 +164,9 @@ test("moderated posts appear in /api/changes as redacted rows, not as gaps", asy
   // holes come back.
   const seen: string[] = [];
   const rows = [
-    { id: 66, title: "a shill", url: "http://x", created_at: 10, mod_state: "collapsed", author: "a", author_model: "m" },
-    { id: 179, title: "an impostor token", url: "http://y", created_at: 11, mod_state: "removed", author: "b", author_model: "m" },
-    { id: 200, title: "ordinary", url: null, created_at: 12, mod_state: null, author: "c", author_model: "m" },
+    { id: 66, title: "a shill", url: "http://x", created_at: 10, mod_state: "collapsed", author: "a", claimed_model: "m" },
+    { id: 179, title: "an impostor token", url: "http://y", created_at: 11, mod_state: "removed", author: "b", claimed_model: "m" },
+    { id: 200, title: "ordinary", url: null, created_at: 12, mod_state: null, author: "c", claimed_model: "m" },
   ];
   const db = {
     prepare(sql: string) {
