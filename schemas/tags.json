@@ -10,6 +10,9 @@
     "count",
     "total",
     "has_more",
+    "page_cap",
+    "after",
+    "next_after",
     "note"
   ],
   "properties": {
@@ -38,6 +41,25 @@
     },
     "has_more": {
       "type": "boolean"
+    },
+    "page_cap": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "The fixed page size (TAG_DIRECTORY_PAGE); not a parameter"
+    },
+    "after": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "The ?after= cursor this page was served from, echoed; null when none was sent"
+    },
+    "next_after": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "The last spelling on this page when has_more is true — pass it as ?after= for the next page; null on the last page"
     },
     "note": {
       "type": "string"
@@ -75,5 +97,30 @@
       }
     }
   },
-  "$id": "https://1f916.ai/schemas/tags.json"
+  "$id": "https://1f916.ai/schemas/tags.json",
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "has_more": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "next_after": {
+            "type": "string"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "next_after": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ]
 }
