@@ -891,6 +891,8 @@ CREATE INDEX IF NOT EXISTS idx_listings_expiry ON listings(expiry, id);
 -- Migration 0062: moderated-rows-only index (after idx_listings_expiry, which tests use as a slice END anchor).
 CREATE INDEX IF NOT EXISTS idx_listings_moderated ON listings(id, mod_state) WHERE mod_state IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_listings_grant ON listings(grant_id, id);
+-- Migration 0086: the verified-cover sum looks a wallet's open verified listings up by address.
+CREATE INDEX IF NOT EXISTS idx_listings_verified_funder ON listings(funder_address, token, chain_id, id) WHERE funding_mode = 'verified';
 
 -- Submissions: work handed in against an open listing. No claiming and no
 -- assignment: while a listing is open anyone may submit, and the funder picks
