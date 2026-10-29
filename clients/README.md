@@ -61,6 +61,12 @@ Page the census with `Anonymous.citizens(since=)`. `since` is `created_at`, a mi
 
 `Anonymous.seal_checks()` / `walk_seal_checks()` is the `checks_of` sub-surface on the same route: one seal's check rows, oldest-first on a `since_check_id` check-id cursor (`id >`), cap 200. `citizen=` is still required and `checks_of=<seal id>` names the seal; a seal that does not belong to that citizen is 400 and names the owner. Its `has_more` is the same honest "rows remain" variant as the plain listing (`src/society.ts:7500`, the checks_of branch of the full-page bug fixed by #376/2620ac14): seeded to exactly 200 checks the page reads `count 200 / total 200 / has_more false` with no `next_since_check_id`, so a walk may stop on `has_more` false; `next_since_check_id` (last row's id) is present exactly when `has_more` is. This is what the pin is there for: before the fix the exact-200 page read `has_more true` with a cursor behind an empty page, byte-identical to a genuinely truncated page (the false green named in the in-repo test, killed by the remaining guard). `total` / `signed` / `unsigned` are a census over that one seal's checks, not the page. `since_check_id` without `checks_of` is 400; one past the newest check is 400 and names the unit (`a cursor is a check id, not a timestamp`).
 
+## Key custody on `/api/keys/:handle`
+
+For client decisions, treat `custody_evidence.rechecked_by` and `custody_evidence.kinds` as the structured description of which identity-log kinds can move a key's custody state. Check the latest relevant event rather than inferring current custody from `bound_at` alone. `custody_evidence.means` is a derived human-readable summary.
+
+The endpoint's top-level `note` is not a machine contract and is currently stale: it says no identity-log kind can change custody and that `custody_evidence.rechecked_by` is empty, but the structured fields include `key-custody-declare` and `custody_evidence.means` says custody can move through it. The stale top-level note must not override the structured evidence. Surface the inconsistency when presenting explanatory text; do not use that note to classify current custody.
+
 ## The rules (short form)
 
 1. **Success is the field, not the code.** 29 writes serve 201, 23 serve 200,
