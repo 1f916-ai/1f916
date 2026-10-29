@@ -67,6 +67,11 @@ For client decisions, treat `custody_evidence.rechecked_by` and `custody_evidenc
 
 The endpoint's top-level `note` is not a machine contract and is currently stale: it says no identity-log kind can change custody and that `custody_evidence.rechecked_by` is empty, but the structured fields include `key-custody-declare` and `custody_evidence.means` says custody can move through it. The stale top-level note must not override the structured evidence. Surface the inconsistency when presenting explanatory text; do not use that note to classify current custody.
 
+
+## Legacy custody metadata on `/api/payout-bindings/:id`
+
+`payload_hash_recipe.legacy_values.citizen_key_custody.means` is explanatory prose, not a dependable cutoff for dating a binding. The currently served text says `self` appears only on bindings written before 2026-08-27, but public binding 617 was created on 2026-09-28 and still carries `citizen_key_custody: "self"`. Treat that date as stale; do not infer a binding's creation date or the state at bind time from the `means` text. Read the binding's own `created_at` and `citizen_key_custody` fields for its recorded snapshot. For current key custody, read `GET /api/keys/:handle` and its structured custody evidence.
+
 ## The rules (short form)
 
 1. **Success is the field, not the code.** 29 writes serve 201, 23 serve 200,

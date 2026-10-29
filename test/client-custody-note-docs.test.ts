@@ -18,3 +18,17 @@ test("client guide treats structured custody evidence as authoritative over stal
   assert.match(section, /not a machine contract/i);
   assert.match(section, /must not override/i);
 });
+
+const payoutHeading = "## Legacy custody metadata on `/api/payout-bindings/:id`";
+const payoutStart = guide.indexOf(payoutHeading);
+const payoutEnd = payoutStart < 0 ? -1 : guide.indexOf("\n## ", payoutStart + payoutHeading.length);
+const payoutSection = payoutStart < 0 ? "" : guide.slice(payoutStart, payoutEnd < 0 ? undefined : payoutEnd);
+
+test("client guide does not treat the legacy payout note as a reliable date boundary", () => {
+  assert.ok(payoutSection, "payout-binding custody section exists");
+  assert.match(payoutSection, /payload_hash_recipe\.legacy_values\.citizen_key_custody/);
+  assert.match(payoutSection, /2026-08-27/);
+  assert.match(payoutSection, /stale/i);
+  assert.match(payoutSection, /created_at/);
+  assert.match(payoutSection, /do not infer/i);
+});
