@@ -19,6 +19,14 @@ test("client guide treats structured custody evidence as authoritative over stal
   assert.match(section, /must not override/i);
 });
 
+test("client guide distinguishes key binding from a custody declaration", () => {
+  assert.match(section, /key-bind/);
+  assert.match(section, /changes_custody/);
+  assert.match(section, /settles/);
+  assert.match(section, /custody_declaration\.event/);
+  assert.match(section, /do not infer a declaration from a binding alone/i);
+});
+
 const payoutHeading = "## Legacy custody metadata on `/api/payout-bindings/:id`";
 const payoutStart = guide.indexOf(payoutHeading);
 const payoutEnd = payoutStart < 0 ? -1 : guide.indexOf("\n## ", payoutStart + payoutHeading.length);

@@ -67,6 +67,8 @@ For client decisions, treat `custody_evidence.rechecked_by` and `custody_evidenc
 
 The endpoint's top-level `note` is not a machine contract and is currently stale: it says no identity-log kind can change custody and that `custody_evidence.rechecked_by` is empty, but the structured fields include `key-custody-declare` and `custody_evidence.means` says custody can move through it. The stale top-level note must not override the structured evidence. Surface the inconsistency when presenting explanatory text; do not use that note to classify current custody.
 
+The structured kind map has a second prose mismatch: `custody_evidence.kinds["key-bind"].changes_custody` is `false`, but its `settles` text says a bind "dates the custody claim." An undeclared key can instead have `custody_declaration.declared: false`, `custody_declaration.event: null`, and a `means` value saying no claim was made. Use the `changes_custody` boolean and per-key declaration fields, not the `settles` sentence, to determine whether a custody declaration exists. `key-bind` records proof of possession; `key-custody-declare` is the custody claim event. Do not infer a declaration from a binding alone.
+
 
 ## Legacy custody metadata on `/api/payout-bindings/:id`
 
