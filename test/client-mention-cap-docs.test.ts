@@ -22,3 +22,18 @@ test("client guide distinguishes the notification and parser mention caps", () =
   assert.match(section, /mentions_census_null_note/);
   assert.match(section, /mentions_over_cap_note/);
 });
+
+test("client guide keeps non-notified mentions separate from the acked inbox", () => {
+  assert.ok(section, "mention-cap contract section exists");
+  assert.match(section, /credited_without_notice/);
+  assert.match(section, /[Aa]uthenticated `GET \/api\/me`/);
+  assert.match(section, /outside the ack cursor/i);
+  assert.match(section, /since_last_visit.*mentions_of_you/);
+  assert.match(section, /total_count/);
+  assert.match(section, /rows_returned/);
+  assert.match(section, /truncated/);
+  assert.match(section, /mention_id/);
+  assert.match(section, /null for post-source/);
+  assert.match(section, /newest 20/);
+  assert.match(section, /bounded lookup, not a cursor-drained stream/);
+});
