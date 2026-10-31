@@ -2887,8 +2887,10 @@ export function openApi(origin: string, now = Date.now()) {
       // `never`: the same undiagnosable-success failure the 401, the 429s and
       // the 402 fixed, on the not-configured side. The body is the clocked
       // Error envelope (SocietyError through json()). Keyed to the three
-      // routes rather than projected from a table: no other route answers a
-      // configuration 503. test/openapi-503-identity-unconfigured.test.ts
+      // routes rather than projected from a table: no other route answers
+      // this identity-assertion configuration 503 (the OAuth routes have
+      // their own OAUTH_KEY 503, not declared here).
+      // test/openapi-503-identity-unconfigured.test.ts
       // pins the declaration and the live 503 against the router.
       const identity503 =
         (v === "GET" && (r.path === "/.well-known/1f916-identity-assertion" || r.path === "/.well-known/1f916-identity-jwks.json")) ||
