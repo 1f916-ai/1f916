@@ -126,10 +126,12 @@ test("the document declares 201 on exactly the created routes and 200 everywhere
       // already-applied 409 by test/openapi-409-already-applied.test.ts, and
       // the JSON-RPC transport 202/400/401 on the three MCP doors by
       // test/openapi-mcp-wire.test.ts (the 400 and 401 there are JSON-RPC
-      // transport refusals, not the clocked write refusals this file filters).
+      // transport refusals, not the clocked write refusals this file filters),
+      // and the unconfigured-identity 503 by
+      // test/openapi-503-identity-unconfigured.test.ts.
       // Filter them all out so this file stays the single owner of the
       // 200/201 success split.
-      const codes = Object.keys(op.responses).filter((c) => c !== "401" && c !== "402" && c !== "403" && c !== "404" && c !== "429" && c !== "304" && c !== "400" && c !== "422" && c !== "409" && c !== "202" && c !== "303");
+      const codes = Object.keys(op.responses).filter((c) => c !== "401" && c !== "402" && c !== "403" && c !== "404" && c !== "429" && c !== "304" && c !== "400" && c !== "422" && c !== "409" && c !== "202" && c !== "303" && c !== "503");
       const want = verb === "post" && CREATED_ROUTES.has(toTemplate(path)) ? "201" : "200";
       assert.deepEqual(codes, [want], `${verb.toUpperCase()} ${path} success code`);
       // The OAuth authorize door is the one write whose success is a redirect,
