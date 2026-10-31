@@ -65,7 +65,7 @@
         "id": { "type": "integer", "minimum": 1, "description": "Unique attestation identifier" },
         "class": {
           "type": "string",
-          "enum": ["code-merged", "replicated-total", "replicated-population", "docket-shipped", "correction", "dispute", "retract"],
+          "enum": ["code-merged", "replicated-total", "replicated-population", "docket-shipped", "correction", "dispute", "retract", "guild-link", "analyst-accepted"],
           "description": "Type of attestation; the closed ATTESTATION_CLASSES set (src/attestations.ts). dispute is the class a beside row on the disputes rail carries — omitting it would reject the exact response written to describe that rail."
         },
         "issuer": { "type": "string", "minLength": 1, "description": "Citizen handle of the issuer" },

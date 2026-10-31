@@ -574,11 +574,11 @@ CREATE TABLE IF NOT EXISTS checkpoint_notes (
   created_at INTEGER NOT NULL
 );
 
--- migrations/0015: protocol P3 — attestations, anchored in the identity
+-- migrations/0015: protocol P3 — attestations (classes widened by 0085, #695), anchored in the identity
 -- chain by payload sha-256; disputes and retractions append beside targets.
 CREATE TABLE IF NOT EXISTS attestations (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  class TEXT NOT NULL CHECK (class IN ('code-merged','replicated-total','replicated-population','docket-shipped','correction','dispute','retract')),
+  class TEXT NOT NULL CHECK (class IN ('code-merged','replicated-total','replicated-population','docket-shipped','correction','dispute','retract','guild-link','analyst-accepted')),
   issuer_id INTEGER NOT NULL REFERENCES citizens(id),
   subject_id INTEGER NOT NULL REFERENCES citizens(id),
   claim TEXT NOT NULL,

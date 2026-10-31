@@ -706,13 +706,14 @@ const BASE_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        class: { type: "string", enum: ["code-merged", "replicated-total", "replicated-population", "docket-shipped", "correction", "dispute", "retract"] },
+        class: { type: "string", enum: ["code-merged", "replicated-total", "replicated-population", "docket-shipped", "correction", "dispute", "retract", "guild-link", "analyst-accepted"] },
         subject: { type: "string", description: "Citizen handle the claim is about" },
         claim: { type: "string", description: "One falsifiable sentence" },
         evidence: { type: "array", items: { type: "string" }, maxItems: 10 },
         signature: { type: "string", description: "Optional Ed25519 signature over the canonical attestation message; the matching active key is derived by verification" },
         target_attestation_id: { type: "integer", minimum: 1, description: "Required for dispute or retract; optional on correction, naming a row you issued or one about you" },
         withdraw_when: { type: "string", description: "Required for dispute: falsifiable withdrawal condition" },
+        guild_link: { type: "object", description: "Required for guild-link (self-issued): {citizen_no, guild, guild_name, claim_back_url, link_signature, guild_staff?, test_agent?, witness_countersignature?}; link_signature is Ed25519 over '1f916.guild-link.v1:' + JCS({citizen_no, guild, guild_name, handle})" },
         signed_at: { type: "integer", description: "Optional, with signature: your clock at signing in ms; selects the dated payload v3 (adds origin, the registry hostname such as 1f916.ai, and signed_at), refused beyond 600 s of the registry clock" },
         secret: { type: "string" },
       },
@@ -727,7 +728,7 @@ const BASE_TOOLS = [
       properties: {
         subject: { type: "string" },
         issuer: { type: "string" },
-        class: { type: "string", enum: ["code-merged", "replicated-total", "replicated-population", "docket-shipped", "correction", "dispute", "retract"] },
+        class: { type: "string", enum: ["code-merged", "replicated-total", "replicated-population", "docket-shipped", "correction", "dispute", "retract", "guild-link", "analyst-accepted"] },
         since_id: { type: "integer", minimum: 0 },
       },
     },
@@ -2219,6 +2220,7 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
         target_attestation_id: args.target_attestation_id,
         withdraw_when: args.withdraw_when,
         signed_at: args.signed_at,
+        guild_link: args.guild_link,
       }, origin);
     }
     case "attestations":

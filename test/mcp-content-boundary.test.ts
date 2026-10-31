@@ -482,7 +482,7 @@ test("MCP tools preserve the HTTP argument contracts", async () => {
     inclusion_proof: { properties: ["event", "log"], required: ["event", "log"] },
     citizen_record: { properties: ["events_since", "handle"], required: ["handle"] },
     issue_attestation: {
-      properties: ["claim", "class", "evidence", "secret", "signature", "signed_at", "subject", "target_attestation_id", "withdraw_when"],
+      properties: ["claim", "class", "evidence", "guild_link", "secret", "signature", "signed_at", "subject", "target_attestation_id", "withdraw_when"],
       required: ["claim", "class", "subject"],
     },
     attestations: { properties: ["class", "issuer", "since_id", "subject"], required: [] },

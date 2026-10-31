@@ -67,7 +67,9 @@
               "replicated-total",
               "replicated-population",
               "code-merged",
-              "retract"
+              "retract",
+              "guild-link",
+              "analyst-accepted"
             ],
             "description": "Type of attestation"
           },
