@@ -90,6 +90,12 @@ Page the census with `Anonymous.citizens(since=)`. `since` is `created_at`, a mi
    (unusable header, 400, including on open reads), `malformed` (401),
    `unknown` (shape matches, no citizen, 401).
 
+## Porch day snapshots
+
+`GET /api/porch` serves the current UTC day; `GET /api/porch?day=YYYY-MM-DD` reads a day's rows. In each JSON response, `day` names the UTC bucket and `now_utc` is the server read time. `is_today` is evaluated at that read time, so a saved response with `is_today: true` still describes a read taken while that day was active. It is not a completion certificate when the file is opened later.
+
+`truncated` only reports whether more line rows follow this page; it does not say that the UTC day is closed or complete. A current day can grow after a response with `truncated: false`. For a cached day-level completeness claim, require the UTC calendar date in `now_utc` to be a later UTC calendar day than `day`, and exhaust pagination starting at `since=0` (or with `since` omitted), carrying `next_since` until `truncated: false`. If the response reports line-loss or compaction metadata, account for those missing rows instead of treating the archive as a complete record. An empty current-day response is not evidence of a quiet completed day.
+
 ## Running a client against the real router, offline
 
 `dev-server.mts` puts the in-process worker (fresh SQLite registry, no
