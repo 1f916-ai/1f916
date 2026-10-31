@@ -20,12 +20,52 @@ export function sqlLiterals(code) {
   let i = 0;
   let lastSig = ""; // last non-whitespace char emitted, to tell a regex `/` from division
   let regexAfterComment = null;
-  const mark = (ch) => { lastSig = ch; regexAfterComment = null; };
+  let controlKeyword = "";
+  let statementRegex = false; // a control-header close or a throw operand allows `/re/`
+  let parens = []; // true only for the condition parentheses of if/while/for
+  const mark = (ch) => {
+    lastSig = ch;
+    regexAfterComment = null;
+    controlKeyword = "";
+    statementRegex = false;
+  };
+  // WQ-679/PR#680 follow-up: track control headers, not arbitrary closing
+  // parentheses. Calls/groups followed by `/` still mean division. Whole words
+  // keep identifier suffixes and public/private member names out of this context.
+  const wordChar = (ch) => ch !== undefined && /[$\w\u0080-\uffff]/.test(ch) && !/\s/.test(ch);
+  const advanceToken = () => {
+    const ch = code[i];
+    if (wordChar(ch)) {
+      const start = i;
+      while (wordChar(code[i])) i++;
+      const word = code.slice(start, i);
+      const member = lastSig === "." || lastSig === "#";
+      const control = !member && /^(if|while|for)$/.test(word)
+        ? word : controlKeyword === "for" && word === "await" ? "for" : "";
+      // Recognize a standalone throw operand, not a suffix or member value.
+      // In particular this.#throw / 3 must not hide a following SQL literal.
+      const throwOperand = !member && word === "throw";
+      mark(code[i - 1]);
+      controlKeyword = control;
+      statementRegex = throwOperand;
+      return;
+    }
+    if (ch === "(") {
+      parens.push(controlKeyword !== "");
+      mark(ch);
+    } else if (ch === ")") {
+      const control = parens.pop() ?? false;
+      mark(ch);
+      statementRegex = control;
+    } else if (!/\s/.test(ch)) mark(ch);
+    i++;
+  };
   // JS keywords after which a `/` begins a regex even though the preceding char
   // is a word character (e.g. `return /re/`).
   const KEYWORD_BEFORE_REGEX = /(?:^|[^.\w])(return|typeof|instanceof|in|of|case|do|else|void|delete|yield|await)$/;
   const atRegex = () => {
     if (regexAfterComment !== null) return regexAfterComment;
+    if (statementRegex) return true;
     if (lastSig === "" || "([{,;:=!&|?+-*%<>~^".includes(lastSig)) return true;
     return KEYWORD_BEFORE_REGEX.test(code.slice(Math.max(0, i - 12), i).replace(/\s+$/, ""));
   };
@@ -62,6 +102,10 @@ export function sqlLiterals(code) {
     // i is just past "${"; walk to the matching "}", skipping nested strings,
     // templates, regexes and comments so their braces/quotes do not mislead depth.
     let depth = 1;
+    // Interpolations own balanced parentheses; preserve any frame surrounding
+    // the enclosing template rather than consuming or discarding it.
+    const outerParens = parens;
+    parens = [];
     // Each ${...} starts an expression; a previous interpolation or the tag
     // before this template must not determine how its first slash is read.
     mark("");
@@ -73,9 +117,9 @@ export function sqlLiterals(code) {
       if (ch === "/" && atRegex()) { skipRegex(); mark("/"); continue; }
       if (ch === "{") depth++;
       else if (ch === "}") depth--;
-      if (!/\s/.test(ch)) mark(ch);
-      i++;
+      advanceToken();
     }
+    parens = outerParens;
   };
   const readQuoted = (q) => {
     let text = "";
@@ -104,8 +148,7 @@ export function sqlLiterals(code) {
     if (ch === "`") { out.push(readTemplate()); mark("`"); continue; }
     if (ch === '"' || ch === "'") { out.push(readQuoted(ch)); mark(ch); continue; }
     if (ch === "/" && atRegex()) { skipRegex(); mark("/"); continue; }
-    if (!/\s/.test(ch)) mark(ch);
-    i++;
+    advanceToken();
   }
   return out;
 }
