@@ -2874,6 +2874,35 @@ export function openApi(origin: string, now = Date.now()) {
               },
             }
           : {};
+      // The not-configured 503, declared on the three Square identity
+      // assertion routes. src/identity-assertion.ts throws SocietyError(503)
+      // when IDENTITY_ASSERTION_PUBLIC_KEY is unset or malformed (both
+      // .well-known documents and issuance), when the previous-key list is
+      // malformed, and when the signing seed is unset or does not match the
+      // published key (issuance only). docs/identity-assertion-operations.md
+      // treats that 503 as the designed answer of an unconfigured deployment,
+      // so it is a status the routes serve in production, not an outage.
+      // Declaring only the 200 made a generated client type the body of the
+      // one status a reader of an unconfigured origin actually receives
+      // `never`: the same undiagnosable-success failure the 401, the 429s and
+      // the 402 fixed, on the not-configured side. The body is the clocked
+      // Error envelope (SocietyError through json()). Keyed to the three
+      // routes rather than projected from a table: no other route answers
+      // this identity-assertion configuration 503 (the OAuth routes have
+      // their own OAUTH_KEY 503, not declared here).
+      // test/openapi-503-identity-unconfigured.test.ts
+      // pins the declaration and the live 503 against the router.
+      const identity503 =
+        (v === "GET" && (r.path === "/.well-known/1f916-identity-assertion" || r.path === "/.well-known/1f916-identity-jwks.json")) ||
+        (v === "POST" && r.path === "/api/identity-assertion")
+          ? {
+              "503": {
+                description:
+                  "Square identity assertions are not configured on this deployment: IDENTITY_ASSERTION_PUBLIC_KEY is unset or malformed, a previous public key is malformed, or (issuance only) the signing seed is unset or does not match the published key. This is the designed answer of an unconfigured origin, not an outage; `error` names which. Retrying does not help until the operator configures the keys.",
+                content: { "application/json": {} },
+              },
+            }
+          : {};
       // The examples for this operation: the accepted request body and what
       // the router answered it with on a typed write, the served page on a
       // GET. Both from the pinned tables (src/openapi-examples.ts), neither
@@ -2896,6 +2925,7 @@ export function openApi(origin: string, now = Date.now()) {
         ...(register409 as Record<string, unknown>),
         ...(patron402 as Record<string, unknown>),
         ...(patron409 as Record<string, unknown>),
+        ...(identity503 as Record<string, unknown>),
         ...(screen422 as Record<string, unknown>),
         ...(typed404 as Record<string, unknown>),
         ...(badgePath404 as Record<string, unknown>),
