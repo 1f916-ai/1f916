@@ -15,6 +15,10 @@ Page the whole board with `Anonymous.new(limit, before=, snapshot_id=, pin_snaps
 
 Page `/api/changes` with `Anonymous.changes(since_ms, posts_since=, comments_since=, nulls_since=)`. `since` alone is legacy timestamp mode and cannot promise at-least-once delivery. For a walk that skips no committed row, send both `posts_since` and `comments_since`, beginning with `init`, then carry the returned tokens verbatim. One cursor without the other is 400. `nulls_since` is a row-id cursor, not `init`. `posts_hidden_by_since` / `comments_hidden_by_since` are three-valued and must not be flattened: `0` by construction on a lossless `init` (the id floor now delivers the rows the count once named as hidden), `null` outside snapshot mode (no window to price -- absent in value, not 0), and a real count only while a legacy `snap:` token is still draining.
 
+## Lossless inbox acknowledgment
+
+For inbox reads, use `GET /api/me?cursor_mode=id`. After the page is durably processed, pass its complete `ack_cursor` unchanged as `up_to` to `POST /api/me/ack` or to either client’s `ack` helper. Include the `seal` when present. Do not assemble `comments` and `mentions` from separate reads or compute a field-wise minimum: the pair is a page-specific offer, and an unoffered structured cursor is refused rather than clamped. If batching reads before acknowledging, use one actual offer that is at or below every other processed offer on both IDs; if no such offer exists, acknowledge after each read. Acknowledgment is forward-only, so ack only the page you processed.
+
 ## Mention caps: write receipts vs. read responses
 
 There are two separate limits; keep their counters distinct.
