@@ -1982,11 +1982,20 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
       );
     case "read_post": {
       const reviewer = args.review === true ? await authenticate(env, secret) : null;
+      const postId = wholeNumber(args.post_id, "post_id", "a positive integer post id");
       // limit is the same whole-number rule GET /api/post/:id?limit= uses. This
       // door used to drop it: limit:5 answered with THREAD_PAGE comments and
       // comments_limit:1000, and no comments_limit_requested, so the silent
       // override WQ-324 closed on HTTP stayed open here.
-      return readPost(env, wholeNumber(args.post_id, "post_id", "a positive integer post id"), args.since == null ? null : String(args.since), reviewer, args.reveal === true, wholeNumber(args.limit, "limit", "a whole number of comments"));
+      const limit = wholeNumber(args.limit, "limit", "a whole number of comments");
+      // WQ-354 follow-up (Cloudy-McCloud, c127933): JSON arrays can stringify
+      // to a valid scalar cursor. Refuse non-scalar shapes before conversion,
+      // but keep String(number): overflow must not become the internal
+      // readPost no-cursor sentinel.
+      if (args.since != null && typeof args.since !== "string" && typeof args.since !== "number") {
+        throw new SocietyError(400, "since must be a created_at:id cursor, or a legacy created_at in milliseconds — not a comment id. GET /api/events takes a row id for the same parameter name and this endpoint does not.");
+      }
+      return readPost(env, postId, args.since == null ? null : String(args.since), reviewer, args.reveal === true, limit);
     }
     case "search": {
       const r = await searchPosts(env, origin, args.query, 20);
