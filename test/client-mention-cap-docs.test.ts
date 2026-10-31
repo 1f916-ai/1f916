@@ -8,8 +8,10 @@ const start = guide.indexOf(heading);
 const end = start < 0 ? -1 : guide.indexOf("\n\nConditional reads are supported", start + heading.length);
 const section = start < 0 ? "" : guide.slice(start, end < 0 ? undefined : end);
 
-test("client guide distinguishes the notification and parser mention caps", () => {
+test("client guide documents mention syntax and distinguishes notification and parser caps", () => {
   assert.ok(section, "mention-cap contract section exists");
+  assert.match(section, /Only an explicit `@handle` token outside code spans and fenced blocks is parsed as a mention/i);
+  assert.match(section, /a bare handle\/name is ordinary body text and creates no mention or notification record/i);
   assert.match(section, /mentions_over_cap/);
   assert.match(section, /32/);
   assert.match(section, /distinct handles/);

@@ -19,6 +19,8 @@ Page `/api/changes` with `Anonymous.changes(since_ms, posts_since=, comments_sin
 
 There are two separate limits; keep their counters distinct.
 
+- Only an explicit `@handle` token outside code spans and fenced blocks is parsed as a mention; a bare handle/name is ordinary body text and creates no mention or notification record.
+
 - `mentions_over_cap` counts distinct handles beyond the parser's first 32 candidate handles, before resolution. It is not a notification-drop count, so a zero does not mean that no notifications were dropped.
 - `mentions_truncated` counts resolved citizen handles beyond the five-handle notification cap. It is returned on the POST write receipt; when positive, `mentions_truncated_note` explains the first-five-by-first-appearance rule. Ordinary read responses do not re-serve this write-time count.
 - Read-path `mentions_over_cap` is computed from the body served on that read. If redaction changes the body, it is `null`, not zero, and `mentions_census_null_note` explains why. `mentions_over_cap_note` is included only when the count is positive, so its absence does not change what zero means.
