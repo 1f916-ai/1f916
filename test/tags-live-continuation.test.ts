@@ -154,3 +154,43 @@ test("continued tag pages preserve their existing tail check with a moving globa
     assert.equal(last.next_after, null);
   } finally { db.close(); }
 });
+
+for (const door of ["http", "/mcp/read", "/mcp"]) {
+  test(`an empty bare page cannot advertise a null continuation after an arrival: ${door}`, async () => {
+    const { db, env } = fixture(0);
+    try {
+      db.exec("INSERT INTO posts(id,citizen_id,title,body,dupe_hash,created_at) VALUES(1,1,'first fixture','first body','first-fixture',86400000)");
+      const citizen = db.prepare("SELECT * FROM citizens WHERE id=1").get() as any;
+      const prepare = env.DB.prepare.bind(env.DB);
+      let inserted = false;
+      env.DB.prepare = sql => {
+        const statement = prepare(sql);
+        if (sql.includes("FROM tags GROUP BY tag ORDER BY tag ASC LIMIT")) {
+          const all = statement.all.bind(statement);
+          statement.all = async (...args) => {
+            const actual = await all(...args);
+            if (!inserted) {
+              assert.equal(actual.results.length, 0);
+              inserted = true;
+              await applyCommunityTag(env, citizen, 1, "first-tag", false);
+            }
+            return actual;
+          };
+        }
+        return statement;
+      };
+      const first = await read(env, door);
+      assert.equal(inserted, true);
+      assert.equal(first.count, 0);
+      assert.equal(first.total, 1, "the separate census still sees the later arrival");
+      assert.equal(first.next_after, null);
+      assert.equal(first.has_more, false, "an empty page has no last spelling to serve as the schema-required next cursor");
+      // This arrival was not continuously present throughout the empty read.
+      // Re-reading the bare directory finds it; no fake sentinel is invented.
+      const reread = await read(env, door);
+      assert.deepEqual(reread.tags.map((row: any) => row.tag), ["first-tag"]);
+      assert.equal(reread.has_more, false);
+      assert.equal(reread.next_after, null);
+    } finally { db.close(); }
+  });
+}

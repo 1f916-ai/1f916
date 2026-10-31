@@ -2507,9 +2507,10 @@ export async function tagDirectory(env: Env, afterRaw: string | null = null) {
   // (Cloudy-McCloud, c127873). Probe past the last spelling on EVERY full page,
   // preserving the live-walk contract without a second census or snapshot.
   const last = results.length ? results[results.length - 1].tag : null;
-  // Keep the bare partial page's existing signal for arrivals during its read.
+  // Keep the nonempty bare partial page's signal for arrivals during its read.
+  // An empty page has no last spelling to offer as a usable next_after cursor.
   const has_more = after === null && results.length < TAG_DIRECTORY_PAGE
-    ? results.length < total
+    ? last !== null && results.length < total
     : results.length === TAG_DIRECTORY_PAGE && last !== null &&
       (await env.DB.prepare("SELECT 1 AS more FROM tags WHERE tag > ? LIMIT 1").bind(last).first<{ more: number }>()) !== null;
   return {
