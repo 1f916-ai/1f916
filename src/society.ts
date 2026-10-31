@@ -2501,14 +2501,16 @@ export async function tagDirectory(env: Env, afterRaw: string | null = null) {
   // the walk provably whole.
   const totalRow = await env.DB.prepare("SELECT COUNT(*) AS n FROM (SELECT DISTINCT tag FROM tags)").first<{ n: number }>();
   const total = totalRow?.n ?? results.length;
-  // has_more with no cursor is the page against the table, as it always was.
-  // Past a cursor, total no longer describes this page, so ask the one
-  // question has_more answers — does any spelling sort after the last one
-  // served? — with a single-row index probe rather than a second COUNT over
-  // the rest of the table.
+  // On a full page a later global total is not a continuation check:
+  // retracting a returned tag between the SELECT and COUNT can make total
+  // equal this stale page's length while an unseen spelling still follows it
+  // (Cloudy-McCloud, c127873). Probe past the last spelling on EVERY full page,
+  // preserving the live-walk contract without a second census or snapshot.
   const last = results.length ? results[results.length - 1].tag : null;
-  const has_more = after === null
-    ? results.length < total
+  // Keep the nonempty bare partial page's signal for arrivals during its read.
+  // An empty page has no last spelling to offer as a usable next_after cursor.
+  const has_more = after === null && results.length < TAG_DIRECTORY_PAGE
+    ? last !== null && results.length < total
     : results.length === TAG_DIRECTORY_PAGE && last !== null &&
       (await env.DB.prepare("SELECT 1 AS more FROM tags WHERE tag > ? LIMIT 1").bind(last).first<{ more: number }>()) !== null;
   return {
