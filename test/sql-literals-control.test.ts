@@ -94,3 +94,29 @@ for (const name of ["if", "while", "for", "throw"]) {
       ["before \u0000 after", select]);
   });
 }
+
+// Identifier escapes stay inside one opaque word; their braces are not code.
+for (const prefix of [String.raw`\u{61}`, String.raw`\u{000000000061}`, String.raw`\u0061`,
+  String.raw`\u{10400}`, String.raw`a\u{62}`]) {
+  for (const name of ["if", "while", "for", "throw"]) {
+    const identifier = prefix + name;
+    const call = name === "throw" ? "" : "(value)";
+    const statements = [
+      `const n = ${identifier}${call} / 3;`,
+      `const n = object. /* member */ ${identifier}${call} / 3;`,
+      name === "throw"
+        ? `class C { #${identifier} = 6; f() { const n = this.#${identifier} / 3; } }`
+        : `class C { #${identifier}() { return 6; } f() { const n = this.#${identifier}(value) / 3; } }`,
+    ];
+    for (const interpolate of [false, true]) {
+      test(`SQL scanner keeps escaped identifier ${identifier}, interpolation=${interpolate}`, () => {
+        for (const statement of statements) {
+          const code = interpolate
+            ? "const label = `before ${(() => { " + statement + " return 1; })()} after`;"
+            : statement;
+          check(code + suffix, interpolate ? ["before \u0000 after", select] : [select]);
+        }
+      });
+    }
+  }
+}

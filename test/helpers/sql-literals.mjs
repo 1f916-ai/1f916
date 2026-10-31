@@ -33,11 +33,28 @@ export function sqlLiterals(code) {
   // parentheses. Calls/groups followed by `/` still mean division. Whole words
   // keep identifier suffixes and public/private member names out of this context.
   const wordChar = (ch) => ch !== undefined && /[$\w\u0080-\uffff]/.test(ch) && !/\s/.test(ch);
+  // Consume identifier escapes as opaque word parts, not code punctuation or
+  // fresh keywords. Braced escapes may have arbitrarily many leading zeroes.
+  const wordEscapeEnd = (start) => {
+    if (code[start] !== "\\" || code[start + 1] !== "u") return start;
+    const digits = start + 2;
+    if (code[digits] !== "{") {
+      return /^[0-9a-f]{4}$/i.test(code.slice(digits, digits + 4)) ? digits + 4 : start;
+    }
+    let end = digits + 1;
+    while (end < code.length && /[0-9a-f]/i.test(code[end])) end++;
+    return end > digits + 1 && code[end] === "}" ? end + 1 : start;
+  };
   const advanceToken = () => {
     const ch = code[i];
-    if (wordChar(ch)) {
+    if (wordChar(ch) || wordEscapeEnd(i) > i) {
       const start = i;
-      while (wordChar(code[i])) i++;
+      while (i < code.length) {
+        if (wordChar(code[i])) { i++; continue; }
+        const end = wordEscapeEnd(i);
+        if (end === i) break;
+        i = end;
+      }
       const word = code.slice(start, i);
       const member = lastSig === "." || lastSig === "#";
       const control = !member && /^(if|while|for)$/.test(word)
