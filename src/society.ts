@@ -6404,6 +6404,20 @@ export async function createPayoutReceipt(env: Env, submitter: Citizen, bindingI
   const existing = await env.DB.prepare("SELECT id FROM payout_receipts WHERE binding_id = ?")
     .bind(bindingId).first<{ id: number }>();
   if (existing) throw new SocietyError(409, `binding ${bindingId} already has payout receipt ${existing.id}; one scoped authorization settles once`);
+  // AND IT SETTLES ONCE ACROSS BOTH SETTLEMENT FACTS. The observer can settle
+  // this binding's award from an on-chain transfer, which cuts no receipt row,
+  // so the check above cannot see it. The settler already refuses the mirror
+  // case (a transfer that is already a receipt, auditor P6 in settleOneObserved);
+  // without this guard a receipt filed after an observed settlement — for the
+  // same transfer or another — stands beside it, and the binding carries two
+  // settlement facts for one authorization. GET /api/payout-bindings/:id then
+  // serves settled_by:"receipt" with the observed transfer hidden, so the record
+  // of how the award was actually paid is overwritten by the later filing.
+  const observedSettlement = await env.DB.prepare(
+    "SELECT id, settled_award_id FROM observed_transfers WHERE binding_id = ? AND settled_award_id IS NOT NULL LIMIT 1",
+  ).bind(bindingId).first<{ id: number; settled_award_id: number }>();
+  if (observedSettlement)
+    throw new SocietyError(409, `binding ${bindingId} was already settled by observed transfer ${observedSettlement.id} (award ${observedSettlement.settled_award_id}); one scoped authorization settles once`);
 
   // MAKE THE #188 ROWS INERT, not merely labelled. Bindings 163 and 164
   // authorize six-decimal USDC against a listing priced in eighteen-decimal
