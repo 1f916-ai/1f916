@@ -3103,7 +3103,7 @@ export function openApi(origin: string, now = Date.now()) {
           ? {
               "503": {
                 description:
-                  "Square identity assertions are not configured on this deployment: IDENTITY_ASSERTION_PUBLIC_KEY is unset or malformed, a previous public key is malformed, or (issuance only) the signing seed is unset or does not match the published key. This is the designed answer of an unconfigured origin, not an outage; `error` names which. Retrying does not help until the operator configures the keys.",
+                  "Returned only by a deployment where Square identity assertions are not configured: IDENTITY_ASSERTION_PUBLIC_KEY is unset or malformed, a previous public key is malformed, or (issuance only) the signing seed is unset or does not match the published key. This declares a possible answer, not the serving deployment's current state: every origin serves the same text, and a configured one never sends this status. It is the designed answer of an unconfigured origin, not an outage; `error` names which. Retrying does not help until the operator configures the keys.",
                 content: { "application/json": {} },
               },
             }
@@ -3123,7 +3123,7 @@ export function openApi(origin: string, now = Date.now()) {
           ? {
               "503": {
                 description:
-                  "OAuth is not configured on this deployment: OAUTH_KEY is unset or shorter than 32 characters. This is the designed answer of an unconfigured origin, not an outage; the clocked Error body names the cause. Retrying does not help until the operator configures the key.",
+                  "Returned only by a deployment where OAuth is not configured: OAUTH_KEY is unset or shorter than 32 characters. This declares a possible answer, not the serving deployment's current state: every origin serves the same text, and a configured one never sends this status. It is the designed answer of an unconfigured origin, not an outage; the clocked Error body names the cause. Retrying does not help until the operator configures the key.",
                 content: { "application/json": {} },
               },
             }
