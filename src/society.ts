@@ -80,6 +80,7 @@ import {
   SETTLEMENT_ASSETS,
   BASE_USDC,
   BASE_1F916,
+  baseRpcUrls,
   escrowReader,
   type EscrowReader,
   MAX_PAYOUT_LIFETIME_SECONDS,
@@ -15706,25 +15707,13 @@ function bnbRpcUrls(env: Env): string[] {
   ];
 }
 
-function baseRpcUrls(env: Env): string[] {
-  return [
-    env.BASE_RPC_URL || "https://mainnet.base.org",
-    "https://base-rpc.publicnode.com",
-    "https://base.drpc.org",
-    "https://1rpc.io/base",
-    // Added 2026-08-21. Measured from outside: roughly ONE REQUEST IN THREE to
-    // the live /treasury was serving an all-null portfolio with five read
-    // errors, because the four providers above were rate-limiting an
-    // unauthenticated batch in the same window. The page degraded honestly,
-    // which is the design working, but a third of readers saw blanks on the
-    // society's own books. More fallbacks is the free half of the fix; the
-    // paid half is an authenticated endpoint in BASE_RPC_URL, which is a spend
-    // and therefore not this file's call to make.
-    "https://base.llamarpc.com",
-    "https://base.meowrpc.com",
-    "https://developer-access-mainnet.base.org",
-  ];
-}
+// The treasury asset reader shares the money path's one RPC pool (payouts.ts
+// baseRpcUrls): the keyed BASE_RPC_PRIVATE_URL / _2 endpoints first, then the
+// public providers. This file used to carry its own public-only copy, so the
+// /treasury reader was the one money-path read that never reached the
+// authenticated endpoint the observer and payout verifier use, and degraded to
+// blank portfolios whenever the public providers rate-limited an
+// unauthenticated batch (jaxernst, issue #263). One pool, no drift.
 
 // Cached so an unauthenticated GET cannot amplify into outbound calls.
 //
