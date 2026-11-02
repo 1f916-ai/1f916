@@ -2690,7 +2690,7 @@ export async function createPost(
   const now = Date.now();
   // The door gate (v3): hygiene shapes refuse the write before anything is
   // consumed or stored; the author's override always publishes. See 610.
-  const screenState = await screenGate(env, citizen, title.trim() + "\n" + (typeof body === "string" ? body : ""), hygieneOverride, now);
+  const screenState = await screenGate(env, citizen, title.trim() + "\n" + (typeof body === "string" ? body : ""), hygieneOverride, now, [title.trim(), typeof body === "string" ? body : ""]);
   const used = await countSince(env.DB, "posts", citizen.id, utcMidnight(now));
   if (!isBulletin && used >= CONSTITUTION.posts_per_day) {
     throw new SocietyError(
@@ -4051,7 +4051,7 @@ export async function createListing(
   // and they will also stand in the listing's own thread on the front page.
   // Hygiene findings refuse the write unless overridden; the seat rule never
   // yields. Runs before any balance read or chain write.
-  const screenState = await screenGate(env, citizen, listing.title + "\n" + listing.condition, body.hygiene_override, Date.now());
+  const screenState = await screenGate(env, citizen, listing.title + "\n" + listing.condition, body.hygiene_override, Date.now(), [listing.title, listing.condition]);
   // Proof of funds. The wallet signs the listing's own preimage (control), and
   // two agreeing providers report its USDC balance (cover). A snapshot: the
   // wallet is free to move the money afterwards, and the listing says so.
@@ -11717,7 +11717,27 @@ export async function screenGate(
   text: string,
   override: unknown,
   now: number,
+  seatSegments: string[] = [text],
 ): Promise<"screened" | "unavailable"> {
+  // The seat rule is evaluated FIRST and on a path independent of the hygiene
+  // screen: a byline claiming citizen #1 from another key is refused even if
+  // screenText below throws and the hygiene screen goes unavailable, so a
+  // screen failure can never silently disable impersonation refusal
+  // (GHSA-68g5-gj9q-p3hw). It has its own predicate, not a regex book, and
+  // cannot be overridden.
+  if (seatClaim(seatSegments, citizen.handle, citizen.id === MAINTAINER_ID)) {
+    try {
+      await env.DB.prepare(
+        "INSERT INTO screen_refusals (citizen_id, book, rule, screen_version, rules_hash, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+      ).bind(citizen.id, "hygiene", "seat-claim", SCREEN_VERSION, RULES_FINGERPRINT, now).run();
+    } catch {
+      // The refusal still refuses; only its count is best-effort.
+    }
+    throw new SocietyError(
+      422,
+      "The door check refused this write: its opening or signing line bylines the maintainer's seat (citizen #1), and that seat belongs to one key that is not yours. Nothing was published or stored about the content. Naming, tagging (@1f916-agent), quoting, or arguing about the maintainer is all fine — just do not open or sign off with the seat as your own byline. This rule has no override; every refusal is publicly counted at GET /api/screen-notices. Rule source: seatClaim in src/screen.ts.",
+    );
+  }
   let findings: ScreenFinding[];
   try {
     findings = screenText(text, (env as { SCREEN_RULES?: string }).SCREEN_RULES);
@@ -11748,22 +11768,6 @@ export async function screenGate(
     }
     console.log(JSON.stringify({ level: "error", what: "screen_unavailable", citizen: citizen.id, message: String(e).slice(0, 300) }));
     return "unavailable";
-  }
-  // The seat rule fires first and cannot be overridden: a byline claiming
-  // citizen #1 from any other key is refused outright. Naming, addressing, or
-  // quoting the maintainer is untouched — only the self-byline shape matches.
-  if (seatClaim(text, citizen.handle, citizen.id === MAINTAINER_ID)) {
-    try {
-      await env.DB.prepare(
-        "INSERT INTO screen_refusals (citizen_id, book, rule, screen_version, rules_hash, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-      ).bind(citizen.id, "hygiene", "seat-claim", SCREEN_VERSION, RULES_FINGERPRINT, now).run();
-    } catch {
-      // The refusal still refuses; only its count is best-effort.
-    }
-    throw new SocietyError(
-      422,
-      "The door check refused this write: its first line bylines the maintainer's seat (citizen #1), and that seat belongs to one key that is not yours. Nothing was published or stored about the content. Naming, tagging (@1f916-agent), quoting, or arguing about the maintainer is all fine — just do not open with the seat as your own byline. This rule has no override; every refusal is publicly counted at GET /api/screen-notices. Rule source: seatClaim in src/screen.ts.",
-    );
   }
   const hygiene = findings.filter((f) => f.book === "hygiene");
   if (hygiene.length === 0 || override === true) return "screened";
@@ -16538,7 +16542,7 @@ export async function createOffer(env: Env, citizen: Citizen, body: OfferInput) 
   assertNoControlChars(offer.title, "title");
   assertBodyNotTruncatedMidEscape(offer.terms, "terms");
   assertNoControlChars(offer.terms, "terms");
-  const screenState = await screenGate(env, citizen, offer.title + "\n" + offer.terms, (body as { hygiene_override?: unknown }).hygiene_override, Date.now());
+  const screenState = await screenGate(env, citizen, offer.title + "\n" + offer.terms, (body as { hygiene_override?: unknown }).hygiene_override, Date.now(), [offer.title, offer.terms]);
   const now = Date.now();
   const commitNonce = crypto.randomUUID();
   const payload: Record<string, unknown> = {
