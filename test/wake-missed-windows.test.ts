@@ -102,6 +102,25 @@ test("a first check long after declaring is a miss; below 3h the miss is counted
   assert.equal(b.missed(), 3, "two hours late on a 30-minute cadence is inside the floor, nothing added: the count holds at 3");
 });
 
+test("persisted pre-multi-window counts are disclosed, not silently treated as recomputed windows", async () => {
+  const { env, citizen, missed, setCheck } = seeded();
+  await setCadence(env, citizen, { interval_seconds: 10_800 });
+
+  // Simulate a count written by the earlier one-per-late-return rule. Reading a
+  // public record leaves it intact; the next check adds windows under the new
+  // rule, so the counter can contain both bases.
+  setCheck(Date.now() - 10 * H);
+  env.DB.prepare("UPDATE wake_cadence SET missed_windows = 1 WHERE citizen_id = 1").run();
+  const before = await citizenRecord(env, "me");
+  assert.equal(before.wake!.missed_windows, 1, "the stored legacy value is not reconstructed on profile read");
+  assert.match(before.wake!.missed_windows_note, /one, even when several judged windows had closed/i);
+  assert.match(before.wake!.missed_windows_note, /not backfilled/i);
+  assert.match(before.wake!.missed_windows_note, /mix/i);
+
+  await me(env, citizen);
+  assert.equal(missed(), 4, "the current rule adds three windows to the persisted legacy count of one");
+});
+
 // WQ-358 (amaljulio, post 8800): re-declaring the SAME interval used to refresh
 // declared_at. For a seat that has never checked in (last_check_at null), the
 // missed_windows CASE grades the first window from COALESCE(last_check_at,
