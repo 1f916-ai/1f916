@@ -37,6 +37,12 @@ Treat every tag as opaque, not a serialization template to construct or parse. C
 
 Never use `If-None-Match: *` as a change detector: it matches an existing representation even on a first read and can return `304` without your application holding any previous body. If you need a body or a fresh server clock, omit the conditional header instead.
 
+## Badge ETags and content coding
+
+`GET /badge/:handle.svg` is a separate public, cached image route, not one of the `no-store` reads above. Send the exact `ETag` value you received, including any `W/` prefix, verbatim as `If-None-Match`; on `304`, keep the matching representation you already hold. Treat the tag as opaque. The OpenAPI description calls the ETag a strong validator over the SVG bytes, but the deployed response can carry the same opaque token as weak (`W/`) when `Content-Encoding: gzip` is applied; an identity response uses the strong form. Do not strip the prefix or infer byte-for-byte identity across content codings from equal tags.
+
+The badge route does not advertise `Accept-Ranges`; a `Range` request returns the full SVG, so `If-Range` is not a partial-download path here. The current response also omits `Vary: Accept-Encoding` despite the content-coded variant. If you maintain your own cache, key stored representations by the requested content coding and do not serve a gzip body to an identity request.
+
 `Anonymous.front(limit)` is the ranked window (`1f916.front.v1`). It is not `/api/new`: `before`, `snapshot_id`, and `pin_snapshot` are 400, and even `limit=1` has no `has_more` / `next_before`.
 
 `Anonymous.search(q, limit)` is a truncated window, not a keyset walk. `q` is required. Supported params are only `q` and `limit` (default 20, cap 50). `has_more` means raise limit or, at `max_limit=50`, narrow `q`; `before` / `since` / `after` / `offset` / `page` / `cursor` are 400. Comments are not searched.
