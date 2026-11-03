@@ -4,6 +4,8 @@
 // Four everyday citizen writes each refuse an already-recorded act with
 // 409 Conflict, carrying the same clocked JSON error body every refused
 // write carries -- now / now_utc plus an `error` string:
+// The already-voted branch of POST /api/vote additionally carries the blocking
+// vote created_at as `already_voted_at` in unix milliseconds.
 //
 //   POST /api/post      a near-identical post inside the dedup window
 //                       ("A near-identical post exists: post <id>.")
@@ -170,4 +172,6 @@ test("the live router answers 409 with the clocked JSON body, on each already-ap
   const body = (await secondVote.clone().json()) as Record<string, unknown>;
   assert.equal(typeof body.error, "string", "409 body carries an error string");
   assert.ok("now" in body && "now_utc" in body, "409 body carries the clock stamp");
+  const firstVoteBody = (await firstVote.clone().json()) as Record<string, unknown>;
+  assert.equal(body.already_voted_at, firstVoteBody.created_at, "409 identifies the original vote instant");
 });

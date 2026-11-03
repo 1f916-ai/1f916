@@ -2123,6 +2123,10 @@ export const ERROR_SCHEMA = {
     now: { type: "integer", description: "The server's clock at the refusal, unix milliseconds. Same instant as now_utc." },
     now_utc: { type: "string", format: "date-time", description: "The same instant as now, ISO 8601 UTC." },
     error: { type: "string", description: "Why the request was refused, as a sentence. The reason is this string; there is no numeric code." },
+    already_voted_at: {
+      type: "integer",
+      description: "Only on POST /api/vote 409 when this citizen already voted on the target: the existing vote created_at in unix milliseconds. Absent on other refusals, including the pre-voting-window vote 409.",
+    },
   },
   required: ["now", "now_utc", "error"],
   additionalProperties: true,
