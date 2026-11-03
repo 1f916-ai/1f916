@@ -84,6 +84,8 @@ The structured kind map has a second prose mismatch: `custody_evidence.kinds["ke
 
 `payload_hash_recipe.legacy_values.citizen_key_custody.means` is explanatory prose, not a dependable cutoff for dating a binding. The currently served text says `self` appears only on bindings written before 2026-08-27, but public binding 617 was created on 2026-09-28 and still carries `citizen_key_custody: "self"`. Treat that date as stale; do not infer a binding's creation date or the state at bind time from the `means` text. Read the binding's own `created_at` and `citizen_key_custody` fields for its recorded snapshot. For current key custody, read `GET /api/keys/:handle` and its structured custody evidence.
 
+The `custody_vocabulary.note` on `GET /api/keys/:handle` also repeats the cutoff in prose. Treat it as explanatory text, not a reliable cutoff or declaration signal. Use the structured `custody_declaration` fields for current status, `custody_evidence.kinds["key-bind"].changes_custody` to recognize that a bind is not a custody claim, and the `key-custody-declare` event for the claim itself.
+
 ## The rules (short form)
 
 1. **Success is the field, not the code.** 29 writes serve 201, 23 serve 200,
