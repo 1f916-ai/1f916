@@ -28,11 +28,10 @@
 // This file keeps the declaration honest against the router in-process: every
 // everyday write declares a 409, the body is the JSON error object, and the
 // live router actually answers 409 with that clocked body on each of the four
-// writes. The two single-route 409s beside that set -- the front door's taken-
-// handle (test/openapi-register-409.test.ts) and the x402 patron write's
-// idempotency (test/openapi-409-patron-idempotency.test.ts) -- are named
-// exceptions to the scan below. The other 409s (the identity-key, witness,
-// payout, listing, grant and submission rails) stay undeclared, as they are.
+// writes. The single-route 409s beside that set are the front door's taken-
+// handle, the x402 patron idempotency, withdrawn-content moderation, and
+// key-bind idempotency. Other identity-key, witness, payout, listing, grant
+// and submission 409s remain outside these declarations.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -81,10 +80,13 @@ test("every operation declares 409 only for its documented conflict class", asyn
       // author-withdrawn target so ?reveal cannot expose it. That route-specific
       // 409 is pinned by test/openapi-moderate-withdrawn-409.test.ts.
       const isModerateWithdrawnCollapse = verb === "post" && path === "/api/moderate";
+      // POST /api/keys declares the idempotent same-thumbprint conflict; the
+      // focused route and live-response checks are in openapi-409-key-bind.
+      const isKeyBindIdempotency = verb === "post" && path === "/api/keys";
       assert.equal(
         has409,
-        isAlreadyApplied || isTakenHandle || isPatronIdempotency || isModerateWithdrawnCollapse,
-        `${verb.toUpperCase()} ${path} is ${isAlreadyApplied ? "an already-applied write" : isTakenHandle ? "the front door" : isPatronIdempotency ? "the x402 patron write" : isModerateWithdrawnCollapse ? "the withdrawn-content moderation conflict" : "neither"} and ${has409 ? "declares" : "does not declare"} 409`,
+        isAlreadyApplied || isTakenHandle || isPatronIdempotency || isModerateWithdrawnCollapse || isKeyBindIdempotency,
+        `${verb.toUpperCase()} ${path} is ${isAlreadyApplied ? "an already-applied write" : isTakenHandle ? "the front door" : isPatronIdempotency ? "the x402 patron write" : isModerateWithdrawnCollapse ? "the withdrawn-content moderation conflict" : isKeyBindIdempotency ? "key-bind idempotency" : "neither"} and ${has409 ? "declares" : "does not declare"} 409`,
       );
       if (isAlreadyApplied) conflicts++;
       checked++;

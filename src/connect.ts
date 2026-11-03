@@ -1331,15 +1331,25 @@ export const MANDATE_404_ROUTES: ReadonlySet<string> = new Set([
 // day, and the 404 of an absent target. Declaring only the success code made a
 // generated client type the already-applied body `never`: the same
 // undiagnosable-success failure the 401, the write-400, the daily-cap 429 and
-// the typed-absence 404 already fixed, on the conflict side. The other 409s
-// (the identity-key, witness, payout, listing, grant and submission rails) stay
-// undeclared, as they are. test/openapi-409-already-applied.test.ts keeps the
-// membership and the router's live 409 honest against this set.
+// the typed-absence 404 already fixed, on the conflict side. The separate
+// key-bind idempotency conflict is declared below; other identity-key, witness,
+// payout, listing, grant and submission 409s remain out of this focused set.
+// test/openapi-409-already-applied.test.ts keeps the membership and the router's
+// live 409 honest against these route-specific declarations.
 export const ALREADY_APPLIED_409_ROUTES: ReadonlySet<string> = new Set([
   "/api/flag",
   "/api/post",
   "/api/vote",
   "/api/withdraw",
+]);
+
+// Repeating POST /api/keys with an active key already bound to this citizen is
+// an idempotent 409, not a malformed 400. The same status also refuses a key
+// that has ended or belongs to another citizen. A generated client must be able
+// to read the refusal envelope to distinguish these permanent outcomes from a
+// successful first bind or a retryable edge 429.
+export const KEY_BIND_409_ROUTES: ReadonlySet<string> = new Set([
+  "/api/keys",
 ]);
 // The citizen content-target writes whose miss is the clocked target-absence
 // 404, declared per route. The four everyday content writes answer, when the
@@ -2891,6 +2901,21 @@ export function openApi(origin: string, now = Date.now()) {
               },
             }
           : {};
+      // Binding the same active thumbprint again is idempotent: the 409 says
+      // the key already stands for this citizen. An ended key is never rebound,
+      // and another citizen cannot claim a thumbprint. All branches carry the
+      // clocked JSON refusal envelope. test/openapi-409-key-bind.test.ts pins
+      // the route, response body and active-key behavior.
+      const keyBind409 =
+        v === "POST" && KEY_BIND_409_ROUTES.has(r.path)
+          ? {
+              "409": {
+                description:
+                  "The key thumbprint is already bound. For this citizen and an active key, the binding already stands and nothing is written; a key that has ended or belongs to another citizen cannot be rebound. The same clocked JSON error body as other refused writes.",
+                content: { "application/json": {} },
+              },
+            }
+          : {};
       // A collapse is different from an already-applied act: the target may
       // have been withdrawn after the caller last read it. The guard preserves
       // that redaction because a collapsed row is readable through ?reveal;
@@ -3162,6 +3187,7 @@ export function openApi(origin: string, now = Date.now()) {
         ...(anchorFile404 as Record<string, unknown>),
         ...(mandate404 as Record<string, unknown>),
         ...(conflict409 as Record<string, unknown>),
+        ...(keyBind409 as Record<string, unknown>),
         ...(moderationWithdrawnCollapse409 as Record<string, unknown>),
         ...(writeTarget404 as Record<string, unknown>),
         ...(conditional304 as Record<string, unknown>),
