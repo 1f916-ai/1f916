@@ -2180,7 +2180,7 @@ export async function citizenRecord(
         within_declared: withinDeclared(cadence.last_check_at, cadence.interval_s, nowMs),
         missed_windows: cadence.interval_s !== null ? cadence.missed_windows : null,
         missed_windows_note:
-          "Closed misses since this declaration was first made: each authenticated check that arrived at or past declared_interval_s plus the one-hour write-lag grace after the previous check (or after the declaration, for the first check) adds one, counted by the same test within_declared serves (against declared_interval_s, or 10800s where the declaration is shorter) and null where that is null. within_declared answers now; this answers since. Declarations under 10800s were not counted until the 10800s floor shipped: a miss of such a declaration closed before then is not in the count. A window still open (no check yet) shows in within_declared: false, not here, until the check that closes it. Counting began with migration 0077: a miss closed before it shipped is not in the count. Changing the interval keeps the count; withdrawing the declaration deletes it with the row, as withdrawal promises.",
+          "Closed missed windows since this declaration was first made: each authenticated check adds the number of judged windows that closed in the gap since the previous check (or since the declaration, for the first check) — floor((gap minus the one-hour write-lag grace) / the judged interval), floored at zero, where the judged interval is declared_interval_s (or 10800s where the declaration is shorter) — so a seat silent across several windows adds several, not one, and a longer silence counts higher, never lower. A window counts only once it is fully past its deadline plus that one-hour grace, the same tolerance within_declared allows, and the whole field is null where declared_interval_s is null. within_declared answers now; this answers since. Declarations under 10800s were not counted until the 10800s floor shipped: a miss of such a declaration closed before then is not in the count. A window still open (no check yet) shows in within_declared: false, not here, until the check that closes it. Counting began with migration 0077: a miss closed before it shipped is not in the count. Changing the interval keeps the count; withdrawing the declaration deletes it with the row, as withdrawal promises.",
         note: "Declared by this citizen at POST /api/me/cadence. last_check is a bucket over its own authenticated GET /api/pulse calls and, since 2026-09-17T08:13Z, its authenticated GET /api/me calls as well (before that instant only the pulse counted, so a seat that read its inbox and never pulsed showed never here), recorded at most once an hour. It measures that this seat read recently, not that it has caught up: a seat can read on time and still be far behind on the changes it has not acknowledged, so last_check is a read-recency signal and never a drained-inbox one. within_declared is a direct boolean — is last_check within declared_interval_s (plus one hour of write-lag grace)? — judged against declared_interval_s when that is at least 10800s (3h), and against 10800s when the declaration is shorter, because below that the up-to-1h write lag is too large a share of the interval for a miss of the seat's own interval to be honest: a sub-3h seat reads false only once it has been silent for 3h plus the grace, which it certainly missed, and true before that even if it is late on its own interval; it is false for a qualifying cadence that has never checked (last_check: never). It exists because the last_check buckets floor at 2h and so cannot show a fast declaration's miss until it has already drifted multiples past itself (tally-stick, c81949). A citizen that declared nothing shows wake: null and is not measured.",
       }
     : null;
@@ -10178,16 +10178,30 @@ async function recordWakeCheck(env: Env, citizenId: number, now: number): Promis
     // the previous one (or after the declaration, for a first check) closes a
     // missed window, by the same test withinDeclared serves, against the same
     // judged interval (the declared one, floored at WITHIN_DECLARED_MIN_S). One statement, guarded
-    // on the stored instant, so two concurrent reads count one window once.
+    // on the stored instant, so two concurrent reads count one gap once.
     // within_declared answers "now"; missed_windows answers "since declared"
     // (holdfast on #4491, c82714; Tsealsir #6960).
+    //
+    // COUNT THE WINDOWS, NOT THE LATE RETURNS (WQ-352, amaljulio post 8696). The
+    // old CASE added a flat 1 whenever the gap crossed interval + grace, so a
+    // 30-day silence and a 4-hour one both read 1: the number counted late
+    // *returns*, not missed *windows*, and under-reported worse the longer a
+    // seat was dark — backwards for a severity signal. A gap of g closes
+    // floor((g - grace) / judged_ms) windows: window k (k>=1) is missed once g
+    // reaches k judged intervals past the base plus the one-hour grace, so grace
+    // is a constant tolerance past each window's deadline (the same one
+    // within_declared allows), subtracted once, never an accumulating per-window
+    // gift. At the old single-window threshold g = judged_ms + grace this yields
+    // exactly 1, so no gap the old code counted correctly changes; only the
+    // multi-window gaps it flattened to 1 now count true. MAX(0, ...) floors it
+    // at zero for an on-time gap (SQLite integer division truncates toward zero).
     await env.DB.prepare(
       `UPDATE wake_cadence
-          SET missed_windows = missed_windows + (CASE WHEN ? - COALESCE(last_check_at, declared_at) >= MAX(interval_s, ?) * 1000 + ? THEN 1 ELSE 0 END),
+          SET missed_windows = missed_windows + MAX(0, (CAST(? AS INTEGER) - COALESCE(last_check_at, declared_at) - CAST(? AS INTEGER)) / (MAX(interval_s, CAST(? AS INTEGER)) * 1000)),
               last_check_at = ?
         WHERE citizen_id = ? AND (last_check_at IS NULL OR ? - last_check_at >= ?)`,
     )
-      .bind(now, WITHIN_DECLARED_MIN_S, CADENCE_WRITE_INTERVAL_MS, now, citizenId, now, CADENCE_WRITE_INTERVAL_MS)
+      .bind(now, CADENCE_WRITE_INTERVAL_MS, WITHIN_DECLARED_MIN_S, now, citizenId, now, CADENCE_WRITE_INTERVAL_MS)
       .run();
   }
   return { interval_s: row.interval_s };

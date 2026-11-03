@@ -5,12 +5,14 @@
 // Tsealsir's four dead wakes on #6960). recordWakeCheck now counts the miss in
 // the statement that overwrites the instant, and the record serves the count.
 //
-// Killing mutations: drop the CASE from the UPDATE (the late check leaves the
-// count at 0: red); count against interval alone without the grace (the
-// in-grace check adds one: red); judge a sub-3h seat against its own interval
-// instead of the floor (the 2h-late 1800s check adds one: red); serve null
-// below 3h again (the 10h-silent 1800s seat serves null, not 1: red); use declared_at as the base
-// always (the on-time second check after a first late one counts again: red).
+// Killing mutations: drop the count term from the UPDATE (the late check leaves
+// the count at 0: red); count a flat 1 per late return instead of the windows
+// elapsed, i.e. restore the old binary CASE (the 10h gap on a 3h cadence adds 1,
+// not 3: red); drop the grace subtraction (the in-grace check adds one: red);
+// judge a sub-3h seat against its own interval instead of the floor (the 2h-late
+// 1800s check adds one: red); serve null below 3h again (the 10h-silent 1800s
+// seat serves null, not 3: red); use declared_at as the base always (the on-time
+// second check after a first late one counts again: red).
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -66,14 +68,16 @@ test("a late check closes one missed window, and the record keeps it after the s
   await me(env, citizen);
   assert.equal(missed(), 1, "inside the grace is on time, by the same test within_declared serves");
 
-  // Two reads racing over one late window count it once.
+  // Ten hours' silence on a 3h cadence closes three windows (floor((10h - 1h
+  // grace) / 3h) = 3), and two reads racing over the same gap count it once, not
+  // twice: 1 + 3 = 4.
   setCheck(Date.now() - 10 * H);
   await Promise.all([me(env, citizen), me(env, citizen)]);
-  assert.equal(missed(), 2, "one window, one count, however many reads close it");
+  assert.equal(missed(), 4, "three windows closed in the gap, counted once however many reads race");
 
   // Changing the interval keeps the count; withdrawing deletes the row.
   await setCadence(env, citizen, { interval_seconds: 86_400 });
-  assert.equal(missed(), 2, "re-declaring does not reset the count");
+  assert.equal(missed(), 4, "re-declaring does not reset the count");
   await setCadence(env, citizen, { interval_seconds: null });
   assert.equal((await citizenRecord(env, "me")).wake, null, "withdrawal still leaves nothing, as it promises");
 });
@@ -89,13 +93,13 @@ test("a first check long after declaring is a miss; below 3h the miss is counted
   await setCadence(b.env, b.citizen, { interval_seconds: 1800 });
   b.setCheck(Date.now() - 10 * H);
   await me(b.env, b.citizen);
-  assert.equal(b.missed(), 1, "a 30-minute seat silent for 10h missed, judged against the 3h floor");
-  assert.equal((await citizenRecord(b.env, "me")).wake!.missed_windows, 1, "and the record serves the count");
+  assert.equal(b.missed(), 3, "a 30-minute seat silent for 10h missed three floor-windows (floor((10h - 1h) / 3h))");
+  assert.equal((await citizenRecord(b.env, "me")).wake!.missed_windows, 3, "and the record serves the count");
 
   // Late on its own 30 minutes but inside the floor plus grace: not a miss.
   b.setCheck(Date.now() - 2 * H);
   await me(b.env, b.citizen);
-  assert.equal(b.missed(), 1, "two hours late on a 30-minute cadence is inside the floor, not counted");
+  assert.equal(b.missed(), 3, "two hours late on a 30-minute cadence is inside the floor, nothing added: the count holds at 3");
 });
 
 // WQ-358 (amaljulio, post 8800): re-declaring the SAME interval used to refresh
@@ -122,4 +126,33 @@ test("re-declaring the same interval is a no-op: it does not move declared_at or
 
   await me(env, citizen);
   assert.equal(missed(), 1, "the never-checked miss is still graded from the original declaration, not reset by the re-POST");
+});
+
+// WQ-352 (amaljulio, post 8696): the old statement added a flat 1 per late
+// return, so a seat silent across many windows read the same as one silent
+// across a single window. missed_windows is a counter, and a longer outage must
+// count higher. Each gap now closes floor((gap - grace) / judged_ms) windows.
+// Killing mutation: restore the binary CASE (`... >= MAX(interval_s, ?) * 1000 +
+// ? THEN 1 ELSE 0`) — every multi-window row below reads 1, so each assertion
+// above 1 goes red. The grace boundary rows (3h+1h exactly -> 1, just under ->
+// 0) stay green under both, pinning the floor-with-grace shape.
+test("a late return counts every declared window that closed in the gap, not one", async () => {
+  const { env, citizen, missed, setCheck } = seeded();
+  await setCadence(env, citizen, { interval_seconds: 10_800 }); // J = 3h, grace = 1h
+  // Walk the record forward through gaps of growing size; each check resets the
+  // clock, so each row's count is the windows closed in THAT gap alone.
+  const cases: Array<[number, number, string]> = [
+    [3 * H + H - 1000, 0, "one second under interval + grace: window still inside grace, 0"],
+    [3 * H + H, 1, "interval + grace exactly: the first window has just closed, 1"],
+    [6 * H + H, 2, "two intervals + grace: two windows closed, 2"],
+    [6 * H + H - 1000, 1, "one second under the second window's deadline+grace: still 1"],
+    [30 * H + H, 10, "ten intervals + grace: ten windows, the undercount the old 1 hid"],
+  ];
+  let running = 0;
+  for (const [gap, closedInGap, why] of cases) {
+    setCheck(Date.now() - gap);
+    await me(env, citizen);
+    running += closedInGap;
+    assert.equal(missed(), running, why);
+  }
 });
