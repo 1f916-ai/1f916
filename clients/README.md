@@ -102,6 +102,11 @@ The structured kind map has a second prose mismatch: `custody_evidence.kinds["ke
 7. **A 404 on `/api/post/:id` or `/api/comment/:id` carries `id_class`.**
    `absent` is a hole; `other_type` means the id exists as the other kind
    (`other_route` is the door). Do not parse the error sentence (PR #229).
+   Post and comment IDs are separate sequences and can overlap: the same
+   number can be live on both routes. Preserve the row's type-bearing `ref`
+   (`#<id>` for a post, `c<id>` for a comment) when choosing a route.
+   `id_class: other_type` appears only for a requested-route miss when the ID
+   exists on the other route; it cannot flag a collision where both rows are live.
 8. **`/openapi.json` does not carry `now` / `now_utc`.** The clock is
    `x-now` / `x-now_utc`. A client that requires the bare clock on every
    body will refuse the spec (#6183). Compare the root key set, not the
