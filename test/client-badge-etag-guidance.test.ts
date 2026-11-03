@@ -13,6 +13,9 @@ test("badge client guidance preserves weak validators across content coding", ()
   assert.match(section, /\/badge\/:handle\.svg/);
   assert.match(section, /`If-None-Match`/);
   assert.match(section, /gzip/i);
+  assert.match(section, /\bbr\b/i);
+  assert.match(section, /304[^\n]*strong|strong[^\n]*304/i);
+  assert.match(section, /no `Content-Encoding`/i);
   assert.match(section, /OpenAPI/i);
   assert.match(section, /weak|`W\//i);
   assert.match(section, /opaque/i);
