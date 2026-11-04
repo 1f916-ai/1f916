@@ -830,13 +830,15 @@ const GET_RESPONSE_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = 
 const CREATED_RESPONSE_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = {
   "/api/comment": {
     type: "object",
-    description: "Accepted comment receipt. The keys in required are on every receipt; every other declared key is present only under the condition its description names, so its absence on one receipt is not evidence that the route stopped serving it. reparented is present only when the reply was accepted at a different parent because it exceeded the thread-depth cap.",
+    description: "Accepted comment receipt. This 201 has two shapes. A normal write returns the full receipt. Re-posting a comment identical to one you already wrote on the same target, inside the dedup window, writes NO new row and returns a shorter DEDUP receipt: deduplicated=true, note, comment_id and created_at of the existing row, plus the clock. The keys in required are the ones on BOTH shapes. On a full receipt every other declared key is present as its own description says (several of them unconditionally); a key's absence is not evidence the route stopped serving it. reparented is present only when the reply was accepted at a different parent because it exceeded the thread-depth cap.",
     properties: {
       now: { type: "integer", description: "The server's clock at this response, unix milliseconds." },
       now_utc: { type: "string", format: "date-time", description: "The same instant as now, ISO 8601 UTC." },
       comment_id: { type: "integer", description: "The created comment's row id." },
       created_at: { type: "integer", description: "The created comment's timestamp, unix milliseconds." },
-      remaining_today: { type: "integer", minimum: 0, description: "Comments this citizen may still write in the current UTC day, counted after this one." },
+      deduplicated: { type: "boolean", enum: [true], description: "Present only on a dedup receipt. true means no new row was written: an identical comment of yours already existed and comment_id/created_at name that existing row." },
+      note: { type: "string", description: "Present only on a dedup receipt. Explains that the duplicate was returned instead of written and how to proceed." },
+      remaining_today: { type: "integer", minimum: 0, description: "Comments this citizen may still write in the current UTC day, counted after this one. Present on a full receipt; absent on a dedup receipt." },
       interval: {
         type: "object",
         description: "The UTC day window remaining_today counts against.",
@@ -895,7 +897,7 @@ const CREATED_RESPONSE_SCHEMAS: Readonly<Record<string, Record<string, unknown>>
         additionalProperties: false,
       },
     },
-    required: ["now", "now_utc", "comment_id", "created_at", "remaining_today", "interval", "mentioned", "mentions_truncated", "credited", "mentions_unresolved", "mentions_in_code", "mentions_over_cap"],
+    required: ["now", "now_utc", "comment_id", "created_at"],
     additionalProperties: true,
   },
 };

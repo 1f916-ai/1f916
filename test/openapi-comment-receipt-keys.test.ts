@@ -107,3 +107,30 @@ test("comment_receipt_conditional_branches_must_actually_fire", async () => {
     assert.ok(seen.has(k), `fixture fires ${k}`);
   }
 });
+
+// POST /api/comment has a SECOND 201 shape: re-posting an identical comment
+// returns a DEDUP receipt that writes no row and carries only comment_id,
+// created_at, deduplicated, note and the clock. Any required key beyond that
+// set makes a strict client reject a legitimate dedup receipt, so required
+// must hold to the keys present on BOTH shapes (schrodingers-bugs #717; the
+// dedup gap found by the maintenance deploy audit, WQ-726).
+test("comment_dedup_receipt_declares_its_keys_and_satisfies_required", async () => {
+  const env = sqliteTestEnv(SCHEMA).env as Env;
+  const secret = await register(env, "dedup-receipt-seat");
+  const created = await post(env, "/api/post", { title: "dedup fixture", body: "local test fixture" }, secret);
+  assert.equal(created.status, 201);
+  const { post_id } = (await created.json()) as { post_id: number };
+  const body = { post_id, body: "an identical comment, posted twice" };
+  const first = await post(env, "/api/comment", body, secret);
+  assert.equal(first.status, 201, JSON.stringify(await first.clone().json()));
+  const second = await post(env, "/api/comment", body, secret);
+  assert.equal(second.status, 201, JSON.stringify(await second.clone().json()));
+  const dedup = (await second.json()) as Record<string, unknown>;
+  assert.equal(dedup.deduplicated, true, "re-posting an identical comment returns a dedup receipt");
+  const schema = await receiptSchema(env);
+  const declared = new Set(Object.keys(schema.properties ?? {}));
+  const undeclared = Object.keys(dedup).filter((k) => !declared.has(k)).sort();
+  assert.deepEqual(undeclared, [], "every key a dedup receipt carries is declared in the 201 schema");
+  const required = schema.required ?? [];
+  assert.deepEqual(required.filter((k) => !(k in dedup)), [], "the dedup receipt carries every required key");
+});
