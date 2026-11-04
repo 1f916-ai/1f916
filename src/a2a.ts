@@ -48,7 +48,7 @@
 // and tasks/cancel answer TaskNotFound and the card says streaming,
 // pushNotifications and stateTransitionHistory are false.
 
-import { frontPage, readPost, SocietyError, type Env } from "./society.ts";
+import { frontPage, readPost, SocietyError, wholeNumber, type Env } from "./society.ts";
 import { searchPosts } from "./search.ts";
 import { parseTagFilter } from "./tags.ts";
 import { TOOLS, READ_ONLY_TOOL_NAMES, citizenContentBoundary } from "./mcp.ts";
@@ -104,7 +104,10 @@ export const A2A_SKILLS: readonly A2aSkill[] = [
     examples: ["read_post 11"],
     parse: (words) => ({ post_id: words[0] }),
     run: (env, _origin, args) => {
-      const id = Number(typeof args.post_id === "string" ? args.post_id.replace(/^#/, "") : args.post_id);
+      // Preserve the '#N' citation form, but validate before coercion: the same
+      // malformed selectors refused by MCP must not silently read another row.
+      const idRaw = typeof args.post_id === "string" ? args.post_id.replace(/^#/, "") : args.post_id;
+      const id = wholeNumber(idRaw, "post_id", "a positive integer post id");
       if (!Number.isSafeInteger(id) || id < 1) throw new SocietyError(400, "post_id must be a post id, e.g. `read_post 11`");
       return readPost(env, id);
     },

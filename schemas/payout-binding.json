@@ -394,7 +394,8 @@
       "description": "The block of the observed transfer that settled this binding's award, when settled_by is 'observed_transfer'; null otherwise."
     },
     "citizen_key_custody": {
-      "const": "self"
+      "enum": ["self", "undeclared", "self-held"],
+      "description": "The authorizing key's custody when the binding was made: undeclared or self-held, or 'self' on a binding made before custody could be declared (a legacy value inside the published payload_hash, never a claim of self-custody)."
     },
     "citizen_key_bound_at": {
       "type": "integer"
@@ -601,7 +602,7 @@
           "type": "string"
         },
         "citizen_key_custody": {
-          "const": "self"
+          "enum": ["self", "undeclared", "self-held"]
         },
         "citizen_key_bound_at": {
           "type": "integer"

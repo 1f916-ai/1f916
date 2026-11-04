@@ -173,6 +173,7 @@
               "key-revoke",
               "key-decline",
               "key-rotate",
+              "key-custody-declare",
               "witness-register",
               "witness-rotate",
               "flag-disposition",

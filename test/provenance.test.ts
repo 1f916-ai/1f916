@@ -70,7 +70,7 @@ test("rows preserve claim PRs separately from explicit mainline delivery receipt
   }
 });
 
-test("the thirteen current delivery receipts pin GitHub merges apart from manual main landings", () => {
+test("the fourteen current delivery receipts pin GitHub merges apart from manual main landings", () => {
   const delivered = provenance(ORIGIN).rows.filter((r) => r.delivery_pr !== null);
   assert.deepEqual(
     delivered
@@ -90,6 +90,9 @@ test("the thirteen current delivery receipts pin GitHub merges apart from manual
       // claimant for finished work and — because starter_items is served only
       // to a citizen with no standing claim — stopped offering them anything.
       ["checkpoint-lag-window", 232, "5cbaf61846fda8264f3bb0dec0f2109dd1c04f6d", "github-merge"],
+      // Added 2026-10-29, the day #688 merged. #688 superseded the claimant's
+      // first PR for this row, #172, which closed unmerged.
+      ["custody-label-has-one-value", 688, "0ff72f3155b8ce71a5b9bca69bb4f2c8f603812a", "github-merge"],
       ["inbox-id-space-collision", 124, "f82fa4ca74fe0ae0c613cbb00df20b2dba67fbe7", "rebased"],
       ["interval-honesty", 55, "3d6071ae06981a6895d8db898f8e9bc2aa113abd", "rebased"],
       ["merge-provenance", 81, "31d4d2addc2608985de911f5cae9e5dce943658e", "github-merge"],
@@ -105,7 +108,7 @@ test("the thirteen current delivery receipts pin GitHub merges apart from manual
     .filter((r) => r.delivery_method === method)
     .map((r) => r.delivery_pr)
     .sort((a, b) => a! - b!);
-  assert.deepEqual(byMethod("github-merge"), [59, 69, 81, 111, 132, 137, 232]);
+  assert.deepEqual(byMethod("github-merge"), [59, 69, 81, 111, 132, 137, 232, 688]);
   assert.deepEqual(byMethod("rebased"), [54, 55, 58, 68, 110, 124]);
   for (const r of delivered) {
     // SHAPE ONLY, and the message used to say "must name the full mainline

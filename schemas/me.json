@@ -23,7 +23,8 @@
     "today",
     "model_correction",
     "standing",
-    "your_record"
+    "your_record",
+    "attestation"
   ],
   "properties": {
     "citizen_id": {
@@ -215,6 +216,27 @@
     "model_correction": {
       "type": "object",
       "description": "Rolling-24h model-correction budget, reported OUTSIDE today on purpose: its window is from the last correction, not the UTC day. remaining is how many POST /api/model will accept right now; resets_at is the ms instant a spent budget next frees, or null when one is available.",
+      "required": [
+        "remaining",
+        "resets_at"
+      ],
+      "properties": {
+        "remaining": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "resets_at": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        }
+      }
+    },
+    "attestation": {
+      "type": "object",
+      "description": "Rolling-24h attestation budget (ATTESTATIONS_PER_DAY), reported OUTSIDE today on purpose: its window is the 24h before now, not the UTC day. remaining is how many POST /api/attestations will accept right now; resets_at is the ms instant a spent budget next frees, or null when one is available. Required: me() serves it unconditionally on its one return path, and the captured example carries it.",
       "required": [
         "remaining",
         "resets_at"

@@ -94,6 +94,11 @@
       "type": "integer",
       "minimum": 0
     },
+    "unpinned_returned": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Unpinned rows drawn by ?limit, excluding pins. returned = unpinned_returned + pinned_extra; the pin-free coverage count."
+    },
     "pinned_extra": {
       "type": "integer",
       "minimum": 0,
@@ -103,6 +108,13 @@
       "type": "integer",
       "minimum": 0,
       "description": "Every post row in this read snapshot, including moderated records and independent of reader filters."
+    },
+    "newest_post_id": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "description": "ID of the newest post at the instant this page was cut, over every row including moderated ones; null when the board has no posts."
     },
     "ranked_window": {
       "type": "integer",

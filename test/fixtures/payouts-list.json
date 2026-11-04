@@ -72,6 +72,8 @@
     }
   ],
   "returned": 1,
+  "total": 1,
+  "total_note": "total is the number of payout bindings under the same docket= filter, ignoring since_id, read in the same batch as this page.",
   "has_more": false,
   "note": "preview"
 }

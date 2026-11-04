@@ -143,6 +143,35 @@ test("REGRESSION: detection is linear, not quadratic, in the length of the text"
   assert.ok(time(body) < 250, "a max-length plain body should be near-instant");
 });
 
+test("excluded box-drawing runs are scanned once, not again from every suffix", (t) => {
+  // Each pair maps to a valid CP437-decoded UTF-8 sequence, but the whole run
+  // is deliberately excluded as drawing. Count decoding work rather than
+  // elapsed time so a fast machine cannot hide a quadratic rescan.
+  const decode = t.mock.method(TextDecoder.prototype, "decode");
+  for (const pairs of [64, 128]) {
+    const drawing = "─┐".repeat(pairs);
+    const before = decode.mock.callCount();
+    assert.deepEqual(detectMojibake(drawing), []);
+    const calls = decode.mock.callCount() - before;
+    assert.ok(calls <= drawing.length, `${drawing.length} drawing characters required ${calls} decodes`);
+  }
+});
+
+test("skipping an excluded drawing preserves adjacent damage and offsets", () => {
+  const drawing = "─┐".repeat(64);
+  const text = `🤖${drawing} ΓÇö â€” �`;
+  const found = detectMojibake(text);
+  assert.deepEqual(found, [
+    { kind: "reversible", codepage: "cp437", at: text.indexOf("ΓÇö"), found: "ΓÇö", repair: "—" },
+    { kind: "reversible", codepage: "cp1252", at: text.indexOf("â€”"), found: "â€”", repair: "—" },
+    { kind: "lossy", codepage: null, at: text.indexOf("�"), found: "�", repair: null },
+  ]);
+  assert.equal(repairMojibake(text), `🤖${drawing} — — �`);
+  // A run containing both drawing and non-drawing characters still takes the
+  // ordinary longest-run path; only an entirely drawing run may be skipped.
+  assert.equal(repairMojibake(`${drawing}ΓÇö`), "Ŀ".repeat(64) + "—");
+});
+
 // ---------- the warning ----------
 
 test("the warning counts both kinds and says which is recoverable", () => {
@@ -212,4 +241,26 @@ test("cp1252 findings still name cp1252, so the second codepage did not blur the
   assert.equal(found.length, 1);
   assert.equal(found[0].codepage, "cp1252");
   assert.equal(found[0].repair, "—");
+});
+
+// ---------- ISO-8859-1, which keeps 0x80-0x9F as C1 controls ----------
+
+// A latin-1 decode of UTF-8 bytes: each byte becomes the codepoint of the same value.
+const asLatin1 = (s: string) => Array.from(new TextEncoder().encode(s), (b) => String.fromCharCode(b)).join("");
+
+test("latin-1 damage is detected and repaired, not only cp1252's", () => {
+  // archimedes-clavius (c104743 on #541): "don’t" through ISO-8859-1 is
+  // "donâ" + U+0080 + U+0099 + "t", and the detector used to say nothing,
+  // because it refused every C1 control cp1252 could not have produced.
+  for (const s of ["don’t", "“quoted”", "naïve café — ok"]) {
+    const broken = asLatin1(s);
+    assert.ok(detectMojibake(broken).length > 0, `no finding for ${JSON.stringify(broken)}`);
+    assert.equal(repairMojibake(broken), s);
+  }
+});
+
+test("a lone C1 control is not a finding", () => {
+  // Reading 0x80-0x9F back as bytes must not make every stray control a
+  // finding: none of them can begin a UTF-8 sequence.
+  assert.deepEqual(detectMojibake("a\u0085b \u0099 c\u0080"), []);
 });

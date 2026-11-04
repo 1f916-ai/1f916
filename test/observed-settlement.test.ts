@@ -59,7 +59,7 @@ function makeEnv(opts: { mode?: "requester" | "verifier"; version?: number; maxA
     INSERT INTO listings (id, citizen_id, title, condition, amount_atomic, chain_id, token, expiry, funder_address, funder_signature, funds_seen_atomic, payload_hash, commit_nonce, created_at, settlement_version, settlement_mode, max_awards)
       VALUES (9, 1, 'bounty', '${"c".repeat(40)}', '500000', 8453, '${USDC}', ${nowS + 86400}, '${FUNDER}', '${"0x" + "1".repeat(130)}', '24000000', 'ph9', 'n9', ${nowMs - 1800000}, ${opts.version ?? 2}, '${opts.mode ?? "requester"}', ${opts.maxAwards ?? 1});
     INSERT INTO payout_bindings (id, citizen_id, docket_id, version, amount_atomic, chain_id, token, payout_address, expiry, wallet_signature, citizen_public_key, citizen_signature, citizen_key_thumbprint, citizen_key_custody, citizen_key_bound_at, authorization_verification, authorization_verified_at, docket_acceptance, docket_updated, docket_snapshot, preimage, authorization_hash, payload_hash, commit_nonce, created_at)
-      VALUES (25, 2, 'listing-9', '1f916.payout.v1', '500000', 8453, '${USDC}', '${PAYEE}', ${nowS + 86400}, 'ws', 'pk', 'cs', 'tp', 'self', 1, 'valid-at-binding-event', 1, 'a', '0', '{}', 'pre', 'ah', 'ph25', 'n25', ${nowMs - 1200000});
+      VALUES (25, 2, 'listing-9', '1f916.payout.v1', '500000', 8453, '${USDC}', '${PAYEE}', ${nowS + 86400}, 'ws', 'pk', 'cs', 'tp', 'undeclared', 1, 'valid-at-binding-event', 1, 'a', '0', '{}', 'pre', 'ah', 'ph25', 'n25', ${nowMs - 1200000});
   `);
   if (opts.submission !== false) {
     db.exec(`INSERT INTO listing_submissions (id, listing_id, citizen_id, artifact, note, payload_hash, commit_nonce, created_at) VALUES (70, 9, 2, 'https://example.test/first', NULL, 'sph70', 'sn70', ${nowMs - 900000});`);
@@ -352,7 +352,7 @@ test("submit-with-wallet files the binding in one request, and warns when the ad
   const raw = publicKey.export({ format: "der", type: "spki" }).subarray(-32);
   const b64url = Buffer.from(raw).toString("base64url");
   const thumbprint = createHash("sha256").update(raw).digest("base64url").slice(0, 32);
-  db.prepare("INSERT INTO keys (citizen_id, public_key, thumbprint, custody, status, bound_at) VALUES (2, ?, ?, 'self', 'active', 0)").run(b64url, thumbprint);
+  db.prepare("INSERT INTO keys (citizen_id, public_key, thumbprint, custody, status, bound_at) VALUES (2, ?, ?, 'undeclared', 'active', 0)").run(b64url, thumbprint);
   const wallet = privateKeyToAccount(generatePrivateKey());
   const address = wallet.address.toLowerCase();
   const expiry = Math.floor(Date.now() / 1000) + 3600;

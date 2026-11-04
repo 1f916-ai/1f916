@@ -10,6 +10,8 @@
     "docket_current",
     "bindings",
     "returned",
+    "total",
+    "total_note",
     "has_more",
     "note"
   ],
@@ -43,6 +45,14 @@
       "type": "integer",
       "minimum": 0,
       "maximum": 50
+    },
+    "total": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Payout bindings under the same docket= filter, ignoring since_id, counted in the same batch as this page. A walk from since_id=0 that follows next_since_id until has_more is false has served every binding when the sum of its returned values equals the total on its last page."
+    },
+    "total_note": {
+      "type": "string"
     },
     "has_more": {
       "type": "boolean"

@@ -87,8 +87,7 @@ const EXPECTED_SCANS: string[] = [
   // (measured 36 rows read for 30 returned), table-sized for a rare one.
   "p :: SELECT p.id, p.title, p.body, p.created_at, c.handle AS author,  … ) > 0) ORDER BY p.created_at DESC, p.id DESC LIMIT ?",
   "ledger :: SELECT id, entry_date, description, amount_cents, tx, source, cr … M ledger ORDER BY entry_date DESC, id DESC LIMIT 200",
-  "n :: SELECT n.id, n.target_type, n.target_id, n.payload, n.created_at … zen_id ORDER BY n.created_at DESC, n.id DESC LIMIT ?",
-  "s :: SELECT s.id, s.target_type, s.target_id, s.book, s.rule, s.scree … ate = 'removed')) ORDER BY s.created_at DESC LIMIT ?",
+
   // Porch presence side-list: PORCH_PRESENCE_PAGE+1 (101) so truncation is a
   // fact. Fingerprint ellipsis lands on "HERE" (from WHERE) at this length.
   "p :: SELECT c.handle FROM porch_presence p JOIN citizens c ON c.id =  … HERE p.read_at > ? ORDER BY p.read_at DESC LIMIT 101",

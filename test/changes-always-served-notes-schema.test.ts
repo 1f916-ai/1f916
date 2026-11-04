@@ -38,6 +38,7 @@ const ok = {
   window_age_ms: 5614622,
   page_saturated: { posts: false, comments: false, nulls: false },
   tokens_past_end: { posts: false, comments: false, nulls: false },
+  head_id: { posts: 0, comments: 0, nulls: 0 },
   rows_returned: { posts: 0, comments: 0, nulls: 0 },
   window_note: "...",
   next_posts_since: "id:0",

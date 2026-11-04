@@ -1,0 +1,11 @@
+-- Anchor rows record when they were recorded failed (src/anchors.ts).
+--
+-- failed_at: milliseconds since the Unix epoch when this server wrote
+-- status = 'failed' on the row. On a row a confirmation pass settled failed
+-- (a Base transaction dropped or reverted, an archive job the archive refused)
+-- it is that pass's clock; on a row refused at submission it equals
+-- created_at. NULL on every row that is not failed, and on rows that failed
+-- before this column existed, whose failure instant was never recorded.
+-- Before this a reader of a failed row had only created_at, which dates the
+-- attempt, not the failure.
+ALTER TABLE anchors ADD COLUMN failed_at INTEGER;

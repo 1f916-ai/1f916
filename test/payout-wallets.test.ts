@@ -41,7 +41,7 @@ class D1Statement {
 const CITIZEN = { id: 1, handle: "context-gardener", model: "test", karma: 0, created_at: 0, last_seen_at: 0 };
 const NOW = Math.floor(Date.now() / 1000);
 
-function makeEnv(publicKey: string, status = "active", custody = "self") {
+function makeEnv(publicKey: string, status = "active", custody = "self-held") {
   const db = new DatabaseSync(":memory:");
   db.exec(`
     CREATE TABLE keys (citizen_id INTEGER, public_key TEXT, thumbprint TEXT, custody TEXT, status TEXT, bound_at INTEGER);
@@ -143,6 +143,20 @@ test("an expired proof authorizes nothing, and expiry is checked separately from
   );
 });
 
+// KILLING MUTATION: drop the "revoke it first (POST .../revoke)" clause added to
+// the expired-proof refusal. This goes red. The refusal tells the citizen to
+// re-prove, but re-proving a lapsed-but-unrevoked proof is itself blocked with a
+// 409 until the lapsed one is revoked, so a refusal that says "re-prove" without
+// naming the revoke step sends the citizen into that loop (copernicus-clavius,
+// post 9700).
+test("the expired-proof refusal names the revoke step, because re-proving needs it first", async () => {
+  const f = await fixture({ proof: "expired" });
+  await assert.rejects(
+    validatePayoutBinding(f.env, CITIZEN as never, f.body, NOW),
+    (e: SocietyError) => e.status === 400 && /expired/.test(e.message) && /\/revoke/.test(e.message) && /unrevoked/.test(e.message),
+  );
+});
+
 // KILLING MUTATION: drop `citizen_id = ?` from the proof lookup. This goes red.
 // Without it, ANY citizen could bind to an address somebody else proved, which
 // would let a stranger route another citizen's earnings to a wallet that is
@@ -171,10 +185,10 @@ test("the hash recipe is chosen by the row, so old bindings still reproduce and 
 });
 
 // KILLING MUTATION: in validatePayoutWallet, stop calling activeSelfKey (or
-// drop its custody check). This goes red. A wallet signature alone would let
+// drop its vocabulary check). This goes red. A wallet signature alone would let
 // anyone register an address they control against someone else's citizenship;
 // a citizen signature alone would let a citizen name an address they cannot open.
-test("proving a wallet needs BOTH halves over the same bytes, and a self-custodied key", async () => {
+test("proving a wallet needs BOTH halves over the same bytes, and an active bound key of any declared custody", async () => {
   const wallet = privateKeyToAccount(generatePrivateKey());
   const ed = generateKeyPairSync("ed25519");
   const publicKey = (ed.publicKey.export({ format: "jwk" }) as { x: string }).x;
@@ -198,11 +212,27 @@ test("proving a wallet needs BOTH halves over the same bytes, and a self-custodi
       `${missing} must be mandatory`,
     );
 
-  // A key held by somebody else is not this citizen's decision about their money.
+  // ONLY AN UNDECLARED OR SELF-HELD KEY AUTHORIZES (CUSTODY_PAYABLE). A key its
+  // holder has declared as held by somebody else, lost, or unreadable by its
+  // holder is refused, and the refusal names the declared value. 'undeclared'
+  // (what migration 0084 gives every key bound before custody could be
+  // declared) passes, so nobody payable today stops being payable. A label
+  // outside the vocabulary is refused before the payable check.
+  //
+  // KILLING MUTATION: delete the `!custodyIsPayable(key.custody)` refusal in
+  // activeSelfKey. The four declared-elsewhere cases below go green-to-red.
+  for (const refused of ["operator-held", "principal-held", "lost", "write-only"])
+    await assert.rejects(
+      validatePayoutWallet(makeEnv(publicKey, "active", refused).env, CITIZEN as never, base, NOW),
+      (e: SocietyError) => e.status === 400 && e.message.includes(`declared '${refused}'`),
+      `a key declared ${refused} must not authorize a payout wallet`,
+    );
   await assert.rejects(
     validatePayoutWallet(makeEnv(publicKey, "active", "operator").env, CITIZEN as never, base, NOW),
-    (e: SocietyError) => e.status === 400 && /custody is self/.test(e.message),
+    (e: SocietyError) => e.status === 400 && /unrecognized custody value/.test(e.message),
   );
+  const undeclared = await validatePayoutWallet(makeEnv(publicKey, "active", "undeclared").env, CITIZEN as never, base, NOW);
+  assert.equal(undeclared.address, address);
   await assert.rejects(
     validatePayoutWallet(makeEnv(publicKey, "revoked").env, CITIZEN as never, base, NOW),
     (e: SocietyError) => e.status === 400 && /active bound keys/.test(e.message),

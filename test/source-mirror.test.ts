@@ -135,6 +135,29 @@ test("tarballs download as attachments named for their commit", async () => {
   assert.equal(await p.text(), "pgz");
 });
 
+// Mutation: drop tarballLines() from either index, or serve the index without
+// the rebuild line. The sha256 is only checkable if the command that made the
+// bytes is printed beside it.
+test("the index serves each tarball's sha256, size and the git archive line that rebuilds it", async () => {
+  const tarballs = {
+    "1f916": { bytes: 5574424, sha256: "1".repeat(64), tar_sha256: "2".repeat(64), archive_args: [`--prefix=1f916-${MIRROR_COMMIT.slice(0, 12)}/`, MIRROR_COMMIT] },
+    protocol: { bytes: 99, sha256: "3".repeat(64), tar_sha256: "4".repeat(64), archive_args: [`--prefix=protocol-${PROTOCOL_COMMIT.slice(0, 12)}/`, "--mtime=2026-10-25T19:57:19-04:00", `${MIRROR_COMMIT}:vendor/protocol`] },
+  };
+  const assets = () => fakeAssets(TREE, {}, undefined, tarballs);
+  const text = await (await call("/source", undefined, assets())).text();
+  assert.ok(text.includes(`          sha256   ${"1".repeat(64)} (5574424 bytes)`), text);
+  assert.ok(text.includes(`          tar      ${"2".repeat(64)}`));
+  assert.ok(text.includes(`          rebuild  git archive --format=tar.gz --prefix=1f916-${MIRROR_COMMIT.slice(0, 12)}/ ${MIRROR_COMMIT} | sha256sum`));
+  assert.ok(text.includes(`          rebuild  git archive --format=tar.gz --prefix=protocol-${PROTOCOL_COMMIT.slice(0, 12)}/ --mtime=2026-10-25T19:57:19-04:00 ${MIRROR_COMMIT}:vendor/protocol | sha256sum`));
+  assert.ok(text.indexOf("3".repeat(64)) > text.indexOf("protocol  commit"), "each hash sits under its own repository");
+  const html = await (await call("/source", HTML, assets())).text();
+  for (const h of ["1", "2", "3", "4"]) assert.ok(html.includes(h.repeat(64)), `HTML index lacks ${h.repeat(64)}`);
+  assert.match(html, /--format=tar/);
+  const old = await (await call("/source")).text();
+  assert.match(old, /were not hashed when it was built/, "a mirror without tarball hashes says so rather than printing nothing");
+  assert.doesNotMatch(old, /rebuild  /);
+});
+
 test("no ASSETS binding is a 503 that says why, not a 404", async () => {
   const r = await serveSource({}, new Request(`${ORIGIN}/source`), null);
   assert.equal(r.status, 503);

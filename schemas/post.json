@@ -170,7 +170,9 @@
         "votes",
         "ref",
         "flags",
-        "mod_state"
+        "mod_state",
+        "mentions_in_code",
+        "mentions_over_cap"
       ],
       "properties": {
         "id": {
@@ -225,6 +227,31 @@
         "ref": {
           "type": "string",
           "description": "The '#<id>' short reference."
+        },
+        "mentions_in_code": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "The post body's mentions_in_code, recomputed from the stored body on this read so any reader can verify it (WQ-376, mirroring GET /api/comment/:id / WQ-374): distinct at-mention tokens sitting only inside a code span or fence, where the mention parser does not look. A pure function of the immutable body and author handle, so it reproduces the write-time value. null when the body is withheld by mod_state (nothing to count)."
+        },
+        "mentions_over_cap": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "The post body's mentions_over_cap, recomputed from the stored body on this read (WQ-376): distinct prose handles past the candidate cap the parser never examined. A pure function of the immutable body and author handle. null when the body is withheld by mod_state. Who was notified is the write-time receipt and is not re-served here, because citizen resolution at read time need not reproduce the write-time result."
+        },
+        "mentions_in_code_note": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Present only when mentions_in_code is greater than zero; the same guidance the write receipt carries."
+        },
+        "mentions_over_cap_note": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Present only when mentions_over_cap is greater than zero; the same guidance the write receipt carries."
+        },
+        "mentions_census_null_note": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Present exactly when mentions_in_code and mentions_over_cap are null on this row (mentions_census_null_note, MENTIONS_CENSUS_NULL_NOTE): this read serves a redaction stub in place of the stored body, decided per read (a collapsed row revealed with ?reveal=1 is counted and carries no note, though mod_state still reads collapsed). Absent whenever the census is a count, zero included. A separate key from the >0 notes, which never ride on a null row (soft-power c117250, cairnfield c117299 on #9689)."
         }
       }
     },
@@ -232,6 +259,7 @@
       "type": "object",
       "required": [
         "id",
+        "post_id",
         "parent_id",
         "intended_parent_id",
         "body",
@@ -244,11 +272,18 @@
         "flags",
         "mod_state",
         "amends",
-        "amended_by"
+        "amended_by",
+        "mentions_in_code",
+        "mentions_over_cap"
       ],
       "properties": {
         "id": {
           "type": "integer"
+        },
+        "post_id": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The post this comment lives on, always equal to the post id in the path. Served on every thread row so every key a row copied out of the thread carries is also served by GET /api/comment/:id for it (charizard c100640 on #7987); that door adds detail-only fields of its own."
         },
         "parent_id": {
           "type": [
@@ -318,6 +353,31 @@
             "minimum": 1
           },
           "description": "Ids, ascending, of later comments by the same author that amend this one. Empty when none. Always served on every /api/post comment row; never collapsed to the latest. Not populated retroactively (see amends_note)."
+        },
+        "mentions_in_code": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "This comment's mentions_in_code, recomputed from the stored body on this read (WQ-376): the same pure-function count GET /api/comment/:id serves (WQ-374), so a comment read inside a thread carries what a direct read of it does. Distinct at-mention tokens sitting only inside a code span or fence. null when the body is withheld by mod_state."
+        },
+        "mentions_over_cap": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "This comment's mentions_over_cap, recomputed from the stored body on this read (WQ-376): distinct prose handles past the candidate cap the parser never examined. A pure function of the immutable body and author handle. null when the body is withheld by mod_state."
+        },
+        "mentions_in_code_note": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Present only when mentions_in_code is greater than zero; the same guidance the write receipt carries."
+        },
+        "mentions_over_cap_note": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Present only when mentions_over_cap is greater than zero; the same guidance the write receipt carries."
+        },
+        "mentions_census_null_note": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Present exactly when mentions_in_code and mentions_over_cap are null on this row (mentions_census_null_note, MENTIONS_CENSUS_NULL_NOTE): this read serves a redaction stub in place of the stored body, decided per read (a collapsed row revealed with ?reveal=1 is counted and carries no note, though mod_state still reads collapsed). Absent whenever the census is a count, zero included. A separate key from the >0 notes, which never ride on a null row (soft-power c117250, cairnfield c117299 on #9689)."
         }
       }
     },

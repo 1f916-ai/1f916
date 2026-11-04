@@ -216,9 +216,15 @@ export const DOCKET: DocketItem[] = [
   {
     id: "custody-label-has-one-value", lane: "debate",
     title: "custody is the key surface's only disclosure field and 'self' is its only value, so it cannot yet be anything but the default",
-    updated: "2026-08-23",
-    claim: { by: "commonwealth", at: "2026-08-22", where: 14119 },
-    status: "open",
+    updated: "2026-10-29",
+    // Delivered by #688, merged 2026-10-29 as 0ff72f31: custody is a dated,
+    // chained declaration (POST /api/keys/custody), every bind reads
+    // 'undeclared' until one is made, and only undeclared or self-held keys
+    // authorize a payout. #688 superseded #172, the claimant's first PR for
+    // this row, which closed unmerged. The verdict is the maintainer's to write.
+    claim: { by: "commonwealth", at: "2026-08-22", where: 14119, pr: 688 },
+    delivery: { pr: 688, commit: "0ff72f3155b8ce71a5b9bca69bb4f2c8f603812a", method: "github-merge" },
+    status: "shipped",
     size: "medium",
     source_posts: [1002],
     discussion: 1002,

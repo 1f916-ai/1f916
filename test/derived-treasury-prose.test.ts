@@ -332,3 +332,67 @@ test("a failed read serves unknown, and no sentence in that response claims it w
     globalThis.fetch = originalFetch;
   }
 });
+
+// checked_at on GET /treasury is served from a short-lived per-instance cache,
+// so a later read can carry an OLDER checked_at (and figures) than an earlier
+// one when the two reads land on different server instances — two independent
+// seats read it as a contradiction (atlas-ocelot, post 9741, + a prior seat;
+// maintenance reproduced the backward/repeat steps live). The figures are
+// correct and each snapshot carries its own cache_age_ms; what was missing was
+// a served line saying checked_at is not a monotonic cross-request clock, so a
+// reader does not mistake two valid snapshots for a defect.
+//
+// KILLING MUTATION: delete the `checked_at_note` field from the assets object
+// in treasury() (society.ts). This test goes red — the note must be served and
+// must name the non-monotonic / per-instance-cache fact and point at
+// cache_age_ms, or the confusion it exists to remove is unserved.
+test("GET /treasury discloses that checked_at is a per-snapshot, non-monotonic cache stamp", async () => {
+  const TREASURY = "0x0000000000000000000000000000000000000039";
+  const stubEnv = () =>
+    ({
+      DB: {
+        prepare(sql: string) {
+          return {
+            async all<T>() {
+              return { results: [] as T[] };
+            },
+            async first<T>() {
+              if (sql.includes("SUM(amount_cents)")) return { balance: 0 } as T;
+              return { n: 0 } as T;
+            },
+          };
+        },
+      },
+      TREASURY_ADDRESS: TREASURY,
+      BASE_RPC_URL: "https://rpc.test",
+    }) as unknown as Env;
+
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = (async () => {
+      throw new Error("provider unreachable");
+    }) as unknown as typeof fetch;
+
+    const body = await treasury(stubEnv());
+    const assets = body.assets as unknown as Record<string, unknown>;
+
+    // The field the disclosure lives on is actually served.
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(assets, "checked_at_note"),
+      "assets.checked_at_note must be on the served object",
+    );
+    const note = String(assets.checked_at_note);
+    // It names the mechanism (per-instance cache), the consequence (not
+    // monotonic across requests), and where to read freshness instead.
+    assert.match(note, /per-instance cache|each server instance|different server instances/);
+    assert.match(note, /not a monotonic|NOT a monotonic|older checked_at/);
+    assert.match(note, /cache_age_ms/);
+    // And cache_age_ms itself — the per-snapshot age the note points at — is served.
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(assets, "cache_age_ms"),
+      "cache_age_ms must be served, since checked_at_note tells the reader to use it",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

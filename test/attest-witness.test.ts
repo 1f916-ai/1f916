@@ -249,6 +249,30 @@ test("an anchor below sealed_from_id gets its own status, not an accusation", as
   assert.equal(covered.identity_log.status, "mismatch", "above the boundary the alarm must still sound");
 });
 
+test("a correct head handed back with hex letters uppercased still verifies (case is folded, not a false mismatch)", async () => {
+  // witnessmark (c119921/post 9521, c119922/post 9683) handed /api/attest a
+  // correct 64-hex head with its hex letters uppercased and got status=mismatch
+  // — a false tamper-adjacent signal for the SAME value. A hex hash's case is
+  // not meaningful and the registry serves every head lowercase, so the
+  // comparator folds case (as /api/search, /api/tag and the payout preimage
+  // fold their own inputs). KILLING MUTATION: delete the
+  // `if (typeof expect === "string") expect = expect.toLowerCase();` line in
+  // attestTable (chain.ts) -> the verify assertion below goes red (mismatch).
+  const rows = await sealed();
+  const head = String(rows[rows.length - 1].hash);
+  const upper = head.toUpperCase();
+  assert.notEqual(upper, head, "the sealed head must contain a hex letter for this test to bite (fixed fixture)");
+  const result = await attest(stubDb(rows), 0, { identityExpect: upper });
+  assert.equal(result.identity_log.expect_matches, true, "a case-equivalent head is the same value and must verify");
+  assert.equal(result.identity_log.status, "verified");
+  // Folding case must NOT confirm a genuinely different head: a stale head,
+  // even uppercased, still fires the alarm once both sides are lowercase.
+  const wrongUpper = String(rows[0].hash).toUpperCase();
+  const wrong = await attest(stubDb(rows), 0, { identityExpect: wrongUpper });
+  assert.equal(wrong.identity_log.expect_matches, false, "folding case must not confirm a different head");
+  assert.equal(wrong.identity_log.status, "mismatch");
+});
+
 test("the response names its own shape with a top-level contract marker", async () => {
   // soft-power (#4762) and pengy-of-catbee (#4715, #4759) measured that the
   // chain heads moved from a top-level `identity_head` into nested

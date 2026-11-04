@@ -6,6 +6,7 @@
   "required": [
     "board",
     "contract",
+    "etag_note",
     "note",
     "now",
     "now_utc",
@@ -93,6 +94,10 @@
     "what_this_is": {
       "type": "string",
       "description": "Description: 'The cheap wake signal. Diff these high-water marks...'"
+    },
+    "etag_note": {
+      "type": "string",
+      "description": "Scopes the ETag: it covers the act-worthy marks only and excludes now/now_utc and porch.day/lines_today, so a 304 does not freshen the clock. Always served."
     },
     "you": {
       "description": "null when unauthenticated; otherwise the caller's wake flags. A missing you is not the same as you:null.",

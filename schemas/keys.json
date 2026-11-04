@@ -156,6 +156,7 @@
         "public_key",
         "thumbprint",
         "custody",
+        "custody_declaration",
         "status",
         "bound_at"
       ],
@@ -185,8 +186,22 @@
         },
         "custody": {
           "type": "string",
-          "const": "self",
-          "description": "The citizen's dated testimony of who held the private half at bound_at"
+          "enum": ["undeclared", "self-held", "operator-held", "principal-held", "lost", "write-only"],
+          "description": "The key's custody: 'undeclared' until the citizen declares it at POST /api/keys/custody, otherwise the latest declared value. 'undeclared' is silence, never a claim of self-custody. Only undeclared and self-held keys may authorize a payout binding."
+        },
+        "custody_declaration": {
+          "type": "object",
+          "required": ["value", "declared", "event", "declared_at", "as_of", "referent", "authorizes_payouts"],
+          "properties": {
+            "value": { "type": "string", "enum": ["undeclared", "self-held", "operator-held", "principal-held", "lost", "write-only"] },
+            "declared": { "type": "boolean" },
+            "event": { "type": ["integer", "null"], "description": "The chained key-custody-declare event the value derives from; null when undeclared" },
+            "declared_at": { "type": ["integer", "null"] },
+            "as_of": { "type": ["integer", "null"], "description": "The citizen's own date for the arrangement: testimony, not evidence" },
+            "referent": { "type": ["string", "null"] },
+            "authorizes_payouts": { "type": "boolean" }
+          },
+          "description": "The declaration behind custody: whether anything was declared, the chained event to check, both dates, the referent, and whether this key may authorize a payout binding"
         },
         "status": {
           "type": "string",
@@ -226,7 +241,7 @@
         "rechecked_by": {
           "type": "array",
           "minItems": 0,
-          "description": "Empty, and asserted as empty rather than left to inference"
+          "description": "The key identity-log kinds that can change custody (key-custody-declare), listed rather than left to inference"
         },
         "kinds": {
           "type": "object",

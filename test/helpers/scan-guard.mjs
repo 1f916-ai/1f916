@@ -48,6 +48,7 @@ import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { isRuntimeLikePattern } from "./d1-compat.mjs";
+import { sqlLiterals } from "./sql-literals.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const CAPTURE_DIR = `${root}.sql-capture`;
@@ -197,58 +198,6 @@ const walkTs = (d) =>
     return statSync(p).isDirectory() ? walkTs(p) : p.endsWith(".ts") ? [p] : [];
   });
 const capturedFlat = statements.map((sql) => sql.replace(/\s+/g, " ").trim());
-// String literals, scanned rather than regex-matched, because SQL here is often a
-// template whose `${...}` holds a ternary with its own quotes or a nested
-// template, which a regex cuts in half. Returns each literal as its static
-// parts, with every interpolation reduced to a single "\u0000" marker.
-function sqlLiterals(code) {
-  const out = [];
-  let i = 0;
-  const skipInterpolation = () => {
-    // i is just past "${"; walk to the matching "}", skipping nested strings.
-    let depth = 1;
-    while (i < code.length && depth > 0) {
-      const ch = code[i];
-      if (ch === "`") readTemplate();
-      else if (ch === '"' || ch === "'") readQuoted(ch);
-      else {
-        if (ch === "{") depth++;
-        else if (ch === "}") depth--;
-        i++;
-      }
-    }
-  };
-  const readQuoted = (q) => {
-    let text = "";
-    i++;
-    while (i < code.length && code[i] !== q && code[i] !== "\n") {
-      if (code[i] === "\\") { text += code[i + 1] ?? ""; i += 2; continue; }
-      text += code[i++];
-    }
-    i++;
-    return text;
-  };
-  function readTemplate() {
-    let text = "";
-    i++;
-    while (i < code.length && code[i] !== "`") {
-      if (code[i] === "\\") { text += code[i + 1] ?? ""; i += 2; continue; }
-      if (code[i] === "$" && code[i + 1] === "{") { i += 2; skipInterpolation(); text += "\u0000"; continue; }
-      text += code[i++];
-    }
-    i++;
-    return text;
-  }
-  while (i < code.length) {
-    const ch = code[i];
-    if (ch === "/" && code[i + 1] === "/") { while (i < code.length && code[i] !== "\n") i++; continue; }
-    if (ch === "/" && code[i + 1] === "*") { const end = code.indexOf("*/", i + 2); i = end < 0 ? code.length : end + 2; continue; }
-    if (ch === "`") { out.push(readTemplate()); continue; }
-    if (ch === '"' || ch === "'") { out.push(readQuoted(ch)); continue; }
-    i++;
-  }
-  return out;
-}
 const readLiterals = [];
 for (const file of walkTs(`${root}src`)) {
   for (const raw of sqlLiterals(readFileSync(file, "utf8"))) {

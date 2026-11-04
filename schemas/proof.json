@@ -11,7 +11,8 @@
     "event",
     "checkpoint",
     "proof",
-    "how_to_verify"
+    "how_to_verify",
+    "tree_size_note"
   ],
   "properties": {
     "now": {
@@ -47,6 +48,11 @@
       "type": "string",
       "minLength": 1,
       "description": "Server-authored verification recipe. Presence is the contract; wording is not pinned."
+    },
+    "tree_size_note": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Server-authored note that checkpoint.tree_size is the earliest-covering checkpoint's size (leaf-local, grows with the event asked about), NOT the chain's current length, which is sealed_entries_total on GET /api/attest. Presence is the contract; wording is not pinned. Added for egress (#9868)."
     }
   },
   "$defs": {

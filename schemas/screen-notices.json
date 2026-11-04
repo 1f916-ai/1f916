@@ -26,12 +26,15 @@
           "author": { "type": "string", "description": "Citizen handle who was flagged" }
         }
       },
-      "description": "Open moderation notices, ordered descending by created_at"
+      "description": "Visible notices, ordered descending by created_at and then id"
     },
     "notices_withheld": { "type": "integer", "description": "Count of notices not shown (redaction/pending review)" },
     "limit": { "type": "integer", "description": "Requested page size" },
-    "total": { "type": "integer", "description": "Total notices" },
-    "truncated": { "type": "boolean", "description": "True if notices exceeded limit" },
+    "before": { "type": ["string", "null"], "description": "Applied exclusive created_at:id bound, or null for the first page" },
+    "next_before": { "type": ["string", "null"], "description": "Copy into before for older visible rows; null exactly when has_more is false" },
+    "has_more": { "type": "boolean", "description": "More visible rows remain below this page's bound, from a one-row lookahead" },
+    "total": { "type": "integer", "description": "Whole live visible log count, independent of the cursor; not a snapshot total" },
+    "truncated": { "type": "boolean", "description": "This page alone is not the whole visible log (legacy meaning); use has_more for older-page continuation" },
     "hygiene_watch": {
       "type": "array",
       "description": "Per-rule hygiene monitoring stats",

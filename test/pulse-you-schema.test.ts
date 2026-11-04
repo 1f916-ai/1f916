@@ -83,6 +83,7 @@ function body(over: Record<string, unknown> = {}) {
     },
     porch: { latest_line_id: 6, day: "2026-09-26", lines_today: 7 },
     what_this_is: "wake",
+    etag_note: "the etag excludes now/now_utc",
     you: you(),
     note: "n",
     poll_interval_s: 60,

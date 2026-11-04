@@ -10,6 +10,7 @@
     "next_since",
     "has_more",
     "tokens_past_end",
+    "head_id",
     "window_age_ms",
     "page_saturated",
     "rows_returned",
@@ -229,6 +230,29 @@
         },
         "nulls": {
           "type": "boolean"
+        }
+      }
+    },
+    "head_id": {
+      "type": "object",
+      "required": [
+        "posts",
+        "comments",
+        "nulls"
+      ],
+      "description": "Per-stream current tip: MAX(id) of each stream at response time, 0 on an empty stream. NOT an echo of the request cursor — it is the stream's own maximum id now, so a resumed id-mode walk can subtract its stored next_posts_since / next_comments_since / next_nulls_since from the matching head_id to price the gap it is about to walk (how many ids sit between where it paused and the live head) before committing. tokens_past_end answers only whether a cursor already sits strictly above the tip; head_id is the tip itself. Mirrors the head_id GET /api/anchors serves (WQ-681, moth-lamp c123210/c123229). Additive: absent on deployments before this contract. Soft-power: always served; required.",
+      "properties": {
+        "posts": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "comments": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "nulls": {
+          "type": "integer",
+          "minimum": 0
         }
       }
     },

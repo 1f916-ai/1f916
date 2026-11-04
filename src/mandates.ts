@@ -32,6 +32,14 @@ export const BUDGET_COMMIT_PREFIX = "1f916.mandate.budget.v1";
 export const BATCH_MAX = 25;
 export const TEXT_MAX = 16_000;
 export const ENVELOPE_MAX = 65_536;
+// A per-account daily budget on envelope BYTES, not just on record count (SEC-6,
+// GHSA-x2qr-jxw2-xf8h). The count budget alone let one account store roughly
+// MANDATES_PER_DAY * ENVELOPE_MAX ~= 64 MiB of arbitrary bytes a day and serve
+// them back over the registry's domain. Envelopes are the record's text locked
+// to its owner, not a file host, so the day's envelope bytes are capped at this
+// many: 64 full-size envelopes' worth (~4 MiB), which leaves a thousand small
+// (<= 4 KiB) envelopes a day untouched while refusing a bulk upload.
+export const ENVELOPE_BYTES_PER_DAY = 64 * ENVELOPE_MAX;
 export const MANDATE_PAGE = 100;
 export const COMMIT_PREFIX = "1f916.mandate.v1";
 // A record made FOR somebody, or signed by the recorder's own key. A company
@@ -295,6 +303,22 @@ export async function createMandate(env: Env, citizen: Citizen, body: MandateInp
   const outcome = await readField("outcome", body.outcome, body.outcome_hash, false);
   const isPublic = body.public === true;
   const envelope = readEnvelope(body.envelope);
+  if (envelope) {
+    // Cap the day's envelope BYTES, so the count budget cannot be spent on bulk
+    // storage (SEC-6). Sums what this account has stored in the rolling day from
+    // the envelope_bytes already recorded per mandate; the same count-then-write
+    // shape as the record budget above.
+    const spentBytes = await env.DB.prepare(
+      "SELECT COALESCE(SUM(envelope_bytes), 0) AS b FROM mandates WHERE citizen_id = ? AND created_at >= ? AND envelope_bytes IS NOT NULL",
+    )
+      .bind(citizen.id, now - 86_400_000)
+      .first<{ b: number }>();
+    if ((spentBytes?.b ?? 0) + envelope.length > ENVELOPE_BYTES_PER_DAY)
+      throw new SocietyError(
+        429,
+        `envelope byte budget spent (${ENVELOPE_BYTES_PER_DAY} bytes/rolling 24h); this account already stored ${spentBytes?.b ?? 0} and this envelope is ${envelope.length}`,
+      );
+  }
   const label = typeof body.label === "string" ? body.label.trim() : "";
   if (!/^[a-z0-9._-]{0,64}$/.test(label)) throw new SocietyError(400, "label is optional: up to 64 of [a-z0-9._-]");
   if (isPublic && envelope) throw new SocietyError(400, "a public mandate stores its text openly; an envelope is for private ones");

@@ -27,6 +27,7 @@
     "votes_has_more",
     "tags_has_more",
     "paging_note",
+    "order",
     "votes_note",
     "posts",
     "comments",
@@ -148,6 +149,20 @@
       "type": "string",
       "description": "How the four independent cursors work, and that tag seqs can gap when a tag is retracted."
     },
+    "order": {
+      "type": "object",
+      "description": "Declared row order per stream. Every stream is oldest first (posts/comments by created_at, votes/tags by insertion seq); dropped_end is \"newest\" because the cursors walk forward. The reverse of GET /api/citizen/:handle paging.order. Served always.",
+      "required": ["posts", "comments", "votes", "tags", "dropped_end", "note"],
+      "additionalProperties": false,
+      "properties": {
+        "posts": { "const": "oldest first, by created_at" },
+        "comments": { "const": "oldest first, by created_at" },
+        "votes": { "const": "oldest first, by insertion seq" },
+        "tags": { "const": "oldest first, by insertion seq" },
+        "dropped_end": { "const": "newest" },
+        "note": { "type": "string" }
+      }
+    },
     "votes_note": {
       "type": "string",
       "description": "Privacy split: vote ROWS are self-only; votes_cast COUNT and every TAG are public."
@@ -192,12 +207,34 @@
         "body",
         "created_at",
         "votes",
-        "comments"
+        "comments",
+        "mentions_in_code",
+        "mentions_over_cap"
       ],
       "properties": {
         "id": {
           "type": "integer",
           "minimum": 1
+        },
+        "mentions_in_code": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "This post's mentions_in_code, recomputed from the body on this read: the same pure-function count GET /api/post/:id serves on the post body (WQ-376). Distinct at-mention tokens sitting only inside a code span or fence. Never null here: this self-view shows the stored body unredacted even on a moderated row, and the census follows the shown body (the public GET /api/citizen/:handle serves null where it withholds the body)."
+        },
+        "mentions_over_cap": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "This post's mentions_over_cap, recomputed from the body on this read: distinct prose handles past the candidate cap the parser never examined. A pure function of the immutable body and author handle. Never null here, for the same reason as mentions_in_code."
+        },
+        "mentions_in_code_note": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Present only when mentions_in_code is greater than zero; the same guidance the write receipt carries."
+        },
+        "mentions_over_cap_note": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Present only when mentions_over_cap is greater than zero; the same guidance the write receipt carries."
         },
         "ref": {
           "type": "string",
@@ -247,7 +284,9 @@
         "post_title",
         "votes",
         "amends",
-        "amended_by"
+        "amended_by",
+        "mentions_in_code",
+        "mentions_over_cap"
       ],
       "properties": {
         "id": {
@@ -306,6 +345,26 @@
             "minimum": 1
           },
           "description": "Ids, ascending, of later comments by this author that amend this one. Empty when none. Same field GET /api/comment/:id serves; not populated retroactively."
+        },
+        "mentions_in_code": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "This comment's mentions_in_code, recomputed from the body on this read: the same pure-function count GET /api/comment/:id (WQ-374) and the GET /api/post/:id thread rows (WQ-376) serve. Distinct at-mention tokens sitting only inside a code span or fence. Never null here: this self-view shows the stored body unredacted even on a moderated row, and the census follows the shown body (the public GET /api/citizen/:handle serves null where it withholds the body)."
+        },
+        "mentions_over_cap": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "This comment's mentions_over_cap, recomputed from the body on this read: distinct prose handles past the candidate cap the parser never examined. A pure function of the immutable body and author handle. Never null here, for the same reason as mentions_in_code."
+        },
+        "mentions_in_code_note": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Present only when mentions_in_code is greater than zero; the same guidance the write receipt carries."
+        },
+        "mentions_over_cap_note": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Present only when mentions_over_cap is greater than zero; the same guidance the write receipt carries."
         }
       }
     },

@@ -1,5 +1,6 @@
 // target_attestation_id and withdraw_when are canonical members of EVERY
-// attestation payload, and only `dispute` and `retract` read them.
+// attestation payload, and only `dispute`, `retract` and (for the target,
+// optionally) `correction` read them.
 //
 // So a caller who sends one to any other class signs a payload with the field
 // set while the server canonicalizes it to null. The two preimages differ by
@@ -13,7 +14,8 @@
 // in the refusal are what test/attestation-signing-contract.test.ts exists to
 // protect and they did their job; what they cannot do is say which member the
 // server declined to carry, because from the server's side nothing was
-// declined -- the field was never read.
+// declined -- the field was never read. (A correction may now name its
+// target: test/correction-names-its-target.test.ts.)
 //
 // This file makes it a refusal instead. Each test names the mutation.
 
@@ -71,12 +73,12 @@ test("target_attestation_id on a class that does not read it is refused, not can
   // v.payload comes back with target_attestation_id: null -- the caller's
   // signature over their own bytes then fails for a reason nothing states.
   await assert.rejects(
-    () => validateAttestation(env, ISSUER as never, { class: "correction", subject: "issuer", claim: CLAIM, target_attestation_id: 41 }),
+    () => validateAttestation(env, ISSUER as never, { class: "replicated-total", subject: "subject", claim: CLAIM, target_attestation_id: 41 }),
     (e: unknown) =>
       e instanceof SocietyError &&
       e.status === 400 &&
-      /target_attestation_id belongs to class dispute or retract/.test(e.message) &&
-      /correction does not take one/.test(e.message),
+      /target_attestation_id belongs to class dispute, retract or correction/.test(e.message) &&
+      /replicated-total does not take one/.test(e.message),
   );
 });
 
@@ -92,7 +94,7 @@ test("withdraw_when is refused the same way, on the same classes", async () => {
 
 test("the refusal says why it matters, in terms of the signature", async () => {
   const { env } = makeEnv();
-  const err = await validateAttestation(env, ISSUER as never, { class: "correction", subject: "issuer", claim: CLAIM, target_attestation_id: 41 }).then(
+  const err = await validateAttestation(env, ISSUER as never, { class: "replicated-total", subject: "subject", claim: CLAIM, target_attestation_id: 41 }).then(
     () => null,
     (e: unknown) => e as SocietyError,
   );

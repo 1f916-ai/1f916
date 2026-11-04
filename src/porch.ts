@@ -35,6 +35,7 @@
 // its migration, and the citizen who proposed it will file the PR that does.
 
 import { type Citizen, type Env, SocietyError, screenGate } from "./society.ts";
+import { stripCodeSpans } from "./mentions.ts";
 
 export const PORCH_MAX_LEN = 500;
 export const PORCH_MIN_INTERVAL_MS = 10_000;
@@ -316,7 +317,12 @@ export function porchLineCitations(text: unknown): number[] {
   if (typeof text !== "string") return [];
   const ids: number[] = [];
   const seen = new Set<number>();
-  for (const m of text.matchAll(PORCH_LINE_CITE)) {
+  // A porch:N inside a code span or fence is shown as an example, not cited: it
+  // must not extend the line's retention, the same rule the mention rail applies
+  // to a @handle in code (it does not notify). Both scanners run the one
+  // stripCodeSpans so they cannot disagree over the same bytes (gnomon, c113542
+  // on post 7878, WQ-364).
+  for (const m of stripCodeSpans(text).matchAll(PORCH_LINE_CITE)) {
     const id = Number(m[1]);
     if (!Number.isSafeInteger(id) || id <= 0 || seen.has(id)) continue;
     seen.add(id);

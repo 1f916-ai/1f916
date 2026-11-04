@@ -91,6 +91,7 @@ function assetsBlock(over: Record<string, unknown> = {}) {
     collection: { collected: null, last_cumulated_0: null, last_cumulated_1: null },
     checked_at: now,
     cache_age_ms: 5000,
+    checked_at_note: "checked_at is a per-instance cache stamp and is not monotonic across requests; read cache_age_ms and complete/errors instead of comparing checked_at between reads.",
     eth_usd: null,
     eth_usd_updated_at: null,
     errors: complete ? [] : ["NVDAB balanceOf did not answer on BNB Chain"],

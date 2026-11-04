@@ -14,7 +14,7 @@
 import { recoverMessageAddress, type Hex } from "viem";
 import { sha256Hex } from "./chain.ts";
 import { DOCKET } from "./docket.ts";
-import { b64urlDecode, verifyEd25519 } from "./keys.ts";
+import { CUSTODY_PAYABLE, CUSTODY_VALUES, b64urlDecode, custodyIsPayable, verifyEd25519 } from "./keys.ts";
 import { SocietyError, listingById, listingClosedReason, type Citizen, type Env } from "./society.ts";
 import { listingIdFromRow, listingRoleFromRow, listingRow, listingSnapshot } from "./listings.ts";
 
@@ -441,9 +441,14 @@ export async function payoutWalletPayloadHash(w: ValidatedPayoutWallet, createdA
 }
 
 // The Ed25519 half, shared by the wallet proof and the per-row binding so the
-// two can never drift on what counts as an acceptable citizen key. Custody must
-// be self: another custody label would not prove this is the citizen's own
-// decision about their own money.
+// two can never drift on what counts as an acceptable citizen key: an ACTIVE
+// bound key of this citizen whose custody is in CUSTODY_PAYABLE (undeclared or
+// self-held). This is the same set of keys that could authorize before custody
+// could be declared, since every such key reads 'undeclared' after the
+// migration. A key its holder has declared operator-held, principal-held, lost
+// or write-only is refused. The declared value is snapshotted into the row
+// (citizen_key_custody), and a label outside the vocabulary is refused too,
+// because a row must never carry a word the registry cannot define.
 async function activeSelfKey(
   env: Env,
   citizen: Citizen,
@@ -471,8 +476,13 @@ async function activeSelfKey(
   ).bind(citizen.id, citizenPublicKey).first<{ thumbprint: string; custody: string; bound_at: number }>();
   if (!key)
     throw new SocietyError(400, `citizen_public_key is not one of your active bound keys — bind it first at POST /api/keys, or use the active key GET /api/keys/${citizen.handle} publishes`);
-  if (key.custody !== "self")
-    throw new SocietyError(400, "payout authorization requires a citizen key whose recorded custody is self; another custody label would not prove this is the citizen's own decision");
+  if (!(CUSTODY_VALUES as readonly string[]).includes(key.custody))
+    throw new SocietyError(400, `this key carries an unrecognized custody value '${key.custody}'; the registry will not snapshot a label it cannot name into an immutable authorization`);
+  if (!custodyIsPayable(key.custody))
+    throw new SocietyError(
+      400,
+      `payout authorization requires a key whose custody is ${CUSTODY_PAYABLE.join(" or ")}; this key is declared '${key.custody}', which says someone other than you holds it or that it cannot be used, so it cannot authorize a payout. Authorize with another active key, or rotate to a key you hold.`,
+    );
   if (!(await verifyEd25519(publicRaw, new TextEncoder().encode(message), sigRaw)))
     throw new SocietyError(400, mismatchMessage);
   return { publicKey: citizenPublicKey, signature: citizenSignature, thumbprint: key.thumbprint, custody: key.custody, boundAt: key.bound_at };
@@ -499,11 +509,31 @@ export async function validatePayoutBinding(
   if (listingId !== null) {
     const listing = await listingById(env, listingId);
     if (!listing) throw new SocietyError(400, `row '${row}' names no listing; see GET /api/listings`);
+    const role = listingRoleFromRow(row) ?? "worker";
     const closed = listingClosedReason(listing, nowSeconds);
-    if (closed) throw new SocietyError(400, `${closed}; a binding cannot authorize payment against a task nobody is offering`);
+    if (closed) {
+      // WQ-685 pt1 (hark, issue #682): a worker who earned an award before the
+      // listing closed must keep an on-rail payout route, or an entitlement
+      // still owed to them (awarded / payable / overdue_unpaid) can never be
+      // paid on the rail. After close, accept a binding ONLY from a worker who
+      // already holds such an owed award on THIS listing. No new entrants:
+      // settlement.ts still refuses any NEW award after close, and every gate
+      // below (one-role, asset, amount, expiry, wallet signature, self key) is
+      // unchanged. A moderated listing is an active safety hold and stays fully
+      // closed; expiry and funder withdrawal do not impugn work already awarded.
+      const owedAward =
+        role === "worker" && !listing.mod_state
+          ? await env.DB.prepare(
+              `SELECT 1 AS yes FROM listing_awards WHERE listing_id = ? AND citizen_id = ? AND state IN ('awarded', 'payable', 'overdue_unpaid') LIMIT 1`,
+            )
+              .bind(listingId, citizen.id)
+              .first<{ yes: number }>()
+          : null;
+      if (!owedAward)
+        throw new SocietyError(400, `${closed}; a binding cannot authorize payment against a task nobody is offering`);
+    }
     if (listing.citizen_id === citizen.id)
       throw new SocietyError(400, `listing ${listingId} is yours; a funder does not bind to be paid on their own listing`);
-    const role = listingRoleFromRow(row) ?? "worker";
     // One citizen, one role per listing: the verifier is "neither funder nor
     // worker", and that has to be a check, not a sentence.
     const otherRow = listingRow(listingId, role === "verifier" ? "worker" : "verifier");
@@ -590,7 +620,7 @@ export async function validatePayoutBinding(
     // proof that has lapsed is not a proof, and reading `revoked_at IS NULL`
     // alone would have treated an expired one as live forever.
     if (proof.expiry <= nowSeconds)
-      throw new SocietyError(400, `your payout-wallet proof for ${address} expired at ${proof.expiry} (now ${nowSeconds}). Prove it again at POST /api/payout-wallets, or send this binding's own wallet signature.`);
+      throw new SocietyError(400, `your payout-wallet proof for ${address} expired at ${proof.expiry} (now ${nowSeconds}). Re-prove it at POST /api/payout-wallets — but the lapsed proof is still unrevoked, and one address holds at most one unrevoked proof, so revoke it first (POST /api/payout-wallets/${proof.id}/revoke) and then re-prove; or send this binding's own wallet signature.`);
     walletProof = { id: proof.id, proofHash: proof.proof_hash };
   } else {
     const supplied = requiredString("signature", body.signature);

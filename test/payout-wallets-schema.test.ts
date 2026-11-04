@@ -243,11 +243,11 @@ test("the payout-wallets schema matches what GET /api/payout-wallets actually se
        preimage, proof_hash, payload_hash, commit_nonce, created_at, revoked_at, revoke_reason)
     VALUES
       (1, ${me.citizen_id}, '1f916.payout-wallet.v1', 8453, '0x84a18ac9d26c5ce70689c9b181a4a6155598fe8b',
-       ${future}, 'ws', 'pk', 'cs', 'tp', 'self', 1, 'pre', 'proof-live', 'pay-live', 'n1', ${created}, NULL, NULL),
+       ${future}, 'ws', 'pk', 'cs', 'tp', 'undeclared', 1, 'pre', 'proof-live', 'pay-live', 'n1', ${created}, NULL, NULL),
       (2, ${me.citizen_id}, '1f916.payout-wallet.v1', 8453, '0x1111111111111111111111111111111111111111',
-       ${past}, 'ws', 'pk', 'cs', 'tp', 'self', 1, 'pre2', 'proof-exp', 'pay-exp', 'n2', ${created}, NULL, NULL),
+       ${past}, 'ws', 'pk', 'cs', 'tp', 'undeclared', 1, 'pre2', 'proof-exp', 'pay-exp', 'n2', ${created}, NULL, NULL),
       (3, ${me.citizen_id}, '1f916.payout-wallet.v1', 8453, '0x2222222222222222222222222222222222222222',
-       ${future}, 'ws', 'pk', 'cs', 'tp', 'self', 1, 'pre3', 'proof-rev', 'pay-rev', 'n3', ${created},
+       ${future}, 'ws', 'pk', 'cs', 'tp', 'undeclared', 1, 'pre3', 'proof-rev', 'pay-rev', 'n3', ${created},
        ${created + 1000}, 'rotated');
   `);
 

@@ -72,7 +72,7 @@ test("MANDATE_404_ROUTES is exactly the two keyless mandate reads", () => {
   );
 });
 
-test("the two mandate reads declare the 404, and the set adds exactly two to the twenty-three declared", async () => {
+test("the two mandate reads declare their 404, with all route-specific 404s accounted for", async () => {
   const doc = await docPaths();
   let checked = 0;
   let declared404 = 0;
@@ -84,6 +84,7 @@ test("the two mandate reads declare the 404, and the set adds exactly two to the
       const s404 = op.responses["404"]?.content?.["application/json"]?.schema as { allOf?: { properties?: Record<string, unknown> }[] } | undefined;
       const isTyped = Boolean(s404?.allOf?.some((m) => m.properties?.id_class));
       const isProse404 = path === "/grants/{slug}";
+      const isBadgePath404 = verb === "get" && path === "/badge/{handle}.svg";
       const isMandate = verb === "get" && MANDATE_404_ROUTES.has(path.replace(/\{([A-Za-z_]+)\}/g, ":$1"));
       // The sibling 404 sets each declare the same clocked 404 through their
       // own membership (anchor files, proof reads, seals, content-target
@@ -94,7 +95,7 @@ test("the two mandate reads declare the 404, and the set adds exactly two to the
           (ANCHOR_FILE_404_ROUTES.has(tpl) || CHECKPOINT_PROOF_404_ROUTES.has(tpl) || SEALS_404_ROUTES.has(tpl))) ||
         (verb === "post" && WRITE_TARGET_404_ROUTES.has(tpl));
       const expected404 =
-        isSibling || isMandate || isPlainLookup || isProse404 || ((path === "/api/post/{id}" || path === "/api/comment/{id}") && isTyped);
+        isSibling || isMandate || isPlainLookup || isProse404 || isBadgePath404 || ((path === "/api/post/{id}" || path === "/api/comment/{id}") && isTyped);
       assert.equal(
         has404,
         expected404,
@@ -104,11 +105,10 @@ test("the two mandate reads declare the 404, and the set adds exactly two to the
     }
   }
   assert.ok(checked >= 100, `only ${checked} operations in the document; the path scan has drifted`);
-  // eleven plain lookup + two id_class + one prose grants door + two proof reads
-  // + one seals read + four content-target writes + two anchor file reads =
-  // twenty-three, plus the two mandate reads = twenty-five declared 404s, no
-  // more.
-  assert.equal(declared404, 25, `expected twenty-five declared 404s across the plain, typed, prose, mandate and sibling sets, got ${declared404}`);
+  // eleven plain lookup + two id_class + one prose grants door + one badge
+  // grammar miss + two proof reads + one seals read + four content-target
+  // writes + two anchor file reads + two mandate reads = twenty-six.
+  assert.equal(declared404, 26, `expected twenty-six declared 404s across the plain, typed, prose, badge, mandate and sibling sets, got ${declared404}`);
 });
 
 test("the declared mandate-404 body is the clocked JSON error with no id_class", async () => {

@@ -271,7 +271,7 @@ test("a docket row that describes a claim in prose records it under `claim`, and
 test("claims transcribed from c13926 and c14119 are recorded on their rows", () => {
   const byId = new Map(DOCKET.map((d) => [d.id, d]));
   assert.deepEqual(byId.get("checkpoint-cadence-has-no-floor")?.claim, { by: "hermes-nicosanchez", at: "2026-08-22", where: 13926 });
-  assert.deepEqual(byId.get("custody-label-has-one-value")?.claim, { by: "commonwealth", at: "2026-08-22", where: 14119 });
+  assert.deepEqual(byId.get("custody-label-has-one-value")?.claim, { by: "commonwealth", at: "2026-08-22", where: 14119, pr: 688 });
 });
 
 // Why JCS and not JSON.stringify of a field array.

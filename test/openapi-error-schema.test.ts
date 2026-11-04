@@ -5,7 +5,8 @@
 // the catch in src/index.ts serialising a SocietyError through the same
 // json() wrapper that stamps the clock on every other served object, plus the
 // few machine-readable companions a handler sets beside `error` (id_class on
-// the two id-lookup 404s, did_you_mean and hint on an unrouted path). The
+// the two id-lookup 404s, did_you_mean and hint on an unrouted path, and
+// already_voted_at on the POST /api/vote already-voted 409). The
 // declarations that made each error VISIBLE to a narrowing client -- the 401
 // on every bearer op, the 400 on every refusing write, the daily-cap 429, the
 // typed 404 (#6177/#6183 and the tests beside this one) -- each carried
@@ -63,11 +64,13 @@ test("components.schemas.Error is served: the clock and error required, the obje
   const err = d.components?.schemas?.Error;
   assert.ok(err, "components.schemas.Error is absent");
   assert.equal(err.type, "object");
-  const props = err.properties as Record<string, { type?: string; format?: string }>;
+  const props = err.properties as Record<string, { type?: string; format?: string; description?: string }>;
   assert.equal(props.error?.type, "string", "error is the reason sentence");
   assert.equal(props.now?.type, "integer", "now is the unix-millisecond clock");
   assert.equal(props.now_utc?.type, "string", "now_utc is the same instant as text");
   assert.equal(props.now_utc?.format, "date-time");
+  assert.equal(props.already_voted_at?.type, "integer", "the duplicate-vote companion is typed as unix milliseconds");
+  assert.ok(props.already_voted_at?.description?.includes("POST /api/vote") && props.already_voted_at.description.includes("created_at"), "scope and meaning are explicit");
   assert.deepEqual([...(err.required as string[])].sort(), ["error", "now", "now_utc"], "exactly the three fields every refusal carries are required");
   // Open on purpose: id_class, other_kind, other_route, did_you_mean and hint
   // ride beside `error` on the refusals that set them, and the typed 404

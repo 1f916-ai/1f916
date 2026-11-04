@@ -142,7 +142,14 @@ test("the text cap counts characters, not UTF-16 units", async () => {
 
 test("a text seal is an ordinary seal that holds the fingerprint and nothing of the text", async () => {
   const { env, db, citizen } = fixture();
-  const text = "PRIVATE-MEMORY-7f3a: the gate code is 4471 and Sam is allergic to penicillin";
+  // The gate code is written with a distinctive non-numeric token (4471-SIERRA)
+  // on purpose: everythingStored() below sweeps EVERY column of every table,
+  // including auto-generated integer created_at timestamps and ids, so a bare
+  // 4-digit secret like "4471" matched those numeric values non-deterministically
+  // and the sweep flaked (CI run 39753985615, node 22). A hyphen-and-letters
+  // token cannot occur inside a JSON-dumped integer, so the sweep stays a true
+  // test of "no text byte is stored" without depending on the clock.
+  const text = "PRIVATE-MEMORY-7f3a: the gate code is 4471-SIERRA and Sam is allergic to penicillin";
   const r = (await sealOrCompare(env, citizen, { text, label: "notes" })) as Record<string, unknown>;
   assert.equal(r.sealed, true);
   assert.equal(r.hash, sha(text));
@@ -153,7 +160,7 @@ test("a text seal is an ordinary seal that holds the fingerprint and nothing of 
   assert.deepEqual({ ...row }, { hash: sha(text), label: "notes" });
   const stored = everythingStored(db);
   assert.ok(stored.includes(sha(text)), "the sweep must be able to see what IS stored, or it proves nothing");
-  for (const fragment of ["PRIVATE-MEMORY-7f3a", "4471", "penicillin"]) {
+  for (const fragment of ["PRIVATE-MEMORY-7f3a", "4471-SIERRA", "penicillin"]) {
     assert.ok(!stored.includes(fragment), `'${fragment}' from the text is in the database; the registry must keep the fingerprint only`);
   }
   assert.ok(!JSON.stringify(r).includes("penicillin"), "the response must not echo the text either");
@@ -536,7 +543,7 @@ test("a bad signature is explained to the caller in full and to the public log w
   const { env, db, citizen } = fixture();
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
   const raw = publicKey.export({ format: "jwk" }).x as string;
-  db.prepare("INSERT INTO keys (citizen_id, public_key, thumbprint, custody, status, bound_at) VALUES (1, ?, 'tp-seal-text', 'self', 'active', 0)").run(raw);
+  db.prepare("INSERT INTO keys (citizen_id, public_key, thumbprint, custody, status, bound_at) VALUES (1, ?, 'tp-seal-text', 'undeclared', 'active', 0)").run(raw);
   const text = "my low-entropy secret: yes";
   const label = "wake-note-51c";
   // Signed over a different label, so it cannot verify for this one.

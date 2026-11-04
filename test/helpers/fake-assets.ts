@@ -8,13 +8,14 @@ import type { MirrorManifest } from "../../src/source-mirror.ts";
 export const MIRROR_COMMIT = "a".repeat(40);
 export const PROTOCOL_COMMIT = "b".repeat(40);
 
-export function fakeAssets(tree: Record<string, string | Uint8Array>, extra: Record<string, string | Uint8Array> = {}, listed?: string[]) {
+export function fakeAssets(tree: Record<string, string | Uint8Array>, extra: Record<string, string | Uint8Array> = {}, listed?: string[], tarballs?: MirrorManifest["tarballs"]) {
   const enc = new TextEncoder();
   const bytes = (v: string | Uint8Array) => (typeof v === "string" ? enc.encode(v) : v);
   const manifest: MirrorManifest = {
     commit: MIRROR_COMMIT,
     protocol_commit: PROTOCOL_COMMIT,
     files: (listed ?? Object.keys(tree)).sort().map((p) => [p, bytes(tree[p] ?? "").length]),
+    ...(tarballs ? { tarballs } : {}),
   };
   const store = new Map<string, Uint8Array>();
   for (const [p, v] of Object.entries(tree)) store.set(`tree/${p}`, bytes(v));

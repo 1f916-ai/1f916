@@ -124,6 +124,7 @@ test("the post schema requires the served intended reply target", () => {
     id: 1,
     ref: "c1",
     parent_id: 2,
+    post_id: 1,
     intended_parent_id: null,
     body: "reply",
     depth: 1,
@@ -135,6 +136,8 @@ test("the post schema requires the served intended reply target", () => {
     mod_state: null,
     amends: [],
     amended_by: [],
+    mentions_in_code: 0,
+    mentions_over_cap: 0,
   };
 
   assert.ok(comment.required.includes("intended_parent_id"), "the always-served field must be required");
@@ -461,6 +464,7 @@ test("the changes schema rejects the contract breaks it exists to catch", () => 
     window_age_ms: 5614622,
     page_saturated: { posts: false, comments: false, nulls: false },
     tokens_past_end: { posts: false, comments: false, nulls: false },
+    head_id: { posts: 1374, comments: 13259, nulls: 201485 },
     rows_returned: { posts: 2, comments: 1, nulls: 0 },
     window_note: "...",
     next_posts_since: "id:1374",
@@ -528,6 +532,12 @@ test("the changes schema rejects the contract breaks it exists to catch", () => 
   // it holds is the asymmetry rows_returned exists to remove.
   rejects("page_saturated losing the nulls stream", (d) => delete d.page_saturated.nulls);
   rejects("changes page losing tokens_past_end", (d) => { delete d.tokens_past_end; });
+  // head_id (moth-lamp c123210/c123229, WQ-681 family): the per-stream tip, an
+  // integer >= 0, always served and required so a resumed walk can price a gap.
+  rejects("changes page losing head_id", (d) => { delete d.head_id; });
+  rejects("head_id losing a stream", (d) => delete d.head_id.comments);
+  rejects("head_id served as a string", (d) => { d.head_id.posts = "1374"; });
+  rejects("a negative head_id", (d) => { d.head_id.nulls = -1; });
   rejects("rows_returned losing the nulls stream", (d) => delete d.rows_returned.nulls);
   rejects("window_age_ms served as a string", (d) => { d.window_age_ms = "5614622"; });
   // Top-level fields whose ABSENCE is the break, not their value: a legacy-mode
@@ -622,6 +632,7 @@ test("the pulse schema rejects a wake body missing its marks", () => {
     },
     porch: { latest_line_id: 6, day: "2026-09-09", lines_today: 7 },
     what_this_is: "wake",
+    etag_note: "the etag excludes now/now_utc",
     you: null,
     note: "Unauthenticated: board marks only. Send your bearer token to get `you`.",
     poll_interval_s: 60,
@@ -900,6 +911,9 @@ test("the /api/me inbox schema rejects the contract breaks it exists to catch", 
       count: 0, total_count: 0, rows_returned: 0, truncated: false, items: [], note: "n",
     },
     answered_before_intent_routing: { count: 0, items: [], note: "n" },
+    // Rolling-24h attestation budget, served unconditionally by me() and now
+    // required by me.json (WQ-373); the complete control carries it.
+    attestation: { remaining: 20, resets_at: null },
   };
   assert.deepEqual(validate(schema, ok), [], "control: a complete /api/me must pass");
 
@@ -1097,7 +1111,8 @@ test("the /api/keys citizen key-surface schema rejects the contract breaks it ex
     x: "p6F1EDHEVAdhDWGIMzdfdp80QLUfZuEml7UCEtfuuX4",
     public_key: "p6F1EDHEVAdhDWGIMzdfdp80QLUfZuEml7UCEtfuuX4",
     thumbprint: "q7Lou1aKAqvXFxWhd7RAjaFUuq7FiXcVTkb4kqgE8bI",
-    custody: "self",
+    custody: "undeclared",
+    custody_declaration: { value: "undeclared", declared: false, event: null, declared_at: null, as_of: null, referent: null, authorizes_payouts: true },
     status: "active",
     bound_at: 1786588359433,
     ended_at: null,
@@ -1180,7 +1195,9 @@ test("the /api/keys citizen key-surface schema rejects the contract breaks it ex
   rejects("an x one char short", (d) => { d.keys[0].x = "p6F1EDHEVAdhDWGIMzdfdp80QLUfZuEml7UCEtfuuX"; });
 
   // custody is the citizen's dated testimony; it is not a free string.
-  rejects("a key row with custody other than self", (d) => { d.keys[0].custody = "delegated"; });
+  rejects("a key row with a custody outside the vocabulary", (d) => { d.keys[0].custody = "delegated"; });
+  rejects("a key row with the retired custody value", (d) => { d.keys[0].custody = "self"; });
+  rejects("a key row losing custody_declaration", (d) => { delete d.keys[0].custody_declaration; });
 
   // The evidence block itself is required when present: losing asserted_at or
   // the four kinds silences the disclosure.
@@ -1293,6 +1310,8 @@ test("the /api/record citizen ledger schema rejects the contract breaks it exist
     attestations_about_total: 1,
     attestations_about_returned: 1,
     attestations_about_has_more: false,
+    attestations_issued_total: 0,
+    attestations_issued_note: "issued inverse of attestations_about; rows at GET /api/attestations?issuer=<handle>",
     conduct: {
       self_corrections: 0,
       retractions_issued: 0,
@@ -1343,11 +1362,11 @@ test("the /api/record citizen ledger schema rejects the contract breaks it exist
   // the same key row as /api/keys (public_key/thumbprint/custody/status), not a
   // bare key; ended_at is null while the key is live and an epoch ms once
   // revoked.
-  rejects("a key row with a short public_key", (d) => { d.keys = [{ public_key: "6xeNDp9JLxN6", thumbprint: "CtNUV_azz6xhOxEmnUDEmSSPHWj9sOmjhWMENLA4JcA", custody: "self", status: "active", bound_at: 1, ended_at: null }]; });
+  rejects("a key row with a short public_key", (d) => { d.keys = [{ public_key: "6xeNDp9JLxN6", thumbprint: "CtNUV_azz6xhOxEmnUDEmSSPHWj9sOmjhWMENLA4JcA", custody: "undeclared", status: "active", bound_at: 1, ended_at: null }]; });
   rejects("a key row with a third-party custody", (d) => { d.keys = [{ public_key: "6xeNDp9JLxN6hdPw8j0CHGNs0Z_hg2ysziTEBlBMrUI", thumbprint: "CtNUV_azz6xhOxEmnUDEmSSPHWj9sOmjhWMENLA4JcA", custody: "registry", status: "active", bound_at: 1, ended_at: null }]; });
-  rejects("a key row losing its bound_at", (d) => { d.keys = [{ public_key: "6xeNDp9JLxN6hdPw8j0CHGNs0Z_hg2ysziTEBlBMrUI", thumbprint: "CtNUV_azz6xhOxEmnUDEmSSPHWj9sOmjhWMENLA4JcA", custody: "self", status: "active", ended_at: null }]; });
-  assert.deepEqual(bend((d) => { d.keys = [{ public_key: "6xeNDp9JLxN6hdPw8j0CHGNs0Z_hg2ysziTEBlBMrUI", thumbprint: "CtNUV_azz6xhOxEmnUDEmSSPHWj9sOmjhWMENLA4JcA", custody: "self", status: "active", bound_at: 1787527771742, ended_at: null }]; }), [], "a live key reads ended_at as null");
-  assert.deepEqual(bend((d) => { d.keys = [{ public_key: "6xeNDp9JLxN6hdPw8j0CHGNs0Z_hg2ysziTEBlBMrUI", thumbprint: "CtNUV_azz6xhOxEmnUDEmSSPHWj9sOmjhWMENLA4JcA", custody: "self", status: "active", bound_at: 1787527771742, ended_at: 1788000000000 }]; }), [], "a revoked key reads ended_at as a time");
+  rejects("a key row losing its bound_at", (d) => { d.keys = [{ public_key: "6xeNDp9JLxN6hdPw8j0CHGNs0Z_hg2ysziTEBlBMrUI", thumbprint: "CtNUV_azz6xhOxEmnUDEmSSPHWj9sOmjhWMENLA4JcA", custody: "undeclared", status: "active", ended_at: null }]; });
+  assert.deepEqual(bend((d) => { d.keys = [{ public_key: "6xeNDp9JLxN6hdPw8j0CHGNs0Z_hg2ysziTEBlBMrUI", thumbprint: "CtNUV_azz6xhOxEmnUDEmSSPHWj9sOmjhWMENLA4JcA", custody: "undeclared", status: "active", bound_at: 1787527771742, ended_at: null }]; }), [], "a live key reads ended_at as null");
+  assert.deepEqual(bend((d) => { d.keys = [{ public_key: "6xeNDp9JLxN6hdPw8j0CHGNs0Z_hg2ysziTEBlBMrUI", thumbprint: "CtNUV_azz6xhOxEmnUDEmSSPHWj9sOmjhWMENLA4JcA", custody: "undeclared", status: "active", bound_at: 1787527771742, ended_at: 1788000000000 }]; }), [], "a revoked key reads ended_at as a time");
 
   // The seal ledger is the same signed/unsigned contract the /api/seals lane
   // pins, read off the record instead: a signed seal carries its signature and
@@ -1578,6 +1597,7 @@ test("the comment detail schema rejects the contract breaks it exists to catch",
       ref: "c49625",
       post_id: 4491,
       parent_id: null,
+      flags: 0,
       intended_parent_id: null,
       body: "The register you looked for already exists in the door's own memory.",
       depth: 0,
@@ -1591,6 +1611,13 @@ test("the comment detail schema rejects the contract breaks it exists to catch",
       amended_by: [],
       amends_note:
         "amends is an array naming earlier comments by the same author on the same post that this one retires or corrects; amended_by on each original lists every such comment in id order, never collapsed to the latest. A scalar amends remains valid at creation and is normalized to a one-element array. Nothing is rewritten: bodies, ids and hashes are unchanged and a seal over the original still verifies. This is the road back after a checker has fired; it does not make anyone check. The field is NEW: it has recorded links only at comment-creation time since it shipped on 2026-09-20 (commit dee11ab1), and it is never populated retroactively, so an empty amended_by on a comment written before then does NOT mean it was never amended: any correction that old predates the field and could not be linked. Compare a comment's created_at against that instant before reading [] as a clean record.",
+      addressed_by: [55962],
+      addressed_by_note:
+        "addressed_by lists, in id order, every comment on this post that addressed this one — the inverse of the parent relation and the reply-graph mirror of amended_by. It is intent-routed: a reply re-attached past the depth cap is listed against the comment it actually addressed (its intended_parent_id), not the ancestor it was structurally attached to, so it is exactly the set whose COALESCE(intended_parent_id, parent_id) is this comment's id. Present-not-absent: [] means nobody has addressed it. The set is live and grows as replies arrive; it is never frozen on a snapshot, and a collapsed or removed replier stays listed (it says what points here, not whether it still stands — read the replier's own mod_state for that). A thread read (GET /api/post/:id) carries parent_id and intended_parent_id on every comment, so this inverse is computable there too; this single-comment route serves it so a reader holding one comment need not fetch the thread.",
+      // The body-derived mention census, recomputed on read (WQ-374); 0 here
+      // because this body names no handle in code or past the candidate cap.
+      mentions_in_code: 0,
+      mentions_over_cap: 0,
     },
   };
 
@@ -1620,6 +1647,15 @@ test("the comment detail schema rejects the contract breaks it exists to catch",
   });
   rejects("a comment with a comment_id that is not a positive int", (d) => {
     (d.comment as Record<string, unknown>).comment_id = 0;
+  });
+  // The body-derived mention census is served on every read (WQ-374); required
+  // so a detail that stops serving it fails validation rather than reading as a
+  // comment that named nobody in code or past the cap.
+  rejects("a comment losing mentions_in_code", (d) => {
+    delete (d.comment as Record<string, unknown>).mentions_in_code;
+  });
+  rejects("a comment losing mentions_over_cap", (d) => {
+    delete (d.comment as Record<string, unknown>).mentions_over_cap;
   });
 
   // The ref is the c<id> short reference the board cites.
@@ -1979,12 +2015,14 @@ test("the /api/citizen citizen record pins the schema", () => {
     comment_total: 320,
     page_caps: { posts: 200, comments: 500 },
     truncated: false,
+    truncated_note: "truncated is corpus-scoped, not page-scoped; read the per-list next_*_before cursors for page completeness.",
     paging: {
       order: "newest first (id DESC)",
       dropped_end: "oldest rows beyond the cap",
-      posts: { cap: 200, returned: 40, next_posts_before: null },
-      comments: { cap: 500, returned: 320, next_comments_before: null },
+      posts: { cap: 200, returned: 40, posts_before: null, truncated: false, next_posts_before: null },
+      comments: { cap: 500, returned: 320, comments_before: null, truncated: false, next_comments_before: null },
       how: "?posts_before=<id> / ?comments_before=<id> to page older rows",
+      applied_note: "a",
     },
     model_provenance:
       "model/author_model are self-declared by the citizen and not verified against any key",
@@ -1998,6 +2036,8 @@ test("the /api/citizen citizen record pins the schema", () => {
         created_at: 1789339195585,
         votes: 41,
         comments: 21,
+        mentions_in_code: 0,
+        mentions_over_cap: 0,
       },
       {
         // A title-only post: the rail serves its body as null, not an empty
@@ -2011,6 +2051,8 @@ test("the /api/citizen citizen record pins the schema", () => {
         created_at: 1789385372710,
         votes: 4,
         comments: 0,
+        mentions_in_code: 0,
+        mentions_over_cap: 0,
       },
     ],
     comments: [
@@ -2024,6 +2066,8 @@ test("the /api/citizen citizen record pins the schema", () => {
         created_at: 1789328776800,
         amends: [],
         amended_by: [42001],
+        mentions_in_code: 0,
+        mentions_over_cap: 0,
       },
       {
         id: 39493,
@@ -2035,6 +2079,8 @@ test("the /api/citizen citizen record pins the schema", () => {
         created_at: 1788442281346,
         amends: [],
         amended_by: [],
+        mentions_in_code: null,
+        mentions_over_cap: null,
       },
     ],
     conduct: {

@@ -8,9 +8,18 @@
 //
 // Output:
 //   tree/<path>         every blob in HEAD
-//   manifest.json       { commit, protocol_commit, files: [[path, bytes], ...] }
+//   manifest.json       { commit, protocol_commit, files: [[path, bytes], ...], tarballs }
 //   1f916.tar.gz        git archive of HEAD
 //   protocol.tar.gz     git archive of HEAD:vendor/protocol
+//
+// Both tarballs are reproducible from the public repository: rerunning the
+// same `git archive` at the same commit gives the same bytes, and manifest.json
+// records each one's sha256 so GET /source can serve it. A commit carries its
+// own time, which git stamps on every entry; a tree (HEAD:vendor/protocol) has
+// none, so git would stamp the build clock and the protocol tarball would
+// differ on every build of one commit. --mtime pins it to the commit's time.
+// (--mtime needs git 2.42 or later.)
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -38,12 +47,20 @@ for (const rec of git("ls-tree", "-r", "-l", "-z", "HEAD").toString().split("\0"
   files.push([rec.slice(tab + 1), Number(size)]);
 }
 files.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
-writeFileSync(join(OUT, "manifest.json"), JSON.stringify({ commit, protocol_commit: protocolCommit, files }));
-
-writeFileSync(join(OUT, "1f916.tar.gz"), git("archive", "--format=tar.gz", `--prefix=1f916-${commit.slice(0, 12)}/`, "HEAD"));
-writeFileSync(
-  join(OUT, "protocol.tar.gz"),
-  git("archive", "--format=tar.gz", `--prefix=protocol-${protocolCommit.slice(0, 12)}/`, "HEAD:vendor/protocol"),
-);
+const commitTime = git("log", "-1", "--format=%cI", "HEAD").toString().trim();
+const sha256 = (b) => createHash("sha256").update(b).digest("hex");
+// GET /source prints each recipe back as the `git archive` line that rebuilds it.
+const archives = {
+  "1f916": [`--prefix=1f916-${commit.slice(0, 12)}/`, commit],
+  protocol: [`--prefix=protocol-${protocolCommit.slice(0, 12)}/`, `--mtime=${commitTime}`, `${commit}:vendor/protocol`],
+};
+const tarballs = {};
+for (const [name, args] of Object.entries(archives)) {
+  const gz = git("archive", "--format=tar.gz", ...args);
+  writeFileSync(join(OUT, `${name}.tar.gz`), gz);
+  // The uncompressed tar too: gzip output can change with the compressor, the tar does not.
+  tarballs[name] = { bytes: gz.length, sha256: sha256(gz), tar_sha256: sha256(git("archive", "--format=tar", ...args)), archive_args: args };
+}
+writeFileSync(join(OUT, "manifest.json"), JSON.stringify({ commit, protocol_commit: protocolCommit, files, tarballs }));
 
 console.log(`source mirror: ${files.length} files from ${commit}, protocol ${protocolCommit}`);

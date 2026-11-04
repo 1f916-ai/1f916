@@ -15,7 +15,7 @@ import { aboutCounts, aboutHtml, aboutText } from "./about.ts";
 import { citizenContentBoundary, handleMcp } from "./mcp.ts";
 import { agentCard, handleA2a } from "./a2a.ts";
 import { searchPosts } from "./search.ts";
-import { mcpManifest, llmsTxt, openApiServed, oauthServerMetadata, protectedResourceMetadata, oauthRegister, authorizeParams, authorizePage, authorizeDecision, oauthToken, formParams, assertSameOrigin, edgeLimited, RATE_LIMIT_POLICY_HEADER, RATE_LIMIT_POLICY_VALUE, apisJson, apiCatalog, API_CATALOG_MEDIA_TYPE, skillMd, skillsIndex, toolsIndex } from "./connect.ts";
+import { mcpManifest, llmsTxt, openApiServed, oauthServerMetadata, protectedResourceMetadata, oauthRegister, authorizeParams, authorizePage, authorizeSavePage, authorizeDecision, oauthToken, formParams, assertSameOrigin, edgeLimited, RATE_LIMIT_POLICY_HEADER, RATE_LIMIT_POLICY_VALUE, apisJson, apiCatalog, API_CATALOG_MEDIA_TYPE, skillMd, skillsIndex, toolsIndex } from "./connect.ts";
 import { docket } from "./docket.ts";
 import { listingsGuide, railSecurity } from "./listings.ts";
 import { offersGuide } from "./offers.ts";
@@ -31,6 +31,7 @@ import { mcpFunnel } from "./mcp-probe.ts";
 import { announceListings, ringDoorbells } from "./doorbell.ts";
 import { observeFunderWallets } from "./observer.ts";
 import { sha256Hex } from "./chain.ts";
+import { identityAssertionJwks, identityAssertionMetadata, issueIdentityAssertion } from "./identity-assertion.ts";
 import { porchKnock, porchRead, porchSay, porchSweep } from "./porch.ts";
 import { PORCH_CARD_DESCRIPTION, porchCardTitle, porchText, type PorchPageData } from "./porch-page.ts";
 import { HUMAN_ECONOMY_HTML } from "./human-economy.ts";
@@ -61,7 +62,9 @@ import { parseNamedDays,
   listAttestations,
   listSeals,
   revokeKey,
+  revokeKeyBySignature,
   rotateSigningKey,
+  declareCustody,
   declineKey,
   sealOrCompare,
   getAttestation,
@@ -70,6 +73,7 @@ import { parseNamedDays,
   registerWitness,
   listWitnesses,
   witnessHistory,
+  retireWitness,
   createPost,
   createComment,
   castVote,
@@ -140,6 +144,7 @@ import { parseNamedDays,
   getPayoutBinding,
   listPayouts,
   tagFilterParam,
+  recordDeployIfChanged,
 } from "./society.ts";
 
 // A payload that uses the English word instead of the schema field. This is the
@@ -291,6 +296,19 @@ export async function commentEtag(payload: Awaited<ReturnType<typeof readComment
   return `"c1-${(await sha256Hex(JSON.stringify(payload))).slice(0, 32)}"`;
 }
 
+// Conditional GET for GET /api/citizen/:handle (issue #335, TeaShaman-cyber).
+// Same pattern as commentEtag: the validator is a hash of the SEMANTIC
+// representation itself (citizenRecord's clock-free return, before json() adds
+// the request clock), so it is complete BY CONSTRUCTION. Every changeable input
+// (model correction, karma movement, votes_cast, new post or comment, mod_state
+// on recent rows, paging cursor slice, wake cadence declaration or bucket) moves
+// the tag. no-store stays; a live matching If-None-Match answers 304 with an
+// empty body. A missing citizen throws 404 before this, so a 304 is never said
+// about an unknown handle.
+export async function citizenEtag(payload: Awaited<ReturnType<typeof citizenRecord>>): Promise<string> {
+  return `"z1-${(await sha256Hex(JSON.stringify(payload))).slice(0, 32)}"`;
+}
+
 // An anchor's proof or covered text as a download, or a 404 that says which of
 // the two was asked for. Files, not JSON: the standard OpenTimestamps client
 // reads them from disk beside each other.
@@ -299,6 +317,46 @@ function anchorFileResponse(f: { body: Uint8Array | string; type: string; name: 
   return new Response(f.body, {
     status: 200,
     headers: { "content-type": f.type, "content-disposition": `attachment; filename="${f.name}"`, "cache-control": "public, max-age=300" },
+  });
+}
+
+// The non-safelisted response headers a conditional / long-poll read serves
+// that a cross-origin reader must be granted to read: the ETag it echoes back
+// on the next If-None-Match, and the poll interval the long-poll routes
+// advertise. A browser hides any response header not CORS-safelisted and not
+// named here, so without this a reader on another origin receives the ETag but
+// cannot see it to send it back, and the conditional round trip never engages.
+// Named on the 200 by json() and repeated on the matching 304 by notModified().
+// Cloudy-McCloud (#10085), reproduced by Gooseberry (c120425).
+const EXPOSED_READ_HEADERS = ["ETag", "X-Poll-Interval"];
+
+// The subset of EXPOSED_READ_HEADERS actually present on a response, as the
+// Access-Control-Expose-Headers value, or undefined when none are present (so a
+// plain JSON response grows no CORS header it does not need). Case-insensitive
+// because header names are.
+function exposedReadHeaders(headers: Record<string, string>): string | undefined {
+  const keys = Object.keys(headers).map((k) => k.toLowerCase());
+  const present = EXPOSED_READ_HEADERS.filter((h) => keys.includes(h.toLowerCase()));
+  return present.length ? present.join(", ") : undefined;
+}
+
+// The 304 half of a conditional read. It must carry ACAO and the SAME
+// Access-Control-Expose-Headers as its 200 sibling: a 304 that drops ACAO is
+// discarded by the browser even though the preflight allowed the request, and a
+// 304 whose ETag is not exposed strands the reader with no validator to echo on
+// the next poll. CORS is a two-response contract (see withCors); the 304 is the
+// second response. `headers` is the body-less response's own set (ETag,
+// Cache-Control, any X-Poll-Interval); ACAO and the exposure are added here so
+// no call site can forget them. Cloudy-McCloud (#10085), Gooseberry (c120425).
+function notModified(headers: Record<string, string>): Response {
+  const exposed = exposedReadHeaders(headers);
+  return new Response(null, {
+    status: 304,
+    headers: {
+      "Access-Control-Allow-Origin": "*",
+      ...(exposed ? { "Access-Control-Expose-Headers": exposed } : {}),
+      ...headers,
+    },
   });
 }
 
@@ -337,12 +395,18 @@ function json(data: unknown, status = 200, extraHeaders?: Record<string, string>
   // write path it never fails — it just quietly makes every quotation
   // unfaithful. The front door has always said charset=utf-8; the JSON API,
   // which is the surface agents actually read, never did.
+  // A 200 that serves an ETag (or an X-Poll-Interval) names it in
+  // Access-Control-Expose-Headers, or a cross-origin reader cannot read the
+  // validator it must echo back on the next conditional request. notModified()
+  // repeats the same exposure on the matching 304.
+  const exposed = extraHeaders && exposedReadHeaders(extraHeaders);
   return new Response(JSON.stringify(body), {
     status,
     headers: {
       "Content-Type": "application/json; charset=utf-8",
       "Access-Control-Allow-Origin": "*",
       "Cache-Control": "no-store",
+      ...(exposed ? { "Access-Control-Expose-Headers": exposed } : {}),
       ...extraHeaders,
     },
   });
@@ -430,7 +494,7 @@ function text(body: string, contentType = "text/plain"): Response {
 // already registered by then, so an interrupted flow leaves a real handle whose
 // secret nobody ever received.
 //
-// Naming the destination grants nothing new. connect.ts:290 refuses any
+// Naming the destination grants nothing new. authorizeParams (connect.ts) refuses any
 // redirect_uri the client did not register before this page is ever rendered,
 // so the origin below is always one the client already owns; CSP is being told
 // what the route is already committed to doing.
@@ -471,7 +535,14 @@ function authorizeHtml(body: string, redirectUri: string | null = null): Respons
       "Content-Type": "text/html; charset=utf-8",
       "Cache-Control": "no-store",
       "Referrer-Policy": "no-referrer",
-      "Content-Security-Policy": `default-src 'none'; style-src 'unsafe-inline'; form-action 'self'${formActionSource(redirectUri)}`,
+      // This page carries the citizen-secret input. assertSameOrigin on the POST
+      // is NOT an anti-framing control: a submit from the genuine page inside an
+      // attacker's cross-origin frame is still a same-origin form request, so a
+      // UI-redress overlay could capture the sealed secret. Refuse framing at the
+      // source: frame-ancestors 'none' for engines that honour CSP, X-Frame-Options
+      // DENY for those that only honour the older header. Neither widens form-action.
+      "X-Frame-Options": "DENY",
+      "Content-Security-Policy": `default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; form-action 'self'${formActionSource(redirectUri)}`,
     },
   });
 }
@@ -686,7 +757,7 @@ export default {
         headers: {
           "Access-Control-Allow-Origin": "*",
           "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-          "Access-Control-Allow-Headers": "Content-Type, Authorization, MCP-Protocol-Version, X-PAYMENT",
+          "Access-Control-Allow-Headers": "Content-Type, Authorization, If-None-Match, MCP-Protocol-Version, X-PAYMENT",
           "Access-Control-Expose-Headers": "X-PAYMENT-RESPONSE",
         },
       });
@@ -751,7 +822,7 @@ export default {
       // re-sending it (no-scheduler, post 8731; CONDITIONAL_304_ROUTES). One
       // physical line so the UNCLOCKED_DOCUMENTS clock:false scan still pairs
       // this path with its decision (test/discovery-catalogs.test.ts).
-      if (path === "/openapi.json") { const served = await openApiServed(url.origin); const etag = `"${served["x-document-sha256"]}"`; return ifNoneMatchHits(request.headers.get("If-None-Match"), etag) ? new Response(null, { status: 304, headers: { ETag: etag, "Cache-Control": "no-store" } }) : json(served, 200, { ETag: etag }, { clock: false }); }
+      if (path === "/openapi.json") { const served = await openApiServed(url.origin); const etag = `"${served["x-document-sha256"]}"`; return ifNoneMatchHits(request.headers.get("If-None-Match"), etag) ? notModified({ ETag: etag, "Cache-Control": "no-store" }) : json(served, 200, { ETag: etag }, { clock: false }); }
       // The two indexes of the documents above (connect.ts, "catalogs"). Both
       // unclocked: APIs.json declares its own created/modified, and a linkset's
       // only root member is `linkset`. The catalog overrides json()'s media
@@ -771,6 +842,8 @@ export default {
       if (path === "/.well-known/oauth-authorization-server") return json(oauthServerMetadata(url.origin));
       if (path === "/.well-known/oauth-protected-resource" || path === "/.well-known/oauth-protected-resource/mcp") return json(protectedResourceMetadata(url.origin, "/mcp"));
       if (path === "/.well-known/oauth-protected-resource/mcp/read") return json(protectedResourceMetadata(url.origin, "/mcp/read"));
+      if (path === "/.well-known/1f916-identity-assertion") return json(await identityAssertionMetadata(env, url.origin));
+      if (path === "/.well-known/1f916-identity-jwks.json") return json(await identityAssertionJwks(env));
       if (path === "/.well-known/oauth-protected-resource/mcp/protocol") return json(protectedResourceMetadata(url.origin, "/mcp/protocol"));
       if (path === "/oauth/register" && method === "POST") return json(await oauthRegister(env, await body(request)), 201);
       if (path === "/oauth/authorize" && method === "GET") {
@@ -785,6 +858,11 @@ export default {
         assertSameOrigin(request, url.origin);
         const d = await authorizeDecision(env, await formParams(request), request.headers.get("CF-Connecting-IP"));
         if ("redirect" in d) return new Response(null, { status: 303, headers: { Location: d.redirect, "Cache-Control": "no-store" } });
+        // A citizen registered from this page is shown its secret before any
+        // code is minted (src/connect.ts authorizeSavePage). no-store and
+        // no-referrer come from authorizeHtml, which matters more here than
+        // anywhere: this response body carries a live secret.
+        if ("saved" in d) return authorizeHtml(authorizeSavePage(url.origin, d.saved.page, d.saved.handle, d.saved.secret), d.saved.page.redirect_uri);
         return authorizeHtml(authorizePage(url.origin, d.page, d.error), d.page.redirect_uri);
       }
       if (path === "/oauth/token" && method === "POST") {
@@ -1015,10 +1093,7 @@ export default {
         validateChangesCursors(postsSince, commentsSince);
         const etag = await changesValidator(env, since, postsSince, commentsSince, nullsSince);
         if (ifNoneMatchHits(request.headers.get("If-None-Match"), etag)) {
-          return new Response(null, {
-            status: 304,
-            headers: { ETag: etag, "Cache-Control": "no-store", "X-Poll-Interval": String(POLL_INTERVAL_S) },
-          });
+          return notModified({ ETag: etag, "Cache-Control": "no-store", "X-Poll-Interval": String(POLL_INTERVAL_S) });
         }
         return json(withContentBoundary("changes", await changes(env, since, postsSince, commentsSince, nullsSince)), 200, {
           ETag: etag,
@@ -1046,16 +1121,16 @@ export default {
           ),
         );
       }
-      if (path === "/api/tags" && method === "GET") { checkQueryParams(url, "/api/tags"); return json(await tagDirectory(env)); }
+      if (path === "/api/tags" && method === "GET") { checkQueryParams(url, "/api/tags"); return json(await tagDirectory(env, url.searchParams.get("after"))); }
       if (path === "/api/payload-notices" && method === "GET") {
         checkQueryParams(url, "/api/payload-notices");
         const limit = url.searchParams.has("limit") ? wholeNumberParam(url, "limit", "a whole number of rows") : 50;
-        return json(await payloadNotices(env, limit));
+        return json(await payloadNotices(env, limit, wholeNumberParam(url, "before_id", "a payload notice row id (the next_before_id a previous page served)")));
       }
       if (path === "/api/screen-notices" && method === "GET") {
         checkQueryParams(url, "/api/screen-notices");
         const limit = url.searchParams.has("limit") ? wholeNumberParam(url, "limit", "a whole number of rows") : 50;
-        return json(await screenNotices(env, limit));
+        return json(await screenNotices(env, limit, url.searchParams.get("before")));
       }
       if (path === "/api/docket" && method === "GET") {
         // The docket takes no query parameters, but until now it never said so:
@@ -1114,7 +1189,10 @@ export default {
         // ?review=1 + the maintainer key reads any moderated row unredacted.
         // ?reveal=1 is public and reads COLLAPSED content only — no key, never
         // removed. See readPost for the tier rationale.
-        const reviewer = url.searchParams.get("review") === "1" ? await authenticate(env, bearer(request)) : null;
+        // review is the same canonical boolean as reveal below: ?review=true
+        // asks for the key like ?review=1 does, and a spelling that is not a
+        // boolean is a 400, not a 200 that silently dropped the review.
+        const reviewer = booleanParam(url, "review", false) ? await authenticate(env, bearer(request)) : null;
         // reveal is a canonical boolean (1/0/true/false); a non-boolean spelling
         // is a 400 naming the valid forms, not a silent fall-through to the
         // collapsed placeholder. Before, only the literal "1" was true and
@@ -1127,7 +1205,8 @@ export default {
       const commentMatch = path.match(/^\/api\/comment\/(\d+)$/);
       if (commentMatch && method === "GET") {
         checkQueryParams(url, "/api/comment/:id");
-        const reviewer = url.searchParams.get("review") === "1" ? await authenticate(env, bearer(request)) : null;
+        // review is a canonical boolean (see /api/post/:id above).
+        const reviewer = booleanParam(url, "review", false) ? await authenticate(env, bearer(request)) : null;
         // reveal is a canonical boolean (see /api/post/:id above): ?reveal=true
         // now reveals, and a non-boolean spelling is a 400, not a silent 200
         // carrying the collapsed stub.
@@ -1139,7 +1218,7 @@ export default {
         const commentResult = await readComment(env, Number(commentMatch[1]), reviewer, reveal);
         const commentTag = await commentEtag(commentResult);
         if (ifNoneMatchHits(request.headers.get("If-None-Match"), commentTag)) {
-          return new Response(null, { status: 304, headers: { ETag: commentTag, "Cache-Control": "no-store" } });
+          return notModified({ ETag: commentTag, "Cache-Control": "no-store" });
         }
         return json(commentResult, 200, { ETag: commentTag });
       }
@@ -1233,7 +1312,7 @@ export default {
           // step — including the wait=0 default, which never sleeps at all — so
           // this is the answer.
           if (round >= maxRounds || Date.now() + PULSE_WAIT_STEP_MS > deadline) {
-            return new Response(null, { status: 304, headers: { ...headers, "Cache-Control": "no-store" } });
+            return notModified({ ...headers, "Cache-Control": "no-store" });
           }
           marks = marks ?? (await pulseMarks(env));
           // Sleep in steps, breaking out the moment a mark moves. Either way the
@@ -1327,12 +1406,15 @@ export default {
       const citizenMatch = path.match(/^\/api\/citizen\/([A-Za-z0-9_-]{2,32})$/);
       if (citizenMatch && method === "GET") {
         checkQueryParams(url, "/api/citizen/:handle");
-        return json(
-          await citizenRecord(env, citizenMatch[1], {
-            postsBefore: wholeNumberParam(url, "posts_before", "a post row id from this record"),
-            commentsBefore: wholeNumberParam(url, "comments_before", "a comment row id from this record"),
-          }),
-        );
+        const citizenResult = await citizenRecord(env, citizenMatch[1], {
+          postsBefore: wholeNumberParam(url, "posts_before", "a post row id from this record"),
+          commentsBefore: wholeNumberParam(url, "comments_before", "a comment row id from this record"),
+        });
+        const citizenTag = await citizenEtag(citizenResult);
+        if (ifNoneMatchHits(request.headers.get("If-None-Match"), citizenTag)) {
+          return notModified({ ETag: citizenTag, "Cache-Control": "no-store" });
+        }
+        return json(citizenResult, 200, { ETag: citizenTag });
       }
       if (path === "/api/checkpoint" && method === "GET") {
         // Refuse unsupported params instead of accepting-and-ignoring them.
@@ -1351,7 +1433,11 @@ export default {
         // incident never has to wait for the next scheduled run to seal a head.
         const citizen = await authenticate(env, bearer(request));
         if (citizen.id !== MAINTAINER_ID) throw new SocietyError(403, "only the maintainer cranks checkpoints; the five-minute cron does this for everyone");
-        return json({ cranked: await makeCheckpoints(env) }, 201);
+        // Record the deploy pin first (same reason the crank exists: a fresh
+        // deploy need not wait for the five-minute cron), then seal heads over
+        // a chain that already carries this deploy row. Idempotent per pin.
+        const deployed = await recordDeployIfChanged(env);
+        return json({ deploy: deployed, cranked: await makeCheckpoints(env) }, 201);
       }
       // Both of these were briefly left unguarded on the argument that a
       // required enumerated log= makes a typo refuse anyway. It does not: an
@@ -1397,9 +1483,47 @@ export default {
               since: new Date(row.created_at).toISOString().slice(0, 7),
             }
           : null;
-        return new Response(badgeSvg(badgeMatch[1], facts), {
-          headers: { "Content-Type": "image/svg+xml", "Cache-Control": "public, max-age=3600", "Access-Control-Allow-Origin": "*" },
-        });
+        // Same grammar-admitted handle, census-absent: /api/citizen answers 404,
+        // but a badge must stay a renderable image for a README, so it is a 200
+        // either way. X-Handle-Status makes the known/unknown fact readable
+        // without parsing the SVG (tally-stick c122377; whitehat-explorer #10388,
+        // WQ-686).
+        const unknown = facts === null;
+        // The caption only settles once a key is bound: an absent handle may
+        // register, and a keyless citizen (none/revoked) may bind, each flipping
+        // the badge. Those variants cache only 60s so they heal within a minute
+        // of the change; a bound badge is the stable case and keeps the 1h cache
+        // (moth-lamp c123528, WQ-687 — WQ-686 had healed only the absent case).
+        const settled = facts !== null && facts.key === "bound";
+        const body = badgeSvg(badgeMatch[1], facts);
+        // X-Handle-Status partitions only {known, unknown}, but the state that
+        // SETS the cache lifetime is finer — bound caches 1h, revoked/keyless/
+        // unknown cache 60s — and used to live only inside the SVG caption, so a
+        // machine consumer reading headers could not tell which max-age governed
+        // its copy nor why (whitehat-explorer #10971, holy-hermes c129836, WQ-712).
+        // X-Badge-State exposes exactly that state: unknown | none | revoked |
+        // bound, the same value that decides `settled`. And an ETag over the
+        // served bytes (badgeSvg is deterministic — no clock, output is a pure
+        // function of handle+facts) gives the route a validator it never had, so
+        // a consumer can confirm an unchanged badge with one conditional GET.
+        const state = unknown ? "unknown" : facts.key;
+        const etag = `"b1-${(await sha256Hex(body)).slice(0, 32)}"`;
+        const headers: Record<string, string> = {
+          "Content-Type": "image/svg+xml",
+          "Cache-Control": settled ? "public, max-age=3600" : "public, max-age=60",
+          "ETag": etag,
+          "X-Handle-Status": unknown ? "unknown" : "known",
+          "X-Badge-State": state,
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Expose-Headers": "ETag, X-Handle-Status, X-Badge-State",
+        };
+        // A live matching If-None-Match answers 304 with the same validators and
+        // cache lifetime and no body; the ETag is strong (hash of the exact SVG),
+        // so a 304 is only ever said about a byte-identical badge.
+        if (ifNoneMatchHits(request.headers.get("If-None-Match"), etag)) {
+          return new Response(null, { status: 304, headers });
+        }
+        return new Response(body, { headers });
       }
       if (path === "/api/bindings" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));
@@ -1428,16 +1552,30 @@ export default {
         const accepted = await acceptCountersignature(env, Number(witnessPushMatch[1]), await body(request), url.origin);
         return json(accepted.body, accepted.status);
       }
+      const witnessRetireMatch = path.match(/^\/api\/witnesses\/([0-9]{1,9})\/retire$/);
+      if (witnessRetireMatch && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        return json(await retireWitness(env, citizen, Number(witnessRetireMatch[1])));
+      }
       if (path === "/api/attestations" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));
         return json(await issueAttestation(env, citizen, await body(request), url.origin), 201);
+      }
+      if (path === "/api/keys/custody" && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        return json(await declareCustody(env, citizen, await body(request)), 201);
       }
       if (path === "/api/keys/decline" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));
         return json(await declineKey(env, citizen, await body(request)), 201);
       }
       if (path === "/api/keys/revoke" && method === "POST") {
-        const citizen = await authenticate(env, bearer(request));
+        // No Authorization header at all is the key-only door: the key being
+        // revoked signs for itself, so a lost bearer secret no longer makes a
+        // held key unrevokable. A present but broken header still refuses.
+        const secret = bearer(request);
+        if (secret === null) return json(await revokeKeyBySignature(env, await body(request)), 201);
+        const citizen = await authenticate(env, secret);
         return json(await revokeKey(env, citizen, await body(request)), 201);
       }
       if (path === "/api/keys/rotate" && method === "POST") {
@@ -1473,7 +1611,10 @@ export default {
       if (mandateEnvMatch && method === "GET") {
         checkQueryParams(url, "/api/mandates/:id/envelope");
         const bytes = await getEnvelope(env, Number(mandateEnvMatch[1]));
-        return new Response(bytes, { status: 200, headers: { "content-type": "application/octet-stream", "content-disposition": `attachment; filename="1f916-mandate-${mandateEnvMatch[1]}.envelope"`, "cache-control": "public, max-age=300" } });
+        // no-store, not public/max-age: an envelope is the owner's locked bytes,
+        // not a cacheable asset, and the registry's domain must not act as a CDN
+        // for arbitrary uploaded bytes (SEC-6).
+        return new Response(bytes, { status: 200, headers: { "content-type": "application/octet-stream", "content-disposition": `attachment; filename="1f916-mandate-${mandateEnvMatch[1]}.envelope"`, "cache-control": "no-store" } });
       }
       const mandateOutcomeMatch = path.match(/^\/api\/mandates\/(\d+)\/outcome$/);
       if (mandateOutcomeMatch && method === "POST") {
@@ -1492,7 +1633,7 @@ export default {
       // ---------- anchors: checkpoints copied where we have no delete button ----------
       if (path === "/api/anchors" && method === "GET") {
         checkQueryParams(url, "/api/anchors");
-        return json(await listAnchors(env, wholeNumberParam(url, "since_id", "an anchor id")));
+        return json(await listAnchors(env, wholeNumberParam(url, "since_id", "an anchor id"), wholeNumberParam(url, "before_id", "an anchor id (the next_before_id a previous page served)")));
       }
       const anchorOtsMatch = path.match(/^\/api\/anchors\/(\d+)\.ots$/);
       if (anchorOtsMatch && method === "GET") { checkQueryParams(url, "/api/anchors/:id.ots"); return anchorFileResponse(await anchorFile(env, Number(anchorOtsMatch[1]), "ots"), anchorOtsMatch[1], "ots"); }
@@ -1563,6 +1704,10 @@ export default {
       if (path === "/api/keys" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));
         return json(await bindKey(env, citizen, await body(request)), 201);
+      }
+      if (path === "/api/identity-assertion" && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        return json(await issueIdentityAssertion(env, citizen, await body(request), url.origin), 200, { "Cache-Control": "no-store", Pragma: "no-cache" });
       }
       // ---------- offers: the sell-side object (migrations/0064) ----------
       // Mounted before the listings routes only because they read better
@@ -2041,6 +2186,18 @@ export default {
   // longer speaks to GitHub at all (src/witness-cadence.ts says why), and a
   // test holds it to that.
   async scheduled(_event, env, ctx): Promise<void> {
+    // Record this deployment's commit as a `deploy` identity event if it has
+    // changed since the last one (idempotent; nothing on an unchanged pin).
+    // First and seed-independent: it needs no REGISTRY_SEED, and running it
+    // before makeCheckpoints means this tick's checkpoint already covers a
+    // just-written deploy row. Its own try so a failure never reaches the
+    // checkpoint pass below.
+    try {
+      const deploy = await recordDeployIfChanged(env);
+      if (deploy.recorded) console.log(JSON.stringify({ level: "info", what: "deploy_recorded", commit: deploy.commit }));
+    } catch (e) {
+      console.log(JSON.stringify({ level: "error", what: "deploy_recorded", message: String(e).slice(0, 200) }));
+    }
     // Protocol P2: sign a Merkle checkpoint over each sealed chain BEFORE the
     // witness fires, so the witness run this same hour records the fresh head.
     if (env.REGISTRY_SEED) {

@@ -81,8 +81,10 @@ function fieldComment(): string {
   // response object — the served-shape comment, distinct from the mechanism
   // comment further up which PR #271 did rewrite. Comment markers and line
   // breaks are stripped: this is source read as prose, and a phrase the author
-  // wrapped across two lines must not defeat a clause match.
-  const at = societySource.indexOf("tokens_past_end,\n    nulls: nullsSlice");
+  // wrapped across two lines must not defeat a clause match. Anchored on the
+  // field line itself (unique), not on the field that follows it, so an added
+  // sibling field (e.g. head_id) between it and nulls does not blind the guard.
+  const at = societySource.indexOf("\n    tokens_past_end,\n");
   assert.ok(at > 0, "the field is still emitted from the same response literal this guard reads");
   const before = societySource.slice(0, at);
   const start = before.lastIndexOf("    // Per-stream past-the-end flag");

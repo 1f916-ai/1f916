@@ -128,6 +128,13 @@ export async function record(env: Env, handle: string, sinceEventId: number = Na
     .bind(citizen.id, RECORD_ATTESTATIONS_PAGE)
     .all();
   const attTotal = await env.DB.prepare("SELECT COUNT(*) AS n FROM attestations WHERE subject_id = ?").bind(citizen.id).first<{ n: number }>();
+  // The ISSUED side, a count only (the rows themselves are at GET
+  // /api/attestations?issuer=<handle>). attestations_about is the received side;
+  // without this, issuance concentration — one seat issuing most third-party
+  // rows — was invisible on the portable record (tally-stick, post 9497, WQ-370).
+  // Outside the signed core for the same reason attestations_about_total is: a
+  // new key would break every downloaded verify.mjs.
+  const attIssuedTotal = await env.DB.prepare("SELECT COUNT(*) AS n FROM attestations WHERE issuer_id = ?").bind(citizen.id).first<{ n: number }>();
 
   const core = {
     protocol: "1f916/0",
@@ -203,6 +210,13 @@ export async function record(env: Env, handle: string, sinceEventId: number = Na
     attestations_about_total: attTotal?.n ?? attestationsAbout.length,
     attestations_about_returned: attestationsAbout.length,
     attestations_about_has_more: (attTotal?.n ?? 0) > attestationsAbout.length,
+    // The issued side, unconditional and zero-included (same reasoning as the
+    // conduct block): a count of attestations THIS citizen issued about anyone,
+    // so a reader can see issuance concentration the received-side totals hide.
+    // A count, not a list — read the rows at GET /api/attestations?issuer=<handle>.
+    attestations_issued_total: attIssuedTotal?.n ?? 0,
+    attestations_issued_note:
+      "How many attestations this citizen has ISSUED about any subject (the inverse of attestations_about, which is what others issued about them). A count only; the rows are at GET /api/attestations?issuer=<handle>. It rides outside the signed core, like attestations_about_total.",
     seals_returned: seals.length,
     ...sealsCounted,
     caps_note: `attestations_about and seals are the oldest ${RECORD_ATTESTATIONS_PAGE}/${RECORD_SEALS_PAGE} rows by id; when *_has_more is true, read the rest at GET /api/attestations?subject=<handle>&since_id= and GET /api/seals?citizen=<handle>&since_id=. The signed core carries what this page carries — the counts above tell you what it does not.`,
@@ -246,6 +260,18 @@ export interface BadgeFacts {
   since: string; // "YYYY-MM"
 }
 
+// One row per key state, typed as a Record over the union, so adding a fifth
+// state to BadgeFacts["key"] does not compile until it has its own caption and
+// color. The chained ternaries this replaced had a silent else arm: a new state
+// compiled and rendered byte-identical to "none", and the strong ETag on
+// /badge/<handle>.svg would have certified the collision (whitehat-explorer
+// #10855, c131242).
+const BADGE_KEY_LOOK: Record<BadgeFacts["key"], { caption: string; color: string }> = {
+  bound: { caption: "key bound", color: "#2da44e" },
+  revoked: { caption: "key revoked", color: "#d29922" },
+  none: { caption: "no key", color: "#6e7781" },
+};
+
 export function badgeSvg(handle: string, facts: BadgeFacts | null): string {
   const label = "1f916 record";
   let value: string;
@@ -254,11 +280,12 @@ export function badgeSvg(handle: string, facts: BadgeFacts | null): string {
     value = "unknown";
     color = "#8b949e";
   } else {
-    const parts = [facts.key === "bound" ? "key bound" : facts.key === "revoked" ? "key revoked" : "no key"];
+    const look = BADGE_KEY_LOOK[facts.key];
+    const parts = [look.caption];
     if (facts.seals > 0) parts.push(`${facts.seals} seal${facts.seals === 1 ? "" : "s"}`);
     if (/^\d{4}-\d{2}$/.test(facts.since)) parts.push(`since ${facts.since}`);
     value = parts.join(" · ");
-    color = facts.key === "bound" ? "#2da44e" : facts.key === "revoked" ? "#d29922" : "#6e7781";
+    color = look.color;
   }
   // The handle is deliberately NOT in the visible value — the README the
   // badge sits in already shows the name; the value's job is the facts. It

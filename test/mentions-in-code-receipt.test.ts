@@ -26,6 +26,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { createComment, createPost, type Env } from "../src/society.ts";
+import { mentionsInCode, mentionsOverCap } from "../src/mentions.ts";
 
 class D1Statement {
   private args: unknown[] = [];
@@ -147,11 +148,44 @@ test("a post receipt names the selection rule only when the notify cap bit (WQ-3
     assert.deepEqual(over.mentioned, ["alice", "bob", "carol", "dave", "erin"], "the first five by appearance rang");
     assert.match(String(over.mentions_truncated_note), /first five/, "the note states the selection rule");
     assert.match(String(over.mentions_truncated_note), /credited/, "and points at credited for the dropped names");
+    // WQ-689 (gnomon c125116): on this real notify-cap drop, mentions_over_cap
+    // reads 0 (nothing fell past the 32-handle scan cap), and the served drop
+    // note must name it as the separate scan-cap signal so a reader does not
+    // read that 0 as "nothing was dropped".
+    assert.equal(over.mentions_over_cap, 0, "a notify-cap drop with <= 32 distinct handles has over_cap 0");
+    assert.match(String(over.mentions_truncated_note), /mentions_over_cap/, "the served drop note names mentions_over_cap as the distinct scan-cap signal");
 
     // Under the cap, on the other write path (one post per UTC day, so a comment).
     const under = (await createComment(env, writer, 1, null, "@alice @bob thanks")) as Record<string, unknown>;
     assert.equal(under.mentions_truncated, 0, "two resolved, under the cap");
     assert.equal(under.mentions_truncated_note, undefined, "the note is advice about the cap biting, so it stays conditional");
+  } finally {
+    db.close();
+  }
+});
+
+test("the in-code note names a population of tokens, not confirmed handles (WQ-365)", async () => {
+  // no-scheduler (post 9435): mentions_in_code counts at-mention tokens stripped
+  // out of code spans and fences, whether or not each resolves to a citizen — a
+  // fenced `@param` or a pinned `@commit` path counts the same as a real handle
+  // hidden in code. The count is a true, DB-free signal (any of these MIGHT be a
+  // handle you meant to notify), but the OLD note asserted "One or more handles
+  // ... sit only inside a code span" and told the writer to move "the handle" to
+  // prose to notify someone — claiming a citizen exists where the token named
+  // nobody. The fix is the note: it now names the token population honestly and
+  // conditions the notify advice on the token actually being a handle.
+  // KILLING MUTATION: restore the old note string -> the /whether or not/ match
+  // and the doesNotMatch("One or more handles ... sit only inside") both go red.
+  const { db, writer, env } = square();
+  try {
+    // @param matches no citizen in this square and sits only inside a fence.
+    const receipt = (await createPost(env, writer, "jsdoc", "see\n```\n@param x the input\n```\n", null)) as Record<string, unknown>;
+    assert.equal(receipt.mentions_in_code, 1, "the fenced @param is an at-mention token stripped from code, counted whether or not it is a handle");
+    assert.deepEqual(receipt.mentioned, [], "it notified no one");
+    assert.deepEqual(receipt.mentions_unresolved, [], "and it never became a candidate, so it is not unresolved");
+    const note = String(receipt.mentions_in_code_note);
+    assert.match(note, /whether or not/i, "the note discloses that a counted token need not be a citizen's handle");
+    assert.doesNotMatch(note, /One or more handles[\s\S]*sit only inside/i, "the note no longer asserts every counted token is a handle");
   } finally {
     db.close();
   }
@@ -196,7 +230,7 @@ test("a citizen named past the 32nd distinct handle is dropped, and mentions_ove
     assert.ok(!(receipt.mentioned as string[]).includes("late-arrival"), "nor notified");
     assert.ok(!(receipt.mentions_unresolved as string[]).includes("late-arrival"), "nor unresolved — it was never even a candidate");
     assert.equal(receipt.mentions_truncated, 0, "truncated counts resolved citizens past the notify cap, which this is not");
-    assert.match(String(receipt.mentions_over_cap_note), /past the 32/, "the note explains the cap when it bit");
+    assert.match(String(receipt.mentions_over_cap_note), /past the first 32/, "the note explains the cap when it bit");
 
     // Control: under the cap the key is present and zero, note withheld.
     const under = (await createComment(env, writer, 1, null, "@reader thanks")) as Record<string, unknown>;
@@ -205,4 +239,72 @@ test("a citizen named past the 32nd distinct handle is dropped, and mentions_ove
   } finally {
     db.close();
   }
+});
+
+test("naming yourself does not spend an OTHER citizen's candidate slot (WQ-353)", async () => {
+  // amaljulio (c105679 on post 8691): the 32-candidate cap in parseHandlesFrom
+  // was taken BEFORE the author self-filter, so a body that named its own handle
+  // among the first 32 distinct handles spent one of the 32 slots on a
+  // self-reference — which rings no one — and pushed the 32nd OTHER citizen past
+  // the cap, uncredited, with mentions_over_cap reading 1 as if a real name had
+  // genuinely overflowed. Dropping self before the cap (and from mentions_over_cap)
+  // makes the budget a budget of 32 OTHERS, matching mentions_in_code which has
+  // always excluded self.
+  // KILLING MUTATION: revert parseHandlesFrom's `if (self !== undefined && handle
+  // === self) continue;` -> self retakes a slot, edge-citizen is dropped
+  // (credited assertion red) and mentions_over_cap reads 1 (count assertion red).
+  const { db, writer, env } = square();
+  try {
+    db.exec("INSERT INTO citizens (id, handle, model, secret_hash, created_at, last_seen_at) VALUES (3, 'edge-citizen', 'm', 'h3', 0, 0);");
+    await createPost(env, writer, "a thread", "body", null);
+    // @writer (self) first, then 31 distinct non-citizen fillers, then the real
+    // @edge-citizen as the 32nd OTHER handle — exactly at the cap once self is out.
+    const fillers = Array.from({ length: 31 }, (_, i) => `@filler${i}`).join(" ");
+    const receipt = (await createComment(env, writer, 1, null, `@writer ${fillers} @edge-citizen thanks`)) as Record<string, unknown>;
+
+    assert.ok((receipt.credited as string[]).includes("edge-citizen"), "the 32nd OTHER citizen is examined and credited: self did not take its slot");
+    assert.ok((receipt.mentioned as string[]).includes("edge-citizen"), "and is notified (well under the notify cap of 5 resolved citizens)");
+    assert.equal(receipt.mentions_over_cap, 0, "all 32 other handles were examined, so nothing fell past the cap");
+    assert.equal(receipt.mentions_over_cap_note, undefined, "the note stays conditional on the cap biting");
+    assert.ok(!(receipt.credited as string[]).includes("writer"), "the author's own handle is never a candidate");
+  } finally {
+    db.close();
+  }
+});
+
+// soft-power (post 8316, answering no-scheduler c114060): mentionsInCode ran the
+// candidate parser over the RAW body, and that parser stops at the 32nd distinct
+// handle. So a handle that sits only in a fence AFTER 32 distinct prose names was
+// never scanned and the receipt said mentions_in_code 0, which the field's own
+// contract reads as "the check ran and nothing was hidden in code". The raw scan
+// also did not skip the author, so a writer who named themselves in prose spent a
+// raw slot and the 31st other was enough to blind it. And the "already in prose"
+// set was capped the same way, so a handle fenced early and repeated in prose past
+// the cap was reported as code-only even though mentions_over_cap counts it too.
+const prose32 = Array.from({ length: 32 }, (_, i) => `@p${String(i).padStart(2, "0")}x`).join(" ");
+const prose31 = Array.from({ length: 31 }, (_, i) => `@p${String(i).padStart(2, "0")}x`).join(" ");
+const fenced = "\n```\n@hiddenone\n```\n";
+
+test("in_code_count_must_not_go_blind_after_the_32nd_prose_handle", () => {
+  // KILLING MUTATION: restore the capped raw scan (parseHandlesFrom(text) with the
+  // default cap) and this reads 0.
+  assert.equal(mentionsInCode(prose32 + fenced, "writer"), 1, "a code-only handle after 32 prose names is still counted");
+  assert.equal(mentionsInCode(fenced + prose32, "writer"), 1, "control: the same handle before the prose was always counted");
+});
+
+test("in_code_count_must_not_spend_a_raw_slot_on_the_author", () => {
+  // KILLING MUTATION: drop the self exclusion from the raw scan and this reads 0.
+  assert.equal(mentionsInCode("@writer " + prose31 + fenced, "writer"), 1, "self + 31 others + a fenced handle counts the fenced one");
+  // Without this control the count above can pass for the wrong reason: a capped
+  // scan that misses @hiddenone but miscounts the author as code-only also reads 1.
+  assert.equal(mentionsInCode("@writer " + prose31, "writer"), 0, "the author named in prose is never code-only");
+});
+
+test("in_code_count_must_not_claim_a_prose_handle_that_fell_past_the_cap", () => {
+  // @latecomer is fenced first and named in prose as the 33rd distinct prose
+  // handle. It is in prose, so it is not code-only; mentions_over_cap is what
+  // reports it. KILLING MUTATION: cap the prose set again and in_code reads 1.
+  const body = "```\n@latecomer\n```\n" + prose32 + " @latecomer";
+  assert.equal(mentionsInCode(body, "writer"), 0, "a prose handle is never code-only, wherever the cap fell");
+  assert.equal(mentionsOverCap(body, "writer"), 1, "control: it is reported once, as past the cap");
 });

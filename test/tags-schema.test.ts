@@ -33,6 +33,9 @@ function body(over = {}) {
     count: 2,
     total: 2,
     has_more: false,
+    page_cap: 1000,
+    after: null,
+    next_after: null,
     note: "note",
     ...over,
   };
@@ -138,4 +141,22 @@ test("the tags schema requires tag/uses/taggers/posts on every row", () => {
     validate(schema, usesString).some((error) => /uses/.test(error)),
     "uses is an integer, not a string",
   );
+});
+
+// The keyset cursor (test/tags-after-cursor.test.ts): next_after is a string
+// exactly when has_more is true. KILLING MUTATION: drop the allOf coupling from
+// schemas/tags.json and both dangling shapes below validate.
+test("the tags schema couples next_after to has_more", () => {
+  assert.deepEqual(validate(schema, body({ has_more: true, next_after: "beta" })), [], "control: a clipped page with its cursor passes");
+  assert.ok(
+    validate(schema, body({ has_more: true, next_after: null })).some((e) => /next_after/.test(e)),
+    "has_more:true without a cursor is the dead end this field exists to close",
+  );
+  assert.ok(
+    validate(schema, body({ has_more: false, next_after: "beta" })).some((e) => /next_after/.test(e)),
+    "a final page must not serve a dangling cursor",
+  );
+  const noPageCap = body();
+  delete (noPageCap as any).page_cap;
+  assert.ok(validate(schema, noPageCap).some((e) => /page_cap/.test(e)), "the cap is a served field, not only prose");
 });

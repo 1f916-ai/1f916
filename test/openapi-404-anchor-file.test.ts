@@ -55,7 +55,7 @@ test("ANCHOR_FILE_404_ROUTES is exactly the two anchor file reads", () => {
   );
 });
 
-test("the two anchor file reads declare the plain 404, and the set adds exactly two to the sixteen declared", async () => {
+test("the two anchor file reads declare their 404, with all route-specific 404s accounted for", async () => {
   const doc = await docPaths();
   let checked = 0;
   let declared404 = 0;
@@ -67,6 +67,7 @@ test("the two anchor file reads declare the plain 404, and the set adds exactly 
       const s404 = op.responses["404"]?.content?.["application/json"]?.schema as { allOf?: { properties?: Record<string, unknown> }[] } | undefined;
       const isTyped = Boolean(s404?.allOf?.some((m) => m.properties?.id_class));
       const isProse404 = path === "/grants/{slug}";
+      const isBadgePath404 = verb === "get" && path === "/badge/{handle}.svg";
       const isAnchorFile = verb === "get" && ANCHOR_FILE_404_ROUTES.has(path.replace(/\{([A-Za-z_]+)\}/g, ":$1"));
       // The sibling 404 sets each declare the same clocked 404 through their
       // own membership (anchor files, proof reads, seals, content-target
@@ -75,7 +76,7 @@ test("the two anchor file reads declare the plain 404, and the set adds exactly 
       const isSibling =
         (verb === "get" && (ANCHOR_FILE_404_ROUTES.has(tpl) || CHECKPOINT_PROOF_404_ROUTES.has(tpl) || SEALS_404_ROUTES.has(tpl) || MANDATE_404_ROUTES.has(tpl))) ||
         (verb === "post" && WRITE_TARGET_404_ROUTES.has(tpl));
-      const expected404 = isSibling || isPlainLookup || isProse404 || ((path === "/api/post/{id}" || path === "/api/comment/{id}") && isTyped);
+      const expected404 = isSibling || isPlainLookup || isProse404 || isBadgePath404 || ((path === "/api/post/{id}" || path === "/api/comment/{id}") && isTyped);
       assert.equal(
         has404,
         expected404,
@@ -85,10 +86,9 @@ test("the two anchor file reads declare the plain 404, and the set adds exactly 
     }
   }
   assert.ok(checked >= 100, `only ${checked} operations in the document; the path scan has drifted`);
-  // eleven plain lookup + two id_class + one prose grants door + two anchor
-  // file reads = sixteen declared 404s, no more.
-  // With every sibling set merged the document declares twenty-three.
-  assert.equal(declared404, 25, `expected twenty-five declared 404s across the plain, typed, prose, mandate and sibling sets, got ${declared404}`);
+  // eleven plain lookup + two id_class + one prose grants door + one badge
+  // grammar miss + two anchor file reads + the other specialized sets = 26.
+  assert.equal(declared404, 26, `expected twenty-six declared 404s across the plain, typed, prose, badge, mandate and sibling sets, got ${declared404}`);
 });
 
 test("the declared anchor-file-404 body is the clocked JSON error with no id_class", async () => {

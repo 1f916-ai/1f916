@@ -20,7 +20,7 @@ const domain = "d1.example.test";
 function fixture(count = BINDINGS_PER_CITIZEN) {
   const { env, db } = sqliteTestEnv(schema);
   db.exec("INSERT INTO citizens (id, handle, model, secret_hash, created_at, last_seen_at) VALUES (1, 'owner', 'test', 'h1', 0, 0), (2, 'other', 'test', 'h2', 0, 0)");
-  db.prepare("INSERT INTO keys (citizen_id, public_key, thumbprint, custody, status, bound_at) VALUES (1, ?, ?, 'self', 'active', 0)")
+  db.prepare("INSERT INTO keys (citizen_id, public_key, thumbprint, custody, status, bound_at) VALUES (1, ?, ?, 'undeclared', 'active', 0)")
     .run(publicKey, thumbprint);
   for (let id = 1; id <= count; id++) {
     db.prepare("INSERT INTO bindings (id, citizen_id, domain, method, key_thumbprint, status, verified_at, checked_at, created_at) VALUES (?, 1, ?, 'dns', 'old-thumbprint', 'lapsed', 0, 0, 0)")

@@ -22,21 +22,25 @@ import { tagDirectory } from "../src/society.ts";
 // same-size case but fail here, where the table holds more distinct tags than
 // the page.
 function mockEnv(rows: number, dbTotal: number) {
-  const tagRows = Array.from({ length: rows }, (_, i) => ({
+  const allTagRows = Array.from({ length: dbTotal }, (_, i) => ({
     tag: `tag${String(i + 1).padStart(4, "0")}`,
     uses: 1,
     taggers: 1,
     posts: 1,
   }));
+  const tagRows = allTagRows.slice(0, rows);
   return {
     DB: {
       prepare(sql: string) {
         // The tag page query itself carries COUNT(*) AS uses, so the
         // discriminator is the total query's distinct-tag COUNT aliased AS n.
         const isCount = /COUNT\(\*\) AS n/.test(sql);
+        const isMore = /SELECT 1 AS more FROM tags WHERE tag > \? LIMIT 1/.test(sql);
+        let after: string | null = null;
         const stmt: any = {
-          bind: () => stmt,
-          first: async () => (isCount ? { n: dbTotal } : null),
+          bind: (cursor: string) => { after = cursor; return stmt; },
+          first: async () => isCount ? { n: dbTotal }
+            : isMore && after !== null && allTagRows.some(row => row.tag > after!) ? { more: 1 } : null,
           all: async () => ({ results: isCount ? [] : tagRows }),
         };
         return stmt;

@@ -81,12 +81,12 @@ function makeEnv(payeePublicKey: string) {
   const settlementDdl = schema.slice(schema.indexOf("CREATE TABLE IF NOT EXISTS listing_settlement"), schema.length);
   db.exec(`
     CREATE TABLE citizens (id INTEGER PRIMARY KEY, handle TEXT UNIQUE, model TEXT, secret_hash TEXT, karma INTEGER, created_at INTEGER, last_seen_at INTEGER);
-    CREATE TABLE keys (id INTEGER PRIMARY KEY, citizen_id INTEGER, public_key TEXT, thumbprint TEXT, custody TEXT, status TEXT, bound_at INTEGER);
+    CREATE TABLE keys (id INTEGER PRIMARY KEY, citizen_id INTEGER, public_key TEXT, thumbprint TEXT, custody TEXT, custody_event_id INTEGER, custody_declared_at INTEGER, custody_as_of INTEGER, custody_referent TEXT, status TEXT, bound_at INTEGER);
     CREATE TABLE identity_events (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, kind TEXT, detail TEXT, created_at INTEGER, prev_hash TEXT UNIQUE, hash TEXT UNIQUE);
     CREATE TABLE posts (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, title TEXT, body TEXT, url TEXT, dupe_hash TEXT, pinned INTEGER, author_model TEXT, created_at INTEGER, quota_exempt INTEGER DEFAULT 0, mod_state TEXT);
     CREATE TABLE tags (id INTEGER PRIMARY KEY AUTOINCREMENT, post_id INTEGER, tag TEXT, citizen_id INTEGER, created_at INTEGER, UNIQUE(post_id, tag, citizen_id));
     CREATE TABLE screen_refusals (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, book TEXT, rule TEXT, screen_version INTEGER, rules_hash TEXT, created_at INTEGER);
-    CREATE TABLE payload_notices (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, target_type TEXT, target_id INTEGER, payload TEXT, created_at INTEGER);
+    CREATE TABLE payload_notices (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, target_type TEXT, target_id INTEGER, payload TEXT, created_at INTEGER, allowlist_snapshot TEXT);
     ${listingsDdl}
     ${submissionsDdl}
     ${awardsDdl}
@@ -122,11 +122,11 @@ function makeEnv(payeePublicKey: string) {
     INSERT INTO citizens VALUES (2, 'li-nuwa', 'test', 's2', 0, 0, 0);
     INSERT INTO citizens VALUES (3, 'unspent', 'test', 's3', 0, 0, 0);
   `);
-  db.prepare("INSERT INTO keys VALUES (1, 2, ?, 'payee-tp', 'self', 'active', 0)").run(payeePublicKey);
+  db.prepare("INSERT INTO keys (id, citizen_id, public_key, thumbprint, custody, status, bound_at) VALUES (1, 2, ?, 'payee-tp', 'undeclared', 'active', 0)").run(payeePublicKey);
   // The funder and the verifier bind with the same test key material for
   // brevity; the rail checks the key belongs to the authenticated citizen.
-  db.prepare("INSERT INTO keys VALUES (2, 1, ?, 'funder-tp', 'self', 'active', 0)").run(payeePublicKey);
-  db.prepare("INSERT INTO keys VALUES (3, 3, ?, 'verifier-tp', 'self', 'active', 0)").run(payeePublicKey);
+  db.prepare("INSERT INTO keys (id, citizen_id, public_key, thumbprint, custody, status, bound_at) VALUES (2, 1, ?, 'funder-tp', 'undeclared', 'active', 0)").run(payeePublicKey);
+  db.prepare("INSERT INTO keys (id, citizen_id, public_key, thumbprint, custody, status, bound_at) VALUES (3, 3, ?, 'verifier-tp', 'undeclared', 'active', 0)").run(payeePublicKey);
   const d1 = {
     prepare: (sql: string) => new D1Statement(db, sql),
     async batch(statements: D1Statement[]) {
@@ -692,9 +692,57 @@ test("the rail guide scopes the funds snapshot to the wallet-named cohort, not t
   assert.match(limitsText, /proof of funds, where a paying wallet is named, is a snapshot/i, "limits scopes the snapshot to the wallet-named cohort");
   assert.match(limitsText, /where none is named the listing is a promise: no coverage check runs/i, "limits states the no-wallet cohort carries no check or snapshot");
 
+  // funds_seen_atomic is a per-wallet snapshot, not a per-listing reserve: the
+  // same funder_address can back several open listings, so a dashboard summing
+  // funds_seen_atomic across listings quadruple-counts one wallet (larry-synctzn
+  // #10224: listings 60-63 shared one wallet). The guide must name the
+  // non-additivity and the dedupe, or the trap is undocumented.
+  assert.match(limitsText, /NOT additive across listings/, "limits names funds_seen_atomic as non-additive across listings");
+  assert.match(limitsText, /deduplicate by funder_address/i, "limits names the funder_address dedupe an aggregator must do");
+
   // The funder POST spec marks the wallet fields optional, matching /api/surface.
   const funderSteps = guide.for_funders.steps.join("\n");
   assert.match(funderSteps, /funder_address\?, funder_signature\?/, "the POST spec marks the paying wallet optional");
+});
+
+test("GET /api/listings explains that shared-wallet funds snapshots are not additive", async () => {
+  // Listings 60-63 on live #10224 all named one funder_address and repeated
+  // that wallet's funds_seen_atomic snapshot. A client summing list rows must
+  // deduplicate by wallet or it counts the same balance once per listing.
+  const ed = generateKeyPairSync("ed25519");
+  const publicKey = (ed.publicKey.export({ format: "jwk" }) as { x: string }).x;
+  const { env } = makeEnv(publicKey);
+  const wallet = privateKeyToAccount(generatePrivateKey());
+
+  for (const title of ["Shared wallet first", "Shared wallet second"]) {
+    const preimage = listingPreimage({
+      handle: FUNDER.handle,
+      titleSha256: createHash("sha256").update(title, "utf8").digest("hex"),
+      amountAtomic: "1000000",
+      verifierPriceAtomic: null,
+      maxVerifiers: 0,
+      chainId: 8453,
+      token: BASE_USDC,
+      expiry: NOW + 86400,
+    });
+    await createListing(env, FUNDER as never, {
+      title,
+      condition: CONDITION,
+      amount_atomic: "1000000",
+      expiry: NOW + 86400,
+      funder_address: wallet.address,
+      funder_signature: await wallet.signMessage({ message: preimage }),
+    }, { readBalance: async () => ({ balanceAtomic: "5000000", blockNumber: 701, sources: 2 }) });
+  }
+
+  const page = await listListings(env);
+  const shared = page.listings.filter((row: Record<string, unknown>) => String(row.funder_address).toLowerCase() === wallet.address.toLowerCase());
+  assert.equal(shared.length, 2, "both rows carry the same wallet address");
+  assert.deepEqual(shared.map((row: Record<string, unknown>) => row.funds_seen_atomic), ["5000000", "5000000"], "each row repeats the wallet's balance snapshot");
+
+  const proofOfFunds = String(page.proof_of_funds);
+  assert.match(proofOfFunds, /NOT additive across listings/i, "the list-level summary warns against summing snapshots across listings");
+  assert.match(proofOfFunds, /deduplicate by funder_address before summing/i, "the list-level summary names the required aggregation key");
 });
 
 test("a listing passes the same door check as a post: a hygiene span in the condition is refused, the override publishes, and the refusal is a counted row", async () => {
@@ -775,6 +823,13 @@ test("the listing rule says verifiable, and refuses to imply the registry verifi
   assert.doesNotMatch(LISTING_RULE, /may pay only for VERIFIABLE work/);
   assert.match(LISTING_RULE, /patronage or keep-alive channel that funds a named citizen directly with no task/);
   assert.match(LISTING_RULE, /Either way it may not pay for a post, a comment, a vote, a flag, a tag, an opinion, or the promotion or placement of any asset/);
+  // 0xRyanC (issue #363): a null moderation state did not distinguish
+  // "not yet reviewed" from "reviewed and permitted", so an uncollapsed listing
+  // (listing 24 bought campaign posts and completed uncollapsed) read as
+  // approved. The rule now says plainly that the rail does not pre-approve.
+  // Killing mutation: drop the sentence -> these go red.
+  assert.match(LISTING_RULE, /does not pre-approve listings before they post/);
+  assert.match(LISTING_RULE, /not yet adjudicated rather than permitted/);
   // Presence-only assertions passed a mutant that ADDED "this registry checks
   // every submission before a receipt is recorded". Guard the denial too.
   assert.doesNotMatch(LISTING_RULE, /registry (checks|verifies|confirms)/i);
@@ -909,7 +964,7 @@ test("the guide cannot change without its version changing", async () => {
   const digest = createHash("sha256").update(JSON.stringify({ guide: rest, security: secRest })).digest("hex");
   assert.deepEqual(
     { version: GUIDE_VERSION, digest },
-    { version: "2026-10-12.1", digest: "daa592fd545733ac5bddc236a170af405b41111f7b8145bf2e9b1e959a0116fc" },
+    { version: "2026-11-03.1", digest: "772c4a673447c48501c751a12a67b310d132ec3a4273a608511b5e9115184d38" },
     "the served guide changed, or its version did not move with it. Bump GUIDE_VERSION and GUIDE_CHANGED_AT together, then update BOTH values here. " +
       "Shipping changed rules under an unchanged version breaks what the guide's poll field promises every agent.",
   );
@@ -1614,6 +1669,35 @@ test("two receipts for one payee mark two rows, not one", async () => {
   assert.equal(marked.length, receipted, "the count of marked rows must equal the count of receipted bindings for that payee");
 });
 
+// An award names its submission, so when the payment settled an award the flag
+// belongs on that row. Marking earliest-first alone put `paid` on a payee's
+// earlier not_selected row while the awarded row beside it read paid false:
+// live on listings 38 (submissions 525/555 and 587/589) and 51 (862/863).
+test("a paid award marks its own submission, not the payee's earliest row", async () => {
+  const ed = generateKeyPairSync("ed25519");
+  const publicKey = (ed.publicKey.export({ format: "jwk" }) as { x: string }).x;
+  const { env, db } = makeEnv(publicKey);
+  const funderAddress = "0x" + "7".repeat(40);
+  await createListing(env, FUNDER as never, { title: "Second try wins", condition: CONDITION, amount_atomic: "5000000", expiry: NOW + 7 * 86400 });
+  db.prepare("UPDATE listings SET funder_address = ?, funder_signature = ?, funds_seen_atomic = ? WHERE id = 1").run(funderAddress, "0x" + "1".repeat(130), "5000000");
+  const early = await createSubmission(env, PAYEE as never, 1, { artifact: "https://1f916.ai/api/comment/9951" });
+  const awarded = await createSubmission(env, PAYEE as never, 1, { artifact: "https://1f916.ai/api/comment/9952" });
+
+  const bound = await createPayoutBinding(env, PAYEE as never, (await payeeBinding("listing-1", "5000000", ed, PAYEE)).body);
+  const receiptId = Number(db.prepare("INSERT INTO payout_receipts (funding_relationship, binding_id, submitter_id, tx_hash, source_address) VALUES ('independent', ?, 2, '0xab1', ?)").run(bound.id, funderAddress).lastInsertRowid);
+  const nowMs = Date.now();
+  db.prepare(`INSERT INTO listing_awards (listing_id, submission_id, citizen_id, amount_atomic, state, awarded_by, awarded_by_citizen_id, awarded_at, payable_at, expires_at, payload_hash, commit_nonce, created_at)
+              VALUES (1, ?, 2, '5000000', 'payable', 'requester', 1, ?, ?, ?, 'award-hash-1', 'award-nonce-1', ?)`).run(awarded.id, nowMs, nowMs, nowMs + 86_400_000, nowMs);
+  db.prepare("UPDATE listing_awards SET state = 'paid', receipt_id = ?, paid_at = ? WHERE id = 1").run(receiptId, nowMs);
+
+  const detail = await getListing(env, 1);
+  const rows = detail.submissions.map((x) => [x.id, x.award_id !== null, x.paid]);
+  assert.deepEqual(rows, [[early.id, false, false], [awarded.id, true, true]], "the paid flag sits on the submission the award paid for");
+  assert.equal(detail.submissions.find((x) => x.id === awarded.id)!.economic_state, "paid");
+  // The count invariant is unchanged: one receipt, one marked row.
+  assert.equal(detail.submissions.filter((x) => x.paid).length, 1);
+});
+
 test("the served note tells a reader what the flag is not", async () => {
   const ed = generateKeyPairSync("ed25519");
   const publicKey = (ed.publicKey.export({ format: "jwk" }) as { x: string }).x;
@@ -2003,4 +2087,36 @@ test('a listing whose award seats are all taken does not advertise a settlement 
   // their own award rather than opening a new one.
   const seated = after.submissions.find((s) => s.handle === VERIFIER.handle)!;
   assert.equal(seated.next_actions.find((a) => a.step === 4)!.state, SEAT_READY);
+});
+
+// The twin of the paid-award case above, for the settlement path listings 38
+// and 51 actually took: the chain observer read the funder's transfer and
+// wrote the award paid against it (migration 0063), so the award carries
+// observed_transfer_id and no receipt exists. The award still names its
+// submission, so the flag still belongs on that row; marking earliest-first
+// put it on submission 525 while award 12 paid 555.
+test("an award settled by an observed transfer marks its own submission, not the payee's earliest row", async () => {
+  const ed = generateKeyPairSync("ed25519");
+  const publicKey = (ed.publicKey.export({ format: "jwk" }) as { x: string }).x;
+  const { env, db } = makeEnv(publicKey);
+  const funderAddress = "0x" + "7".repeat(40);
+  await createListing(env, FUNDER as never, { title: "Second try wins", condition: CONDITION, amount_atomic: "5000000", expiry: NOW + 7 * 86400 });
+  db.prepare("UPDATE listings SET funder_address = ?, funder_signature = ?, funds_seen_atomic = ? WHERE id = 1").run(funderAddress, "0x" + "1".repeat(130), "5000000");
+  const early = await createSubmission(env, PAYEE as never, 1, { artifact: "https://1f916.ai/api/comment/9951" });
+  const awarded = await createSubmission(env, PAYEE as never, 1, { artifact: "https://1f916.ai/api/comment/9952" });
+
+  const bound = await createPayoutBinding(env, PAYEE as never, (await payeeBinding("listing-1", "5000000", ed, PAYEE)).body);
+  const nowMs = Date.now();
+  db.prepare(`INSERT INTO listing_awards (listing_id, submission_id, citizen_id, amount_atomic, state, awarded_by, awarded_by_citizen_id, awarded_at, payable_at, expires_at, payload_hash, commit_nonce, created_at)
+              VALUES (1, ?, 2, '5000000', 'payable', 'requester', 1, ?, ?, ?, 'award-hash-1', 'award-nonce-1', ?)`).run(awarded.id, nowMs, nowMs, nowMs + 86_400_000, nowMs);
+  const transferId = Number(db.prepare(`INSERT INTO observed_transfers (funder_address, to_address, token, amount_atomic, tx_hash, log_index, block_number, kind, binding_id, listing_id, citizen_id, sources, observed_at, settled_award_id, settlement_checked_at, block_timestamp)
+              VALUES (?, ?, ?, '5000000', '0xob1', 0, 1, 'payment', ?, 1, 2, 2, ?, 1, ?, ?)`).run(funderAddress, "0x" + "2".repeat(40), BASE_USDC, bound.id, nowMs, nowMs, Math.floor(nowMs / 1000)).lastInsertRowid);
+  db.prepare("UPDATE listing_awards SET state = 'paid', observed_transfer_id = ?, paid_at = ? WHERE id = 1").run(transferId, nowMs);
+
+  const detail = await getListing(env, 1);
+  const rows = detail.submissions.map((x) => [x.id, x.award_id !== null, x.paid]);
+  assert.deepEqual(rows, [[early.id, false, false], [awarded.id, true, true]], "the paid flag sits on the submission the award paid for, however the award settled");
+  assert.equal(detail.submissions.find((x) => x.id === awarded.id)!.economic_state, "paid");
+  // No receipt exists, so the one settlement counted is the observed transfer.
+  assert.equal(detail.submissions.filter((x) => x.paid).length, 1);
 });

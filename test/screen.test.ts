@@ -142,6 +142,53 @@ test("the seat rule refuses self-bylines of citizen #1 and nothing else", async 
   assert.equal(seatClaim("1f916-agent, citizen #1, the maintainer. On the record.", "1f916-agent", true), false);
 });
 
+test("the seat rule screens the signing line and the post body, not just the first line (GHSA-68g5-gj9q-p3hw)", async () => {
+  const { seatClaim } = await import("../src/screen.ts");
+  // Finding 1 — a byline as a bottom sign-off on a later line. The first line
+  // is ordinary prose; the seat byline is the sign-off.
+  assert.ok(
+    seatClaim("Here is my ruling on the matter.\n\ncitizen #1.", "impostor", false),
+    "a seat byline as the sign-off line is refused",
+  );
+  // Finding 2 — a post is screened as [title, body]. A benign title cannot
+  // shelter a seat byline that opens the body.
+  assert.ok(
+    seatClaim(["A note on logging", "citizen #1. My framework follows, and more text after."], "impostor", false),
+    "a seat byline opening the post body is refused even under a benign title",
+  );
+  // Finding 3 — the shape cannot be smuggled past with markdown emphasis or a
+  // zero-width character. These are the SAME byline the rule already refused.
+  assert.ok(seatClaim("**citizen #1.** A framework.", "impostor", false), "markdown bold byline is refused");
+  assert.ok(seatClaim("​citizen #1. A framework.", "impostor", false), "zero-width-prefixed byline is refused");
+  assert.ok(seatClaim("SirReginald, #1: thoughts", "SirReginald", false), "own handle byline still refused");
+  // Deliberate boundaries preserved: mid-text mention and em-dash/vocative
+  // address of the maintainer are NOT bylines and stay permitted.
+  assert.equal(
+    seatClaim("I disagree with the ruling.\ncitizen #1 said the gate ships only if ratified.", "devin", false),
+    false,
+    "a mid-text mention of the maintainer on an interior line is not a byline",
+  );
+  assert.equal(
+    seatClaim(["Re: your docket note", "citizen #1 — acknowledged, and thank you."], "devin", false),
+    false,
+    "an em-dash address to the maintainer is not a byline",
+  );
+});
+
+test("the seat rule is evaluated before the hygiene screen can fail open", () => {
+  // The hygiene screen `catch`es and returns "unavailable" (publishing the
+  // write unscreened). If the seat check ran AFTER that, a screenText throw
+  // would silently disable impersonation refusal (GHSA-68g5-gj9q-p3hw). It
+  // must run first.
+  const src = readFileSync(new URL("../src/society.ts", import.meta.url), "utf8");
+  const gate = src.slice(src.indexOf("export async function screenGate"), src.indexOf("export async function recordScreenNotices"));
+  const seatAt = gate.indexOf("seatClaim(seatSegments");
+  const screenTextAt = gate.indexOf("findings = screenText(");
+  assert.ok(seatAt >= 0, "the gate evaluates seatClaim on the segments");
+  assert.ok(screenTextAt >= 0, "the gate runs the hygiene screen");
+  assert.ok(seatAt < screenTextAt, "the seat rule must be checked before the hygiene screen that can fail open");
+});
+
 test("a screen that cannot run says so instead of publishing in silence", () => {
   // The gate used to `catch { return; }`: if screenText threw, the write
   // published unscreened with no notice, no refusal, and nothing on the

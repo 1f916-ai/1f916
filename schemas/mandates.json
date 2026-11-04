@@ -74,6 +74,11 @@
         "id",
         "citizen",
         "label",
+        "subject",
+        "signed",
+        "signature",
+        "key_thumbprint",
+        "signed_message",
         "created_at",
         "public",
         "instruction_hash",
@@ -84,8 +89,11 @@
         "seal",
         "stored",
         "envelope_bytes",
+        "envelope_format",
         "page",
-        "record"
+        "record",
+        "has_outcome",
+        "outcome_added"
       ],
       "properties": {
         "id": {
@@ -98,6 +106,24 @@
         },
         "label": {
           "type": "string"
+        },
+        "subject": {
+          "type": ["string", "null"],
+          "description": "The label the recorder chose for whom the record was made, or null. Means something only beside the recorder's name."
+        },
+        "signed": {
+          "type": "boolean",
+          "description": "True iff the recorder signed the record with their own key (signature is non-null)."
+        },
+        "signature": {
+          "type": ["string", "null"]
+        },
+        "key_thumbprint": {
+          "type": ["string", "null"]
+        },
+        "signed_message": {
+          "type": ["string", "null"],
+          "description": "The exact message the signature covers, or null when unsigned."
         },
         "created_at": {
           "type": "integer"
@@ -185,11 +211,78 @@
           ],
           "minimum": 0
         },
+        "envelope_format": {
+          "type": ["string", "null"],
+          "description": "age-encryption.org/v1 when the stored envelope's first line says so, \"not recognized\" when an envelope is stored but its first line does not, null when no envelope is stored."
+        },
         "page": {
           "type": "string"
         },
         "record": {
           "type": "string"
+        },
+        "has_outcome": {
+          "type": "boolean",
+          "description": "True iff the record was made with an outcome or one was added later."
+        },
+        "outcome_added": {
+          "type": ["object", "null"],
+          "description": "An outcome added after the record was made (null when none). The record's own commit never changes; a later outcome is carried here with the seal that committed it.",
+          "required": [
+            "outcome_hash",
+            "commit",
+            "commit_payload",
+            "seal",
+            "stored",
+            "created_at"
+          ],
+          "properties": {
+            "outcome_hash": {
+              "type": "string",
+              "minLength": 64,
+              "maxLength": 64
+            },
+            "commit": {
+              "type": "string",
+              "minLength": 64,
+              "maxLength": 64
+            },
+            "commit_payload": {
+              "type": "string",
+              "minLength": 1
+            },
+            "seal": {
+              "type": "object",
+              "required": [
+                "id",
+                "label",
+                "chained"
+              ],
+              "properties": {
+                "id": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "label": {
+                  "type": "string",
+                  "const": "mandate"
+                },
+                "chained": {
+                  "type": "string",
+                  "minLength": 64,
+                  "maxLength": 64
+                }
+              },
+              "additionalProperties": false
+            },
+            "stored": {
+              "type": "boolean"
+            },
+            "created_at": {
+              "type": "integer"
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false

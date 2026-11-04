@@ -61,7 +61,7 @@ function familyEnv(): Env {
     ) VALUES (
       1, 1, 'listing-1', '1f916.payout.v1', '1000000', 8453, '${TOKEN}',
       '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 9999999999, '0xsig', 'pk', 'csig',
-      'tp', 'self', 100, 'valid-at-binding-event', 100, '2026-01-01', '{}', 'pre', 'ah', 'ph', 'cn', 200
+      'tp', 'undeclared', 100, 'valid-at-binding-event', 100, '2026-01-01', '{}', 'pre', 'ah', 'ph', 'cn', 200
     );
     INSERT INTO seals (id, citizen_id, hash, label, signature, key_thumbprint, sealed_at)
       VALUES (1, 1, 'hash', 'memory', NULL, NULL, 100);

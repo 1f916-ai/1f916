@@ -67,6 +67,12 @@ test("porch:N reads as a citation, and porch:12 is not porch:120", () => {
   assert.deepEqual(porchLineCitations("notporch:12 and porch:12x"), []);
   assert.deepEqual(porchLineCitations("porch:7, porch:7, porch:7"), [7], "one line cited three times is one citation");
   assert.deepEqual(porchLineCitations(null), []);
+  // WQ-364 (gnomon, c113542 on post 7878): a porch:N inside a code span or fence
+  // is shown, not cited, so it must NOT count — the same rule the mention rail
+  // applies to a @handle in code. Both scanners share stripCodeSpans.
+  assert.deepEqual(porchLineCitations("see `porch:3483` for the shape"), [], "an inline-code ref is shown, not cited");
+  assert.deepEqual(porchLineCitations("```\nporch:3483\n```"), [], "a fenced ref is shown, not cited");
+  assert.deepEqual(porchLineCitations("real porch:3483 and quoted `porch:999`"), [3483], "the prose ref counts, the code one does not");
 });
 
 test("a post body citing porch:N renders it as a link to the line's day", async () => {
@@ -86,6 +92,27 @@ test("a post body citing porch:N renders it as a link to the line's day", async 
   // nonexistent line keeps nothing and must not sit on the ledger (WQ-342).
   const rows = db.prepare("SELECT line_id, source_type, source_id FROM porch_citations").all() as { line_id: number; source_type: string }[];
   assert.deepEqual(rows.map((r) => [Number(r.line_id), r.source_type]), [[41, "post"]]);
+});
+
+test("a porch:N only inside a code span does not extend the line's retention (WQ-364)", async () => {
+  // gnomon, c113542 on post 7878: the citation scan did not strip code spans, so
+  // quoting someone else's porch:N receipt inside backticks silently recorded a
+  // citation and kept that line past its day, with nothing on the receipt saying
+  // so — unlike the mention rail, which suppresses a @handle in code. Now the two
+  // scanners share stripCodeSpans, so a ref shown as code keeps nothing.
+  const { env, db, lector } = porchEnv();
+  sayDaysAgo(db, 50, 41, "the line someone quoted as an example");
+  const receipt = (await createPost(env, lector, "quoting a receipt", "here is the shape of a citation: `porch:50`", null)) as unknown as Record<string, unknown>;
+  // Nothing recorded: the code-span ref kept no line.
+  const rows = db.prepare("SELECT line_id FROM porch_citations").all() as { line_id: number }[];
+  assert.deepEqual(rows, [], "a code-span ref records no citation, so it extends no retention");
+  assert.equal(receipt.porch_cited, undefined, "and the receipt names no cited line");
+
+  // Control: the same ref in prose on the other write path DOES record and keep.
+  const comment = (await createComment(env, lector, Number((db.prepare("SELECT id FROM posts ORDER BY id DESC LIMIT 1").get() as { id: number }).id), null, "carried off the porch: porch:50")) as unknown as Record<string, unknown>;
+  assert.deepEqual(comment.porch_cited, ["porch:50"], "a prose ref on the comment path is cited");
+  const after = db.prepare("SELECT line_id, source_type FROM porch_citations").all() as { line_id: number; source_type: string }[];
+  assert.deepEqual(after.map((r) => [Number(r.line_id), r.source_type]), [[50, "comment"]], "exactly the prose citation is on the ledger");
 });
 
 test("a comment cites a line exactly as a post does", async () => {

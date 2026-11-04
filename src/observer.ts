@@ -406,29 +406,33 @@ async function walkWallet(env: Env, wallet: WalletRow, deps: ObserverDeps): Prom
     pages++;
   }
 
-  const logs = pageLogs.slice(0, OBSERVER_MAX_ROWS_PER_CYCLE);
-  // A page cut at the cap advances only to the last block fully covered, so
-  // nothing in a partially read block is skipped.
-  const coveredTo = logs.length === OBSERVER_MAX_ROWS_PER_CYCLE ? logs[logs.length - 1]!.block_number - 1 : walkedTo;
-  // THE ROW CAP IS A REASON TOO. The loop above exits on three conditions and
-  // only two of them set `partial`: a refused page and a disagreement. Hitting
-  // OBSERVER_MAX_ROWS_PER_CYCLE exits with `partial` empty, so last_error was
-  // written NULL and a stride cut short by the cap read as a clean full cycle
-  // -- while the walk_note served on GET /api/rail says last_error "names the
-  // reason the last cycle wrote nothing, or stopped short of the full stride".
-  // That sentence was an over-claim for exactly this path. Flagged by the
-  // pre-deploy auditor as an advisory on PR #233; this makes the sentence true
-  // rather than softening it. Rare (it needs OBSERVER_MAX_ROWS_PER_CYCLE
-  // transfers from one wallet inside a single stride) and never wrong about
-  // the mark, which is why it was an advisory and not a block.
+  // THE ROW CAP FINISHES THE BLOCK IT LANDS IN, so the mark always advances
+  // (SEC-5). The old code sliced the page at exactly OBSERVER_MAX_ROWS_PER_CYCLE
+  // and set coveredTo to (last kept row's block - 1). When at least the cap's
+  // worth of transfers fell in the FIRST block after the mark, coveredTo became
+  // the mark itself; the mark was rewritten unchanged and the next cycle asked
+  // the same question forever, freezing the walk for that funder. An attacker
+  // can emit the cap's worth of zero-value Transfer(funder,x,0) in one block for
+  // only gas (a zero-amount transferFrom passes the >= allowance check), and a
+  // funder's own batch payout of that many in one block does it by accident.
+  // Pages are fetched whole, so the block the cap row sits in is fully present
+  // in pageLogs: cover that block entirely and set the mark to it. A cap-limited
+  // cycle then reads at most one block beyond the cap, and the mark advances by
+  // at least one block every cycle, so no finalized block can stall it.
+  const capBlock = pageLogs.length > OBSERVER_MAX_ROWS_PER_CYCLE ? pageLogs[OBSERVER_MAX_ROWS_PER_CYCLE - 1]!.block_number : null;
+  const coveredTo = capBlock !== null ? capBlock : walkedTo;
+  // THE ROW CAP IS A REASON TOO: the loop exits on three conditions and only a
+  // refused page and a disagreement set `partial`; a cap-limited cycle leaves it
+  // empty, so name the cap here too, or a stride cut short reads as a clean full
+  // cycle against the walk_note served on GET /api/rail (advisory, PR #233).
   if (!partial && coveredTo < toBlock) {
-    partial = `row cap: ${OBSERVER_MAX_ROWS_PER_CYCLE} transfers filled the cycle at block ${coveredTo}, short of ${toBlock}`;
+    partial = `row cap: ${OBSERVER_MAX_ROWS_PER_CYCLE}+ transfers filled the cycle through block ${coveredTo}, short of ${toBlock}`;
   }
   const index = await bindingIndexFor(env, funder);
   let payments = 0;
   let zero = 0;
   const stamp = now();
-  const covered = logs.filter((l) => l.block_number <= coveredTo);
+  const covered = pageLogs.filter((l) => l.block_number <= coveredTo);
   // ONE BATCH: every row and the mark commit together, or nothing does. A
   // cycle cut off mid-write (subrequest budget, a D1 hiccup) then leaves the
   // mark where it was and the next cycle re-walks the same range, which the
