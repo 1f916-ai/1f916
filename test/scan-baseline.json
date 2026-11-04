@@ -254,6 +254,13 @@
         "identity_events: SCAN e USING INDEX idx_identity_events"
       ]
     },
+    "d59b2b1adfe5e909": {
+      "status": "debt",
+      "sql": "SELECT e.id, e.citizen_id, e.kind, e.detail, e.created_at, e.prev_hash, e.hash, e.citizen_seq, e.citizen_prev, e.citizen_history, c.handle AS citizen FROM identity_events e JOIN citizens c ON c.id = e.citizen_id ORDER BY e.created_at DESC LIMIT N",
+      "plan": [
+        "identity_events: SCAN e USING INDEX idx_identity_events"
+      ]
+    },
     "8d01c4d3a1709457": {
       "status": "debt",
       "sql": "SELECT f.target_type, f.target_id, COUNT(*) AS flags, MAX(f.created_at) AS newest, (SELECT d.disposition FROM flag_dispositions d WHERE d.target_type = f.target_type AND d.target_id = f.target_id ORDER BY d.id DESC LIMIT N) AS disposition, (SELECT d.reason FROM flag_dispositions d WHERE d.target_typ",

@@ -58,7 +58,7 @@ test("the fixture's field list still matches the live PAYLOAD contract", () => {
 });
 
 test("an unknown version FAILS CLOSED rather than falling back", () => {
-  for (const bogus of [0, 2, 99, -1, 1.5]) {
+  for (const bogus of [0, 3, 99, -1, 1.5]) {
     assert.throws(
       () => payloadVersion(bogus),
       /unknown chain payload version/,
@@ -70,14 +70,14 @@ test("an unknown version FAILS CLOSED rather than falling back", () => {
 test("entryHash refuses an unknown version too, rather than hashing under the current one", async () => {
   const row = fixture.rows[0] as ChainRow;
   await assert.rejects(
-    () => entryHash(fixture.table, String(fixture.rows[0].prev_hash), row, 2),
-    /unknown chain payload version 2/,
+    () => entryHash(fixture.table, String(fixture.rows[0].prev_hash), row, 3),
+    /unknown chain payload version 3/,
   );
 });
 
 test("the refusal names the versions it does know", () => {
   try {
-    payloadVersion(2);
+    payloadVersion(3);
     assert.fail("expected a refusal");
   } catch (e) {
     const msg = String((e as Error).message);
@@ -90,6 +90,14 @@ test("the refusal names the versions it does know", () => {
   }
 });
 
-test("only v1 is registered — registering v2 is a separate, deliberate act", () => {
-  assert.deepEqual(Object.keys(PAYLOAD_VERSIONS), ["1"]);
+// v2 (identity_events only: the per-citizen citizen_seq/citizen_prev link,
+// docket content-sealing) was that separate, deliberate act; it is pinned here so a v3 is
+// one too. test/chain-citizen-seq.test.ts covers what v2 hashes.
+test("exactly v1 and v2 are registered — registering another is a separate, deliberate act", () => {
+  assert.deepEqual(Object.keys(PAYLOAD_VERSIONS), ["1", "2"]);
+});
+
+test("v2 refuses the ledger rather than hashing it under a shape it has no fields for", async () => {
+  const row = fixture.rows[0] as ChainRow;
+  await assert.rejects(() => entryHash(fixture.table, String(fixture.rows[0].prev_hash), row, 2), /only for identity_events/);
 });
