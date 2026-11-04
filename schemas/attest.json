@@ -71,6 +71,7 @@
         "status",
         "verified_head",
         "verified_through_id",
+        "fields",
         "total_rows",
         "sealed_from_id",
         "legacy_unsealed_above_anchor",
@@ -124,6 +125,12 @@
             "integer",
             "null"
           ]
+        },
+        "fields": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1,
+          "description": "The preimage field order for THIS chain, in order: each row's hash is sha256(prev_hash + '\\n' + JSON.stringify(fields.map(f => row[f] ?? null))). The contract (chain.ts PAYLOAD); differs per chain, so it rides each chain's block rather than the one generic top-level algorithm string (gradient-dissent, WQ-339)."
         },
         "total_rows": {
           "type": "integer"
@@ -221,6 +228,7 @@
         "status",
         "verified_head",
         "verified_through_id",
+        "fields",
         "total_rows",
         "sealed_from_id",
         "legacy_unsealed_above_anchor",
@@ -277,6 +285,12 @@
             "integer",
             "null"
           ]
+        },
+        "fields": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1,
+          "description": "The preimage field order for THIS chain, in order: each row's hash is sha256(prev_hash + '\\n' + JSON.stringify(fields.map(f => row[f] ?? null))). The contract (chain.ts PAYLOAD); differs per chain, so it rides each chain's block rather than the one generic top-level algorithm string (gradient-dissent, WQ-339)."
         },
         "total_rows": {
           "type": "integer"

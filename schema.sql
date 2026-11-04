@@ -465,7 +465,13 @@ CREATE TABLE IF NOT EXISTS payload_notices (
   target_id   INTEGER NOT NULL,
   citizen_id  INTEGER NOT NULL REFERENCES citizens(id),
   payload     TEXT NOT NULL,
-  created_at  INTEGER NOT NULL
+  created_at  INTEGER NOT NULL,
+  -- migrations/0085: the /api/official allowlist membership (a JSON array of
+  -- lowercased addresses) this payload was screened against at write time, so
+  -- the observation can be re-verified against the facts as they stood then.
+  -- NULL on rows written before 0085: which list applied was not recorded
+  -- (UNKNOWN), never an empty allowlist.
+  allowlist_snapshot TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_payload_notices_payload ON payload_notices(payload, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_payload_notices_created ON payload_notices(created_at DESC);
@@ -520,21 +526,34 @@ CREATE TABLE IF NOT EXISTS screen_refusals (
 );
 CREATE INDEX IF NOT EXISTS idx_screen_refusals_created ON screen_refusals(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_screen_notices_created ON screen_notices(created_at DESC);
+-- Match both descending keys of the public notice archive walk without a
+-- temporary sort for a timestamp's id ties (migration 0082).
+CREATE INDEX IF NOT EXISTS idx_screen_notices_page ON screen_notices(created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_screen_notices_target ON screen_notices(target_type, target_id);
 
 -- migrations/0013: protocol P1 — keys, additive over bearer secrets. A key
--- upgrades what a citizen can prove; it never replaces the secret. Custody
--- 'self' only: this registry holds no private keys for anyone.
+-- upgrades what a citizen can prove; it never replaces the secret.
+-- migrations/0084: custody stopped being a constant. It was 'self' and nothing
+-- else, so it measured nothing — an affirmative claim and a never-written
+-- field were the same byte. The column is now a CACHE of the latest chained
+-- key-custody-declare event: 'undeclared' until one exists, and 'undeclared'
+-- is never rendered as self by any read path.
 CREATE TABLE IF NOT EXISTS keys (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   citizen_id INTEGER NOT NULL REFERENCES citizens(id),
   alg TEXT NOT NULL DEFAULT 'Ed25519',
   public_key TEXT NOT NULL,
   thumbprint TEXT NOT NULL UNIQUE,
-  custody TEXT NOT NULL CHECK (custody IN ('self')),
+  custody TEXT NOT NULL DEFAULT 'undeclared'
+    CHECK (custody IN ('undeclared','self-held','operator-held','principal-held','lost','write-only')),
+  custody_event_id INTEGER REFERENCES identity_events(id),
+  custody_declared_at INTEGER,
+  custody_as_of INTEGER,
+  custody_referent TEXT,
   status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','rotated','revoked')),
   bound_at INTEGER NOT NULL,
-  ended_at INTEGER
+  ended_at INTEGER,
+  CHECK ((custody = 'undeclared') = (custody_event_id IS NULL))
 );
 CREATE INDEX IF NOT EXISTS idx_keys_citizen ON keys(citizen_id, status);
 
@@ -706,7 +725,15 @@ CREATE TABLE IF NOT EXISTS payout_bindings (
   citizen_public_key TEXT NOT NULL,
   citizen_signature TEXT NOT NULL,
   citizen_key_thumbprint TEXT NOT NULL,
-  citizen_key_custody TEXT NOT NULL CHECK (citizen_key_custody = 'self'),
+  -- migrations/0084: the key's custody at binding time, restricted to the
+  -- values that may authorize a payout (CUSTODY_PAYABLE in src/keys.ts). A
+  -- MIGRATED database's CHECK also carries the legacy value 'self', because
+  -- this column is field thirteen of PAYOUT_BINDING_HASH_FIELDS and pre-0084
+  -- rows must keep the byte their published payload_hash was taken over
+  -- (@souchong-still-unburnt, c27222 on #1002). A fresh install has no such
+  -- rows, so 'self' is deliberately absent here.
+  citizen_key_custody TEXT NOT NULL
+    CHECK (citizen_key_custody IN ('undeclared','self-held')),
   citizen_key_bound_at INTEGER NOT NULL,
   authorization_verification TEXT NOT NULL CHECK (authorization_verification = 'valid-at-binding-event'),
   authorization_verified_at INTEGER NOT NULL,
@@ -739,7 +766,12 @@ CREATE TABLE IF NOT EXISTS payout_wallets (
   citizen_public_key TEXT NOT NULL,
   citizen_signature TEXT NOT NULL,
   citizen_key_thumbprint TEXT NOT NULL,
-  citizen_key_custody TEXT NOT NULL CHECK (citizen_key_custody = 'self'),
+  -- migrations/0084: same rule as payout_bindings.citizen_key_custody — a
+  -- hashed snapshot of keys.custody (field ten of PAYOUT_WALLET_HASH_FIELDS),
+  -- restricted to the payable values; a migrated database also carries the
+  -- legacy 'self', a fresh install deliberately does not.
+  citizen_key_custody TEXT NOT NULL
+    CHECK (citizen_key_custody IN ('undeclared','self-held')),
   citizen_key_bound_at INTEGER NOT NULL,
   preimage TEXT NOT NULL,
   proof_hash TEXT NOT NULL UNIQUE,
@@ -1515,7 +1547,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_offer_orders_listing ON offer_orders(listi
 -- button for. One row per (checkpoint, kind, target). `proof` holds the
 -- OpenTimestamps file for kind 'ots' (base64), nothing for the others; the
 -- Base row's target is the transaction hash, the archive row's target is the
--- Wayback capture URL. Rows are never updated except status/confirmed_at/error.
+-- Wayback capture URL. Rows are never updated except status/confirmed_at/error
+-- (and proof on an OTS upgrade, checked_at/block_number by the confirmation passes).
 CREATE TABLE IF NOT EXISTS anchors (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   checkpoint_id INTEGER NOT NULL REFERENCES checkpoints(id),
@@ -1526,10 +1559,28 @@ CREATE TABLE IF NOT EXISTS anchors (
   error TEXT,
   created_at INTEGER NOT NULL,
   confirmed_at INTEGER,
+  -- 0079: when a confirmation pass last asked about this row (NULL = never);
+  -- the passes pick ORDER BY checked_at, id so a row that never settles cannot
+  -- hold a slot forever. block_number: the Base block the transaction was
+  -- mined in, from the receipt (confirmed_at is when this server read it).
+  checked_at INTEGER,
+  block_number INTEGER,
+  -- 0080: when this server recorded the row failed (the deciding pass's clock,
+  -- or created_at for a row refused at submission). NULL unless failed, and on
+  -- rows that failed before the column existed.
+  failed_at INTEGER,
   UNIQUE (checkpoint_id, kind, target)
 );
 CREATE INDEX IF NOT EXISTS idx_anchors_checkpoint ON anchors(checkpoint_id, id);
 CREATE INDEX IF NOT EXISTS idx_anchors_kind_status ON anchors(kind, status, id);
+CREATE INDEX IF NOT EXISTS idx_anchors_queue ON anchors(kind, status, checked_at, id);
+-- 0081: a pass claims a checkpoint's Base send before sending, so two
+-- overlapping passes cannot both send for one checkpoint (src/anchors.ts,
+-- claimBase). A claim older than 10 minutes may be taken over.
+CREATE TABLE IF NOT EXISTS anchor_base_claims (
+  checkpoint_id INTEGER PRIMARY KEY REFERENCES checkpoints(id),
+  claimed_at INTEGER NOT NULL
+);
 -- Mandates: what an agent was told, what it did, and what came of it, as one
 -- record. The three fingerprints are committed to the chain through a memory
 -- seal (label 'mandate', kind memory.seal), so every proof, witness and anchor
@@ -1676,3 +1727,32 @@ CREATE TABLE IF NOT EXISTS checkpoint_cosignatures (
   PRIMARY KEY (checkpoint_id, witness, key_id)
 );
 CREATE INDEX IF NOT EXISTS idx_checkpoint_cosignatures_witness ON checkpoint_cosignatures(log, witness, key_id, checkpoint_id);
+
+-- migrations/0078: witness push receipts (src/witness-push.ts). One row per
+-- (witness, log): the newest countersignature a witness pushed, replaced only by
+-- a larger tree_size. received_at is epoch milliseconds, as checkpoints.created_at;
+-- receipt_payload / receipt_sig are the registry's signed word on it.
+CREATE TABLE IF NOT EXISTS witness_countersignatures (
+  witness_id INTEGER NOT NULL REFERENCES witnesses(id),
+  log TEXT NOT NULL CHECK (log IN ('identity_events','ledger')),
+  tree_size INTEGER NOT NULL,
+  root TEXT NOT NULL,
+  witness_sig TEXT NOT NULL,
+  witness_epoch INTEGER NOT NULL,
+  checkpoint_id INTEGER NOT NULL REFERENCES checkpoints(id),
+  received_at INTEGER NOT NULL,
+  receipt_payload TEXT NOT NULL,
+  receipt_sig TEXT NOT NULL,
+  PRIMARY KEY (witness_id, log)
+);
+
+-- An OAuth authorization code is single-use: the token exchange records the
+-- redeemed code's id here the first time it succeeds (UNIQUE), and any later
+-- exchange of the same code conflicts and is refused invalid_grant. code_id is
+-- the sha256 (base64url) of the exact sealed code string; expires_at is the
+-- code's own expiry (unix ms), so a row is prunable once the code is expired.
+-- See migrations/0083_oauth_consumed_codes.sql.
+CREATE TABLE IF NOT EXISTS oauth_consumed_codes (
+  code_id TEXT PRIMARY KEY,
+  expires_at INTEGER NOT NULL
+);

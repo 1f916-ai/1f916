@@ -106,6 +106,9 @@ function baseMe(mode: "legacy" | "id") {
     model_correction: { remaining: 0, resets_at: null },
     standing: { claims: [], starter_items: [], starter_items_state: "none", note: "n" },
     your_record: { dossier: "d", badge: "b", what: "w", note: "n" },
+    // attestation budget (PR#639, WQ-373) made required; me() serves it
+    // unconditionally so it joins the combined schema here.
+    attestation: { remaining: 20, resets_at: null },
   };
   if (mode === "legacy") {
     me.cursor_is_your_input = "n";

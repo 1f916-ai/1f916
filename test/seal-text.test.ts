@@ -142,7 +142,14 @@ test("the text cap counts characters, not UTF-16 units", async () => {
 
 test("a text seal is an ordinary seal that holds the fingerprint and nothing of the text", async () => {
   const { env, db, citizen } = fixture();
-  const text = "PRIVATE-MEMORY-7f3a: the gate code is 4471 and Sam is allergic to penicillin";
+  // The gate code is written with a distinctive non-numeric token (4471-SIERRA)
+  // on purpose: everythingStored() below sweeps EVERY column of every table,
+  // including auto-generated integer created_at timestamps and ids, so a bare
+  // 4-digit secret like "4471" matched those numeric values non-deterministically
+  // and the sweep flaked (CI run 39753985615, node 22). A hyphen-and-letters
+  // token cannot occur inside a JSON-dumped integer, so the sweep stays a true
+  // test of "no text byte is stored" without depending on the clock.
+  const text = "PRIVATE-MEMORY-7f3a: the gate code is 4471-SIERRA and Sam is allergic to penicillin";
   const r = (await sealOrCompare(env, citizen, { text, label: "notes" })) as Record<string, unknown>;
   assert.equal(r.sealed, true);
   assert.equal(r.hash, sha(text));
@@ -153,7 +160,7 @@ test("a text seal is an ordinary seal that holds the fingerprint and nothing of 
   assert.deepEqual({ ...row }, { hash: sha(text), label: "notes" });
   const stored = everythingStored(db);
   assert.ok(stored.includes(sha(text)), "the sweep must be able to see what IS stored, or it proves nothing");
-  for (const fragment of ["PRIVATE-MEMORY-7f3a", "4471", "penicillin"]) {
+  for (const fragment of ["PRIVATE-MEMORY-7f3a", "4471-SIERRA", "penicillin"]) {
     assert.ok(!stored.includes(fragment), `'${fragment}' from the text is in the database; the registry must keep the fingerprint only`);
   }
   assert.ok(!JSON.stringify(r).includes("penicillin"), "the response must not echo the text either");
@@ -241,8 +248,151 @@ test("check_only with nothing sealed under the label is refused, writes nothing 
   const e = await refusal(() => sealOrCompare(env, citizen, { text: "first look", label: "empty", check_only: true }));
   assert.equal(e.status, 409);
   assert.match(e.message, /no seal under label 'empty'/);
-  assert.deepEqual(e.fields, { matched: false, hash: sha("first look"), label: "empty", latest: null, from_text: true });
+  assert.match(e.message, /You have no seals under a label check_only can compare with\. Send it again without check_only to seal it\./);
+  assert.deepEqual(e.fields, {
+    matched: false, hash: sha("first look"), label: "empty", latest: null, from_text: true,
+    citizen: "chatter", same_fingerprint: [], checkable_labels: [], checkable_labels_total: 0,
+  });
   assert.deepEqual(written(db), { seals: 0, checks: 0, events: 0 });
+});
+
+// Measured 2026-10-11, fresh Claude sessions on /mcp/protocol: asked "is this
+// the same note I saved with 1F916 last time?", 0 of 10 found the seal. Each
+// sent check_only under the empty label and stopped at "no seal under label
+// ''", because the answer never said where the note was.
+//
+// Killing mutations, each checked in a scratch copy before commit:
+//   - drop the steer (`${steer.sentence}` removed): the label is never named,
+//     red.
+//   - list labels oldest first (`ORDER BY latest ASC`): the order assertion,
+//     red.
+//   - drop the LIMIT on the label list: twelve labels are listed and "and 2
+//     more" is absent, red.
+//   - record the check under the steered label instead of refusing: a check
+//     row is written, red.
+//   - pass the message as the public reason: the label reaches the nulls log,
+//     red.
+//   - stop excluding reserved labels (reservedSealLabelKind ignored): the
+//     steer names 'stored.dentist' and lists 'mandate', red.
+//   - cap the matching rows at three again (LIMIT 3 on the same-hash query):
+//     the four-label case never names the one label still holding it, red.
+test("check_only under a label with nothing sealed names the label that holds this content", async () => {
+  const { env, db, citizen } = fixture();
+  const note = "Dentist moved to Thursday 9:40.\nBudget $340.";
+  await sealOrCompare(env, citizen, { text: "an older, unrelated note", label: "errands" });
+  const sealed = (await sealOrCompare(env, citizen, { text: note, label: "wake-note" })) as Record<string, unknown>;
+  const before = written(db);
+
+  // No label: the caller asked about '' and has nothing there.
+  const e = await refusal(() => sealOrCompare(env, citizen, { text: note, check_only: true }));
+  assert.equal(e.status, 409);
+  assert.match(e.message, /no seal under label '', so nothing was compared/);
+  assert.match(e.message, new RegExp(`identical to your latest seal under label 'wake-note' \\(seal ${sealed.id}\\)`));
+  assert.match(e.message, /send it again with check_only and label 'wake-note'/);
+  assert.doesNotMatch(e.message, /without check_only to seal it/, "a caller who asked to compare is not told to seal");
+  assert.deepEqual(e.fields?.same_fingerprint, [{ label: "wake-note", seal: sealed.id, latest: true, latest_seal: sealed.id, reserved: false }]);
+  // The steer records nothing: the check is testimony about the label asked
+  // for, so the caller asks again under the one it meant.
+  assert.deepEqual(written(db), before);
+
+  // Following the steer records the check on that seal.
+  const followed = (await sealOrCompare(env, citizen, { text: note, label: "wake-note", check_only: true })) as Record<string, unknown>;
+  assert.equal(followed.checked, true);
+  assert.equal(followed.seal_id, sealed.id);
+
+  // The detail is the caller's; the public nulls log gets the generic reason.
+  const reason = nullReasonFor(e);
+  for (const detail of ["wake-note", "errands", sha(note), "chatter"]) assert.ok(!reason.includes(detail), `the public reason names '${detail}'`);
+});
+
+test("check_only content that matches none of the caller's seals lists their labels, newest first", async () => {
+  const { env, db, citizen } = fixture();
+  await sealOrCompare(env, citizen, { text: "kitchen shelves: $340", label: "errands" });
+  await sealOrCompare(env, citizen, { text: "kitchen shelves: $340, wall 82 cm", label: "wake-note" });
+  const before = written(db);
+  const e = await refusal(() => sealOrCompare(env, citizen, { text: "kitchen shelves: $430, wall 82 cm", check_only: true }));
+  assert.equal(e.status, 409);
+  assert.match(e.message, /None of your seals, under any label, has this fingerprint\./);
+  assert.match(e.message, /You are chatter, and the labels check_only can compare with, newest first, are: 'wake-note' \(latest seal \d+\), 'errands' \(latest seal \d+\)\./);
+  assert.match(e.message, /send it again with check_only and that label/);
+  assert.deepEqual(written(db), before);
+
+  // Twelve labels: ten are named, the rest are counted and pointed at.
+  for (let i = 0; i < 10; i++) await sealOrCompare(env, citizen, { text: `filler ${i}`, label: `filler-${i}` });
+  const many = await refusal(() => sealOrCompare(env, citizen, { text: "nothing like it", check_only: true }));
+  assert.equal((many.fields?.checkable_labels as unknown[]).length, 10);
+  assert.equal(many.fields?.checkable_labels_total, 12);
+  assert.match(many.message, /'filler-9' \(latest seal \d+\), 'filler-8'/);
+  assert.match(many.message, /, and 2 more at GET \/api\/seals\?citizen=chatter\./);
+  assert.doesNotMatch(many.message, /'errands'/);
+});
+
+test("check_only content that matches an older seal says the label has moved on since", async () => {
+  const { env, db, citizen } = fixture();
+  const first = (await sealOrCompare(env, citizen, { text: "version one", label: "core" })) as Record<string, unknown>;
+  const second = (await sealOrCompare(env, citizen, { text: "version two", label: "core" })) as Record<string, unknown>;
+  const before = written(db);
+  const e = await refusal(() => sealOrCompare(env, citizen, { text: "version one", label: "notes", check_only: true }));
+  assert.match(
+    e.message,
+    new RegExp(`identical to your seal ${first.id} under label 'core', but that is not your latest seal under that label: seal ${second.id} was sealed there after it, with different content\\.`),
+  );
+  assert.deepEqual(e.fields?.same_fingerprint, [{ label: "core", seal: first.id, latest: false, latest_seal: second.id, reserved: false }]);
+  assert.deepEqual(written(db), before);
+  // And the claim holds: a check under 'core' is refused as a difference.
+  const under = await refusal(() => sealOrCompare(env, citizen, { text: "version one", label: "core", check_only: true }));
+  assert.match(under.message, /NOT what you last sealed under label 'core'/);
+});
+
+// Deploy audit, 2026-10-11, finding 1: a note kept through POST /api/memory is
+// sealed under 'stored.<name>', a mandate under 'mandate', a journal head under
+// 'journal.head', and check_only refuses all three. A steer toward one of them
+// sends the caller from one refusal to another.
+test("the steer never sends a check to a reserved label, and never lists one", async () => {
+  const { env, db, citizen } = fixture();
+  const note = "kept in the memory store";
+  await sealMemory(env, citizen, { hash: sha(note), label: "stored.dentist" }, { stored: true });
+  await sealMemory(env, citizen, { hash: sha("a mandate commit"), label: "mandate" }, { budgetExempt: true });
+  await sealMemory(env, citizen, { hash: sha("a journal head"), label: "journal.head" }, { journal: true });
+  const before = written(db);
+
+  // Only reserved labels hold seals: nothing is offered, and the old advice stands.
+  const none = await refusal(() => sealOrCompare(env, citizen, { text: "something else entirely", check_only: true }));
+  assert.match(none.message, /You have no seals under a label check_only can compare with\./);
+  assert.deepEqual(none.fields?.checkable_labels, []);
+
+  // The content is held under a reserved label: said, and not offered as a target.
+  const held = await refusal(() => sealOrCompare(env, citizen, { text: note, check_only: true }));
+  assert.match(held.message, /identical to your seal \d+ under label 'stored\.dentist', which is reserved: check_only cannot be sent under it\./);
+  assert.doesNotMatch(held.message, /send it again with check_only and label 'stored/);
+  // And that is true: a check sent there is refused.
+  const there = await refusal(() => sealOrCompare(env, citizen, { text: note, label: "stored.dentist", check_only: true }));
+  assert.equal(there.status, 400);
+
+  // With an ordinary label beside them, only the ordinary one is listed.
+  await sealOrCompare(env, citizen, { text: "an ordinary note", label: "wake-note" });
+  const listed = await refusal(() => sealOrCompare(env, citizen, { text: "matches nothing", check_only: true }));
+  assert.match(listed.message, /are: 'wake-note' \(latest seal \d+\)\. To compare/);
+  for (const r of ["stored.dentist", "'mandate'", "journal.head"]) assert.ok(!listed.message.includes(r), `the list names ${r}`);
+  assert.equal(listed.fields?.checkable_labels_total, 1);
+  assert.deepEqual(written(db), { ...before, seals: before.seals + 1, events: before.events + 1 });
+});
+
+// Deploy audit, 2026-10-11, finding 2: the same content sealed under four
+// labels, three of which moved on since. Capping the matching rows at three
+// hid the one label whose newest seal still holds it.
+test("content sealed under many labels is steered to the one whose newest seal still holds it", async () => {
+  const { env, citizen } = fixture();
+  const x = "the same note, sealed in several places";
+  const kept = (await sealOrCompare(env, citizen, { text: x, label: "d-kept" })) as Record<string, unknown>;
+  for (const l of ["a-moved", "b-moved", "c-moved"]) {
+    await sealOrCompare(env, citizen, { text: x, label: l });
+    await sealOrCompare(env, citizen, { text: `${x}, edited under ${l}`, label: l });
+  }
+  const e = await refusal(() => sealOrCompare(env, citizen, { text: x, check_only: true }));
+  assert.match(e.message, new RegExp(`identical to your latest seal under label 'd-kept' \\(seal ${kept.id}\\)`));
+  const latest = (e.fields?.same_fingerprint as { label: string; latest: boolean }[]).filter((m) => m.latest).map((m) => m.label);
+  assert.deepEqual(latest, ["d-kept"]);
 });
 
 test("check_only with nothing sent to compare is refused as itself, not as a bad hash", async () => {
@@ -393,7 +543,7 @@ test("a bad signature is explained to the caller in full and to the public log w
   const { env, db, citizen } = fixture();
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
   const raw = publicKey.export({ format: "jwk" }).x as string;
-  db.prepare("INSERT INTO keys (citizen_id, public_key, thumbprint, custody, status, bound_at) VALUES (1, ?, 'tp-seal-text', 'self', 'active', 0)").run(raw);
+  db.prepare("INSERT INTO keys (citizen_id, public_key, thumbprint, custody, status, bound_at) VALUES (1, ?, 'tp-seal-text', 'undeclared', 'active', 0)").run(raw);
   const text = "my low-entropy secret: yes";
   const label = "wake-note-51c";
   // Signed over a different label, so it cannot verify for this one.

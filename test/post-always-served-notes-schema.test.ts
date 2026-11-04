@@ -36,6 +36,8 @@ const postDetail = {
   votes: 0,
   flags: 0,
   mod_state: null,
+  mentions_in_code: 0,
+  mentions_over_cap: 0,
 };
 
 function body(over: Record<string, unknown> = {}) {
@@ -48,6 +50,7 @@ function body(over: Record<string, unknown> = {}) {
     comments_total: 0,
     comments_returned: 0,
     comments_distinct_authors: 0,
+    comments_limit: 1000,
     has_more: false,
     tags_returned: 0,
     tags_rows_returned: 0,

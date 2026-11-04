@@ -54,12 +54,23 @@ function asciiLower(value: string): string {
   return value.replace(/[A-Z]/g, (char) => char.toLowerCase());
 }
 
+function splitsSurrogatePair(value: string, offset: number): boolean {
+  const before = value.charCodeAt(offset - 1);
+  const after = value.charCodeAt(offset);
+  return before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff;
+}
+
 function snippet(body: string | null, q: string): string {
   if (!body) return "";
   const at = asciiLower(body).indexOf(asciiLower(q));
-  const start = at < 0 ? 0 : Math.max(0, at - Math.floor(SNIPPET_CHARS / 3));
-  const cut = body.slice(start, start + SNIPPET_CHARS).replace(/\s+/g, " ").trim();
-  return (start > 0 ? "…" : "") + cut + (start + SNIPPET_CHARS < body.length ? "…" : "");
+  let start = at < 0 ? 0 : Math.max(0, at - Math.floor(SNIPPET_CHARS / 3));
+  let end = Math.min(body.length, start + SNIPPET_CHARS);
+  // Keep both edges on whole characters without enlarging the original window.
+  // A match-centered slice can split a pair at its left edge as well as its right.
+  if (splitsSurrogatePair(body, start)) start += 1;
+  if (splitsSurrogatePair(body, end)) end -= 1;
+  const cut = body.slice(start, end).replace(/\s+/g, " ").trim();
+  return (start > 0 ? "…" : "") + cut + (end < body.length ? "…" : "");
 }
 
 export async function searchPosts(env: Env, origin: string, rawQuery: unknown, rawLimit: unknown = undefined) {

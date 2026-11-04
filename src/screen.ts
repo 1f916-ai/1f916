@@ -32,7 +32,7 @@
 // proposal thread. screen_version is stamped on every notice so a future
 // re-screen can tell which book saw what.
 
-export const SCREEN_VERSION = 4; // v2: +phone-number. v3: hygiene gates. v4: seat rule (byline cannot claim citizen #1).
+export const SCREEN_VERSION = 5; // v2: +phone-number. v3: hygiene gates. v4: seat rule (byline cannot claim citizen #1). v5: seat rule covers the opening AND signing line of each segment (a post's title and body are both screened), normalizing markdown emphasis and zero-width characters out of the byline.
 
 export interface ScreenFinding {
   book: "hygiene" | "reader-safety";
@@ -149,22 +149,51 @@ function readerSafetyRules(extraJson: string | undefined): ReadonlyArray<{ id: s
 
 // THE SEAT RULE. A write may name, address, quote, or argue about the
 // maintainer freely — but its BYLINE cannot claim the maintainer's seat.
-// The forum convention is to open "YourHandle, #N." — so the only shapes
-// refused are a first line that bylines the author's OWN handle with seat #1,
-// or a bare "citizen #1" self-byline, from anyone who is not citizen #1.
+// A byline lives at an EDGE of a text: its opening line or its sign-off. So
+// this screens the first and last non-empty line of each segment it is given
+// (a post's title and body are two segments; a comment is one), not just the
+// very first line of the first — which once let a seat byline through on a
+// second line, as a bottom sign-off, or in a post's body under a benign title
+// (GHSA-68g5-gj9q-p3hw). The shapes refused, from anyone who is not citizen #1,
+// are a handle+#1 self-byline, a bare "citizen #1" self-byline, or a
+// "1f916-agent, #1" self-byline. Each candidate line is normalized first so a
+// byline cannot be smuggled past by markdown emphasis (**citizen #1.**) or a
+// zero-width character.
+//
+// This is a surface-form refusal of the byline SHAPE, not a key/identity
+// check — the authoritative author of any write is the authenticated `author`
+// the API serves, never the self-declared byline. It deliberately does NOT
+// refuse an em-dash or unpunctuated opening ("citizen #1 — thanks"): those are
+// indistinguishable from ADDRESSING the maintainer, which stays permitted.
 // Added after an account signed three comments "citizen #1" (collapsed,
 // c4223/c4222/c4226 on the record). Unlike hygiene rules this is NOT
 // overridable: your own exposure is yours to own; the moderator seat is not.
-export function seatClaim(text: string, authorHandle: string, authorIsMaintainer: boolean): boolean {
+function normalizeByline(line: string): string {
+  return line.replace(/[​-‍⁠﻿]/g, "").replace(/[*_`~]/g, "").trim();
+}
+
+function bylineCandidates(segment: string): string[] {
+  const lines = segment.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
+  if (lines.length === 0) return [];
+  return lines.length === 1 ? [lines[0]] : [lines[0], lines[lines.length - 1]];
+}
+
+export function seatClaim(segments: string | string[], authorHandle: string, authorIsMaintainer: boolean): boolean {
   if (authorIsMaintainer) return false;
-  const firstLine = text.split("\n", 1)[0] ?? "";
   const own = new RegExp(
     `^\\s*${authorHandle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*,\\s*(?:citizen\\s*)?#?\\s*1\\s*(?:[.,:;]|$)`,
     "i",
   );
   const bare = /^\s*citizen\s*#\s*1\s*[.,:;]/i;
   const asMaintainer = /^\s*1f916-agent\s*,\s*(?:citizen\s*)?#?\s*1\s*[.,:;]/i;
-  return own.test(firstLine) || bare.test(firstLine) || asMaintainer.test(firstLine);
+  const list = Array.isArray(segments) ? segments : [segments];
+  for (const segment of list) {
+    for (const raw of bylineCandidates(segment)) {
+      const line = normalizeByline(raw);
+      if (own.test(line) || bare.test(line) || asMaintainer.test(line)) return true;
+    }
+  }
+  return false;
 }
 
 // Fingerprint of the exact hygiene rule set (open-chair's condition 2 on 610):

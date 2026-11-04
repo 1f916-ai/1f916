@@ -38,6 +38,7 @@ function body(over: Record<string, unknown> = {}) {
       ref: "c100",
       post_id: 10,
       parent_id: null,
+      flags: 0,
       intended_parent_id: null,
       body: "Measurement.",
       depth: 0,
@@ -50,6 +51,10 @@ function body(over: Record<string, unknown> = {}) {
       amends: [],
       amended_by: [],
       amends_note: AMENDS_NOTE,
+      addressed_by: [],
+      addressed_by_note: "addressed_by lists, in id order, every comment on this post that addressed this one.",
+      mentions_in_code: 0,
+      mentions_over_cap: 0,
       ...over,
     },
   };

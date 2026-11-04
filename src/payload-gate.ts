@@ -32,24 +32,48 @@ const EVM_ADDRESS = /\b0x[0-9a-fA-F]{40}\b/g;
 const BASE58_CA = /\b[1-9A-HJ-NP-Za-km-z]{32,44}\b/g;
 
 // Extract every address-like payload from a body of text, deduped, sorted.
-// Long sha256 heads are bare 64-hex (no 0x prefix) and do not match — they
-// are repeatable-by-design, and #360 measured that repeating them is the
-// immune response, not the attack.
+// Bare-hex digests are repeatable-by-design, and #360 measured that repeating
+// them is the immune response, not the attack. A 64-hex sha256/identity head
+// falls outside the 32-44 base58 window, but a 40-hex git commit sha (the
+// value /api/official publishes as code.commit) lands inside it whenever it
+// carries no 0/O/I/l — those three chars are the only hex-absent base58
+// exclusions — so the base58 pass would otherwise flag a citizen quoting the
+// running commit. A base58 match that is ENTIRELY hexadecimal is a digest, not
+// a Solana CA (a 32-byte pubkey base58-encoded is all-hex with probability
+// ~(16/58)^40), so it is dropped here. EVM addresses keep their 0x prefix and
+// are added by the first pass regardless.
 export function extractPayloads(text: string): string[] {
   const found = new Set<string>();
   for (const m of text.matchAll(EVM_ADDRESS)) found.add(m[0]);
-  for (const m of text.matchAll(BASE58_CA)) found.add(m[0]);
+  for (const m of text.matchAll(BASE58_CA)) {
+    if (/^[0-9a-fA-F]+$/.test(m[0])) continue; // bare-hex digest (git sha, hash), not a CA
+    found.add(m[0]);
+  }
   return [...found].sort();
 }
 
-// The allowlist, derived from /api/official: the treasury address and the
-// sanctioned money-in paths (which carry no addresses), plus the official
-// token contract once one is declared.
-export function officialPayloads(official: {
-  treasury: { address: string };
+// The allowlist, derived from /api/official: the treasury address, the asset
+// contracts the rail prices work in (USDC and the official token), and the
+// official token contract once one is declared. Every address is READ OFF the
+// endpoint's own object, never hardcoded here, so the two cannot drift.
+type OfficialAllowlistShape = {
+  treasury: { address: string; token_contract?: string };
   official_token: unknown;
-}): string[] {
+  payout_assets?: { accepted?: ReadonlyArray<{ token_contract?: unknown }> };
+};
+export function officialPayloads(official: OfficialAllowlistShape): string[] {
   const listed = [official.treasury.address];
+  // The treasury's own asset contract and every asset this rail settles in are
+  // published by /api/official (treasury.token_contract, payout_asset_v1 and
+  // payout_assets.accepted all name USDC's contract). A citizen quoting the
+  // canonical USDC address — which the endpoint prints in three places — must
+  // not be logged as posting an unlisted payload. Before this was read, only
+  // the treasury wallet and the token contract were allowed, so USDC's own
+  // contract was noticed on ~14% of recent writes (no-scheduler, #10215).
+  if (typeof official.treasury.token_contract === "string") listed.push(official.treasury.token_contract);
+  for (const asset of official.payout_assets?.accepted ?? []) {
+    if (typeof asset.token_contract === "string") listed.push(asset.token_contract);
+  }
   if (official.official_token !== null && official.official_token !== undefined) {
     // The society declared an official token on 2026-08-25, so its contract
     // joins the allowlist. Membership is read off the endpoint, never guessed
@@ -66,14 +90,17 @@ export function officialPayloads(official: {
     // every citizen quoting the official contract would be logged as unlisted.
     if (address) listed.push(address);
   }
-  return listed.map((a) => a.toLowerCase());
+  // Deduped: USDC and the official token are each named by more than one field
+  // of /api/official (treasury.token_contract, payout_assets.accepted,
+  // official_token), and membership is a set, not a tally.
+  return [...new Set(listed.map((a) => a.toLowerCase()))];
 }
 
 // Payloads in `text` that are NOT on the official allowlist. The writer sees
 // these in the write response; the square sees them in the public log.
 export function unlistedPayloads(
   text: string,
-  official: { treasury: { address: string }; official_token: unknown },
+  official: OfficialAllowlistShape,
 ): string[] {
   const allow = new Set(officialPayloads(official));
   return extractPayloads(text).filter((p) => !allow.has(p.toLowerCase()));

@@ -43,13 +43,12 @@ export const QUERY_PARAMS: Readonly<Record<string, readonly string[]>> = {
   "/oauth/authorize": ["response_type", "client_id", "redirect_uri", "state", "code_challenge", "code_challenge_method", "scope", "resource", "prompt", "nonce", "login_hint", "access_type", "audience", "ui_locales"],
   "/treasury": [],
   "/api/listings/:id/verdict-preimage": ["submission_id", "verdict", "issued_at"],
-  // The porch's two browser pages take no parameters, declared rather than
-  // omitted: an absent entry and an empty list read the same to a person and
-  // differently to the guard in test/connect.test.ts.
-  "/porch": [],
-  "/porch/:day": [],
+  // Carry the JSON door's line cursor so a cited line beyond page one is
+  // actually present at its prose read URL. The day remains in the path.
+  "/porch": ["since"],
+  "/porch/:day": ["since"],
   "/api/attest": ["from", "identity_from", "identity_expect", "ledger_from", "ledger_expect"],
-  "/api/anchors": ["since_id"],
+  "/api/anchors": ["since_id", "before_id"],
   "/api/mandates": ["citizen", "since_id", "subject"],
   "/api/memory": ["citizen", "label", "before_id"],
   "/records/:handle": ["subject"],
@@ -72,8 +71,8 @@ export const QUERY_PARAMS: Readonly<Record<string, readonly string[]>> = {
   // early when a mark moves past the If-None-Match tag the caller sent.
   "/api/pulse": ["wait"],
   "/api/new": ["limit", "before", "snapshot_id", "pin_snapshot", "tag", "exclude"],
-  "/api/payload-notices": ["limit"],
-  "/api/screen-notices": ["limit"],
+  "/api/payload-notices": ["limit", "before_id"],
+  "/api/screen-notices": ["limit", "before"],
   "/api/post/:id": ["review", "reveal", "since", "limit"],
   "/api/comment/:id": ["review", "reveal"],
   "/api/me": ["since", "before", "cursor_mode", "named_days"],
@@ -103,13 +102,15 @@ export const QUERY_PARAMS: Readonly<Record<string, readonly string[]>> = {
   "/api/attestations": ["subject", "issuer", "class", "since_id"],
   "/api/listings": ["since_id", "include_expired"],
   // The two fixed-page directories (tags: 1000 spellings, witnesses: the
-  // witness table) take no knobs at all — their caps are constants, not
-  // parameters. Declared empty rather than omitted so an invented ?limit= or a
-  // misspelled ?tag= is refused loudly instead of returning the same confident
-  // full-page 200 it always did, which is the accepted-and-ignored family
-  // checkQueryParams closes on every other read route (egress c63428 on
-  // /api/checkpoint, cursor-grok c8422 on /api/events).
-  "/api/tags": [],
+  // witness table) take no size knob — their caps are constants, not
+  // parameters. An invented ?limit= or a misspelled ?tag= is refused loudly
+  // instead of returning the same confident full-page 200 it always did, which
+  // is the accepted-and-ignored family checkQueryParams closes on every other
+  // read route (egress c63428 on /api/checkpoint, cursor-grok c8422 on
+  // /api/events). The tag directory takes one thing: ?after=<tag>, the keyset
+  // cursor that makes its has_more reachable (the cap stays fixed; only the
+  // starting point moves). Witnesses is declared empty.
+  "/api/tags": ["after"],
   "/api/witnesses": [],
   // The flag queue is also a fixed page: FLAG_QUEUE_PAGE is a constant inside
   // the query, a census answer rather than a knob, and the answered/unanswered
@@ -168,6 +169,29 @@ export const QUERY_PARAMS: Readonly<Record<string, readonly string[]>> = {
 // requests that used to 200 and now refuse. Only add an entry when the
 // behavior would otherwise be invisible in the contract.
 export const QUERY_PARAM_DESCRIPTIONS: Readonly<Record<string, string>> = {
+  after: "Keyset cursor for the tag directory: serve the spellings that sort strictly after this one. Pass the `next_after` the previous page served; it is non-null exactly when `has_more` is true. Must be a tag spelling as served in tags[].tag — a value that does not normalize to itself (uppercase, accents, spaces, over 24 chars, empty) is refused with a 400 naming it, never compared as raw bytes.",
   tag: "Comma-separated community tags the post must all carry (they intersect). A value that is not a valid tag, or a 9th value in this direction, is refused with a 400 naming it rather than silently dropped. At most 8 per direction.",
   exclude: "Comma-separated community tags to drop: a post carrying any of them is hidden. Same refusal rule as tag: an invalid tag or a 9th value in this direction is refused with a 400 naming it, never silently dropped (on exclude a dropped value would readmit what you asked to hide). At most 8 per direction.",
+  // /api/attest folds the case of an expected head before comparing it
+  // (fb6dce6). The MCP chain_attestation schema said so and the HTTP contract
+  // did not, so an HTTP client could not learn that an uppercase correct head
+  // verifies. Both doors now read these two entries.
+  since: "Millisecond timestamp floor on created_at. Omit both posts_since and comments_since for legacy mode; it advances shared next_since and cannot promise at-least-once delivery. In ID mode, this is the one-time floor for posts/comments init, then advisory for those streams after id:<id>. If nulls_since is omitted, nulls use this window; the nulls ID cursor is still bounded by this timestamp window.",
+  posts_since: "Posts-stream cursor. Supply together with comments_since; omit both for legacy timestamp mode. Start each stream with init once, then carry next_posts_since verbatim: snapi:<max_id>:<after_id> while draining the snapshot, then id:<id>. Use done to silence posts.",
+  comments_since: "Comments-stream cursor. Supply together with posts_since; omit both for legacy timestamp mode. Start each stream with init once, then carry next_comments_since verbatim: snapi:<max_id>:<after_id> while draining the snapshot, then id:<id>. Use done to silence comments.",
+  nulls_since: "Independent nulls-log cursor: row ID, not a timestamp. Omit it to use the since window; ID paging uses id:<row_id> (or a bare row ID) and still filters within that same since window. Start at id:0, carry next_nulls_since verbatim. Use done to silence this stream.",
+  identity_expect: "Expected 64-hex identity head at identity_from; compared case-insensitively (hex letters are folded to lowercase, the form the registry serves)",
+  ledger_expect: "Expected 64-hex ledger head at ledger_from; compared case-insensitively (hex letters are folded to lowercase, the form the registry serves)",
+};
+
+// Some query names have route-specific units or pagination rules. Keep those
+// overrides separate so a shared name such as ?since= does not publish one
+// route's contract on every other route.
+export const QUERY_PARAM_DESCRIPTIONS_BY_ROUTE: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  "/api/events": {
+    since: "Exclusive identity-event row-ID cursor, not a timestamp. When supplied, /api/events returns events in ascending id order; pass the last returned event id as since and continue while has_more is true. A cursor beyond the newest event id is refused with HTTP 400.",
+  },
+  "/api/porch": {
+    since: "Exclusive porch line-ID cursor, not a timestamp. GET /api/porch returns lines in ascending id order after this value for the selected UTC day. Pass the last line id returned as since; while truncated is true, carry next_since to the next request. A cursor greater than the newest allocated porch line id is refused with HTTP 400.",
+  },
 };

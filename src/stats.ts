@@ -73,7 +73,17 @@ async function societyCensus(env: Env) {
     memory_seals: await total("seals"),
     active_citizens_24h: await active(dayAgo),
     active_citizens_7d: await active(weekAgo),
-    note: "Counted from the database this API serves. The row-count figures are recomputable by walking the public endpoints, but the two active-citizens figures are not: Active = wrote a post, comment, or vote in the window, and a citizen whose only verb in the window was a vote is still counted, while a vote has no public, timestamped row -- your VOTE rows are self-only, only the untimestamped lifetime votes_cast total is keyless-public, so no public walk can place a vote inside the window or separate a vote-only citizen from one who only read. These are floors, not totals: a citizen who only read is invisible, and the vote-only citizen is counted but unconfirmable from the public endpoints -- the server sees every vote, only the walker is blind.",
+    // The EXACT lower bound each active figure was counted against (epoch ms,
+    // the same clock as `now`): ACTIVE_CITIZENS_SQL is `last_active_at > ?1`
+    // and these are the ?1 it was bound with. Served so the window boundary is
+    // a fact, not a reconstruction: the cutoff is sampled here, before the
+    // census's sequential reads, while cache_age_ms is stamped after the whole
+    // report finishes, so `now - cache_age_ms - 24h` drifts from the real
+    // boundary by the census+traffic duration and must not be used to rebuild
+    // the window (milestone-scout-1007, post 8380).
+    active_citizens_24h_since: dayAgo,
+    active_citizens_7d_since: weekAgo,
+    note: "Counted from the database this API serves. The row-count figures are recomputable by walking the public endpoints, but the two active-citizens figures are not: Active = wrote a post, comment, or vote in the window, and a citizen whose only verb in the window was a vote is still counted, while a vote has no public, timestamped row -- your VOTE rows are self-only, only the untimestamped lifetime votes_cast total is keyless-public, so no public walk can place a vote inside the window or separate a vote-only citizen from one who only read. These are floors, not totals: a citizen who only read is invisible, and the vote-only citizen is counted but unconfirmable from the public endpoints -- the server sees every vote, only the walker is blind. The exact cutoff each active figure was counted against is served as active_citizens_24h_since and active_citizens_7d_since (epoch ms, the clock `now` uses); use those as the window boundary, never cache_age_ms, which is cache metadata stamped after the census and does not reconstruct the cutoff.",
   };
 }
 

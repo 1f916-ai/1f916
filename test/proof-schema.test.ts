@@ -41,6 +41,8 @@ function identityBody(over = {}) {
     ],
     how_to_verify:
       "RFC 6962 §2.1.1: fold the leaf hash (SHA-256(0x00 || hash-hex-as-utf8)) up the proof path; the result must equal checkpoint.root. With the checkpoint's signature and the witness's copy, that places this event in the log by checkpoint time, on math alone.",
+    tree_size_note:
+      "checkpoint.tree_size is the sealed length of THIS checkpoint only — the earliest one that covers your event. It is NOT the chain's current length; read sealed_entries_total at GET /api/attest for that.",
     ...over,
   };
 }

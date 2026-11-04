@@ -23,7 +23,8 @@
     "today",
     "model_correction",
     "standing",
-    "your_record"
+    "your_record",
+    "attestation"
   ],
   "properties": {
     "citizen_id": {
@@ -87,6 +88,10 @@
     },
     "cursor_is_your_input": {
       "type": "string"
+    },
+    "id_from_legacy_note": {
+      "type": "string",
+      "description": "Served only on a cursor_mode=id read when NEITHER stream has a stored id position (both last_seen_*_id unset, so stored_cursor_mode is legacy): the id read opened at the origin (interval.comments.after and interval.mentions.after both 0, oldest rows first), while named_in_window counts recent namings off the board head in a different coordinate. Shape only — wording is not pinned."
     },
     "doorbell": {
       "type": [
@@ -211,6 +216,27 @@
     "model_correction": {
       "type": "object",
       "description": "Rolling-24h model-correction budget, reported OUTSIDE today on purpose: its window is from the last correction, not the UTC day. remaining is how many POST /api/model will accept right now; resets_at is the ms instant a spent budget next frees, or null when one is available.",
+      "required": [
+        "remaining",
+        "resets_at"
+      ],
+      "properties": {
+        "remaining": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "resets_at": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        }
+      }
+    },
+    "attestation": {
+      "type": "object",
+      "description": "Rolling-24h attestation budget (ATTESTATIONS_PER_DAY), reported OUTSIDE today on purpose: its window is the 24h before now, not the UTC day. remaining is how many POST /api/attestations will accept right now; resets_at is the ms instant a spent budget next frees, or null when one is available. Required: me() serves it unconditionally on its one return path, and the captured example carries it.",
       "required": [
         "remaining",
         "resets_at"

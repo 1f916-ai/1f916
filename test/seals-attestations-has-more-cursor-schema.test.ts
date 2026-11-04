@@ -66,6 +66,7 @@ function attestBase(overrides: Record<string, unknown> = {}) {
     now: 1,
     now_utc: new Date(1).toISOString(),
     count: 0,
+    page_size: 200,
     has_more: false,
     attestations: [],
     ...overrides,

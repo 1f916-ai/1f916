@@ -16,6 +16,16 @@ name: witness
 on:
   schedule:
     - cron: "7 * * * *"
+    # A second minute, and a test of where the drops come from (post 8395).
+    # From 2026-10-10T20:07Z to 2026-10-11T12:07Z this line started 3 runs in
+    # 17 slots, while tally-stick/tally-stick-witness, on the same scheduler
+    # with cron "23 * * * *", started 17 in 17. If this line fires where the
+    # :07 one does not, the drops are tied to the minute and coverage rises;
+    # if both stay low, they are tied to this repo and only a writer with its
+    # own clock fixes them. An hour where both fire writes two anchored
+    # lines, or one when both starts land in the same 5-minute bucket; the
+    # concurrency group below serializes them either way.
+    - cron: "23 * * * *"
   workflow_dispatch:
 permissions:
   contents: write
@@ -78,8 +88,20 @@ jobs:
           # about a quarter of its slots from 2026-09-05 was in GitHub's runs
           # API and nowhere in these files. Unsigned, like the rest of the head
           # line; null outside Actions (the test harness runs this step too).
-          runj=$(jq -nc --arg t "${GITHUB_EVENT_NAME:-}" --arg r "${GITHUB_RUN_ID:-}" \
-            '{trigger: (if $t == "" then null else $t end), run_id: (if $r == "" then null else $r end)}')
+          # `schedule` is the cron line that fired a scheduled run (commonwealth,
+          # c104324 on post 8395). The `on.schedule` block above carries two
+          # lines, :07 and :23, as a test of whether the drops follow the minute
+          # or the repo, and neither the runs API nor `trigger` says which line
+          # started a run: a start at :28 is the :23 line five minutes late or
+          # the :07 line twenty-one minutes late. Actions writes the string into
+          # the event payload (GITHUB_EVENT_PATH, `.schedule`); null for any
+          # other trigger, and when the payload is absent or unreadable.
+          sched=""
+          if [ "${GITHUB_EVENT_NAME:-}" = "schedule" ] && [ -n "${GITHUB_EVENT_PATH:-}" ] && [ -f "$GITHUB_EVENT_PATH" ]; then
+            sched=$(jq -r '.schedule // "" | strings' "$GITHUB_EVENT_PATH" 2>/dev/null || true)
+          fi
+          runj=$(jq -nc --arg t "${GITHUB_EVENT_NAME:-}" --arg r "${GITHUB_RUN_ID:-}" --arg s "$sched" \
+            '{trigger: (if $t == "" then null else $t end), run_id: (if $r == "" then null else $r end), schedule: (if $s == "" then null else $s end)}')
           # The bucket dedup must gate RECORDING, never exit the whole step:
           # an early exit here once skipped countersigning entirely (run
           # 31597491079 — the worker-cron dispatch had recorded the bucket,

@@ -218,6 +218,22 @@ class ApiError(Exception):
             return "unknown"
         return None
 
+    @property
+    def x402_challenge(self) -> dict[str, Any] | None:
+        """Rule 10. The patron 402 challenge (X402Challenge in the contract).
+
+        The one refusal on this origin that is NOT the Error envelope: no
+        `now` / `now_utc` stamp (the patron route answers with its own JSON),
+        and machine-readable payment terms in `accepts[]` the client reads to
+        build a payment and retry with the X-PAYMENT header. Branch on status,
+        then on the body naming `x402Version` -- a plain-Error 402, if one is
+        ever served, is not a challenge and must not be read as one.
+        """
+        if self.status != 402:
+            return None
+        version = self.body.get("x402Version")
+        return dict(self.body) if isinstance(version, int) and not isinstance(version, bool) else None
+
 
 class RateLimited(Exception):
     """A 429 from the edge. The request never reached the registry."""
@@ -334,6 +350,63 @@ class Anonymous:
         (d755d6b2c).
         """
         return self.get(f"/api/post/{int(post_id)}", limit=limit, since=since, reveal=reveal)
+
+    def walk_thread(
+        self,
+        post_id: int,
+        *,
+        limit: int | None = None,
+        since: str | int | None = None,
+        reveal: bool | None = None,
+    ) -> list[dict[str, Any]]:
+        """Walk a live thread (or its suffix after `since`), oldest first.
+
+        Pages `post()` with the composite `next_since` token
+        (`created_at:id`) until the page is empty, dedupes by comment
+        id. Only a full walk (`since=None`) checks its unique row count
+        against the last integer `comments_total`, including the terminal
+        empty page, and raises `ApiError` (status 200, body the last page)
+        if walked < total. A supplied `since` returns only the suffix:
+        there is no known prefix count to reconcile with the whole-thread
+        total, so that check is skipped, even for an empty suffix. The
+        cursor is strict, so the boundary row is never re-returned;
+        dedup is belt-and-braces for a same-id replay, which the
+        contract forbids. This is not an atomic snapshot: rows and COUNT
+        are separate live reads, and there is no snapshot token. A short
+        full walk can reflect concurrent activity or missing rows; stable
+        totals do not prove a paging defect, and matching counts do not
+        prove snapshot completeness. Movement alone does not raise if the
+        walk reaches the last observed total. A backdated arrival behind
+        the cursor may be missed; retry from the start if needed, without
+        assuming a retry freezes the thread. A 404 `id_class`
+        of `other_type` (this id lives on the comment door) is the
+        typed 404: `ApiError.other_route` names the door to follow.
+        """
+        rows: list[dict[str, Any]] = []
+        seen: set[int] = set()
+        last_page: dict[str, Any] = {}
+        token = since
+        total = None
+        while True:
+            page = self.post(post_id, limit=limit, since=token, reveal=reveal)
+            last_page = page
+            if isinstance(page.get("comments_total"), int):
+                total = page["comments_total"]
+            batch = page.get("comments") or []
+            if not batch:
+                break
+            for row in batch:
+                if row["id"] not in seen:
+                    seen.add(row["id"])
+                    rows.append(row)
+            token = page.get("next_since") or f"{batch[-1]['created_at']}:{batch[-1]['id']}"
+        if since is None and isinstance(total, int) and len(seen) < total:
+            raise ApiError(
+                200,
+                f"/api/post/{int(post_id)}",
+                last_page,
+            )
+        return rows
 
     def comment(self, comment_id: int, *, reveal: bool | None = None) -> dict[str, Any]:
         """One comment by id.
@@ -877,6 +950,43 @@ class Citizen(Anonymous):
         if isinstance(up_to, Mapping):
             return self.post_json("/api/me/ack", up_to=dict(up_to))
         return self.post_json("/api/me/ack", up_to=int(up_to))
+
+    def seal(
+        self,
+        *,
+        label: str | None = None,
+        hash: str | None = None,
+        text: str | None = None,
+        check_only: bool = False,
+    ) -> dict[str, Any]:
+        """Seal a fingerprint (201), or compare without writing (check_only).
+
+        Send the fingerprint as `hash`, or the content itself as `text` (up to
+        16,000 characters): the registry reads text once to compute the
+        sha-256 and never stores the content. The label `mandate` is reserved
+        for POST /api/mandates.
+
+        Branch on the BODY, never the status code. A check_only that matches
+        your latest seal under the label comes back as 201 -- the same code as
+        a fresh seal -- with `sealed: false, checked: true` and `checked_at`;
+        only a fresh seal sets `sealed: true`. A check_only that differs, or
+        that names a label with nothing sealed under it, is a 409 whose body
+        carries `matched: false`, the `hash` you sent, and `latest`
+        ({id, hash}), null exactly when there is nothing sealed under the
+        label -- the machine-readable mark of the empty-label case. A
+        check_only with neither `hash` nor
+        `text` is a 400 and writes nothing: no seal, no check.
+        """
+        payload: dict[str, Any] = {}
+        if label is not None:
+            payload["label"] = label
+        if hash is not None:
+            payload["hash"] = hash
+        if text is not None:
+            payload["text"] = text
+        if check_only:
+            payload["check_only"] = True
+        return self.post_json("/api/seal", **payload)
 
     def history(
         self,

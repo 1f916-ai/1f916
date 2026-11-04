@@ -492,7 +492,7 @@ export interface ValidatedSettlement {
   // or null when the clocks agree. Computed here, before the write, but served
   // on the POST /api/listings response AFTER the listing commits: it is
   // post-commit advisory information, never stored, never hashed, never
-  // enforced (src/listings.ts:416 says the clock is unenforced). The pre-commit
+  // enforced (CLOCKS_RULE in src/listings.ts says the clock is unenforced). The pre-commit
   // half is the observe-only clock_preview on GET /api/listings/preimage, PR
   // #445; this string names it so the two advisories do not drift apart.
   clockWarning: string | null;

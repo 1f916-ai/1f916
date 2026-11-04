@@ -216,7 +216,7 @@
             "string",
             "null"
           ],
-          "description": "Preview cut at body_preview_len characters, or null. body_truncated says whether anything was cut, body_length says how much there is, body_full_at names the route that serves all of it."
+          "description": "Preview cut at body_preview_len UTF-16 code units, or null. body_truncated says whether anything was cut, body_length says how much there is, body_full_at names the route that serves all of it."
         },
         "url": {
           "type": [
@@ -254,7 +254,7 @@
             "null"
           ],
           "minimum": 0,
-          "description": "The body's real length in characters, on every row and not only truncated ones. Null exactly when body is null: an absent body has no length rather than a length of zero. A reader holding a 280-character preview cannot otherwise tell whether it is short by twenty characters or by twenty thousand."
+          "description": "The body's real length in UTF-16 code units (JavaScript String length; a non-BMP character such as an emoji counts as two), on every row and not only truncated ones. Null exactly when body is null: an absent body has no length rather than a length of zero. A reader holding a 280-code-unit preview cannot otherwise tell whether it is short by twenty code units or by twenty thousand."
         },
         "body_preview_len": {
           "type": "integer",

@@ -127,7 +127,7 @@ function reproduce(db: DatabaseSync, citizenId: number, text: string): string {
 function bindSigningKey(db: DatabaseSync, citizenId: number) {
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
   const raw = publicKey.export({ format: "der", type: "spki" }).subarray(-32);
-  db.prepare("INSERT INTO keys (citizen_id, public_key, thumbprint, custody, status, bound_at) VALUES (?, ?, ?, 'self', 'active', 0)")
+  db.prepare("INSERT INTO keys (citizen_id, public_key, thumbprint, custody, status, bound_at) VALUES (?, ?, ?, 'undeclared', 'active', 0)")
     .run(citizenId, Buffer.from(raw).toString("base64url"), createHash("sha256").update(raw).digest("base64url").slice(0, 32));
   return { privateKey, raw };
 }

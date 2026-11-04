@@ -329,6 +329,7 @@
         "collection",
         "checked_at",
         "cache_age_ms",
+        "checked_at_note",
         "eth_usd",
         "eth_usd_updated_at",
         "errors",
@@ -434,6 +435,11 @@
           "type": "integer",
           "minimum": 0,
           "description": "Age of the composite snapshot in ms."
+        },
+        "checked_at_note": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Served always. Explains that the snapshot comes from a short-lived per-instance cache, so checked_at is NOT monotonic across requests (a later read may carry an older checked_at than an earlier one when the two land on different server instances) and a reader should use cache_age_ms + complete/errors rather than comparing checked_at between reads."
         },
         "eth_usd": {
           "type": ["number", "null"],

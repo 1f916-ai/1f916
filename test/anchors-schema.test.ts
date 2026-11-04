@@ -35,6 +35,7 @@ function base(overrides: Record<string, unknown> = {}) {
     targets: {
       ots_calendars: ["https://alice.btc.calendar.opentimestamps.org"],
       base: true,
+      base_address: "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
       archive: "authenticated",
     },
     anchored_text: "1f916.checkpoint.v1:...",
@@ -54,6 +55,8 @@ function base(overrides: Record<string, unknown> = {}) {
             error: null,
             created_at: 1,
             confirmed_at: null,
+            block_number: null,
+            failed_at: null,
           },
         ],
       },
@@ -72,19 +75,39 @@ function base(overrides: Record<string, unknown> = {}) {
         error: null,
         created_at: 1,
         confirmed_at: 2,
+        block_number: 52638732,
+        last_asked_at: 2,
+        failed_at: null,
       },
     ],
     has_more: false,
+    head_id: 1,
     next_since_id: 1,
+    next_before_id: null,
     caps: { per_response: 200, unit: "anchors, oldest-first by id" },
     ...overrides,
   };
 }
 
-test("anchors.json requires has_more, next_since_id, and caps", () => {
-  for (const key of ["has_more", "next_since_id", "caps", "contract", "anchors", "latest_checkpoints"]) {
+test("anchors.json requires has_more, head_id, both cursors, and caps", () => {
+  for (const key of ["has_more", "head_id", "next_since_id", "next_before_id", "caps", "contract", "anchors", "latest_checkpoints"]) {
     assert.ok(schema.required.includes(key), `required must include ${key}`);
   }
+});
+
+test("head_id and next_before_id are required: dropping either must NOT validate", () => {
+  for (const key of ["head_id", "next_before_id"]) {
+    const incomplete = base();
+    delete (incomplete as Record<string, unknown>)[key];
+    assert.ok(validate(schema, incomplete).some((e) => new RegExp(key).test(e)), `missing ${key} must fail`);
+  }
+});
+
+test("a newest-first page validates: next_since_id null, next_before_id an id", () => {
+  assert.deepEqual(
+    validate(schema, base({ next_since_id: null, next_before_id: 3, caps: { per_response: 200, unit: "anchors, newest-first by id" } })),
+    [],
+  );
 });
 
 test("a final page with always-served next_since_id validates", () => {
@@ -129,6 +152,9 @@ test("ots row may carry ots_file and payload_file", () => {
             error: null,
             created_at: 1,
             confirmed_at: null,
+            block_number: null,
+            last_asked_at: null,
+            failed_at: null,
             ots_file: "/api/anchors/2.ots",
             payload_file: "/api/anchors/2.txt",
           },
@@ -137,6 +163,21 @@ test("ots row may carry ots_file and payload_file", () => {
     ),
     [],
   );
+});
+
+test("an anchor row without last_asked_at must NOT validate", () => {
+  const page = base();
+  delete (page.anchors[0] as { last_asked_at?: number }).last_asked_at;
+  assert.ok(validate(schema, page).some((e) => /last_asked_at/.test(e)));
+});
+
+test("an anchor row without failed_at must NOT validate", () => {
+  const page = base();
+  delete (page.anchors[0] as { failed_at?: number | null }).failed_at;
+  assert.ok(validate(schema, page).some((e) => /failed_at/.test(e)));
+  const latest = base();
+  delete (latest.latest_checkpoints[0].anchors[0] as { failed_at?: number | null }).failed_at;
+  assert.ok(validate(schema, latest).some((e) => /failed_at/.test(e)), "the latest-checkpoint copy of a row requires it too");
 });
 
 test("description names always-served next_since_id and has_more", () => {

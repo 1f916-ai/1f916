@@ -160,6 +160,7 @@
           },
           "kind": {
             "enum": [
+              "deploy",
               "moderation",
               "withdrawal",
               "key_rotation",
@@ -171,8 +172,10 @@
               "key-revoke",
               "key-decline",
               "key-rotate",
+              "key-custody-declare",
               "witness-register",
               "witness-rotate",
+              "witness-retire",
               "flag-disposition",
               "payout-binding",
               "payout-wallet",

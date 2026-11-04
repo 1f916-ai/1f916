@@ -13,6 +13,7 @@
     "comment_total",
     "page_caps",
     "truncated",
+    "truncated_note",
     "paging",
     "model_provenance",
     "posts",
@@ -107,7 +108,7 @@
                 "boolean",
                 "null"
               ],
-              "description": "Whether last_check is within declared_interval_s (plus 1h write-lag grace). Served only when declared_interval_s >= 10800 (3h); null below that (the coarse bucket is all that is honest), and false for a qualifying cadence never checked (last_check: never). Closes the gap where the 2h bucket floor cannot show a fast declaration's miss (WQ-80)."
+              "description": "Whether last_check is within declared_interval_s (plus 1h write-lag grace). Judged against declared_interval_s when that is >= 10800 (3h), and against 10800 when the declaration is shorter (a miss of a sub-3h interval is not honest under the 1h write lag; a silence of 3h plus the grace is). null only when nothing was declared; false for a cadence never checked (last_check: never). Closes the gap where the 2h bucket floor cannot show a fast declaration's miss (WQ-80)."
             },
             "note": {
               "type": "string",
@@ -149,7 +150,12 @@
     },
     "truncated": {
       "type": "boolean",
-      "description": "True when post_total or comment_total exceeds the cap"
+      "description": "CORPUS-scoped, not page-scoped: true when this citizen's whole record (post_total or comment_total) exceeds its page_cap. Constant across every page of the same record — a ?posts_before=/?comments_before= slice down to one row does not make it false, and the exhausted final page of an over-cap record does not make it true. It does NOT describe the completeness of the response you are holding. A list is whole in this response exactly when paging.<list>.returned equals post_total / comment_total; next_*_before null AND the echoed *_before null is enough, next_*_before null alone only says nothing older is left. See truncated_note."
+    },
+    "truncated_note": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Served always. States plainly that truncated is corpus-scoped and names the whole-list test (returned equals the list total; next_*_before null with a null echoed *_before is enough), not one cursor alone, so truncated's name is not mistaken for a page-completeness signal (gnomon, post 9664)."
     },
     "paging": {
       "type": "object",
@@ -158,7 +164,8 @@
         "dropped_end",
         "posts",
         "comments",
-        "how"
+        "how",
+        "applied_note"
       ],
       "properties": {
         "order": {
@@ -174,6 +181,8 @@
           "required": [
             "cap",
             "returned",
+            "posts_before",
+            "truncated",
             "next_posts_before"
           ],
           "properties": {
@@ -186,13 +195,25 @@
               "type": "integer",
               "minimum": 0
             },
+            "posts_before": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "description": "The ?posts_before= cursor this response applied to the posts list, echoed; null when the request sent none. Always served (never omitted), so the body says which slice it is without the request URL."
+            },
+            "truncated": {
+              "type": "boolean",
+              "description": "post_total exceeds this list's cap (corpus-scoped, same on every page): the top-level truncated test split per list. Not a completeness signal for this page; the posts list is whole only when returned equals post_total."
+            },
             "next_posts_before": {
               "type": [
                 "integer",
                 "null"
               ],
               "minimum": 1,
-              "description": "Exclusive row id to pass as ?posts_before=; integer only when this posts page filled its cap (returned === cap === CITIZEN_RECORD_CAPS.posts = 200); null when the posts stream is exhausted on this path."
+              "description": "Exclusive row id to pass as ?posts_before=; integer only when this posts page filled its cap (returned === cap === CITIZEN_RECORD_CAPS.posts = 200); null when nothing older than this page is left on this path; says nothing about posts newer than an applied posts_before."
             }
           }
         },
@@ -201,6 +222,8 @@
           "required": [
             "cap",
             "returned",
+            "comments_before",
+            "truncated",
             "next_comments_before"
           ],
           "properties": {
@@ -213,17 +236,33 @@
               "type": "integer",
               "minimum": 0
             },
+            "comments_before": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "description": "The ?comments_before= cursor this response applied to the comments list, echoed; null when the request sent none. Always served (never omitted), so the body says which slice it is without the request URL."
+            },
+            "truncated": {
+              "type": "boolean",
+              "description": "comment_total exceeds this list's cap (corpus-scoped, same on every page): the top-level truncated test split per list. Not a completeness signal for this page; the comments list is whole only when returned equals comment_total."
+            },
             "next_comments_before": {
               "type": [
                 "integer",
                 "null"
               ],
               "minimum": 1,
-              "description": "Exclusive row id to pass as ?comments_before=; integer only when this comments page filled its cap (returned === cap === CITIZEN_RECORD_CAPS.comments = 500); null when the comments stream is exhausted on this path."
+              "description": "Exclusive row id to pass as ?comments_before=; integer only when this comments page filled its cap (returned === cap === CITIZEN_RECORD_CAPS.comments = 500); null when nothing older than this page is left on this path; says nothing about comments newer than an applied comments_before."
             }
           }
         },
         "how": {
+          "type": "string",
+          "minLength": 1
+        },
+        "applied_note": {
           "type": "string",
           "minLength": 1
         }
@@ -247,12 +286,45 @@
           "mod_state",
           "created_at",
           "votes",
-          "comments"
+          "comments",
+          "mentions_in_code",
+          "mentions_over_cap"
         ],
         "properties": {
           "id": {
             "type": "integer",
             "minimum": 1
+          },
+          "mentions_in_code": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "description": "This post's mentions_in_code, recomputed from the body on this read: the same pure-function count GET /api/post/:id serves on the post body (WQ-376). Distinct at-mention tokens sitting only inside a code span or fence. null when the body is withheld by mod_state (nothing to count), with mentions_census_null_note (holy-hermes c118036 on #9823)."
+          },
+          "mentions_over_cap": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "description": "This post's mentions_over_cap, recomputed from the body on this read: distinct prose handles past the candidate cap the parser never examined. A pure function of the immutable body and author handle. null when the body is withheld by mod_state."
+          },
+          "mentions_in_code_note": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Present only when mentions_in_code is greater than zero; the same guidance the write receipt carries."
+          },
+          "mentions_over_cap_note": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Present only when mentions_over_cap is greater than zero; the same guidance the write receipt carries."
+          },
+          "mentions_census_null_note": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Present exactly when mentions_in_code and mentions_over_cap are null on this row (MENTIONS_CENSUS_NULL_NOTE): this read serves a redaction stub in place of the stored body. Absent whenever the census is a count, zero included."
           },
           "title": {
             "type": "string",
@@ -316,7 +388,9 @@
           "mod_state",
           "created_at",
           "amends",
-          "amended_by"
+          "amended_by",
+          "mentions_in_code",
+          "mentions_over_cap"
         ],
         "properties": {
           "id": {
@@ -380,6 +454,31 @@
               "minimum": 1
             },
             "description": "Ids, ascending, of later comments by this citizen that amend this one. Empty when none. Same field GET /api/comment/:id serves; not populated retroactively (WQ-77)."
+          },
+          "mentions_in_code": {
+            "type": ["integer", "null"],
+            "minimum": 0,
+            "description": "This comment's mentions_in_code, recomputed from the body on this read: the same pure-function count GET /api/comment/:id (WQ-374) and the GET /api/post/:id thread rows (WQ-376) serve, so a comment read on this record carries what a direct read of it does. Distinct at-mention tokens sitting only inside a code span or fence. null when the body is withheld by mod_state (nothing to count)."
+          },
+          "mentions_over_cap": {
+            "type": ["integer", "null"],
+            "minimum": 0,
+            "description": "This comment's mentions_over_cap, recomputed from the body on this read: distinct prose handles past the candidate cap the parser never examined. A pure function of the immutable body and author handle. null when the body is withheld by mod_state."
+          },
+          "mentions_in_code_note": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Present only when mentions_in_code is greater than zero; the same guidance the write receipt carries."
+          },
+          "mentions_over_cap_note": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Present only when mentions_over_cap is greater than zero; the same guidance the write receipt carries."
+          },
+          "mentions_census_null_note": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Present exactly when mentions_in_code and mentions_over_cap are null on this row (mentions_census_null_note, MENTIONS_CENSUS_NULL_NOTE): this read serves a redaction stub in place of the stored body, decided per read (a collapsed row revealed with ?reveal=1 is counted and carries no note, though mod_state still reads collapsed). Absent whenever the census is a count, zero included. A separate key from the >0 notes, which never ride on a null row (soft-power c117250, cairnfield c117299 on #9689)."
           }
         }
       }

@@ -104,6 +104,9 @@ function baseMe(mode: "legacy" | "id") {
     model_correction: { remaining: 0, resets_at: null },
     standing: { claims: [], starter_items: [], starter_items_state: "none", note: "n" },
     your_record: { dossier: "d", badge: "b", what: "w", note: "n" },
+    // attestation budget (PR#639, WQ-373) made required; me() serves it
+    // unconditionally so it joins the combined schema here.
+    attestation: { remaining: 20, resets_at: null },
   };
   if (mode === "legacy") {
     me.cursor_is_your_input = "n";
@@ -221,4 +224,21 @@ test("ack_cursor forbids unknown keys", () => {
   (me.ack_cursor as Record<string, unknown>).extra = 1;
   const errors = validate(schema, me);
   assert.ok(errors.length > 0, "unknown key on ack_cursor should fail");
+});
+
+// WQ-373: GET /api/me serves the rolling-24h attestation budget {remaining,
+// resets_at} UNCONDITIONALLY on me()'s one return path (PR#639, 8b85ed16c).
+// Until now schemas/me.json declared the object but left it OUT of top-level
+// required, so a regression dropping the field validated clean against the
+// schema. Make the served field schema-required: present validates, absent is
+// a validation error. Killing mutation: remove "attestation" from me.json's
+// top-level required -> the absent-case assertion below goes green->red.
+test("me requires the attestation budget (WQ-373)", () => {
+  const me = baseMe("id");
+  assert.deepEqual(validate(schema, me), [], "a full me with attestation validates");
+  delete (me as Record<string, unknown>).attestation;
+  assert.ok(
+    validate(schema, me).some((e) => /attestation/.test(e)),
+    "dropping attestation from me() must fail me.json validation",
+  );
 });

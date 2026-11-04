@@ -52,6 +52,21 @@ export interface MirrorManifest {
   commit: string;
   protocol_commit: string;
   files: Array<[string, number]>;
+  /** Absent from a mirror built before the build script hashed its tarballs. */
+  tarballs?: Partial<Record<RepoName, TarballRecord>>;
+}
+
+/**
+ * One served tarball, hashed by the build that wrote it. `archive_args` are the
+ * `git archive` arguments after --format, so anyone with the public repository
+ * can rebuild the same bytes and compare: sha256 for the .tar.gz as served,
+ * tar_sha256 for the tar inside it, which does not depend on the compressor.
+ */
+export interface TarballRecord {
+  bytes: number;
+  sha256: string;
+  tar_sha256: string;
+  archive_args: string[];
 }
 
 type RepoName = "1f916" | "protocol";
@@ -145,6 +160,26 @@ function buildNote(m: MirrorManifest, buildCommit: string | undefined): string {
   return "This is the commit the deployment names as code.commit on GET /api/official.";
 }
 
+// Shell-quoted so the rebuild line runs as printed; every arg here is a flag, a sha or a date.
+const sh = (a: string) => (/^[\w@%+=:,./-]+$/.test(a) ? a : `'${a.replace(/'/g, "'\\''")}'`);
+
+function tarballLines(t: TarballRecord | undefined): string[] {
+  if (!t) return [];
+  const pad = "".padEnd(9);
+  return [
+    `${pad} sha256   ${t.sha256} (${t.bytes} bytes)`,
+    `${pad} tar      ${t.tar_sha256} (the tar inside it, gzip -dc)`,
+    `${pad} rebuild  git archive --format=tar.gz ${t.archive_args.map(sh).join(" ")} | sha256sum`,
+  ];
+}
+
+const REBUILD_NOTE = [
+  "Each tarball is `git archive` of a public commit, and the build hashed what it wrote. The rebuild",
+  "line is the exact command it ran: in a clone of the repository it prints the sha256 above. A",
+  "different git or zlib can change the gzip layer alone, so the same line with --format=tar must",
+  "print the tar sha256 whatever compressor you have.",
+];
+
 function indexText(origin: string, m: MirrorManifest, buildCommit: string | undefined): string {
   return [
     "SOURCE",
@@ -156,7 +191,10 @@ function indexText(origin: string, m: MirrorManifest, buildCommit: string | unde
       `${"".padEnd(9)} contents ${REPOS[name].about}`,
       `${"".padEnd(9)} browse   ${origin}/source/${name}`,
       `${"".padEnd(9)} tarball  ${origin}/source/${name}.tar.gz`,
+      ...tarballLines(m.tarballs?.[name]),
     ]),
+    "",
+    ...(m.tarballs ? REBUILD_NOTE : ["The tarballs of this build were not hashed when it was built, so no sha256 is served for them."]),
     "",
     `The 1f916 tree is \`git archive\` of one commit, taken at deploy time. ${buildNote(m, buildCommit)}`,
     "History is not mirrored; this is that commit's tree and nothing else.",
@@ -186,7 +224,8 @@ function indexHtml(origin: string, m: MirrorManifest, buildCommit: string | unde
       const c = REPOS[name].commitOf(m);
       return (
         `<li><a href="/source/${name}">${name}</a><span>${esc(REPOS[name].about)}</span></li>` +
-        `<li><span class="size">commit ${esc(c)} · <a href="/source/${name}.tar.gz">${name}.tar.gz</a></span></li>`
+        `<li><span class="size">commit ${esc(c)} · <a href="/source/${name}.tar.gz">${name}.tar.gz</a></span></li>` +
+        tarballLines(m.tarballs?.[name]).map((l) => `<li><span class="size">${esc(l.trim())}</span></li>`).join("")
       );
     })
     .join("");
@@ -194,6 +233,7 @@ function indexHtml(origin: string, m: MirrorManifest, buildCommit: string | unde
     `<header><b>source</b><div class="meta">The source of the code running at 1f916.ai, served by 1f916.ai.</div></header>` +
     `<main><ul>${rows}</ul>` +
     `<p>The 1f916 tree is <code>git archive</code> of one commit, taken at deploy time. ${esc(buildNote(m, buildCommit))} History is not mirrored.</p>` +
+    (m.tarballs ? `<p>${esc(REBUILD_NOTE.join(" "))}</p>` : "") +
     `<p>The protocol tree is a snapshot of the protocol repository, kept under <a href="/source/1f916/vendor">vendor/</a>. ` +
     `The offline checker is <a href="/source/protocol/verify.mjs">verify.mjs</a>.</p>` +
     `<p>A URL with <code>@&lt;commit&gt;</code> after the repository name answers only while that commit is running, and 404s after the next deploy instead of serving different bytes under the old name.</p>` +

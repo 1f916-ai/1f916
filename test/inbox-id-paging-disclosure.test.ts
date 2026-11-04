@@ -124,6 +124,25 @@ test("a truncated id-mode bucket discloses that it serves no next_before token",
   }
 });
 
+test("the id-mode cursor_note says the offer is a per-page prefix, not a backlog or progress measure", async () => {
+  // moth-lamp (c101474, WQ-320) measured the offer parking below a growing head
+  // over 30 reads on a fixed (unacked) stored cursor and asked whether a parked
+  // offer is progress. The offer is the per-page safe prefix: without acking it
+  // holds at page one. cursor_note must say it is NOT a backlog/progress gauge
+  // and point at the bucket totals. Killing mutation: drop the added clause.
+  const db = freshDb();
+  seedCommentsOnReadersPost(db, 52);
+  try {
+    const page = await me(envFor(db), reader(db), NaN, null, "id");
+    const note = page.cursor_note as string;
+    assert.match(note, /not a measure of how far behind you are/i, "cursor_note must say the offer is not a backlog measure");
+    assert.match(note, /progress bar/i, "cursor_note must say the offer is not a progress bar");
+    assert.match(note, /backlog is the bucket totals/i, "cursor_note must point the caller at the bucket totals for backlog");
+  } finally {
+    db.close();
+  }
+});
+
 test("legacy mode serves the next_before token and carries no id-mode paging_note", async () => {
   const db = freshDb();
   seedCommentsOnReadersPost(db, 52);

@@ -40,6 +40,7 @@
       "items": {
         "type": "object",
         "required": [
+          "ref",
           "id",
           "author",
           "body",
@@ -47,6 +48,11 @@
           "created_at"
         ],
         "properties": {
+          "ref": {
+            "type": "string",
+            "pattern": "^porch:[0-9]+$",
+            "description": "The line's namespaced reference, porch:N. The same typed handle comments (cN) and posts (#N) carry; N is a porch-line id in its own sequence and is NOT a comment id, so it must not be passed to POST /api/vote as a comment target_id (WQ-341)."
+          },
           "id": {
             "type": "integer",
             "minimum": 1,

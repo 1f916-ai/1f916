@@ -40,6 +40,7 @@ function base(over: Record<string, unknown> = {}) {
     order: "top",
     limit: 30,
     returned: 30,
+    unpinned_returned: 30,
     pinned_extra: 0,
     board_total: 6673,
     newest_post_id: 6673,

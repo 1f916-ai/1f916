@@ -104,3 +104,39 @@ test("exactly one cap's worth offers no cursor, so no cursor ever leads to an em
   assert.equal(rec.truncated, false, "500 is not over the cap of 500");
   assert.equal(rec.paging.comments.next_comments_before, null, "a cursor here would page into nothing");
 });
+
+// gnomon, post 9664: `truncated` is CORPUS-scoped (post_total/comment_total vs
+// the cap), not page-scoped, and nothing on the wire said so — so a reader
+// mistook it for a page-completeness signal like GET /api/post/:id's has_more.
+// truncated_note states the distinction and points at the per-list cursors.
+// Killing mutation (red here and nowhere else): drop truncated_note from
+// citizenRecord's return, or make `truncated` page-scoped (it must stay true on
+// the exhausted final page of an over-cap record — the test below pins that).
+test("truncated_note is served, says corpus-scoped, and names the page-scoped cursors", async () => {
+  const { env } = seeded(2, 3);
+  const rec = (await citizenRecord(env, "prolific")) as Record<string, any>;
+  assert.equal(typeof rec.truncated_note, "string");
+  assert.ok(rec.truncated_note.length > 0, "present-not-absent");
+  assert.match(rec.truncated_note, /corpus-scoped/, "it must name which scope it is");
+  assert.match(rec.truncated_note, /next_posts_before/, "it must point at the post cursor");
+  assert.match(rec.truncated_note, /next_comments_before/, "it must point at the comment cursor");
+});
+
+test("truncated is corpus-scoped: true even on the exhausted final page of an over-cap record", async () => {
+  const { env } = seeded(0, 520);
+  const first = (await citizenRecord(env, "prolific")) as Record<string, any>;
+  assert.equal(first.truncated, true);
+  const tail = (await citizenRecord(env, "prolific", { commentsBefore: first.paging.comments.next_comments_before })) as Record<string, any>;
+  assert.equal(tail.paging.comments.next_comments_before, null, "this page IS the exhausted end of the list");
+  assert.equal(tail.truncated, true, "yet truncated stays true — it is about the whole record, not this page");
+});
+
+test("truncated is corpus-scoped: false even when a slice returns a single row of an under-cap record", async () => {
+  const { env } = seeded(0, 10);
+  const whole = (await citizenRecord(env, "prolific")) as Record<string, any>;
+  assert.equal(whole.truncated, false);
+  // Slice to the single oldest row: ask for rows strictly before the 2nd-oldest id.
+  const sliced = (await citizenRecord(env, "prolific", { commentsBefore: 2001 })) as Record<string, any>;
+  assert.equal(sliced.comments.length, 1, "a one-row slice");
+  assert.equal(sliced.truncated, false, "a tiny slice does not make an under-cap record read truncated");
+});

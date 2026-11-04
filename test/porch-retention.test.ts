@@ -67,6 +67,12 @@ test("porch:N reads as a citation, and porch:12 is not porch:120", () => {
   assert.deepEqual(porchLineCitations("notporch:12 and porch:12x"), []);
   assert.deepEqual(porchLineCitations("porch:7, porch:7, porch:7"), [7], "one line cited three times is one citation");
   assert.deepEqual(porchLineCitations(null), []);
+  // WQ-364 (gnomon, c113542 on post 7878): a porch:N inside a code span or fence
+  // is shown, not cited, so it must NOT count — the same rule the mention rail
+  // applies to a @handle in code. Both scanners share stripCodeSpans.
+  assert.deepEqual(porchLineCitations("see `porch:3483` for the shape"), [], "an inline-code ref is shown, not cited");
+  assert.deepEqual(porchLineCitations("```\nporch:3483\n```"), [], "a fenced ref is shown, not cited");
+  assert.deepEqual(porchLineCitations("real porch:3483 and quoted `porch:999`"), [3483], "the prose ref counts, the code one does not");
 });
 
 test("a post body citing porch:N renders it as a link to the line's day", async () => {
@@ -76,14 +82,37 @@ test("a post body citing porch:N renders it as a link to the line's day", async 
   const written = db.prepare("SELECT id FROM posts ORDER BY id DESC LIMIT 1").get() as { id: number };
 
   const read = (await readPost(env, Number(written.id))) as unknown as Record<string, unknown>;
-  assert.deepEqual(read.porch_cited, [{ ref: "porch:41", line_id: 41, day, read: `/porch/${day}#41` }]);
+  assert.deepEqual(read.porch_cited, [{ ref: "porch:41", line_id: 41, day, read: `/porch/${day}?since=40#41` }]);
   // A ref is rendered, never rewritten: the body still says what the citizen typed.
   assert.match(String((read.post as { body: string }).body), /porch:41 is where this started/);
 
   // The citation is also the thing that keeps the line, so it is on the ledger
-  // the moment the post lands rather than at sweep time.
+  // the moment the post lands rather than at sweep time. porch:999 is a typo
+  // for a line that does not exist, so it is NOT recorded: a citation to a
+  // nonexistent line keeps nothing and must not sit on the ledger (WQ-342).
   const rows = db.prepare("SELECT line_id, source_type, source_id FROM porch_citations").all() as { line_id: number; source_type: string }[];
-  assert.deepEqual(rows.map((r) => [Number(r.line_id), r.source_type]), [[41, "post"], [999, "post"]]);
+  assert.deepEqual(rows.map((r) => [Number(r.line_id), r.source_type]), [[41, "post"]]);
+});
+
+test("a porch:N only inside a code span does not extend the line's retention (WQ-364)", async () => {
+  // gnomon, c113542 on post 7878: the citation scan did not strip code spans, so
+  // quoting someone else's porch:N receipt inside backticks silently recorded a
+  // citation and kept that line past its day, with nothing on the receipt saying
+  // so — unlike the mention rail, which suppresses a @handle in code. Now the two
+  // scanners share stripCodeSpans, so a ref shown as code keeps nothing.
+  const { env, db, lector } = porchEnv();
+  sayDaysAgo(db, 50, 41, "the line someone quoted as an example");
+  const receipt = (await createPost(env, lector, "quoting a receipt", "here is the shape of a citation: `porch:50`", null)) as unknown as Record<string, unknown>;
+  // Nothing recorded: the code-span ref kept no line.
+  const rows = db.prepare("SELECT line_id FROM porch_citations").all() as { line_id: number }[];
+  assert.deepEqual(rows, [], "a code-span ref records no citation, so it extends no retention");
+  assert.equal(receipt.porch_cited, undefined, "and the receipt names no cited line");
+
+  // Control: the same ref in prose on the other write path DOES record and keep.
+  const comment = (await createComment(env, lector, Number((db.prepare("SELECT id FROM posts ORDER BY id DESC LIMIT 1").get() as { id: number }).id), null, "carried off the porch: porch:50")) as unknown as Record<string, unknown>;
+  assert.deepEqual(comment.porch_cited, ["porch:50"], "a prose ref on the comment path is cited");
+  const after = db.prepare("SELECT line_id, source_type FROM porch_citations").all() as { line_id: number; source_type: string }[];
+  assert.deepEqual(after.map((r) => [Number(r.line_id), r.source_type]), [[50, "comment"]], "exactly the prose citation is on the ledger");
 });
 
 test("a comment cites a line exactly as a post does", async () => {
@@ -95,6 +124,46 @@ test("a comment cites a line exactly as a post does", async () => {
   assert.match(String(receipt.porch_cited_note), /thirty days/);
   const rows = db.prepare("SELECT line_id, source_type FROM porch_citations").all() as { line_id: number; source_type: string }[];
   assert.deepEqual(rows.map((r) => [Number(r.line_id), r.source_type]), [[55, "comment"]]);
+});
+
+test("a citation to a line that does not exist yet is not recorded, so it cannot pre-cover a future line (WQ-342)", async () => {
+  const { env, db } = porchEnv();
+  // A post cites porch:7 before line 7 has ever been said.
+  post(db, 200, "pre-covering the future: porch:7");
+  const recorded = await recordPorchCitations(env, "post", 200, "pre-covering the future: porch:7", NOW);
+  assert.deepEqual(recorded, [], "a citation to a line that does not exist records nothing");
+  assert.equal(
+    (db.prepare("SELECT COUNT(*) AS n FROM porch_citations").get() as { n: number }).n,
+    0,
+    "no citation row is written for a line that is not on the square",
+  );
+  // Later the id 7 is given to a real line, said thirty-one days ago (already
+  // expired). The pre-dated citation must not keep it: the sweep compacts it.
+  sayDaysAgo(db, 7, 31, "said long after it was 'cited'");
+  const swept = await porchSweep(env, NOW);
+  assert.equal(swept.compacted, 1, "the earlier citation to a then-nonexistent id does not protect the line");
+  assert.deepEqual(lineIds(db), [], "nothing survives on the pre-dated citation");
+});
+
+test("a citation from a withdrawn, removed or collapsed source stops keeping its line (WQ-342)", async () => {
+  const { env, db } = porchEnv();
+  // Four lines expired the same day, each cited by exactly one post; the posts
+  // differ only in mod_state. Only the line whose citer is still live survives.
+  sayDaysAgo(db, 1, 31, "cited by a live post");
+  sayDaysAgo(db, 2, 31, "cited by a withdrawn post");
+  sayDaysAgo(db, 3, 31, "cited by a removed post");
+  sayDaysAgo(db, 4, 31, "cited by a collapsed post");
+  for (const [sid, lid] of [[101, 1], [102, 2], [103, 3], [104, 4]] as const) {
+    post(db, sid, `carrying porch:${lid}`);
+    await recordPorchCitations(env, "post", sid, `carrying porch:${lid}`, NOW);
+  }
+  db.prepare("UPDATE posts SET mod_state = 'withdrawn' WHERE id = 102").run();
+  db.prepare("UPDATE posts SET mod_state = 'removed' WHERE id = 103").run();
+  db.prepare("UPDATE posts SET mod_state = 'collapsed' WHERE id = 104").run();
+
+  const swept = await porchSweep(env, NOW);
+  assert.equal(swept.compacted, 3, "the three lines held only by a redacted source are compacted");
+  assert.deepEqual(lineIds(db), [1], "only the line cited by a still-live post survives");
 });
 
 test("thirty-one days uncited goes, thirty-one days cited stays, twenty-nine days stays", async () => {
@@ -149,9 +218,11 @@ test("the day that lost lines says how many and when, on its own page", async ()
   const page = porchText(room, ORIGIN);
   assert.match(page, /2 lines from this day were not cited within thirty days and were compacted on 2026-08-23\./);
   assert.ok(page.includes(PORCH_RETENTION_NOTE), "the page reports a deletion without saying what rule made it");
-  // The id is on the page, or a reader cannot cite the line that survived.
-  assert.match(page, /Ids for citing, in the order above:\n {2}22/);
-  assert.ok(page.includes(`${ORIGIN}/porch/${day}#N`), "the page never says where porch:N resolves");
+  // The id is on the page, or a reader cannot cite the line that survived — now
+  // in the porch:N form that cannot be mis-cast as a comment vote target (WQ-343).
+  assert.match(page, /Ids for citing, in the order above\. Each is a porch:N/);
+  assert.match(page, /\n {2}porch:22\n/);
+  assert.ok(page.includes(`${ORIGIN}/porch/${day}?since=N-1#N`), "the page never says where porch:N resolves");
 });
 
 test("a day whose every line was compacted does not read as a day nobody used", async () => {

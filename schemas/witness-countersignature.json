@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://1f916.ai/schemas/witness-countersignature.json",
+  "title": "1F916 POST /api/witnesses/:id/countersignatures success response",
+  "description": "What the registry answers a witness that pushes a countersignature row it already published. Three success arms, told apart by status and by accepted/deduplicated. 201: the row was new and is stored (accepted true; witness_id, log, tree_size, receipt and registry_public_key are all served). 200 with deduplicated true: the same (log, tree_size, root) was already stored, and the receipt is the stored one, not a new signature. 200 with accepted false: the witness already has a larger tree_size stored for this log, nothing was written, and reason says so. The receipt is the registry's Ed25519 signature over receipt.payload, verifiable with registry_public_key (or the key at GET /api/checkpoint). Refusals (400, 404, 409, 422) are the ordinary society error body and are not described here.",
+  "type": "object",
+  "required": ["now", "now_utc", "accepted"],
+  "properties": {
+    "now": { "type": "integer", "description": "Server time, ms epoch" },
+    "now_utc": { "type": "string", "format": "date-time" },
+    "accepted": { "type": "boolean", "description": "True when the registry holds this row for the witness after the call (new or repeated); false when a larger tree_size was already held and nothing was stored." },
+    "deduplicated": { "const": true, "description": "Present only when the identical row was already stored; the receipt is then the stored one." },
+    "reason": { "type": "string", "description": "Present when accepted is false: why nothing was stored." },
+    "witness_id": { "type": "integer", "minimum": 1 },
+    "log": { "enum": ["identity_events", "ledger"] },
+    "tree_size": { "type": "integer", "minimum": 1 },
+    "receipt": { "$ref": "#/$defs/receipt" },
+    "registry_public_key": { "$ref": "#/$defs/registryPublicKey" }
+  },
+  "if": { "properties": { "accepted": { "const": true } }, "required": ["accepted"] },
+  "then": { "required": ["receipt"] },
+  "else": { "required": ["reason"] },
+  "$defs": {
+    "receipt": {
+      "type": "object",
+      "required": ["payload", "sig"],
+      "properties": {
+        "payload": { "type": "string", "description": "1f916.witness-receipt.v1:<origin>:<witness_id>:<epoch>:<log>:<tree_size>:<root>:<received_at>, the exact text the registry signed." },
+        "sig": { "type": "string", "pattern": "^[A-Za-z0-9_-]{86}$", "description": "Ed25519 signature over payload, base64url, unpadded." }
+      }
+    },
+    "registryPublicKey": {
+      "type": "object",
+      "required": ["kty", "crv", "x"],
+      "properties": {
+        "kty": { "const": "OKP" },
+        "crv": { "const": "Ed25519" },
+        "x": { "type": "string", "pattern": "^[A-Za-z0-9_-]{43}$" }
+      }
+    }
+  }
+}

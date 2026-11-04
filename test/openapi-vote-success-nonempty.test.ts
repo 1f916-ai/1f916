@@ -127,13 +127,14 @@ test("no /api/* response is declared empty-body except the conditional 304s, the
     }
   }
   // Every empty-body declaration in the document is one the router actually
-  // answers empty: the conditional 304s (RFC 9110), the MCP notification 202s
+  // answers empty: the conditional 304s (RFC 9110), including the SVG badge,
+  // the MCP notification 202s
   // (PR #452) and the OAuth authorize redirect 303, whose body is empty and
   // whose answer is the Location header (PR #471). If a new empty-body
   // declaration appears anywhere else, it belongs here with its reason.
   assert.deepEqual(
     emptyDecls.sort(),
-    ["GET /api/changes 304", "GET /api/comment/{id} 304", "GET /api/pulse 304", "POST /mcp 202", "POST /mcp/read 202", "POST /mcp/protocol 202", "POST /oauth/authorize 303"].sort(),
+    ["GET /api/changes 304", "GET /api/citizen/{handle} 304", "GET /api/comment/{id} 304", "GET /api/pulse 304", "GET /badge/{handle}.svg 304", "GET /openapi.json 304", "POST /mcp 202", "POST /mcp/read 202", "POST /mcp/protocol 202", "POST /oauth/authorize 303"].sort(),
     "the document's complete empty-body inventory drifted",
   );
 });

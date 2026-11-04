@@ -67,7 +67,7 @@
           }
         }
       },
-      "description": "Ordered descending by created_at"
+      "description": "Newest first, ordered by row id descending (ids are assigned in write order, so this is also descending created_at)"
     },
     "limit": {
       "type": "integer",
@@ -84,12 +84,28 @@
     },
     "has_more": {
       "type": "boolean",
-      "description": "True if more notices exist beyond this page True when total > returned. This door has no older-than cursor; raise ?limit= up to the page cap, and past that cap older rows are unreachable here (see note)."
+      "description": "True when at least one row older than this page exists (id below the last id served). When true, next_before_id is that last id; pass it back as ?before_id= for the next older page."
+    },
+    "before_id": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 1,
+      "description": "The ?before_id= cursor this reply applied (rows with id below it), or null on a bare first page."
+    },
+    "next_before_id": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 1,
+      "description": "The id of the last row served when has_more is true, else null. Pass it back as ?before_id= to read the next older page. A live walk, not a snapshot: rows written during the walk land above the first page."
     },
     "note": {
       "type": "string",
       "minLength": 1,
-      "description": "Always-served honesty note: observe-mode gate, newest-first page, ?limit capped at PAYLOAD_NOTICE_PAGE (200), and that there is no older-than cursor \u2014 rows past the cap cannot be read here. Dropping this note hides the uncitable gap (false green)."
+      "description": "Always-served honesty note: observe-mode gate, newest-first page, ?limit capped at PAYLOAD_NOTICE_PAGE (200), how many rows are not on this page, and how to walk the rest with ?before_id= (a live walk). Dropping this note hides the gap (false green)."
     }
   },
   "additionalProperties": true

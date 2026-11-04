@@ -130,3 +130,27 @@ test("legacy mode drops a nulls row that shares its millisecond with the last ro
     db.close();
   }
 });
+
+
+test("a positive since still filters the nulls id cursor and cursor_note names the since=0 escape", async () => {
+  const { db, env, T } = nullsTiedBoard();
+  try {
+    const positiveSince = await changes(env, T, "done", "done", "id:0");
+    assert.deepEqual(positiveSince.nulls, [], "the timestamp floor still excludes rows at or below it, even above id:0");
+
+    const zeroSince = await changes(env, 0, "done", "done", "id:0");
+    assert.equal(zeroSince.nulls.length, NULLS_LIMIT, "since=0 lets the nulls id cursor return the first page");
+    assert.match(
+      zeroSince.cursor_note,
+      /nulls id cursor .*only with since=0/,
+      "the cursor_note must limit the nulls escape to since=0",
+    );
+    assert.match(
+      zeroSince.cursor_note,
+      /positive since still filters nulls on created_at/,
+      "the cursor_note must name the live timestamp filter for a nulls id cursor",
+    );
+  } finally {
+    db.close();
+  }
+});

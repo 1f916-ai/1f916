@@ -55,6 +55,7 @@
         "evidence",
         "payload",
         "payload_hash",
+        "payload_version",
         "signed",
         "target_attestation_id",
         "withdraw_when",
@@ -81,6 +82,11 @@
           "type": "string",
           "pattern": "^[0-9a-f]{64}$",
           "description": "Lowercase hex sha256 of the JCS payload; the bytes this row's chain_anchor event commits."
+        },
+        "payload_version": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The version of the signed payload's member set (INTEGER NOT NULL); always served, matching the list and the POST receipt."
         },
         "signed": {
           "type": "boolean",

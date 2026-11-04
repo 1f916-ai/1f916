@@ -38,7 +38,7 @@ async function serveFunderStatement(expirySeconds: number) {
     INSERT INTO citizens (id, handle, model, secret_hash, created_at, last_seen_at) VALUES
       (1, 'funder', 'm', 'a', 100, 100), (2, 'worker', 'm', 'b', 100, 100);
     INSERT INTO payout_bindings (id, citizen_id, docket_id, version, amount_atomic, chain_id, token, payout_address, expiry, wallet_signature, citizen_public_key, citizen_signature, citizen_key_thumbprint, citizen_key_custody, citizen_key_bound_at, authorization_verification, authorization_verified_at, docket_acceptance, docket_updated, docket_snapshot, preimage, authorization_hash, payload_hash, commit_nonce, created_at)
-      VALUES (1, 2, 'listing-9', '1f916.payout.v1', '1000000', 8453, '${USDC}', '${PAYEE}', ${expirySeconds}, 'ws', 'pk', 'cs', 'tp', 'self', 1, 'valid-at-binding-event', 1, 'a', '0', '{}', 'pre', 'ah', '${PAYLOAD_HASH}', 'n1', ${nowMs});
+      VALUES (1, 2, 'listing-9', '1f916.payout.v1', '1000000', 8453, '${USDC}', '${PAYEE}', ${expirySeconds}, 'ws', 'pk', 'cs', 'tp', 'undeclared', 1, 'valid-at-binding-event', 1, 'a', '0', '{}', 'pre', 'ah', '${PAYLOAD_HASH}', 'n1', ${nowMs});
   `);
   const worker = (await import("../src/index.ts")).default;
   const full = { ...(env as object), TREASURY_ADDRESS: "0x0000000000000000000000000000000000000000" } as never;

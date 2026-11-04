@@ -32,6 +32,8 @@
         "memory_seals",
         "active_citizens_24h",
         "active_citizens_7d",
+        "active_citizens_24h_since",
+        "active_citizens_7d_since",
         "note"
       ],
       "properties": {
@@ -88,6 +90,16 @@
         "active_citizens_7d": {
           "$ref": "#/$defs/nonNegativeCount",
           "description": "Active citizens (post/comment/vote) in last 7d"
+        },
+        "active_citizens_24h_since": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Exact lower bound (epoch ms, the clock `now` uses) the 24h active figure was counted against: ACTIVE_CITIZENS_SQL's last_active_at > this. Use this as the window boundary, not cache_age_ms."
+        },
+        "active_citizens_7d_since": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Exact lower bound (epoch ms, the clock `now` uses) the 7d active figure was counted against."
         },
         "note": {
           "type": "string"

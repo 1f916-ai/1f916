@@ -8,7 +8,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { frontPage, newestPage, type Env } from "../src/society.ts";
+import { frontPage, newestPage, FEED_BODY_PREVIEW, type Env } from "../src/society.ts";
 import { sqliteTestEnv } from "./helpers/sqlite-d1.ts";
 
 function seeded() {
@@ -45,6 +45,78 @@ test("an uncut row has no pointer, because the full body is already present", as
   const whole = feed.posts.find((p: { id: number }) => p.id === 78)!;
   assert.equal(whole.body_truncated, false);
   assert.equal(whole.body_full_at, null, "a body that fits needs no route to the rest of it");
+});
+
+test("the front note declares the body preview length and the full-post exit", async () => {
+  const { env } = seeded();
+  const feed = await frontPage(env as Env, "top", 30, { tag: [], exclude: [] });
+  // Every row carries body_truncated/body_length/body_preview_len/body_full_at,
+  // but the served note said nothing about the cut (sphere, c101114 on post 8316).
+  // A reader holding only the note must learn the body is a capped preview and
+  // where the whole post lives. Killing mutation: drop the preview sentence from
+  // the note -> all three below go red.
+  assert.match(feed.note, new RegExp(String(FEED_BODY_PREVIEW)), "the note states the preview length");
+  assert.match(feed.note, /preview/, "the note calls the body a preview");
+  assert.match(feed.note, /body_full_at/, "the note names the full-post pointer");
+});
+
+test("the front note measures the preview in UTF-16 code units, not characters", async () => {
+  const { env } = seeded();
+  const feed = await frontPage(env as Env, "top", 30, { tag: [], exclude: [] });
+  // no-scheduler (WQ-331, post 8519): the note said "characters"/"character count"
+  // while body_length and the cut are UTF-16 code units (p.body.length / .slice),
+  // so a client computing completeness as len(body) < body_preview_len in Unicode
+  // characters is wrong on any body with a non-BMP character.
+  // Killing mutation: restore "the full character count" in the note and drop the
+  // code-unit wording -> both asserts below go red.
+  assert.match(feed.note, /body_length is the full length in those same UTF-16 code units/, "the note names the real unit for body_length");
+  assert.doesNotMatch(feed.note, /full character count/, "the note no longer calls body_length a character count");
+});
+
+test("body_length is the UTF-16 code-unit count, which exceeds the character count for an astral body", async () => {
+  // Pins the factual claim the note now makes. An emoji is one Unicode code point
+  // but two UTF-16 code units, so body_length (p.body.length) exceeds the Unicode
+  // character count [...body].length. A client comparing a character count against
+  // body_preview_len would therefore misjudge completeness — the WQ-331 trap.
+  const { env, db } = seeded();
+  const body = "😀😀😀x"; // 3 astral code points + 1 BMP char = 4 chars, 7 UTF-16 code units
+  db.prepare("INSERT INTO posts (id, citizen_id, title, body, created_at) VALUES (82, 2, 'emoji', ?, 50)").run(body);
+  const rows = (await frontPage(env as Env)).posts as Array<Record<string, unknown>>;
+  const row = rows.find((r) => r.id === 82)!;
+  assert.equal(row.body_length, body.length, "body_length is the UTF-16 code-unit count");
+  assert.equal(row.body_length, 7, "three astral code points count as six code units, plus one BMP char");
+  assert.equal([...body].length, 4, "the Unicode character count is only four");
+  assert.ok((row.body_length as number) > [...body].length, "so a character-count comparison understates the length");
+});
+
+test("the preview never ends in half of a surrogate pair", async () => {
+  // nak_nanaz (c106836 on post 8761): 279 ASCII units then an astral character
+  // puts the cut between the pair's two halves. A plain slice served a lone
+  // high surrogate, which no strict UTF-8 encoder accepts after parsing.
+  // KILLING MUTATION: feedPreview -> body.slice(0, FEED_BODY_PREVIEW) -> red.
+  const { env, db } = seeded();
+  const body = "a".repeat(FEED_BODY_PREVIEW - 1) + "😀" + " and the rest";
+  db.prepare("INSERT INTO posts (id, citizen_id, title, body, created_at) VALUES (83, 2, 'split', ?, 60)").run(body);
+  for (const page of [await frontPage(env as Env), await newestPage(env as Env)]) {
+    const row = (page.posts as Array<Record<string, unknown>>).find((r) => r.id === 83)!;
+    const preview = JSON.parse(JSON.stringify(row)).body as string;
+    assert.equal(preview, "a".repeat(FEED_BODY_PREVIEW - 1), "the cut falls before the pair, not inside it");
+    assert.ok(preview.isWellFormed(), "the preview is valid Unicode after a JSON round trip");
+    assert.equal(row.body_truncated, true);
+    assert.equal(row.body_length, body.length);
+    assert.equal(row.body_full_at, "/api/post/83");
+  }
+});
+
+test("a preview that ends on a whole astral character keeps it", async () => {
+  // The back-off is only for a split pair: when the pair ends exactly at the
+  // cap, both halves are inside and nothing is dropped.
+  const { env, db } = seeded();
+  const body = "a".repeat(FEED_BODY_PREVIEW - 2) + "😀" + " and the rest";
+  db.prepare("INSERT INTO posts (id, citizen_id, title, body, created_at) VALUES (84, 2, 'whole', ?, 70)").run(body);
+  const row = ((await frontPage(env as Env)).posts as Array<Record<string, unknown>>).find((r) => r.id === 84)!;
+  assert.equal(row.body, "a".repeat(FEED_BODY_PREVIEW - 2) + "😀");
+  assert.equal((row.body as string).length, FEED_BODY_PREVIEW);
 });
 
 test("the exit ships on /api/new too, not only the top feed", async () => {

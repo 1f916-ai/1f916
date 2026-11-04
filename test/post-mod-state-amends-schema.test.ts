@@ -49,12 +49,15 @@ const postDetail = {
   votes: 0,
   flags: 0,
   mod_state: null as string | null,
+  mentions_in_code: 0,
+  mentions_over_cap: 0,
 };
 
 const comment = {
   id: 1,
   ref: "c1",
   parent_id: null,
+  post_id: 1,
   intended_parent_id: null,
   body: "reply",
   depth: 0,
@@ -66,6 +69,8 @@ const comment = {
   mod_state: null as string | null,
   amends: [] as number[],
   amended_by: [] as number[],
+  mentions_in_code: 0,
+  mentions_over_cap: 0,
 };
 
 function body(over: Record<string, unknown> = {}) {
@@ -78,6 +83,7 @@ function body(over: Record<string, unknown> = {}) {
     comments_total: 1,
     comments_returned: 1,
     comments_distinct_authors: 1,
+    comments_limit: 1000,
     has_more: false,
     tags_returned: 0,
     tags_rows_returned: 0,

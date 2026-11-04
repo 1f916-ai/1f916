@@ -115,11 +115,11 @@ test("capped page of listing-visible rows: truncated true against the listing-aw
   assert.equal(page.truncated, true);
 });
 
-test("source-guard: page SELECT, notices_withheld, and total all bind SCREEN_NOTICE_VISIBLE_SQL", () => {
+test("source-guard: both page SELECTs, notices_withheld, and total all bind SCREEN_NOTICE_VISIBLE_SQL", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const src = readFileSync(join(here, "../src/society.ts"), "utf8");
   const uses = src.split("${SCREEN_NOTICE_VISIBLE_SQL}").length - 1;
-  assert.equal(uses, 3, "list / withheld / total must share the named visibility clause");
+  assert.equal(uses, 4, "both page ranges / withheld / total must share the named visibility clause");
   assert.match(SCREEN_NOTICE_VISIBLE_SQL, /target_type = 'listing'/, "listing arm must stay in the shared clause");
   // A bare listing EXISTS still inlined beside the constant would let one site
   // drift again; after the bind, the only listing EXISTS in screenNotices is

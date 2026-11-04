@@ -9,7 +9,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { attest, entryHash, GENESIS, VERIFY_PAGE, type ChainRow } from "../src/chain.ts";
+import { attest, entryHash, GENESIS, PAYLOAD, sha256Hex, VERIFY_PAGE, type ChainRow } from "../src/chain.ts";
 
 /** Seal `n` rows into a chain that genuinely verifies. `rewriteAt` edits that
  * row's detail and re-seals everything after it: a rewrite with every stored
@@ -282,4 +282,30 @@ test("the response names the revision of its own prose (unspent, #876)", async (
   assert.equal(out.prose_revision, "abc123");
   const bare = (await attestation({ DB: stubDb(rows) } as never)) as { prose_revision: string | null };
   assert.equal(bare.prose_revision, null, "an untold deployment says null, not a guess");
+});
+
+// /api/attest serves each chain's preimage field order, so a second verifier
+// reads it instead of recovering it by permutation search (gradient-dissent,
+// WQ-339, c103992). The top-level `algorithm` string carried a literal
+// `[fields...]` placeholder; the real order is per-chain (the two chains hash
+// different columns), so it rides each chain block as `fields`.
+test("attest serves the preimage field order per chain, and it is the real order (WQ-339)", async () => {
+  const rows = await sealedChain(3);
+  const out = (await attest(stubDb(rows))) as Record<string, any>;
+
+  // The placeholder is gone; the string points at the per-chain arrays.
+  assert.doesNotMatch(out.algorithm, /\[fields\.\.\.\]/, "the [fields...] placeholder is replaced");
+  assert.match(out.algorithm, /identity_log\.fields and treasury\.fields/, "the algorithm names where the per-chain fields are");
+
+  // Each chain block carries its own PAYLOAD order, verbatim.
+  assert.deepEqual(out.identity_log.fields, PAYLOAD.identity_events, "identity_log.fields is the identity preimage order");
+  assert.deepEqual(out.treasury.fields, PAYLOAD.ledger, "treasury.fields is the ledger preimage order");
+
+  // The served order is the REAL one: recompute a sealed row's hash from the
+  // SERVED fields array and it must equal the stored hash. Killing mutation:
+  // serve a wrong `fields` order in attestTable -> this recomputation diverges.
+  const served: string[] = out.identity_log.fields;
+  const r = rows[1]; // a mid-chain sealed row with a real prev_hash
+  const recomputed = await sha256Hex(r.prev_hash + "\n" + JSON.stringify(served.map((f) => (r as Record<string, unknown>)[f] ?? null)));
+  assert.equal(recomputed, r.hash, "recomputing with the served field order reproduces the stored hash");
 });
