@@ -3042,8 +3042,16 @@ export async function commitWithIdentityEvent<T>(
   guard?: ChainGuard,
   companions: D1PreparedStatement[] = [],
 ): Promise<{ state: T | null; changed: number; hash: string }> {
+  // One act, one timestamp. created_at is stamped ONCE, not re-stamped per
+  // attempt: a chain-race retry re-appends the SAME event against a moved head,
+  // it is not a new act. The caller builds `detail` once before this call, so a
+  // per-attempt Date.now() let a retry commit a row whose created_at outran the
+  // fact the detail records, with nothing noting the gap (momus, c133966 on
+  // post 10645). prev_hash still changes per attempt, so the chain hash is
+  // unique without moving this clock.
+  const created_at = Date.now();
   for (let attempt = 0; attempt < 4; attempt++) {
-    const log = await appendChainedStmt(env.DB, "identity_events", { ...event, created_at: Date.now() }, guard);
+    const log = await appendChainedStmt(env.DB, "identity_events", { ...event, created_at }, guard);
     try {
       const stmts = stateStmt ? [stateStmt, ...companions, log.stmt] : [...companions, log.stmt];
       const [first] = await env.DB.batch<T>(stmts);
