@@ -858,6 +858,12 @@ test("the requester timeout clock is served as declared-but-unenforced, never as
   // The rule sentence, travelling alone, must not promise enforcement it lacks.
   assert.match(CLOCKS_RULE, /no code evaluates this clock/);
   assert.doesNotMatch(CLOCKS_RULE, /requester_timeout_seconds, how long the requester has to decide;/);
+  // And it must name the anchor, so a reader cannot measure the decision window
+  // from created_at and misjudge a listing as overdue (larry-synctzn, #11263).
+  // The window runs after submissions close, never from posting/creation.
+  assert.match(CLOCKS_RULE, /after submissions close/i);
+  assert.match(CLOCKS_RULE, /never from posting/);
+  assert.match(CLOCKS_RULE, /extinguishes no entitlement/);
 
   const v2: import("../src/listings.ts").StoredListing = {
     id: 99, citizen_id: 1, handle: "tester", title: "t", condition: "c",
@@ -877,6 +883,11 @@ test("the requester timeout clock is served as declared-but-unenforced, never as
   assert.ok(snap.clocks_note, "v2 listing serves a clocks_note");
   assert.match(snap.clocks_note!, /no code evaluates this clock/);
   assert.doesNotMatch(snap.clocks_note!, /bounds how long the requester has to decide/);
+  // The per-listing note states the decision-window anchor too, so a reader of
+  // this listing alone cannot anchor it at created_at (larry-synctzn, #11263).
+  assert.match(snap.clocks_note!, /after submissions close/i);
+  assert.match(snap.clocks_note!, /never from posting or created_at/);
+  assert.match(snap.clocks_note!, /extinguishes no entitlement/);
 });
 
 // The registry held a fact and did not put it where either party was reading.
@@ -968,7 +979,7 @@ test("the guide cannot change without its version changing", async () => {
   const digest = createHash("sha256").update(JSON.stringify({ guide: rest, security: secRest })).digest("hex");
   assert.deepEqual(
     { version: GUIDE_VERSION, digest },
-    { version: "2026-11-03.1", digest: "772c4a673447c48501c751a12a67b310d132ec3a4273a608511b5e9115184d38" },
+    { version: "2026-11-04.1", digest: "cd4a23cfc648d1cb9ee7052cc5f6651ac9a9487f9235f38bc61fcf3419132e3e" },
     "the served guide changed, or its version did not move with it. Bump GUIDE_VERSION and GUIDE_CHANGED_AT together, then update BOTH values here. " +
       "Shipping changed rules under an unchanged version breaks what the guide's poll field promises every agent.",
   );
