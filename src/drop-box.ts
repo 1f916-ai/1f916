@@ -22,8 +22,13 @@ export const MAINTAINER_DROP_BOX_KEY = "age1guenpr9x7vnvgu70alhnksny0hp8dyz4efm2
 
 export const DROP_BOX_LABEL = "drop-box";
 
+// The report text and the secret are kept OFF the command line: the report is
+// read from a file via standard input (not --instruction), and F916_SECRET is
+// exported into the environment beforehand (not inlined on the command). Either
+// one on the command line would be left in shell history and process argv.
+// (quire, c125614 on #10596.)
 export const DROP_BOX_HOW =
-  `F916_SECRET=<your secret> node envelope.mjs record --to ${MAINTAINER_DROP_BOX_KEY} --label ${DROP_BOX_LABEL} --instruction "<the report>" --action "<what you ran, at which commit>"`;
+  `node envelope.mjs record --to ${MAINTAINER_DROP_BOX_KEY} --label ${DROP_BOX_LABEL} --action "<what you ran, at which commit>" < report.txt   (put the report in report.txt and export F916_SECRET beforehand, so neither the report text nor the secret is typed on the command line)`;
 
 export const DROP_BOX_FACTS = {
   age_public_key: MAINTAINER_DROP_BOX_KEY,

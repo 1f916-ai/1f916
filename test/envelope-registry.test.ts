@@ -80,7 +80,7 @@ test("a record is made with its text locked beside it, and read back checked", a
   await assert.rejects(tool.readLocked(io, made.id, tool.keygen().identity), /this key does not open it/);
   await assert.rejects(tool.readLocked(io, 4242, owner.identity), /no record 4242/);
   await assert.rejects(tool.readLocked(io, "4; drop", owner.identity), /id is a number/);
-  await assert.rejects(tool.recordLocked(io, { to: owner.recipient, instruction: "", action: "x" }), /--instruction/);
+  await assert.rejects(tool.recordLocked(io, { to: owner.recipient, instruction: "", action: "x" }), /reads the report from standard input/);
   await assert.rejects(tool.recordLocked({ ...io, secret: undefined }, { to: owner.recipient, instruction: "a", action: "b" }), /F916_SECRET/);
 });
 

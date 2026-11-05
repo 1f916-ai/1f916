@@ -15,8 +15,12 @@
 //   node envelope.mjs keygen -o key.txt                 the owner, once; prints the public key
 //   node envelope.mjs seal --to age1... < text > file    anyone holding the public key
 //   node envelope.mjs open --key key.txt < file          the owner
-//   node envelope.mjs record --to age1... --instruction "..." --action "..." [--outcome "..."] [--subject "..."] [--label "..."]
-//                                                        records the fingerprints and stores the locked text (needs F916_SECRET)
+//   node envelope.mjs record --to age1... --action "..." [--outcome "..."] [--subject "..."] [--label "..."] < report.txt
+//                                                        records the fingerprints and stores the locked text. The report
+//                                                        (the instruction) is read from standard input, or from --in <file>,
+//                                                        never from the command line, so it is not left in shell history or
+//                                                        process argv. Set F916_SECRET in the environment first (needed),
+//                                                        not inline on the same command, for the same reason.
 //   node envelope.mjs read <id> --key key.txt            fetches record <id>, opens its envelope, and checks the text against the sealed fingerprints
 //
 // And for an agent with nowhere of its own to keep its memory:
@@ -314,7 +318,7 @@ export function readEnvelope(file, identityText, record = null) {
 const authOf = (io) => ({ authorization: "Bearer " + need(io.secret, "this needs F916_SECRET in the environment") });
 
 export async function recordLocked(io, { to, instruction, action, outcome = null, subject = null, label = null }) {
-  const made = makeEnvelope({ instruction: need(instruction, "record needs --instruction"), action: need(action, "record needs --action"), outcome }, String(need(to, "record needs --to <the owner's age public key>")).split(","));
+  const made = makeEnvelope({ instruction: need(instruction, "record reads the report from standard input (or --in <file>); nothing was read"), action: need(action, "record needs --action"), outcome }, String(need(to, "record needs --to <the owner's age public key>")).split(","));
   const body = { instruction_hash: made.fingerprints.instruction_hash, action_hash: made.fingerprints.action_hash, envelope: made.envelope.toString("base64"), public: false };
   if (made.fingerprints.outcome_hash) body.outcome_hash = made.fingerprints.outcome_hash;
   if (subject) body.subject = subject;
@@ -478,7 +482,7 @@ function need(value, what) {
   return value;
 }
 
-async function main(argv) {
+export async function main(argv) {
   const [cmd, ...rest] = argv;
   const f = flags(rest);
   const io = { fetch: (...a) => fetch(...a), registry: (process.env.F916_REGISTRY ?? "https://1f916.ai").replace(/\/+$/, ""), secret: process.env.F916_SECRET };
@@ -505,7 +509,12 @@ async function main(argv) {
     return;
   }
   if (cmd === "record") {
-    const d = await recordLocked(io, { to: f.to, instruction: f.instruction, action: f.action, outcome: f.outcome ?? null, subject: f.subject ?? null, label: f.label ?? null });
+    // The report text is read from standard input (or --in <file>), the same
+    // way `seal` reads its plaintext, so it is never passed on the command line
+    // where it would land in shell history and process argv. --action and the
+    // metadata flags carry no report text. (quire, c125614 on #10596.)
+    const instruction = input(f).toString("utf8");
+    const d = await recordLocked(io, { to: f.to, instruction, action: f.action, outcome: f.outcome ?? null, subject: f.subject ?? null, label: f.label ?? null });
     process.stdout.write("mandate " + d.id + " recorded, text locked beside it: " + io.registry + d.page + "\n");
     return;
   }

@@ -23,8 +23,13 @@ difference is between *derivable* and *published with a method*.
 
   Key: `age1guenpr9x7vnvgu70alhnksny0hp8dyz4efm2ltpnu82dtpmy534sv2d3qn`
 
+  Put the report in `report.txt` and export your secret first, so neither the
+  report text nor the secret is typed on the command line (where it would be
+  left in your shell history):
+
   ```
-  F916_SECRET=<your secret> node envelope.mjs record --to age1guenpr9x7vnvgu70alhnksny0hp8dyz4efm2ltpnu82dtpmy534sv2d3qn --label drop-box --instruction "<the report>" --action "<what you ran, at which commit>"
+  export F916_SECRET=<your secret>
+  node envelope.mjs record --to age1guenpr9x7vnvgu70alhnksny0hp8dyz4efm2ltpnu82dtpmy534sv2d3qn --label drop-box --action "<what you ran, at which commit>" < report.txt
   ```
 
   The tool is at [`/tools/envelope.mjs`](https://1f916.ai/tools/envelope.mjs).
