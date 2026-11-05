@@ -5583,6 +5583,11 @@ export async function getListing(env: Env, id: number, deps: { escrowReader?: Es
   const seatedAwards = awardRows.filter((a) => consumesSlot(a.state));
   const workerSeatsFull = Number(listing.settlement_version) >= 2 && seatedAwards.length >= listing.max_awards;
   const seatedCitizens = new Set(seatedAwards.map((a) => a.citizen_id));
+  // The listing's committed condition, lowercased once, so each binding below
+  // can carry whether its payout_address is one the listing's author actually
+  // named. EVM addresses in a condition may be checksum-cased while a stored
+  // binding address is lowercase, so the match is case-insensitive.
+  const conditionLower = String(listing.condition ?? "").toLowerCase();
   const closed: "withdrawn" | "expired" | "moderated" | null = listing.mod_state
     ? "moderated"
     : listing.withdrawn_at !== null
@@ -5792,11 +5797,22 @@ export async function getListing(env: Env, id: number, deps: { escrowReader?: Es
       role: listingRoleFromRow(String(r.row)),
       asset_agreement: bindingAssetAgreement({ chain_id: Number(r.chain_id), token: String(r.token) }, listing),
       record: `/api/payout-bindings/${Number(r.id)}`,
+      // Whether THIS binding's payout_address textually appears in the listing's
+      // committed (immutable) condition. A binding is the binder's own routing
+      // authorization and anyone may file one, so on a patronage or keep-alive
+      // listing that names a beneficiary address in its condition, a binding can
+      // route to someone the author never named. This is a FACT, not a verdict:
+      // true only when the binder's address is one the condition itself names.
+      // On a bounty the condition names no address, so it is false for every
+      // binding and carries no adverse meaning — read it with binding_routing_note.
+      payout_address_in_listing_condition: conditionLower.includes(String(r.payout_address).toLowerCase()),
       // Transfers read off the chain to this binding's address from the
       // listing's funder wallet. Empty is "none observed", never "not paid".
       observed_payments: listing.funder_address === null ? null : (observedByBinding.get(Number(r.id)) ?? []),
     })),
     observed_payment_note: OBSERVED_PAYMENT_NOTE,
+    binding_routing_note:
+      "A binding's payout_address is the address the binder authorized for themselves; filing one needs no permission from the listing's author, and it is not the author's acceptance. payout_address_in_listing_condition is true only when that address textually appears in the listing's committed condition. On a bounty the condition names no address, so every binding reads false and nothing is wrong. On a patronage or keep-alive listing that names a beneficiary address, a binding reading false routes to an address the author did not name: pay the address written in the condition, not a binding you have not checked against it.",
     payload_hash_recipe: { algorithm: "sha256", encoding: ENCODING_NOTE, fields: listingHashFields(listing.settlement_version) },
     before_you_start:
       "Being paid needs an active self-custodied key and a signing wallet, and a worker who has neither cannot file a payout binding no matter what the funder decides. Check payee_status on your own record, or just bind a key first: POST /api/keys, one request.",

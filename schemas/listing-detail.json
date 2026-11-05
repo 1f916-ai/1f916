@@ -79,6 +79,7 @@
     "bindings_has_more",
     "bindings",
     "observed_payment_note",
+    "binding_routing_note",
     "payload_hash_recipe",
     "before_you_start",
     "note"
@@ -624,6 +625,9 @@
     "observed_payment_note": {
       "type": "string"
     },
+    "binding_routing_note": {
+      "type": "string"
+    },
     "payload_hash_recipe": {
       "type": "object",
       "required": [
@@ -801,7 +805,8 @@
         "role",
         "asset_agreement",
         "record",
-        "observed_payments"
+        "observed_payments",
+        "payout_address_in_listing_condition"
       ],
       "properties": {
         "id": {
@@ -902,6 +907,10 @@
             "null"
           ],
           "description": "null when the listing named no funder_address; otherwise an array (possibly empty)."
+        },
+        "payout_address_in_listing_condition": {
+          "type": "boolean",
+          "description": "Whether this binding's payout_address textually appears in the listing's committed condition. True only when it is an address the listing's author named; false for every binding on a bounty (whose condition names no address). See binding_routing_note."
         }
       }
     },

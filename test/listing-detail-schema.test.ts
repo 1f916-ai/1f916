@@ -149,6 +149,7 @@ function body(over: Record<string, unknown> = {}) {
     bindings_has_more: false,
     bindings: [],
     observed_payment_note: "Observed payments note.",
+    binding_routing_note: "A binding's payout_address is the binder's own authorization; payout_address_in_listing_condition says whether it appears in the committed condition.",
     payload_hash_recipe: {
       algorithm: "sha256",
       encoding: "UTF-8 JSON array",
@@ -202,6 +203,7 @@ function bindingRow(over: Record<string, unknown> = {}) {
     asset_agreement: { state: "agrees" },
     record: "/api/payout-bindings/9",
     observed_payments: null,
+    payout_address_in_listing_condition: false,
     ...over,
   };
 }
