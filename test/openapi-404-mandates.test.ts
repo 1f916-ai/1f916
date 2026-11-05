@@ -85,6 +85,7 @@ test("the two mandate reads declare their 404, with all route-specific 404s acco
       const isTyped = Boolean(s404?.allOf?.some((m) => m.properties?.id_class));
       const isProse404 = path === "/grants/{slug}";
       const isBadgePath404 = verb === "get" && path === "/badge/{handle}.svg";
+      const isSourceMirror404 = verb === "get" && path === "/source/{path}";
       const isMandate = verb === "get" && MANDATE_404_ROUTES.has(path.replace(/\{([A-Za-z_]+)\}/g, ":$1"));
       // The sibling 404 sets each declare the same clocked 404 through their
       // own membership (anchor files, proof reads, seals, content-target
@@ -95,7 +96,7 @@ test("the two mandate reads declare their 404, with all route-specific 404s acco
           (ANCHOR_FILE_404_ROUTES.has(tpl) || CHECKPOINT_PROOF_404_ROUTES.has(tpl) || SEALS_404_ROUTES.has(tpl))) ||
         (verb === "post" && WRITE_TARGET_404_ROUTES.has(tpl));
       const expected404 =
-        isSibling || isMandate || isPlainLookup || isProse404 || isBadgePath404 || ((path === "/api/post/{id}" || path === "/api/comment/{id}") && isTyped);
+        isSibling || isMandate || isPlainLookup || isProse404 || isBadgePath404 || isSourceMirror404 || ((path === "/api/post/{id}" || path === "/api/comment/{id}") && isTyped);
       assert.equal(
         has404,
         expected404,
@@ -106,9 +107,9 @@ test("the two mandate reads declare their 404, with all route-specific 404s acco
   }
   assert.ok(checked >= 100, `only ${checked} operations in the document; the path scan has drifted`);
   // eleven plain lookup + two id_class + one prose grants door + one badge
-  // grammar miss + two proof reads + one seals read + four content-target
-  // writes + two anchor file reads + two mandate reads = twenty-six.
-  assert.equal(declared404, 26, `expected twenty-six declared 404s across the plain, typed, prose, badge, mandate and sibling sets, got ${declared404}`);
+  // grammar miss + one source-mirror text miss + two proof reads + one seals read + four content-target
+  // writes + two anchor file reads + two mandate reads = twenty-seven.
+  assert.equal(declared404, 27, `expected twenty-seven declared 404s across the plain, typed, prose, badge, source-mirror, mandate and sibling sets, got ${declared404}`);
 });
 
 test("the declared mandate-404 body is the clocked JSON error with no id_class", async () => {

@@ -2758,6 +2758,20 @@ export function openApi(origin: string, now = Date.now()) {
               },
             }
           : {};
+      // The source mirror uses a plain-text 404 for an unavailable repository,
+      // path, or pinned commit.
+      const sourceMirror404 =
+        v === "GET" && r.path === "/source/:path"
+          ? {
+              "404": {
+                description:
+                  "The repository, path, or pinned commit is not available in this deployment. The response body is plain text.",
+                content: {
+                  "text/plain": { schema: { type: "string" } },
+                },
+              },
+            }
+          : {};
       // The Merkle-log proof reads' clocked 404, declared per route. The two
       // reads in CHECKPOINT_PROOF_404_ROUTES answer a miss (a tree size with
       // no checkpoint row, a row id that names no chain row, or an event the
@@ -3231,6 +3245,7 @@ export function openApi(origin: string, now = Date.now()) {
         ...(typed404 as Record<string, unknown>),
         ...(badgePath404 as Record<string, unknown>),
         ...(plain404 as Record<string, unknown>),
+        ...(sourceMirror404 as Record<string, unknown>),
         ...(checkpointProof404 as Record<string, unknown>),
         ...(prose404 as Record<string, unknown>),
         ...(seals404 as Record<string, unknown>),

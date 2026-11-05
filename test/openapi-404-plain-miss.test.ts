@@ -71,7 +71,7 @@ test("PLAIN_404_ROUTES is exactly the eleven keyless JSON lookup reads", () => {
   );
 });
 
-test("every keyless lookup read declares the plain 404, and only they do", async () => {
+test("the declared 404 set matches the documented route exceptions", async () => {
   const doc = await docPaths();
   let checked = 0;
   let declared404 = 0;
@@ -85,15 +85,18 @@ test("every keyless lookup read declares the plain 404, and only they do", async
       // envelope composed with allOf). The two Merkle-log proof reads
       // (test/openapi-404-checkpoint-proof.test.ts) and the anchor file reads
       // (test/openapi-404-anchor-file.test.ts) declare the same clocked 404
-      // through their own sets. Every other operation declares no 404 at all.
+      // through their own sets. The source mirror has a separate text/plain
+      // miss pinned in test/openapi-404-source-mirror.test.ts.
       const s404 = op.responses["404"]?.content?.["application/json"]?.schema as { allOf?: { properties?: Record<string, unknown> }[] } | undefined;
       const isTyped = Boolean(s404?.allOf?.some((m) => m.properties?.id_class));
       // The prose grants door (test/openapi-404-prose-grant.test.ts) declares
       // a JSON 404 beside its 200 text page. The badge's malformed-handle
       // router 404 is pinned separately by test/openapi-badge-svg.test.ts.
       // Both are explicit route-specific exceptions, not plain lookup misses.
+      // The source mirror miss is a separate text/plain response.
       const isProse404 = path === "/grants/{slug}";
       const isBadgePath404 = verb === "get" && path === "/badge/{handle}.svg";
+      const isSourceMirror404 = verb === "get" && path === "/source/{path}";
       const isProof404 = path === "/api/checkpoint/consistency" || path === "/api/proof";
       // The memory-seal read (test/openapi-404-seals.test.ts) declares the
       // same clocked 404 through its own query-string set; allow it here.
@@ -107,7 +110,7 @@ test("every keyless lookup read declares the plain 404, and only they do", async
       // the same clocked 404 through their own set; allow them here so the
       // closed set stays honest.
       const isMandate404 = path === "/api/mandates/{id}" || path === "/api/mandates/{id}/envelope";
-      const expected404 = isPlain || isProse404 || isBadgePath404 || isProof404 || isSeals404 || isWriteTarget404 || isAnchorFile404 || isMandate404 || ((path === "/api/post/{id}" || path === "/api/comment/{id}") && isTyped);
+      const expected404 = isPlain || isProse404 || isBadgePath404 || isSourceMirror404 || isProof404 || isSeals404 || isWriteTarget404 || isAnchorFile404 || isMandate404 || ((path === "/api/post/{id}" || path === "/api/comment/{id}") && isTyped);
       assert.equal(
         has404,
         expected404,
@@ -118,9 +121,9 @@ test("every keyless lookup read declares the plain 404, and only they do", async
   }
   assert.ok(checked >= 100, `only ${checked} operations in the document; the path scan has drifted`);
   // eleven plain + two typed + one prose grants door + one badge grammar
-  // miss + two Merkle-log proof reads + one seals read + four content-target
-  // writes + two anchor file reads + two mandate reads = twenty-six.
-  assert.equal(declared404, 26, `expected twenty-six declared 404s (eleven plain + two id_class + one prose grants door + one badge grammar miss + two proof reads + one seals read + four content-target writes + two anchor file reads + two mandate reads), got ${declared404}`);
+  // miss + one source-mirror text miss + two proof reads + one seals read +
+  // four content-target writes + two anchor file reads + two mandate reads = 27.
+  assert.equal(declared404, 27, `expected twenty-seven declared 404s (eleven plain + two id_class + one prose grants door + one badge grammar miss + one source-mirror text miss + two proof reads + one seals read + four content-target writes + two anchor file reads + two mandate reads), got ${declared404}`);
 });
 
 test("the declared plain-404 body is the clocked JSON error with no id_class", async () => {
