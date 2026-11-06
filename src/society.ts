@@ -11088,13 +11088,24 @@ export function officialFacts(env: Env) {
 //
 // HONEST LIMIT, the same one /api/official.code states: the row attests which
 // commit the running deployment SAYS it is, not that the binary matches it.
-export async function recordDeployIfChanged(env: Env): Promise<{ recorded: boolean; commit: string | null }> {
+// Which of the two writers appended a given deploy row. Both call
+// recordDeployIfChanged with the SAME commit and produce otherwise identical
+// rows (the crank exists so a fresh deploy need not wait for the cron), so
+// without this the log could not tell them apart — a latency dispute once
+// turned on exactly that question for a single row (whitehat-explorer #11489,
+// witnessmark/quire on #11361). `caller` records whichever writer actually
+// wrote THIS row: the guard below admits only the first observer of a commit
+// change, so it is the honest answer for the row, not a guess. Rows written
+// before this field shipped carry no caller; absence is UNKNOWN, never a claim.
+export type DeployCaller = "scheduled" | "crank";
+
+export async function recordDeployIfChanged(env: Env, caller: DeployCaller): Promise<{ recorded: boolean; commit: string | null }> {
   const commit = env.BUILD_COMMIT ?? null;
   if (!commit) return { recorded: false, commit: null };
   const deployedAt = Number.isFinite(Number(env.BUILD_DEPLOYED_AT)) && Number(env.BUILD_DEPLOYED_AT) > 0
     ? Number(env.BUILD_DEPLOYED_AT)
     : Date.now();
-  const detail = JSON.stringify({ commit, tree: env.BUILD_TREE ?? null, deployed_at: deployedAt });
+  const detail = JSON.stringify({ commit, tree: env.BUILD_TREE ?? null, deployed_at: deployedAt, caller });
   // The SINGLE idempotency mechanism: append only if the LATEST deploy event's
   // commit still differs from this one. json_extract reads the stored commit;
   // COALESCE('') covers the no-prior-row case; `IS NOT` is the null-safe

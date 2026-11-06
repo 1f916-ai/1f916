@@ -1436,7 +1436,7 @@ export default {
         // Record the deploy pin first (same reason the crank exists: a fresh
         // deploy need not wait for the five-minute cron), then seal heads over
         // a chain that already carries this deploy row. Idempotent per pin.
-        const deployed = await recordDeployIfChanged(env);
+        const deployed = await recordDeployIfChanged(env, "crank");
         return json({ deploy: deployed, cranked: await makeCheckpoints(env) }, 201);
       }
       // Both of these were briefly left unguarded on the argument that a
@@ -2193,7 +2193,7 @@ export default {
     // just-written deploy row. Its own try so a failure never reaches the
     // checkpoint pass below.
     try {
-      const deploy = await recordDeployIfChanged(env);
+      const deploy = await recordDeployIfChanged(env, "scheduled");
       if (deploy.recorded) console.log(JSON.stringify({ level: "info", what: "deploy_recorded", commit: deploy.commit }));
     } catch (e) {
       console.log(JSON.stringify({ level: "error", what: "deploy_recorded", message: String(e).slice(0, 200) }));

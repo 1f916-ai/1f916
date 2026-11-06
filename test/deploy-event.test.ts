@@ -17,6 +17,10 @@
 //   M3  key idempotency on "commit ever seen" instead of "differs from latest"
 //       (match any prior deploy row with this commit, not just the newest) ->
 //       "a rollback to an earlier commit is recorded" red.
+//   M4  drop `caller` from the stored detail (or hardcode one value) -> the
+//       "records which writer wrote the row" test red: the cron and the crank
+//       are made to produce identical rows BY DESIGN, so `caller` is the only
+//       thing that tells them apart on the row (whitehat-explorer #11489).
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -43,7 +47,7 @@ function deployRows(db: DatabaseSync) {
 
 test("records a deploy event when the commit changed", async () => {
   const { env, db } = envAt("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-  const r = await recordDeployIfChanged(env);
+  const r = await recordDeployIfChanged(env, "scheduled");
   assert.equal(r.recorded, true);
   const rows = deployRows(db);
   assert.equal(rows.length, 1, "exactly one deploy row");
@@ -59,9 +63,9 @@ test("records a deploy event when the commit changed", async () => {
 
 test("an unchanged commit records nothing (idempotent on every cron tick)", async () => {
   const { env, db } = envAt("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-  assert.equal((await recordDeployIfChanged(env)).recorded, true);
-  assert.equal((await recordDeployIfChanged(env)).recorded, false, "second call with the same commit records nothing");
-  assert.equal((await recordDeployIfChanged(env)).recorded, false, "and a third");
+  assert.equal((await recordDeployIfChanged(env, "scheduled")).recorded, true);
+  assert.equal((await recordDeployIfChanged(env, "scheduled")).recorded, false, "second call with the same commit records nothing");
+  assert.equal((await recordDeployIfChanged(env, "scheduled")).recorded, false, "and a third");
   assert.equal(deployRows(db).length, 1, "still exactly one deploy row");
 });
 
@@ -71,10 +75,10 @@ test("a rollback to an earlier commit is recorded (key is 'differs from latest',
   const A = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   const B = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
   const at = (commit: string): Env => ({ ...base, BUILD_COMMIT: commit } as Env);
-  assert.equal((await recordDeployIfChanged(at(A))).recorded, true, "A recorded");
-  assert.equal((await recordDeployIfChanged(at(B))).recorded, true, "B recorded (changed)");
-  assert.equal((await recordDeployIfChanged(at(A))).recorded, true, "A again recorded: it differs from the latest (B), though it was seen before");
-  assert.equal((await recordDeployIfChanged(at(A))).recorded, false, "but a repeat of the now-latest A records nothing");
+  assert.equal((await recordDeployIfChanged(at(A), "scheduled")).recorded, true, "A recorded");
+  assert.equal((await recordDeployIfChanged(at(B), "scheduled")).recorded, true, "B recorded (changed)");
+  assert.equal((await recordDeployIfChanged(at(A), "scheduled")).recorded, true, "A again recorded: it differs from the latest (B), though it was seen before");
+  assert.equal((await recordDeployIfChanged(at(A), "scheduled")).recorded, false, "but a repeat of the now-latest A records nothing");
   assert.deepEqual(
     deployRows(db).map((r) => (JSON.parse(r.detail) as { commit: string }).commit),
     [A, B, A],
@@ -84,8 +88,23 @@ test("a rollback to an earlier commit is recorded (key is 'differs from latest',
 
 test("no BUILD_COMMIT records nothing — an unknown commit is UNKNOWN, never a fabricated row", async () => {
   const { env, db } = envAt(undefined);
-  const r = await recordDeployIfChanged(env);
+  const r = await recordDeployIfChanged(env, "scheduled");
   assert.equal(r.recorded, false);
   assert.equal(r.commit, null);
   assert.equal(deployRows(db).length, 0);
+});
+
+test("records which writer wrote the row (crank vs cron are otherwise identical)", async () => {
+  // The cron and the maintainer crank both call recordDeployIfChanged with the
+  // same commit and produce otherwise identical rows by design. `caller` is the
+  // only field that distinguishes them on the row — a latency dispute once
+  // turned on which writer wrote one row (whitehat-explorer #11489).
+  const { env: base, db } = envAt("placeholder");
+  const A = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const B = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  const at = (commit: string): Env => ({ ...base, BUILD_COMMIT: commit } as Env);
+  assert.equal((await recordDeployIfChanged(at(A), "crank")).recorded, true, "A written by the crank");
+  assert.equal((await recordDeployIfChanged(at(B), "scheduled")).recorded, true, "B written by the cron");
+  const callers = deployRows(db).map((r) => (JSON.parse(r.detail) as { caller?: string }).caller);
+  assert.deepEqual(callers, ["crank", "scheduled"], "each row carries the writer that actually wrote it");
 });
