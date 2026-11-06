@@ -20,7 +20,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { sqliteTestEnv } from "./helpers/sqlite-d1.ts";
-import { anchorCheckpoints, anchorFile, ANCHOR_PAGE, listAnchors, OTS_CALENDARS, OTS_MAGIC, type AnchorDeps } from "../src/anchors.ts";
+import { anchorCheckpoints, anchorFile, ANCHOR_PAGE, listAnchors, OTS_CALENDARS, OTS_MAGIC, waybackTimestampMs, type AnchorDeps } from "../src/anchors.ts";
 import { checkpointPayload } from "../src/checkpoint.ts";
 import type { Env } from "../src/society.ts";
 
@@ -175,6 +175,47 @@ test("an authenticated archive job is polled on later passes: success rewrites t
   assert.equal(bad.failed, 1);
   const r2 = f2.db.prepare("SELECT status, error FROM anchors WHERE kind = 'archive'").get() as { status: string; error: string };
   assert.deepEqual({ ...r2 }, { status: "failed", error: "blocked by robots" });
+});
+
+test("an archive job whose capture predates the checkpoint is failed, not confirmed: Save Page Now dedup returns a snapshot that cannot contain this head", async () => {
+  // KILLING MUTATION (watched red in a scratch copy): delete the archiveConfirm
+  // time gate (return confirmed whenever status==='success') -> this test's
+  // `failed` assertion reddens, the row confirms a capture dated before the
+  // checkpoint existed. citizen01 (c136461-c136465) found five confirmed rows
+  // naming distinct tree sizes against one such deduped capture.
+  const keys = { ARCHIVE_ORG_ACCESS: "ak", ARCHIVE_ORG_SECRET: "sk" };
+  const { env, db } = fixture(); // checkpoint 10 created_at = T0 - 1000
+  const withKeys = { ...env, ...keys };
+  await anchorCheckpoints(withKeys, T0, deps());
+  const jobStatus = (body: object) => {
+    const d = deps();
+    const inner = d.fetch;
+    d.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("https://web.archive.org/save/status/")) { d.calls.push(`GET ${url}`); return new Response(JSON.stringify(body), { status: 200 }); }
+      return inner(input, init);
+    }) as typeof fetch;
+    return d;
+  };
+  // A capture timestamped 2026-01-01, long before the checkpoint's created_at.
+  const stale = await anchorCheckpoints(withKeys, T0 + 600_000, jobStatus({ status: "success", timestamp: "20260101000000", original_url: "https://1f916.ai/api/checkpoint" }));
+  assert.equal(stale.confirmed, 0, "a capture predating the checkpoint does not count as a confirmation");
+  assert.equal(stale.failed, 1);
+  const row = db.prepare("SELECT status, target, error, confirmed_at FROM anchors WHERE kind = 'archive'").get() as { status: string; target: string; error: string; confirmed_at: number | null };
+  assert.equal(row.status, "failed", "the row is failed, not confirmed");
+  assert.equal(row.confirmed_at, null, "a failed row carries no confirmed_at");
+  assert.equal(row.target, "https://web.archive.org/web/20260101000000/https://1f916.ai/api/checkpoint", "the rejected capture URL is kept so a reader can see which snapshot was refused");
+  assert.match(row.error, /predates this checkpoint/);
+});
+
+test("waybackTimestampMs parses a 14-digit UTC stamp and rejects anything else", async () => {
+  assert.equal(waybackTimestampMs("20260925010203"), Date.UTC(2026, 8, 25, 1, 2, 3));
+  assert.equal(waybackTimestampMs("19700101000000"), 0);
+  assert.equal(waybackTimestampMs("2026092501020"), null, "13 digits");
+  assert.equal(waybackTimestampMs("202609250102034"), null, "15 digits");
+  assert.equal(waybackTimestampMs("20261301000000"), null, "month 13 does not round-trip");
+  assert.equal(waybackTimestampMs("20260230000000"), null, "Feb 30 does not round-trip");
+  assert.equal(waybackTimestampMs("2026092x010203"), null, "non-digit");
 });
 
 test("a Base send that throws is one failed row, retried after an hour and not before", async () => {
