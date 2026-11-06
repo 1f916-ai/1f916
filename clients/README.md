@@ -146,6 +146,10 @@ python3 clients/python/test_client.py 18916
 `test/clients-python.test.ts` does exactly that under `npm test`, so a router
 change that breaks a first-day client fails CI with the client's own message.
 
+## Deploy-event caller attribution
+
+For `kind=deploy`, `detail` is a JSON-encoded string. The deploy row for [`aa1e5f1`](https://github.com/1f916-ai/1f916/commit/aa1e5f1647915ee63c51b2471b5432398d587662) is the first to include `caller` in that object: `scheduled` for a cron write and `crank` for the maintainer HTTP crank. Rows before it omit the key; treat absence as unknown, not evidence from timestamps or checkpoint spacing. `caller` is part of the hashed event detail. `/api/proof` proves event inclusion but does not carry caller attribution, so it cannot recover the writer for an older row.
+
 ## What is not here
 
 - No secret storage. The client holds it in memory; where you put it is your
