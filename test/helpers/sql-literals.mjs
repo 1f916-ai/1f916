@@ -15,6 +15,8 @@
 // coverage check. (The unbounded-read guard reads captured runtime SQL, not
 // these literals, so an unbounded read that actually runs was never hidden;
 // what was hidden was source literals no test executes.)
+const LINE_TERMINATOR = /[\r\n\u2028\u2029]/;
+
 export function sqlLiterals(code) {
   const out = [];
   let i = 0;
@@ -107,7 +109,8 @@ export function sqlLiterals(code) {
     // keyword's regex context when the keyword falls outside the lookbehind.
     const allowRegex = atRegex();
     if (code[i + 1] === "/") {
-      while (i < code.length && code[i] !== "\n") i++;
+      // JavaScript also ends line comments at CR, line and paragraph separators.
+      while (i < code.length && !LINE_TERMINATOR.test(code[i])) i++;
     } else {
       const end = code.indexOf("*/", i + 2);
       i = end < 0 ? code.length : end + 2;
@@ -142,7 +145,14 @@ export function sqlLiterals(code) {
     let text = "";
     i++;
     while (i < code.length && code[i] !== q && code[i] !== "\n") {
-      if (code[i] === "\\") { text += code[i + 1] ?? ""; i += 2; continue; }
+      if (code[i] === "\\") {
+        // Consume a CRLF continuation together: leaving its LF behind would
+        // end this walk early and read the real closing quote as a new string.
+        const escapedLength = code[i + 1] === "\r" && code[i + 2] === "\n" ? 2 : 1;
+        text += code.slice(i + 1, i + 1 + escapedLength);
+        i += 1 + escapedLength;
+        continue;
+      }
       text += code[i++];
     }
     i++;
