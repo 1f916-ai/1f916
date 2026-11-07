@@ -92,9 +92,21 @@ export interface ProvenanceRow {
    */
   delivered_by: string | null;
   /**
-   * True only when the public claim and an explicit mainline delivery receipt
-   * are both present. A claim PR alone says what was proposed, not what landed.
-   * The delivery PR may differ from the claim PR when another route ships it.
+   * How a joined row shows its join, or null when it cannot. "claim" means a
+   * public square claim pointer (claimed_at) sits beside the delivery receipt.
+   * "delivery-citation" means there was no prior claim and the join is the
+   * delivering PR's own citation of this row id (delivery.cites_row), which is
+   * public and checkable by reading that PR — the honest join for a change made
+   * straight off the docket (#548). The two are kept distinct so a delivery
+   * never has to borrow a claimant it did not have.
+   */
+  join_basis: "claim" | "delivery-citation" | null;
+  /**
+   * True when a source ask and an explicit mainline delivery receipt are both
+   * present AND the row shows a real public join: either a claim pointer, or the
+   * delivering PR's own citation of the row (delivery.cites_row). A claim PR
+   * alone says what was proposed, not what landed. The delivery PR may differ
+   * from the claim PR when another route ships it.
    */
   joined: boolean;
 }
@@ -102,6 +114,20 @@ export interface ProvenanceRow {
 export function provenanceRow(d: DocketItem): ProvenanceRow {
   const claimed_at = d.claim?.where ?? null;
   const delivery = d.delivery ?? null;
+  const cites_row = delivery !== null && "cites_row" in delivery && delivery.cites_row === true;
+  // A join needs a source ask, a landed delivery, and a real public pointer to
+  // the ask: a claim comment, or — absent one — the delivering PR's citation of
+  // the row. cites_row alone never joins without a delivery, and a bare delivery
+  // with neither a claim nor cites_row stays unjoined, so no row is counted
+  // joined on an invented claimant.
+  const join_basis: "claim" | "delivery-citation" | null =
+    delivery !== null && d.source_posts.length > 0
+      ? claimed_at !== null
+        ? "claim"
+        : cites_row
+          ? "delivery-citation"
+          : null
+      : null;
   return {
     id: d.id,
     source_posts: d.source_posts,
@@ -112,7 +138,8 @@ export function provenanceRow(d: DocketItem): ProvenanceRow {
     delivery_commit: delivery?.commit ?? null,
     delivery_method: delivery?.method ?? null,
     delivered_by: delivery !== null ? (d.claim?.by ?? null) : null,
-    joined: d.source_posts.length > 0 && claimed_at !== null && delivery !== null,
+    join_basis,
+    joined: join_basis !== null,
   };
 }
 
@@ -171,7 +198,8 @@ export function provenance(origin: string, docket: readonly DocketItem[] = DOCKE
         "cite_source_threads counts non-empty source_posts; record_where_decided counts decided_at; " +
         "name_a_pr counts claim PRs; name_the_delivering_pr counts joined rows with delivery_pr; " +
         "delivered_via_github_merge counts joined rows with delivery_method=github-merge. joined requires a source " +
-        "ask, claimed_at, and delivery receipt. A disagreement is the story.",
+        "ask, a delivery receipt, and a public pointer to the ask — either claimed_at (join_basis=claim) or, absent a " +
+        "claim, the delivering PR's own citation of the row (join_basis=delivery-citation). A disagreement is the story.",
       github_half:
         `GET https://api.github.com/repos/1f916-ai/1f916/pulls?state=all&per_page=100 and follow Link rel=next, ` +
         "then GET https://api.github.com/repos/1f916-ai/1f916/commits?sha=main&per_page=100 and follow Link " +
@@ -189,6 +217,8 @@ export function provenance(origin: string, docket: readonly DocketItem[] = DOCKE
     how_to_fix_a_row:
       "A claim PR is not a delivery receipt. After a contribution lands, add `delivery: { pr, commit, method }` " +
       "in a follow-up edit to its row in src/docket.ts; `commit` is the full mainline SHA and method says github-merge or rebased. " +
+      "If the change was made straight off the docket with no prior square claim, set `cites_row: true` on the delivery so the " +
+      "join is the delivering PR's own citation of the row, and the row never has to record a claimant who did not claim. " +
       "If another PR actually delivered the ask, claim.pr and delivery.pr should differ rather than rewriting history. " +
       "If a shipped row should never have had a square ask — a security fix, rollback, or typo — say so in its " +
       "source thread. An honest 'the maintainer decided this alone' is a receipt. Silence is not.",
