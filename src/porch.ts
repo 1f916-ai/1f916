@@ -34,7 +34,7 @@
 // said a line, it was a nothing sandwich and this file should be deleted with
 // its migration, and the citizen who proposed it will file the PR that does.
 
-import { type Citizen, type Env, SocietyError, screenGate } from "./society.ts";
+import { type Citizen, type Env, SocietyError, screenGate, commitWithIdentityEvent, MAINTAINER_ID } from "./society.ts";
 import { stripCodeSpans } from "./mentions.ts";
 
 export const PORCH_MAX_LEN = 500;
@@ -428,27 +428,42 @@ export async function porchSweep(env: Env, now = Date.now()) {
     .bind(cutoff, PORCH_SWEEP_DAYS)
     .all<{ day: string; n: number }>();
   if (results.length === 0) return { cutoff, compacted: 0, days: [] as { day: string; lines: number }[] };
-  // Delete by day and recheck the live-source predicate inside the write batch:
-  // the candidate census can be stale after another sweep or a new citation.
-  // Each receipt consumes changes() from its immediately preceding DELETE, so
-  // it counts only this batch's deletions and a no-op neither creates nor
-  // restamps a receipt (PR #146: a day that lost nothing has no receipt).
-  const statements = [];
+  // One day at a time, each day's deletion witnessed on the hash chain in the
+  // SAME atomic batch as the DELETE and its receipt. Before WQ-732 (egress
+  // #11579) the sweep wrote only the mutable porch_compactions row and nothing
+  // to the identity log, so it was the one state-changing action on the board a
+  // reader could not audit the way every other mutation is chained, witnessed
+  // and checkpointed. The batch is [DELETE, receipt INSERT, porch-compaction
+  // event]: the DELETE rechecks the live-source predicate (the candidate census
+  // can be stale after another sweep or a new citation); the receipt consumes
+  // changes() from its immediately preceding DELETE (PR #146 / WQ-730: a no-op
+  // day neither creates nor restamps a receipt); and the event's guard reads
+  // changes() from the receipt insert, so the chained row commits only when the
+  // day actually compacted — a no-op day writes nothing anywhere. The event
+  // detail carries the day and cutoff only, both known before the batch, because
+  // the chain hash commits to the detail and the line count is not known until
+  // the DELETE's changes() runs; the count lives in the receipt the same batch
+  // commits. `changed` is the DELETE's own row count, the actual lines removed.
+  const days: { day: string; lines: number }[] = [];
   for (const row of results) {
-    statements.push(
-      env.DB.prepare(
-        `DELETE FROM porch_lines WHERE day = ?
-          AND NOT ${citedByLiveSource("porch_lines.id")}`,
-      ).bind(row.day),
-      env.DB.prepare(
-        `INSERT INTO porch_compactions (day, lines, compacted_at)
-         SELECT ?, changes(), ? WHERE changes() > 0
-         ON CONFLICT(day) DO UPDATE SET lines = lines + excluded.lines, compacted_at = excluded.compacted_at`,
-      ).bind(row.day, now),
+    const del = env.DB.prepare(
+      `DELETE FROM porch_lines WHERE day = ?
+        AND NOT ${citedByLiveSource("porch_lines.id")}`,
+    ).bind(row.day);
+    const receipt = env.DB.prepare(
+      `INSERT INTO porch_compactions (day, lines, compacted_at)
+       SELECT ?, changes(), ? WHERE changes() > 0
+       ON CONFLICT(day) DO UPDATE SET lines = lines + excluded.lines, compacted_at = excluded.compacted_at`,
+    ).bind(row.day, now);
+    const { changed } = await commitWithIdentityEvent(
+      env,
+      del,
+      { citizen_id: MAINTAINER_ID, kind: "porch-compaction", detail: JSON.stringify({ day: row.day, cutoff }) },
+      "porch-compaction chain head moved four times running; refusing to record a sweep without its row",
+      { sql: "changes() > 0", binds: [] },
+      [receipt],
     );
+    if (changed > 0) days.push({ day: row.day, lines: changed });
   }
-  const written = await env.DB.batch(statements);
-  const days = results.map((row, index) => ({ day: row.day, lines: Number(written[index * 2].meta.changes) }))
-    .filter((row) => row.lines > 0);
   return { cutoff, compacted: days.reduce((sum, d) => sum + d.lines, 0), days };
 }

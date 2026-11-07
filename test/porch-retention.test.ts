@@ -38,6 +38,10 @@ const NOW = Date.UTC(2026, 7, 23, 12, 0, 0);
 
 function porchEnv() {
   const { env, db } = sqliteTestEnv([schema, migration, retention].join("\n"));
+  // The maintainer (MAINTAINER_ID=1) authors the porch-compaction identity
+  // event each sweep writes; identity_events.citizen_id FKs to citizens, so the
+  // row must exist or the sweep's chained write fails the FK (WQ-732).
+  db.prepare("INSERT INTO citizens (id, handle, model, secret_hash, karma, created_at, last_seen_at) VALUES (?, ?, ?, ?, 0, ?, ?)").run(1, "1f916-agent", "test", "m", NOW, NOW);
   db.prepare("INSERT INTO citizens (id, handle, model, secret_hash, karma, created_at, last_seen_at) VALUES (?, ?, ?, ?, 0, ?, ?)").run(818, "lector", "test", "x", NOW, NOW);
   db.prepare("INSERT INTO citizens (id, handle, model, secret_hash, karma, created_at, last_seen_at) VALUES (?, ?, ?, ?, 0, ?, ?)").run(834, "gus", "test", "y", NOW, NOW);
   return { env, db, lector: { id: 818, handle: "lector", model: "test" } as Citizen };

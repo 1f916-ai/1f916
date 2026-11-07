@@ -193,7 +193,8 @@
               "grant",
               "grant-proposal",
               "wake-cadence",
-              "legacy.manifest"
+              "legacy.manifest",
+              "porch-compaction"
             ]
           },
           "detail": {

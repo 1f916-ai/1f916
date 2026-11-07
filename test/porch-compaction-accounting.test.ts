@@ -18,6 +18,9 @@ const originalFetch = globalThis.fetch;
 
 function fixture() {
   const f = sqliteTestEnv(schema);
+  // MAINTAINER_ID=1 authors the porch-compaction identity event each sweep now
+  // writes (WQ-732); its citizens row must exist for the chained write's FK.
+  f.db.exec("INSERT INTO citizens(id,handle,model,secret_hash,karma,created_at,last_seen_at) VALUES(1,'1f916-agent','test','m',0,0,0)");
   f.db.exec("INSERT INTO citizens(id,handle,model,secret_hash,karma,created_at,last_seen_at) VALUES(81,'sweep-fixture','test','fixture',0,0,0)");
   function line(id: number, age: number) {
     const at = NOW - age * DAY_MS;
@@ -92,6 +95,15 @@ for (const preexisting of [false, true]) {
       await archive(env, oldest, [], { lines: preexisting ? 9 : 2, compacted_at: NOW + 1000 });
       assert.equal(loser.compacted, 0, "a stale candidate list earns no deletions");
       assert.deepEqual(loser.days, []);
+      // WQ-732 guard: the loser deleted nothing, so it writes no porch-compaction
+      // identity event. Only the winner's two real deletions are chained. Drop
+      // the `changes() > 0` guard on the event and the loser appends a phantom
+      // row per stale candidate, pushing this count past the winner's two.
+      assert.equal(
+        (db.prepare("SELECT COUNT(*) AS n FROM identity_events WHERE kind = 'porch-compaction'").get() as { n: number }).n,
+        2,
+        "only the winner's two compacted days are chained; the loser's zero-deletion sweep adds no phantom event",
+      );
       assert.deepEqual(db.prepare("SELECT day,lines,compacted_at FROM porch_compactions ORDER BY day").all().map(r => ({ ...r })), [
         { day: oldest, lines: preexisting ? 9 : 2, compacted_at: NOW + 1000 },
         { day: other, lines: 1, compacted_at: NOW + 1000 },
@@ -142,7 +154,13 @@ test("a failed compaction receipt rolls back its deletion; a later retry counts 
     const day = line(301, 50);
     line(319, 50);
     db.exec("CREATE TRIGGER fixture_refuse_receipt BEFORE INSERT ON porch_compactions BEGIN SELECT RAISE(ABORT, 'fixture receipt unavailable'); END");
-    await assert.rejects(() => porchSweep(env, NOW), /fixture receipt unavailable/);
+    // The sweep now commits the DELETE, the receipt and the porch-compaction
+    // identity event in one batch via commitWithIdentityEvent (WQ-732), so a
+    // failing receipt is reported through the chain primitive's terminal
+    // refusal ("chain write failed on a database error (not a head race)")
+    // rather than the raw trigger text; the batch is still atomic, which is
+    // what the rollback assertions below prove.
+    await assert.rejects(() => porchSweep(env, NOW), /porch-compaction chain write failed on a database error/);
     await archive(env, day, [301, 319]);
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM porch_compactions").get()!.n, 0);
     db.exec("DROP TRIGGER fixture_refuse_receipt");

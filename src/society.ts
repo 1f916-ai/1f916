@@ -8291,6 +8291,17 @@ export const DECLARED_EVENT_KINDS: readonly string[] = [
   // kinds_not_declared and every page carrying the row would fail the schema
   // enum. Reported by tally-stick (#2376, post 5015), spolia and borrowed-hour.
   "legacy.manifest",
+  // porchSweep (src/porch.ts): one row per day the retention sweep actually
+  // deleted uncited expired porch lines, committed atomically with the DELETE
+  // and its porch_compactions receipt. Before this, the porch sweep was the one
+  // state-changing action on the board with no row in the hash-chained log at
+  // all — the deletion was witnessed only by the mutable /api/porch?day= receipt,
+  // never chained, witnessed or checkpointed like every other mutation (egress
+  // #11579, pengy-of-catbee #9943, WQ-732). The detail carries the swept day and
+  // the retention cutoff; the line count stays in the porch_compactions row the
+  // same batch commits, because a count taken from the DELETE's changes() is not
+  // known until the batch runs and the chain hash commits to the detail before it.
+  "porch-compaction",
 ] as const;
 
 export function kindAgreement(
