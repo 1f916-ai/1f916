@@ -17,6 +17,7 @@
 import type { Env } from "./society.ts";
 import { SocietyError } from "./society.ts";
 import { checkpointPayload } from "./checkpoint.ts";
+import { baseRpcUrls } from "./payouts.ts";
 
 export const OTS_CALENDARS = [
   "https://alice.btc.calendar.opentimestamps.org",
@@ -314,15 +315,34 @@ async function upgradeOts(f: typeof fetch, calendar: string, attesteeMsg: Uint8A
   return bytes;
 }
 
+// Base anchoring reads and writes go through the SAME pooled, keyed Base-RPC
+// list the rest of the money path uses (payouts.ts baseRpcUrls), wrapped in
+// viem's fallback transport so one provider's outage or billing lapse falls
+// through to the next instead of silently stopping the whole Base leg. Before
+// 2026-11-07 submit/confirm each used a single URL (env.BASE_RPC_PRIVATE_URL
+// || env.BASE_RPC_URL || the public node): when the keyed endpoint answered
+// 402 (quota/billing) every Base anchor failed at eth_getTransactionCount even
+// though healthy public providers were in the pool. Keyed endpoints are tried
+// first; the public providers remain as fallbacks. The anchor wallet's txs are
+// zero-value self-sends with a fixed nonce, so broadcasting the same signed tx
+// to a second provider after the first errors is idempotent (same tx hash).
+export function baseAnchorTransport(
+  env: Env,
+  viem: { fallback: typeof import("viem").fallback; http: typeof import("viem").http },
+) {
+  return viem.fallback(baseRpcUrls(env).map((url) => viem.http(url)));
+}
+
 // Base: a zero-value transaction from the anchoring wallet to itself with the
 // payload as calldata. The wallet is a dedicated pocket-change key, never the
 // treasury. Unset secret means no Base anchoring and nothing is attempted.
 async function submitBase(env: Env, payload: string): Promise<string> {
-  const { createWalletClient, http } = await import("viem");
+  const viem = await import("viem");
+  const { createWalletClient } = viem;
   const { privateKeyToAccount } = await import("viem/accounts");
   const { base } = await import("viem/chains");
   const account = privateKeyToAccount(env.ANCHOR_BASE_KEY as `0x${string}`);
-  const client = createWalletClient({ account, chain: base, transport: http(env.BASE_RPC_PRIVATE_URL || env.BASE_RPC_URL || "https://mainnet.base.org") });
+  const client = createWalletClient({ account, chain: base, transport: baseAnchorTransport(env, viem) });
   return client.sendTransaction({ to: account.address, value: 0n, data: baseCalldata(payload) });
 }
 
@@ -350,9 +370,10 @@ export async function baseWalletAddress(env: Env): Promise<string | null> {
 // with the status, because the instant this server reads the receipt can lag
 // the block by as long as the queue takes.
 async function confirmBase(env: Env, txHash: string): Promise<BaseReceiptStatus | BaseReceipt> {
-  const { createPublicClient, http, TransactionNotFoundError, TransactionReceiptNotFoundError } = await import("viem");
+  const viem = await import("viem");
+  const { createPublicClient, TransactionNotFoundError, TransactionReceiptNotFoundError } = viem;
   const { base } = await import("viem/chains");
-  const client = createPublicClient({ chain: base, transport: http(env.BASE_RPC_PRIVATE_URL || env.BASE_RPC_URL || "https://mainnet.base.org") });
+  const client = createPublicClient({ chain: base, transport: baseAnchorTransport(env, viem) });
   const hash = txHash as `0x${string}`;
   try {
     const r = await client.getTransactionReceipt({ hash });
