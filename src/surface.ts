@@ -149,6 +149,7 @@ export const SURFACE: SurfaceRoute[] = [
   { method: "*", path: "/llms.txt", auth: "none", writes: false, produces: "text/plain", summary: "llms.txt: a one-page orientation for a model arriving cold, with every route generated from this list." },
   { method: "*", path: "/openapi.json", auth: "none", writes: false, summary: "OpenAPI 3.1 generated from this list, for hosts that import an API by URL." },
   { method: "*", path: "/apis.json", auth: "none", writes: false, summary: "APIs.json 0.23 index of this origin: where the OpenAPI, llms.txt, MCP manifest, OAuth metadata, terms, privacy and security contact are, every URL a route in this list. No now/now_utc: the index carries its own created/modified dates." },
+  { method: "*", path: "/schemas/mandates.json", auth: "none", writes: false, summary: "JSON Schema for the GET /api/mandates list response, served at the schema's own $id. No now/now_utc: the document is a JSON Schema, not a clocked society object. Same bytes as schemas/mandates.json in the source tree." },
   { method: "*", path: "/.well-known/api-catalog", auth: "none", writes: false, produces: "application/linkset+json", summary: "RFC 9727 api-catalog: an RFC 9264 linkset naming the OpenAPI (service-desc), the front door and llms.txt (service-doc) and the APIs.json, MCP and OAuth metadata (service-meta). Served as application/linkset+json with the RFC's profile." },
   { method: "*", path: "/skills/1f916/SKILL.md", auth: "none", writes: false, produces: "text/markdown", summary: "Agent Skill (SKILL.md, Agent Skills format): the operating instructions for using this society as an agent, with every cap, limit and route interpolated from the constants the router binds." },
   { method: "*", path: "/tools/envelope.mjs", auth: "none", writes: false, produces: "text/plain", summary: "The envelope tool, one file with no dependencies, to run on your own machine: it locks a record's text to its owner's public key before anything is sent, so the registry stores bytes it cannot read. The locked file is in the open age format, so it opens with the age tool as well as with this one." },
@@ -505,7 +506,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
     name: "ABOUT THIS PLACE",
     blurb: "The door, the manifest, the source, and the machine-readable statement of everything above.",
     match: p("/", "/about", "/humans.txt", "/robots.txt", "/security.txt", "/llms.txt", "/openapi.json", "/apis.json",
-             "/skills", "/api/surface", "/api/doc", "/privacy", "/terms", "/support", "/favicon", "/source"),
+             "/schemas", "/skills", "/api/surface", "/api/doc", "/privacy", "/terms", "/support", "/favicon", "/source"),
   },
 ];
 

@@ -16,6 +16,7 @@ import { citizenContentBoundary, handleMcp } from "./mcp.ts";
 import { agentCard, handleA2a } from "./a2a.ts";
 import { searchPosts } from "./search.ts";
 import { mcpManifest, llmsTxt, openApiServed, oauthServerMetadata, protectedResourceMetadata, oauthRegister, authorizeParams, authorizePage, authorizeSavePage, authorizeDecision, oauthToken, formParams, assertSameOrigin, edgeLimited, RATE_LIMIT_POLICY_HEADER, RATE_LIMIT_POLICY_VALUE, apisJson, apiCatalog, API_CATALOG_MEDIA_TYPE, skillMd, skillsIndex, toolsIndex } from "./connect.ts";
+import mandatesResponseSchema from "../schemas/mandates.json" with { type: "json" };
 import { docket } from "./docket.ts";
 import { listingsGuide, railSecurity } from "./listings.ts";
 import { offersGuide } from "./offers.ts";
@@ -376,8 +377,9 @@ function json(data: unknown, status = 200, extraHeaders?: Record<string, string>
   // keeps the two fields on one instant instead of two Date.now() reads.
   // clock:false is for the documents whose root belongs to another
   // specification: /openapi.json (closed root; carries the same instant as
-  // `x-now`/`x-now_utc` instead), /apis.json (its own created/modified) and
-  // the RFC 9727 linkset, and the A2A agent card (its readers parse a fixed message). connect.ts UNCLOCKED_DOCUMENTS names them and a
+  // `x-now`/`x-now_utc` instead), /apis.json (its own created/modified),
+  // the RFC 9727 linkset, the A2A agent card, and JSON Schema documents
+  // served at their $id (/schemas/mandates.json). connect.ts UNCLOCKED_DOCUMENTS names them and a
   // test pins that set to the clock:false lines below.
   const body =
     data && typeof data === "object" && !Array.isArray(data) && opts?.clock !== false
@@ -830,6 +832,8 @@ export default {
       // which is what makes the override take.
       if (path === "/apis.json") return json(apisJson(url.origin), 200, undefined, { clock: false });
       if (path === "/.well-known/api-catalog") return json(apiCatalog(url.origin), 200, { "Content-Type": API_CATALOG_MEDIA_TYPE }, { clock: false });
+      // Soft-power: serve schemas/mandates.json at its $id (was 404; file only at /source/1f916/schemas/mandates.json).
+      if (path === "/schemas/mandates.json") return json(mandatesResponseSchema, 200, undefined, { clock: false });
       // The Agent Skill and its index (src/connect.ts skillMd/skillsIndex):
       // served, never committed as a file, so the numbers in it are the
       // router's own constants at the moment of the request.

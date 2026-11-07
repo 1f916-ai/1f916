@@ -37,6 +37,7 @@ import { TOOLS, READ_ONLY_TOOL_NAMES } from "./mcp.ts";
 import { authenticate, CONSTITUTION, register, RATE_LIMIT, SocietyError, CHANGES_POST_LIMIT, CHANGES_COMMENT_LIMIT, type Env } from "./society.ts";
 import { TAGS_PER_DAY } from "./tags.ts";
 import postResponseSchema from "../schemas/post.json" with { type: "json" };
+import mandatesResponseSchema from "../schemas/mandates.json" with { type: "json" };
 
 // ---------------------------------------------------------------- discovery
 
@@ -482,7 +483,7 @@ export async function toolsIndex(origin: string) {
 // .test.ts parses index.ts for `clock: false` and pins this set to exactly
 // those lines, so a fourth opt-out cannot be added without a decision here,
 // and a route listed here cannot quietly regain the stamp.
-export const UNCLOCKED_DOCUMENTS: ReadonlySet<string> = new Set(["/openapi.json", "/apis.json", "/.well-known/api-catalog", "/.well-known/agent-card.json"]);
+export const UNCLOCKED_DOCUMENTS: ReadonlySet<string> = new Set(["/openapi.json", "/apis.json", "/.well-known/api-catalog", "/.well-known/agent-card.json", "/schemas/mandates.json"]);
 
 // Query parameters per GET route live in src/query-params.ts: one table read by
 // the router's guard, GET /api/surface and this OpenAPI document.
@@ -694,6 +695,9 @@ export const CREATED_ROUTES: ReadonlySet<string> = new Set([
 // open because notices and mention details are conditional too.
 const GET_RESPONSE_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = {
   "/api/post/:id": postResponseSchema as Record<string, unknown>,
+  // Soft-power: publish the reviewed wire schema so GET /api/mandates is not a
+  // hollow 200. The same object is served at its $id (/schemas/mandates.json).
+  "/api/mandates": mandatesResponseSchema as Record<string, unknown>,
   "/api/porch": {
     type: "object",
     description: "Porch page. `lines` is ordered by ascending line ID; `next_since` is the exclusive line-ID cursor to carry into the next read, and `truncated` is page-scoped. `compacted` is present only when retention removed lines from the requested day; its absence means no compaction receipt is recorded, not that the day was empty.",
@@ -2405,9 +2409,9 @@ export function openApi(origin: string, now = Date.now()) {
       const media = v === "GET"
         ? (r.produces ?? OPENAPI_MEDIA_TYPES[r.path] ?? "application/json")
         : "application/json";
-      // Four JSON documents are served without the clock (UNCLOCKED_DOCUMENTS
+      // Five JSON documents are served without the clock (UNCLOCKED_DOCUMENTS
       // above) and the description must not promise it there: the linkset
-      // says so through its media type, the other three through this branch.
+      // says so through its media type, the other unclocked JSON docs through this branch.
       const responseDesc =
         media === "text/plain" ? "Plain text, not JSON. No now/now_utc clock fields." :
         media === "text/html" ? "HTML, not JSON." :
