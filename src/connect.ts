@@ -1382,8 +1382,9 @@ export const MANDATE_404_ROUTES: ReadonlySet<string> = new Set([
 // generated client type the already-applied body `never`: the same
 // undiagnosable-success failure the 401, the write-400, the daily-cap 429 and
 // the typed-absence 404 already fixed, on the conflict side. The separate
-// key-bind idempotency conflict is declared below; other identity-key, witness,
-// payout, listing, grant and submission 409s remain out of this focused set.
+// key-bind, payout-receipt and award-settlement conflicts are declared below;
+// other identity-key, witness, payout, listing, grant and submission 409s remain
+// out of this focused set.
 // test/openapi-409-already-applied.test.ts keeps the membership and the router's
 // live 409 honest against these route-specific declarations.
 export const ALREADY_APPLIED_409_ROUTES: ReadonlySet<string> = new Set([
@@ -1411,11 +1412,17 @@ export const KEY_BIND_409_ROUTES: ReadonlySet<string> = new Set([
 // client generated with openapi-fetch typed this money-path conflict `never` —
 // the same undiagnosable-success gap the four everyday writes (ALREADY_APPLIED_
 // 409_ROUTES) fixed, on the settlement side. Gooseberry (c137825) reported the
-// omission; the sibling payout/listing/award 409s share it and are tracked as a
-// follow-up. test/openapi-payout-receipt-409.test.ts pins the route, the
-// declared body, and the live createPayoutReceipt 409.
+// omission. The award-settlement sibling is declared separately below; other
+// payout/listing/award 409s remain a tracked follow-up. The focused test pins
+// the route, declared body, and live createPayoutReceipt 409.
 export const PAYOUT_RECEIPT_409_ROUTES: ReadonlySet<string> = new Set([
   "/api/payout-bindings/:id/receipt",
+]);
+
+// Closing an award against a receipt is a state conflict when it was already
+// paid, has no recorded payment, or the receipt cannot close a settleable award.
+export const AWARD_SETTLE_409_ROUTES: ReadonlySet<string> = new Set([
+  "/api/awards/:id/settle",
 ]);
 // The citizen content-target writes whose miss is the clocked target-absence
 // 404, declared per route. The four everyday content writes answer, when the
@@ -3013,6 +3020,16 @@ export function openApi(origin: string, now = Date.now()) {
               },
             }
           : {};
+      const awardSettlement409 =
+        v === "POST" && AWARD_SETTLE_409_ROUTES.has(r.path)
+          ? {
+              "409": {
+                description:
+                  "The award cannot be settled against a recorded receipt: it is already paid, no recorded payment exists for the payee, or the receipt could not close a settleable award (including a competing transition). No new transition is recorded. The same clocked JSON error body as every other refused write; read `error` for the specific reason.",
+                content: { "application/json": {} },
+              },
+            }
+          : {};
       // A collapse is different from an already-applied act: the target may
       // have been withdrawn after the caller last read it. The guard preserves
       // that redaction because a collapsed row is readable through ?reveal;
@@ -3287,6 +3304,7 @@ export function openApi(origin: string, now = Date.now()) {
         ...(conflict409 as Record<string, unknown>),
         ...(keyBind409 as Record<string, unknown>),
         ...(payoutReceiptSettled409 as Record<string, unknown>),
+        ...(awardSettlement409 as Record<string, unknown>),
         ...(moderationWithdrawnCollapse409 as Record<string, unknown>),
         ...(writeTarget404 as Record<string, unknown>),
         ...(conditional304 as Record<string, unknown>),

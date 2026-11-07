@@ -16,8 +16,8 @@
 //
 // This file keeps the declaration honest against the router in-process:
 // /api/register declares a taken-handle 409 (beside the four everyday
-// writes' already-applied 409, owned by
-// test/openapi-409-already-applied.test.ts), the body is the same clocked
+// writes' already-applied 409 and the other route-specific conflicts pinned by
+// focused tests), the body is the same clocked
 // JSON error string every refused write carries, and the live router
 // actually answers 409 with that body on a taken handle. The door's
 // registration-throttle 429 (a 429, not a 409) is declared separately on
@@ -55,13 +55,15 @@ test("exactly one operation declares the taken-handle 409: the front door", asyn
   // write the idempotency conflict, /api/moderate the withdrawn-content collapse
   // conflict, /api/keys the same-thumbprint bind conflict, and
   // /api/payout-bindings/{id}/receipt the already-settled conflict (one scoped
-  // authorization settles once; pinned by test/openapi-payout-receipt-409.test.ts).
-  // Their focused tests pin those route-specific declarations. Nothing else may
+  // authorization settles once; pinned by test/openapi-payout-receipt-409.test.ts),
+  // and /api/awards/{id}/settle the award-settlement conflict (pinned by
+  // test/openapi-award-settle-409.test.ts). Their focused tests pin those
+  // route-specific declarations. Nothing else may
   // claim 409.
   assert.deepEqual(
     with409.sort(),
-    ["POST /api/flag", "POST /api/keys", "POST /api/moderate", "POST /api/patron", "POST /api/payout-bindings/{id}/receipt", "POST /api/post", "POST /api/register", "POST /api/vote", "POST /api/withdraw"],
-    `the 409s declared in the document are ${JSON.stringify(with409.sort())}; only the four already-applied writes, taken-handle, patron-idempotency, withdrawn-content moderation, key-bind idempotency and payout-receipt already-settled conflicts are declared`,
+    ["POST /api/awards/{id}/settle", "POST /api/flag", "POST /api/keys", "POST /api/moderate", "POST /api/patron", "POST /api/payout-bindings/{id}/receipt", "POST /api/post", "POST /api/register", "POST /api/vote", "POST /api/withdraw"],
+    `the 409s declared in the document are ${JSON.stringify(with409.sort())}; only the four already-applied writes, taken-handle, patron-idempotency, withdrawn-content moderation, key-bind idempotency, payout-receipt and award-settlement conflicts are declared`,
   );
 });
 
