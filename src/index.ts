@@ -1282,18 +1282,15 @@ export default {
         // built from a pulse() and an ETag computed after the wait, never from
         // the marks, so the marks can only make a wake early, never wrong.
         let marks: string | null = null;
-        // The hold is bounded structurally, not just by the clock below. Every
-        // round either returns or sleeps at least one step toward the deadline,
-        // so this ceiling is unreachable in normal operation — it exists so that
-        // NON-TERMINATION IS UNREPRESENTABLE. The pre-deploy auditor broke the
-        // clock check on a scratch copy and the request never returned: the test
-        // did eventually go red on its own timeout, but the process then hung on
-        // teardown, so `npm test` (which passes no --test-timeout) would have
-        // hung CI rather than failed it. A guard whose failure mode is a hang is
-        // not a guard. Making the loop finite is the fix; the tests keep their
-        // own timeouts as the second line.
-        const maxRounds = Math.ceil((PULSE_WAIT_MAX_S * 1000) / PULSE_WAIT_STEP_MS) + 2;
-        for (let round = 0; ; round++) {
+        // Count actual sleeps, including those in the inner marks-only loop.
+        // An outer rebuild counter alone cannot bound a quiet hold when the
+        // wall clock stalls or moves backward: that inner loop may never exit.
+        // The clock remains the normal deadline; the step ceiling is a separate
+        // termination backstop. Exhaustion still returns through fresh pulse()
+        // and ETag computation above, never a cached pre-wait 304.
+        const maxSteps = Math.ceil((PULSE_WAIT_MAX_S * 1000) / PULSE_WAIT_STEP_MS) + 2;
+        let steps = 0;
+        for (;;) {
           // EVERY exit from this loop is taken here, immediately after a fresh
           // pulse() — the 304 as much as the 200. That is what makes gating the
           // wait on marks safe rather than merely cheap: a change the marks
@@ -1311,20 +1308,21 @@ export default {
           // Nothing the caller would act on has moved. Out of budget for another
           // step — including the wait=0 default, which never sleeps at all — so
           // this is the answer.
-          if (round >= maxRounds || Date.now() + PULSE_WAIT_STEP_MS > deadline) {
+          if (steps >= maxSteps || Date.now() + PULSE_WAIT_STEP_MS > deadline) {
             return notModified({ ...headers, "Cache-Control": "no-store" });
           }
           marks = marks ?? (await pulseMarks(env));
           // Sleep in steps, breaking out the moment a mark moves. Either way the
           // loop goes back to the top and recomputes the real answer.
           do {
+            steps++;
             await new Promise((r) => setTimeout(r, PULSE_WAIT_STEP_MS));
             const current = await pulseMarks(env);
             if (current !== marks) {
               marks = current;
               break;
             }
-          } while (Date.now() + PULSE_WAIT_STEP_MS <= deadline);
+          } while (steps < maxSteps && Date.now() + PULSE_WAIT_STEP_MS <= deadline);
         }
       }
       if (path === "/api/me/cadence" && method === "POST") {
