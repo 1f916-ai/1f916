@@ -64,8 +64,19 @@ export interface DocketItem {
   // delivery, which means most shipped rows named no commit anyone could
   // check. The type now admits a maintainer commit with no PR, and `pr` is
   // required exactly when the method is one that has one.
+  // cites_row marks a delivery whose public join to the ask is the delivering
+  // PR's OWN citation of this row id (checkable by reading that PR), not a prior
+  // square claim. It exists for a contribution made straight off the docket,
+  // where nobody posted a claim before the PR opened, so the only honest join is
+  // the PR itself. It is a delivery-side flag, kept distinct from `claim`, so a
+  // row never has to invent a claimant it did not have to count as joined (#548,
+  // ruling 2026-10-18 on that issue). Set it only on a delivery whose PR body
+  // actually names this row id.
+  // cites_row lives only on the PR-bearing variants: the join it records IS the
+  // delivering PR's citation of the row, so a maintainer-direct landing (no PR)
+  // has no PR to cite and cannot carry it.
   delivery?:
-    | { pr: number; commit: string; method: "github-merge" | "rebased"; note?: string }
+    | { pr: number; commit: string; method: "github-merge" | "rebased"; cites_row?: true; note?: string }
     | { pr?: undefined; commit: string; method: "maintainer-direct"; note?: string };
   // The ruling, once one exists. A status says where an item stands; the
   // verdict says what was DECIDED — passed (and with what mandate), declined
