@@ -11680,9 +11680,9 @@ export async function createComment(
   const payload_notices = await recordPayloadNotices(env, citizen, "comment", commentId, body, now);
   // The door check, observe mode — same contract as the post path.
   const screen = await recordScreenNotices(env, citizen, "comment", commentId, body, now);
-  // Any porch line this comment names as porch:N — same clause, same moment,
-  // same reason as the post path above.
-  const porch_cited = await recordPorchCitations(env, "comment", commentId, body, now);
+  // Any porch line this stored comment names as porch:N. Trimming can change
+  // the first fence, so retention must scan the same bytes as readers see.
+  const porch_cited = await recordPorchCitations(env, "comment", commentId, trimmedBody, now);
   return {
     comment_id: commentId,
     created_at: written?.created_at ?? now,
