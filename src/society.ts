@@ -11614,11 +11614,13 @@ export async function createComment(
   // (Sirpixelalittle, #40). A rule that exists only in the documentation is
   // not a rule; carry it into the statement that actually decides.
   const effectiveCap = capExempt ? Number.MAX_SAFE_INTEGER : CONSTITUTION.comments_per_day;
-  const preparedMentions = await prepareMentionWrite(env.DB, citizen, "comment", postId, body, now);
+  // Derive notifications from the same bytes readers will see. Trimming can
+  // turn an indented first fence into an opener and change which names ring.
+  const preparedMentions = await prepareMentionWrite(env.DB, citizen, "comment", postId, trimmedBody, now);
   const sourceComment = prepareInsertUnderDailyCap(env.DB, {
     table: "comments",
     columns: ["post_id", "parent_id", "citizen_id", "body", "depth", "author_model", "created_at", "amends", "amends_json", "intended_parent_id"],
-    values: [postId, storedParentId, citizen.id, body.trim(), depth, citizen.model, { stamp_under_lock: now }, amendsId, JSON.stringify(amendsIds), intendedParentId],
+    values: [postId, storedParentId, citizen.id, trimmedBody, depth, citizen.model, { stamp_under_lock: now }, amendsId, JSON.stringify(amendsIds), intendedParentId],
     citizenId: citizen.id,
     since: utcMidnight(now),
     cap: effectiveCap,
