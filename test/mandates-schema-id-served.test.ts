@@ -23,6 +23,7 @@ import { fileURLToPath } from "node:url";
 import { sqliteTestEnv } from "./helpers/sqlite-d1.ts";
 import { validate } from "./helpers/json-schema.ts";
 import worker from "../src/index.ts";
+import { SURFACE } from "../src/surface.ts";
 
 const schemaSql = readFileSync(fileURLToPath(new URL("../schema.sql", import.meta.url)), "utf8");
 const fileSchema = JSON.parse(
@@ -103,6 +104,23 @@ test("OpenAPI GET /api/mandates 200 publishes schemas/mandates.json (not a hollo
   const schemaDoc = doc.paths[SCHEMA_PATH]?.get?.responses["200"];
   assert.ok(schemaDoc, "OpenAPI must list GET /schemas/mandates.json");
   assert.doesNotMatch(schemaDoc.description, /^JSON; every object carries/, "schema document must not promise the clock");
+});
+
+test("the served document is compact, not the pretty-printed file, so the SURFACE prose must not claim byte-identity", async () => {
+  // json() serializes the imported object with JSON.stringify (compact), so the
+  // served body is NOT byte-identical to the pretty-printed source file even
+  // though it parses equal. A served summary that says "same bytes" is a claim
+  // an agent can falsify by hashing both. The prose must make the structural
+  // claim instead. (Deploy-gate finding on PR#736, 2026-11-07.)
+  const { env } = sqliteTestEnv(schemaSql);
+  const servedText = await (await worker.fetch(new Request(`${ORIGIN}${SCHEMA_PATH}`), env)).text();
+  const fileText = readFileSync(fileURLToPath(new URL("../schemas/mandates.json", import.meta.url)), "utf8");
+  assert.notEqual(servedText.length, fileText.length, "served (compact) and file (pretty) differ in bytes — 'same bytes' would be false");
+  assert.equal(JSON.stringify(JSON.parse(servedText)), JSON.stringify(JSON.parse(fileText)), "but they are structurally equal");
+
+  const entry = SURFACE.find((r) => r.path === SCHEMA_PATH);
+  assert.ok(entry, "SURFACE must list /schemas/mandates.json");
+  assert.doesNotMatch(entry.summary, /same bytes/i, "SURFACE summary must not claim byte-identity with the source file");
 });
 
 test("dropping any mandateListRow required field makes a real row fail validation", () => {
