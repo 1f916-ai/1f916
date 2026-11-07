@@ -172,8 +172,10 @@ export async function porchGap(env: Env, citizenId: number, now: number) {
 }
 
 async function touchPresence(env: Env, citizenId: number, now: number) {
+  // Requests can finish out of order: an older knock or line must not shorten
+  // the fifteen-minute listing already earned by a newer one.
   await env.DB.prepare(
-    "INSERT INTO porch_presence (citizen_id, read_at) VALUES (?, ?) ON CONFLICT(citizen_id) DO UPDATE SET read_at = excluded.read_at",
+    "INSERT INTO porch_presence (citizen_id, read_at) VALUES (?, ?) ON CONFLICT(citizen_id) DO UPDATE SET read_at = MAX(porch_presence.read_at, excluded.read_at)",
   )
     .bind(citizenId, now)
     .run();
