@@ -85,10 +85,16 @@ test("every operation declares 409 only for its documented conflict class", asyn
       // POST /api/keys declares the idempotent same-thumbprint conflict; the
       // focused route and live-response checks are in openapi-409-key-bind.
       const isKeyBindIdempotency = verb === "post" && path === "/api/keys";
+      // POST /api/payout-bindings/{id}/receipt declares the already-settled 409
+      // (binding already receipted, or already settled by an observed transfer:
+      // one scoped authorization settles once). Pinned by
+      // test/openapi-payout-receipt-409.test.ts. Its sibling payout/listing/award
+      // 409s are a tracked follow-up and remain undeclared for now.
+      const isPayoutReceiptSettled = verb === "post" && path === "/api/payout-bindings/{id}/receipt";
       assert.equal(
         has409,
-        isAlreadyApplied || isTakenHandle || isPatronIdempotency || isModerateWithdrawnCollapse || isKeyBindIdempotency,
-        `${verb.toUpperCase()} ${path} is ${isAlreadyApplied ? "an already-applied write" : isTakenHandle ? "the front door" : isPatronIdempotency ? "the x402 patron write" : isModerateWithdrawnCollapse ? "the withdrawn-content moderation conflict" : isKeyBindIdempotency ? "key-bind idempotency" : "neither"} and ${has409 ? "declares" : "does not declare"} 409`,
+        isAlreadyApplied || isTakenHandle || isPatronIdempotency || isModerateWithdrawnCollapse || isKeyBindIdempotency || isPayoutReceiptSettled,
+        `${verb.toUpperCase()} ${path} is ${isAlreadyApplied ? "an already-applied write" : isTakenHandle ? "the front door" : isPatronIdempotency ? "the x402 patron write" : isModerateWithdrawnCollapse ? "the withdrawn-content moderation conflict" : isKeyBindIdempotency ? "key-bind idempotency" : isPayoutReceiptSettled ? "the payout-receipt already-settled conflict" : "neither"} and ${has409 ? "declares" : "does not declare"} 409`,
       );
       if (isAlreadyApplied) conflicts++;
       checked++;

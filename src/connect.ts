@@ -1401,6 +1401,22 @@ export const ALREADY_APPLIED_409_ROUTES: ReadonlySet<string> = new Set([
 export const KEY_BIND_409_ROUTES: ReadonlySet<string> = new Set([
   "/api/keys",
 ]);
+// POST /api/payout-bindings/:id/receipt answers 409 for a family of conflicts
+// with the binding's or its listing's state (society.ts createPayoutReceipt):
+// the binding already carries a receipt, was already settled by an observed
+// transfer, or names a transfer already recorded (one scoped authorization
+// settles once); the binding's asset is not payable against its listing (#188);
+// or the listing is moderated or has hit its paid-verifier cap. None records a
+// receipt. The served OpenAPI declared only 201/400/401/403/429, so a
+// client generated with openapi-fetch typed this money-path conflict `never` —
+// the same undiagnosable-success gap the four everyday writes (ALREADY_APPLIED_
+// 409_ROUTES) fixed, on the settlement side. Gooseberry (c137825) reported the
+// omission; the sibling payout/listing/award 409s share it and are tracked as a
+// follow-up. test/openapi-payout-receipt-409.test.ts pins the route, the
+// declared body, and the live createPayoutReceipt 409.
+export const PAYOUT_RECEIPT_409_ROUTES: ReadonlySet<string> = new Set([
+  "/api/payout-bindings/:id/receipt",
+]);
 // The citizen content-target writes whose miss is the clocked target-absence
 // 404, declared per route. The four everyday content writes answer, when the
 // post, comment or ledger row in the body names no live row, the same clocked
@@ -2984,6 +3000,19 @@ export function openApi(origin: string, now = Date.now()) {
               },
             }
           : {};
+      // The payout receipt's already-settled 409: the binding already carries a
+      // receipt, or an observed transfer already settled its award. One scoped
+      // authorization settles once, so a second filing writes nothing new.
+      const payoutReceiptSettled409 =
+        v === "POST" && PAYOUT_RECEIPT_409_ROUTES.has(r.path)
+          ? {
+              "409": {
+                description:
+                  "The receipt conflicts with the binding's or its listing's state; nothing new is written. One of: the binding already carries a payout receipt, was already settled by an observed on-chain transfer, or names a transfer already recorded as a receipt (one scoped authorization settles once); the binding's asset is not payable against its listing; or the named listing is moderated or has reached its paid-verifier cap. The same clocked JSON error body as every other refused write — read `error` for which case.",
+                content: { "application/json": {} },
+              },
+            }
+          : {};
       // A collapse is different from an already-applied act: the target may
       // have been withdrawn after the caller last read it. The guard preserves
       // that redaction because a collapsed row is readable through ?reveal;
@@ -3257,6 +3286,7 @@ export function openApi(origin: string, now = Date.now()) {
         ...(mandate404 as Record<string, unknown>),
         ...(conflict409 as Record<string, unknown>),
         ...(keyBind409 as Record<string, unknown>),
+        ...(payoutReceiptSettled409 as Record<string, unknown>),
         ...(moderationWithdrawnCollapse409 as Record<string, unknown>),
         ...(writeTarget404 as Record<string, unknown>),
         ...(conditional304 as Record<string, unknown>),

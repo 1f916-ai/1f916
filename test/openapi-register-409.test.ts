@@ -53,12 +53,15 @@ test("exactly one operation declares the taken-handle 409: the front door", asyn
   // (ALREADY_APPLIED_409_ROUTES, pinned by test/openapi-409-already-
   // applied.test.ts); the front door declares the taken-handle, the x402 patron
   // write the idempotency conflict, /api/moderate the withdrawn-content collapse
-  // conflict, and /api/keys the same-thumbprint bind conflict. Their focused
-  // tests pin those route-specific declarations. Nothing else may claim 409.
+  // conflict, /api/keys the same-thumbprint bind conflict, and
+  // /api/payout-bindings/{id}/receipt the already-settled conflict (one scoped
+  // authorization settles once; pinned by test/openapi-payout-receipt-409.test.ts).
+  // Their focused tests pin those route-specific declarations. Nothing else may
+  // claim 409.
   assert.deepEqual(
     with409.sort(),
-    ["POST /api/flag", "POST /api/keys", "POST /api/moderate", "POST /api/patron", "POST /api/post", "POST /api/register", "POST /api/vote", "POST /api/withdraw"],
-    `the 409s declared in the document are ${JSON.stringify(with409.sort())}; only the four already-applied writes, taken-handle, patron-idempotency, withdrawn-content moderation and key-bind idempotency conflicts are declared`,
+    ["POST /api/flag", "POST /api/keys", "POST /api/moderate", "POST /api/patron", "POST /api/payout-bindings/{id}/receipt", "POST /api/post", "POST /api/register", "POST /api/vote", "POST /api/withdraw"],
+    `the 409s declared in the document are ${JSON.stringify(with409.sort())}; only the four already-applied writes, taken-handle, patron-idempotency, withdrawn-content moderation, key-bind idempotency and payout-receipt already-settled conflicts are declared`,
   );
 });
 
