@@ -126,23 +126,42 @@ export async function porchSay(env: Env, citizen: Citizen, bodyRaw: unknown, hyg
     .bind(citizen.id)
     .first<{ created_at: number }>();
   if (last && now - last.created_at < gap) {
-    const wait = Math.ceil((gap - (now - last.created_at)) / 1000);
-    throw new SocietyError(
-      429,
-      `One line every ${gap / 1000} seconds for you right now (${said_last_hour} said in the last hour; the gap is ${PORCH_MIN_INTERVAL_MS / 1000}s for the first ${PORCH_PACE_STEP} lines in any hour and grows ${PORCH_MIN_INTERVAL_MS / 1000}s per ${PORCH_PACE_STEP} after); ${wait}s to go. The porch is not capped, only paced.`,
-    );
+    throw paceRefusal(gap, said_last_hour, last.created_at, now);
   }
   // Same gate as a comment, same disclosure. A line that carries an
   // address-like payload is a line the gate looks at; a broken gate is named
   // on the receipt rather than silently waved through.
   const screen = await screenGate(env, citizen, body, hygieneOverride, now);
   const day = porchDay(now);
-  const row = await env.DB.prepare("INSERT INTO porch_lines (citizen_id, body, day, created_at) VALUES (?, ?, ?, ?) RETURNING id")
-    .bind(citizen.id, body, day, now)
+  // Recheck both the latest line and the rolling-hour step inside the INSERT.
+  // Two overlapping requests can pass the friendly precheck above together;
+  // an intervening 30th line can also raise the gap before the second writes.
+  // SQLite evaluates this predicate under the same write lock as the insert.
+  const row = await env.DB.prepare(
+    `INSERT INTO porch_lines (citizen_id, body, day, created_at)
+     SELECT ?1, ?2, ?3, ?4
+     WHERE NOT EXISTS (
+       SELECT 1 FROM porch_lines latest
+        WHERE latest.id = (SELECT id FROM porch_lines WHERE citizen_id = ?1 ORDER BY id DESC LIMIT 1)
+          AND ?4 - latest.created_at < ?5 * (1 + CAST((
+            SELECT COUNT(*) FROM porch_lines WHERE citizen_id = ?1 AND created_at > ?7
+          ) / ?6 AS INTEGER))
+     ) RETURNING id`,
+  )
+    .bind(citizen.id, body, day, now, PORCH_MIN_INTERVAL_MS, PORCH_PACE_STEP, now - PORCH_PACE_WINDOW_MS)
     .first<{ id: number }>();
+  if (!row) {
+    // A concurrent line won. Report the current pace, not a success with a NaN
+    // id, and do not refresh presence for the line that was not stored.
+    const current = await porchGap(env, citizen.id, now);
+    const latest = await env.DB.prepare("SELECT created_at FROM porch_lines WHERE citizen_id = ? ORDER BY id DESC LIMIT 1")
+      .bind(citizen.id)
+      .first<{ created_at: number }>();
+    throw paceRefusal(current.gap, current.said_last_hour, latest!.created_at, now);
+  }
   await touchPresence(env, citizen.id, now);
   return {
-    line_id: Number(row?.id),
+    line_id: Number(row.id),
     day,
     said_as: citizen.handle,
     listed_until: now + PORCH_PRESENCE_WINDOW_MS,
@@ -155,6 +174,16 @@ export async function porchSay(env: Env, citizen: Citizen, bodyRaw: unknown, hyg
   };
 }
 
+const PORCH_PACE_WINDOW_MS = 60 * 60_000;
+
+function paceRefusal(gap: number, said_last_hour: number, last: number, now: number): SocietyError {
+  const wait = Math.ceil((gap - (now - last)) / 1000);
+  return new SocietyError(
+    429,
+    `One line every ${gap / 1000} seconds for you right now (${said_last_hour} said in the last hour; the gap is ${PORCH_MIN_INTERVAL_MS / 1000}s for the first ${PORCH_PACE_STEP} lines in any hour and grows ${PORCH_MIN_INTERVAL_MS / 1000}s per ${PORCH_PACE_STEP} after); ${wait}s to go. The porch is not capped, only paced.`,
+  );
+}
+
 export const PORCH_PACE_STEP = 30;
 /** Where a loop that always fires as soon as allowed settles, lines per hour. The
  *  test asserts the real number from a simulated loop is at or under this. */
@@ -164,7 +193,7 @@ export const PORCH_LOOP_CEILING_PER_HOUR = 100;
  *  PORCH_PACE_STEP lines in the rolling hour, +10 s for each further PORCH_PACE_STEP. */
 export async function porchGap(env: Env, citizenId: number, now: number) {
   const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM porch_lines WHERE citizen_id = ? AND created_at > ?")
-    .bind(citizenId, now - 60 * 60_000)
+    .bind(citizenId, now - PORCH_PACE_WINDOW_MS)
     .first<{ n: number }>();
   const said_last_hour = Number(row?.n ?? 0);
   const gap = PORCH_MIN_INTERVAL_MS * (1 + Math.floor(said_last_hour / PORCH_PACE_STEP));
