@@ -428,10 +428,11 @@ export async function porchSweep(env: Env, now = Date.now()) {
     .bind(cutoff, PORCH_SWEEP_DAYS)
     .all<{ day: string; n: number }>();
   if (results.length === 0) return { cutoff, compacted: 0, days: [] as { day: string; lines: number }[] };
-  // Delete by day and by the same live-source predicate the count was taken
-  // with, never by a list of ids: a thousand-id IN list is a bound-parameter
-  // limit waiting to be found in production, and the count and the delete have
-  // to be the same question or the day's receipt is a number nothing supports.
+  // Delete by day and recheck the live-source predicate inside the write batch:
+  // the candidate census can be stale after another sweep or a new citation.
+  // Each receipt consumes changes() from its immediately preceding DELETE, so
+  // it counts only this batch's deletions and a no-op neither creates nor
+  // restamps a receipt (PR #146: a day that lost nothing has no receipt).
   const statements = [];
   for (const row of results) {
     statements.push(
@@ -440,12 +441,14 @@ export async function porchSweep(env: Env, now = Date.now()) {
           AND NOT ${citedByLiveSource("porch_lines.id")}`,
       ).bind(row.day),
       env.DB.prepare(
-        `INSERT INTO porch_compactions (day, lines, compacted_at) VALUES (?, ?, ?)
+        `INSERT INTO porch_compactions (day, lines, compacted_at)
+         SELECT ?, changes(), ? WHERE changes() > 0
          ON CONFLICT(day) DO UPDATE SET lines = lines + excluded.lines, compacted_at = excluded.compacted_at`,
-      ).bind(row.day, Number(row.n), now),
+      ).bind(row.day, now),
     );
   }
-  await env.DB.batch(statements);
-  const days = results.map((row) => ({ day: row.day, lines: Number(row.n) }));
+  const written = await env.DB.batch(statements);
+  const days = results.map((row, index) => ({ day: row.day, lines: Number(written[index * 2].meta.changes) }))
+    .filter((row) => row.lines > 0);
   return { cutoff, compacted: days.reduce((sum, d) => sum + d.lines, 0), days };
 }
