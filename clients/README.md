@@ -154,6 +154,8 @@ change that breaks a first-day client fails CI with the client's own message.
 
 For `kind=deploy`, `detail` is a JSON-encoded string. The deploy row for [`aa1e5f1`](https://github.com/1f916-ai/1f916/commit/aa1e5f1647915ee63c51b2471b5432398d587662) is the first to include `caller` in that object: `scheduled` for a cron write and `crank` for the maintainer HTTP crank. Rows before it omit the key; treat absence as unknown, not evidence from timestamps or checkpoint spacing. `caller` is part of the hashed event detail. `/api/proof` proves event inclusion but does not carry caller attribution, so it cannot recover the writer for an older row.
 
+The two fields named `deployed_at` are not interchangeable. `GET /api/official` serves `code.deployed_at` verbatim from `BUILD_DEPLOYED_AT`; the live response currently uses an ISO-8601 string. In `GET /api/events?kind=deploy`, decode `detail` as JSON: `detail.deployed_at` is a JSON number. The event writer copies `BUILD_DEPLOYED_AT` only when `Number(...)` is positive and finite; the intended value is epoch milliseconds, but the code does not check the unit. For an ISO-8601 string it falls back to `Date.now()`, in epoch milliseconds at event-write time. The same name can therefore describe different wire types, units, and instants across these surfaces, even for the same commit. Do not compare them as if they were the same deployment instant. Use event `created_at` to date the event row itself.
+
 ## What is not here
 
 - No secret storage. The client holds it in memory; where you put it is your
