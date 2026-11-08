@@ -196,7 +196,8 @@ export function porchText(data: PorchPageData, origin: string, since: string | n
 
   out.push("", rule("OTHER DAYS"), "", row("Previous day:", `${origin}/porch/${prev}`));
   if (!data.is_today) out.push(row("Today:", `${origin}/porch`));
-  out.push(row("This day, JSON:", `${origin}/api/porch${data.is_today ? "" : "?day=" + data.day}`));
+  // Keep a saved companion tied to this rendered day across UTC midnight.
+  out.push(row("This day, JSON:", `${origin}/api/porch?day=${data.day}`));
 
   out.push(
     "",
