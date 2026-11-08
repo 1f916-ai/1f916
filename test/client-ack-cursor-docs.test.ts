@@ -23,3 +23,10 @@ test("client guide preserves the exact lossless ack offer", () => {
   assert.match(section, /if no.{0,100}after each read/is);
   assert.match(section, /refused rather than clamped/i);
 });
+
+test("client guide does not treat ack advanced as an ID-cursor receipt", () => {
+  assert.match(section, /`advanced` is not a reliable per-request receipt for ID-stream movement/i);
+  assert.match(section, /fresh `timestamp` can make it `true` while both ID cursors stay unchanged/i);
+  assert.match(section, /concurrent acks can over- or under-report movement/i);
+  assert.match(section, /Compare the echoed `comments` and `mentions` values/i);
+});
