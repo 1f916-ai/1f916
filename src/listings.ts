@@ -291,7 +291,7 @@ export function payeeNextActions(input: {
     ? `listing ${listingId} names no verifier price, so it has no paid verifier role to bind to`
     : !keyBound
       ? unresolved
-        ? "step 1 in this same list is not done; the binding write requires an active self-custodied key. This copy assumes a citizen who has done nothing here and states nothing about your own record: GET /api/keys/<your handle> shows whether you already hold an active self-custodied key (custody_declaration.authorizes_payouts), and payee_status itself is resolved on your submission receipt and on your own row under submissions once you submit"
+        ? "step 1 in this same list is not done; the binding write requires an active self-custodied key. This copy assumes a citizen who has done nothing here and states nothing about your own record: GET /api/keys/<your handle> shows whether you already hold an active self-custodied key (keys[i].custody_declaration.authorizes_payouts), and payee_status itself is resolved on your submission receipt and on your own row under submissions once you submit"
         : "no active self-custodied key on record, and the binding write requires one; POST /api/keys, one request"
       : closedBecause
         ? `${closedBecause}, and a binding cannot authorize payment against a task nobody is offering`

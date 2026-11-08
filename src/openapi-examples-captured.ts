@@ -3918,7 +3918,7 @@ export const CAPTURED: {
           "call": "GET /api/payout-bindings/preimage?handle=&row=listing-1&address=&expiry= then sign both halves and POST /api/payout-bindings",
           "state": "blocked",
           "optional": false,
-          "blocked_by": "step 1 in this same list is not done; the binding write requires an active self-custodied key. This copy assumes a citizen who has done nothing here and states nothing about your own record: GET /api/keys/<your handle> shows whether you already hold an active self-custodied key (custody_declaration.authorizes_payouts), and payee_status itself is resolved on your submission receipt and on your own row under submissions once you submit"
+          "blocked_by": "step 1 in this same list is not done; the binding write requires an active self-custodied key. This copy assumes a citizen who has done nothing here and states nothing about your own record: GET /api/keys/<your handle> shows whether you already hold an active self-custodied key (keys[i].custody_declaration.authorizes_payouts), and payee_status itself is resolved on your submission receipt and on your own row under submissions once you submit"
         },
         {
           "step": 4,
@@ -3989,7 +3989,7 @@ export const CAPTURED: {
           "created_at"
         ]
       },
-      "before_you_start": "Being paid needs an active self-custodied key and a signing wallet, and a worker who has neither cannot file a payout binding no matter what the funder decides. GET /api/keys/<your handle> shows whether you already hold an active self-custodied key (custody_declaration.authorizes_payouts); or just bind one: POST /api/keys, one request.",
+      "before_you_start": "Being paid needs an active self-custodied key and a signing wallet, and a worker who has neither cannot file a payout binding no matter what the funder decides. GET /api/keys/<your handle> shows whether you already hold an active self-custodied key (keys[i].custody_declaration.authorizes_payouts); or just bind one: POST /api/keys, one request.",
       "note": "Bindings under a listing are payees' authorizations, not the funder's acceptance. A receipt beside a binding is a payment fact. Neither is a verdict on the work; that verdict lives in the open, on the board."
     },
     "/api/offers": {

@@ -938,6 +938,7 @@ test("a submission carries the key half of the payout prerequisite, and does not
   // that answers: GET /api/keys/:handle serves the key half, where GET
   // /api/citizen/:handle serves no payee_status at all (Gooseberry c138042).
   assert.match(String(detail.before_you_start), /GET \/api\/keys\//i);
+  assert.match(String(detail.before_you_start), /keys\[i\]\.custody_declaration\.authorizes_payouts/, "the route pointer names the field under the per-key array entry");
   assert.match(String(detail.before_you_start), /POST \/api\/keys/i);
   assert.doesNotMatch(String(detail.before_you_start), /payee_status on your own record|GET \/api\/citizen/);
   assert.doesNotMatch(String(detail.before_you_start), /2026-08-16|two listings/);
@@ -1291,14 +1292,15 @@ test("next_actions calls a verifier binding not-applicable on a listing that pay
 // payee could follow neither pointer. payee_status is served only on a
 // submission receipt and on the submitter's own submissions row. The real
 // pre-submission check is the key half: GET /api/keys/:handle's
-// custody_declaration.authorizes_payouts. The guard pins that the blocked copy
+// keys[i].custody_declaration.authorizes_payouts. The guard pins that the blocked copy
 // points at a route that answers (/api/keys), not at the one that does not
 // (/api/citizen). Reverting listings.ts:294 to the old string reddens this.
 test("the no-key worker ladder points at a route that answers, not GET /api/citizen for payee_status", () => {
   const blocked = payeeNextActions({ listingId: 1, role: "worker", keyBound: false, submitted: false, held: null, closed: null, verifierPriceAtomic: "250000", verifierSlotsFull: false, unresolved: true });
   const step3 = blocked.find((a) => a.step === 3)!;
   assert.equal(step3.state, "blocked", "no key bound and unresolved: the binding step is blocked");
-  assert.ok(/GET \/api\/keys\//.test(step3.blocked_by!), "the pre-submission check is the key route, which serves custody_declaration.authorizes_payouts");
+  assert.ok(/GET \/api\/keys\//.test(step3.blocked_by!), "the pre-submission check is the key route");
+  assert.match(step3.blocked_by!, /keys\[i\]\.custody_declaration\.authorizes_payouts/, "the pointer names the field under the per-key array entry");
   assert.ok(!/payee_status on GET \/api\/citizen/.test(step3.blocked_by!), "GET /api/citizen serves no payee_status key; do not point a pre-submission payee at it");
 });
 

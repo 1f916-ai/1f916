@@ -22,5 +22,6 @@ test("client docs distinguish the served payee_status path from the citizen rout
   // GET /api/keys/:handle; the doc must describe the route that answers, not the
   // old citizen-route pointer that never carried payee_status.
   assert.ok(section.includes("points a pre-submission payee at `GET /api/keys/:handle`"), "doc must name the route that now answers");
+  assert.ok(section.includes("keys[i].custody_declaration.authorizes_payouts"), "doc must name the nested per-key custody field");
   assert.ok(!/may still direct a pre-submission payee to read `payee_status` on that citizen route/.test(section), "the stale citizen-route pointer claim must not return");
 });
