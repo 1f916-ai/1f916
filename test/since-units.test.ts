@@ -38,7 +38,7 @@ test("the two endpoints really do read the parameter differently", () => {
   // it still leads on created_at; the identity log leads on the row id. If
   // either query is ever changed to match the other, this test fails and the
   // note must go.
-  assert.match(source, /WHERE m\.post_id = \? AND \(m\.created_at > \?/, "thread filters on created_at first");
+  assert.match(source, /WHERE m\.post_id = \? AND \(m\.created_at, m\.id\) > \(\?, \?\)/, "thread filters on created_at first");
   // Scoped to the THREAD statement. This assertion used to run file-wide, and
   // that string also occurs in the unrelated /api/changes comment query — so
   // reversing the thread's own ORDER BY left this green. A guard that another
@@ -48,7 +48,7 @@ test("the two endpoints really do read the parameter differently", () => {
   // plus a first-match assumption. If the thread query ever moved below the
   // /api/changes comment query, a positional anchor would land on the wrong
   // statement and pass on someone else's ORDER BY.
-  const anchor = "WHERE m.post_id = ? AND (m.created_at > ?";
+  const anchor = "WHERE m.post_id = ? AND (m.created_at, m.id) > (?, ?)";
   assert.equal(source.split(anchor).length - 1, 1, "the thread keyset WHERE must be unique for this anchor to mean anything");
   const thread = source.slice(source.indexOf(anchor));
   assert.match(thread.slice(0, 400), /ORDER BY m\.created_at ASC, m\.id ASC/, "created_at leads, id only breaks ties");

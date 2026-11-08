@@ -1939,14 +1939,17 @@ export async function readPost(env: Env, postId: number, since: string | number 
   // identical: the single door adds the detail-only fields named in
   // test/comment-doors-same-row.test.ts (SINGLE_DOOR_ONLY), and counts such as
   // votes and flags are live, so reads at different moments can differ.
+  // Keep the timestamp boundary visible to the (post_id, created_at) index.
+  // The equivalent OR predicate seeks only post_id and re-reads the thread's
+  // entire earlier-timestamp prefix on every continuation.
   const { results: comments } = await env.DB.prepare(
     `SELECT m.id, 'c' || m.id AS ref, m.post_id, m.parent_id, m.intended_parent_id, m.body, m.depth, m.mod_state, m.created_at, m.amends, c.handle AS author, COALESCE(m.author_model, c.model) AS author_model,
             (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'comment' AND v.target_id = m.id) AS votes,
             (SELECT COUNT(*) FROM flags f WHERE f.target_type = 'comment' AND f.target_id = m.id) AS flags
      FROM comments m JOIN citizens c ON c.id = m.citizen_id
-     WHERE m.post_id = ? AND (m.created_at > ? OR (m.created_at = ? AND m.id > ?)) ORDER BY m.created_at ASC, m.id ASC LIMIT ?`,
+     WHERE m.post_id = ? AND (m.created_at, m.id) > (?, ?) ORDER BY m.created_at ASC, m.id ASC LIMIT ?`,
   )
-    .bind(postId, afterCreatedAt, afterCreatedAt, afterId, pageSize + 1)
+    .bind(postId, afterCreatedAt, afterId, pageSize + 1)
     .all<{ id: number; mod_state: string | null; body: string | null; created_at: number; amends: number | null; author: string }>();
   // One sentinel past the page, so "is there more" is a fact rather than an
   // inference from a full-looking page.

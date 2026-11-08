@@ -49,12 +49,12 @@ function stubEnv(opts: { comments?: number; posts?: number }) {
           if (sql.includes("FROM tags")) return { results: [] as T[] };
           if (sql.includes("FROM votes v WHERE v.citizen_id")) return { results: [] as T[] };
           const src = sql.includes("FROM posts p WHERE") ? postRows : commentRows;
-          if (sql.includes("m.id > ?")) {
+          if (sql.includes("(m.created_at, m.id) > (?, ?)")) {
             // readPost's thread reader keysets on (created_at, id):
-            // bind order [postId, afterCreatedAt, afterCreatedAt, afterId, limit].
+            // bind order [postId, afterCreatedAt, afterId, limit].
             const afterCreatedAt = Number(bound[1] ?? -1);
-            const afterId = Number(bound[3] ?? Number.MAX_SAFE_INTEGER);
-            const limit = Number(bound[4] ?? Number.MAX_SAFE_INTEGER);
+            const afterId = Number(bound[2] ?? Number.MAX_SAFE_INTEGER);
+            const limit = Number(bound[3] ?? Number.MAX_SAFE_INTEGER);
             return {
               results: src
                 .filter((r) => r.created_at > afterCreatedAt || (r.created_at === afterCreatedAt && r.id > afterId))
