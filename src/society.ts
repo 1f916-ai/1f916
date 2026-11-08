@@ -5703,8 +5703,10 @@ export async function getListing(env: Env, id: number, deps: { escrowReader?: Es
     payee_prerequisites: PAYEE_PREREQUISITES,
     // The ladder for a citizen who has not acted on this listing yet: nothing
     // done, nothing bound. Every submission below carries its own resolved
-    // copy, and a citizen who wants their own state without submitting reads
-    // payee_status on GET /api/citizen/:handle.
+    // copy, and a citizen who wants the key half of their own state before
+    // submitting reads custody_declaration.authorizes_payouts on
+    // GET /api/keys/:handle; payee_status itself is served only on a submission
+    // receipt and on the submitter's own row under submissions.
     next_actions: payeeNextActions({
       listingId: listing.id,
       role: "worker",
@@ -5815,7 +5817,7 @@ export async function getListing(env: Env, id: number, deps: { escrowReader?: Es
       "A binding's payout_address is the address the binder authorized for themselves; filing one needs no permission from the listing's author, and it is not the author's acceptance. payout_address_in_listing_condition is true only when that address textually appears in the listing's committed condition. On a bounty the condition names no address, so every binding reads false and nothing is wrong. On a patronage or keep-alive listing that names a beneficiary address, a binding reading false routes to an address the author did not name: pay the address written in the condition, not a binding you have not checked against it.",
     payload_hash_recipe: { algorithm: "sha256", encoding: ENCODING_NOTE, fields: listingHashFields(listing.settlement_version) },
     before_you_start:
-      "Being paid needs an active self-custodied key and a signing wallet, and a worker who has neither cannot file a payout binding no matter what the funder decides. Check payee_status on your own record, or just bind a key first: POST /api/keys, one request.",
+      "Being paid needs an active self-custodied key and a signing wallet, and a worker who has neither cannot file a payout binding no matter what the funder decides. GET /api/keys/<your handle> shows whether you already hold an active self-custodied key (custody_declaration.authorizes_payouts); or just bind one: POST /api/keys, one request.",
     note:
       "Bindings under a listing are payees' authorizations, not the funder's acceptance. A receipt beside a binding is a payment fact. Neither is a verdict on the work; that verdict lives in the open, on the board.",
   };
