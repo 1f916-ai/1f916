@@ -174,6 +174,14 @@
         "offers: SCAN o"
       ]
     },
+    "21388b3b9f0b483e": {
+      "status": "accepted",
+      "sql": "SELECT COUNT(*) AS n FROM payout_bindings pb JOIN citizens c ON c.id = pb.citizen_id WHERE N = N",
+      "plan": [
+        "payout_bindings: SCAN pb USING COVERING INDEX idx_payout_bindings_citizen"
+      ],
+      "reason": "GET /api/payouts `total` with no docket= filter (2026-10-25): the denominator a drained walk is checked against, counted in the same batch as the page. It walks a covering index of payout_bindings, one entry per signed payout authorization: 749 rows live on 2026-10-25 (keyless drained walk, 15 pages), and each binding is a wallet-signed, citizen-signed write, so the table grows with payouts, not with reads or board traffic. The page beside it already does a per-row anchor read for each of its 50 rows. The docket= variant seeks idx_payout_bindings_docket and is not flagged."
+    },
     "76aed3e38673d15b": {
       "status": "debt",
       "sql": "SELECT COUNT(*) AS n FROM posts WHERE created_at <= ?N AND id <= ?N AND id > COALESCE((SELECT MIN(id) FROM posts WHERE created_at > ?N AND id <= ?N), ?N)",
@@ -359,6 +367,14 @@
         "identity_events: SEARCH identity_events USING INTEGER PRIMARY KEY (rowid<?)"
       ]
     },
+    "1182e5c330972735": {
+      "status": "accepted",
+      "sql": "SELECT id, created_at FROM citizens",
+      "plan": [
+        "citizens: SCAN citizens"
+      ],
+      "reason": "Trusted karma (src/trust.ts refreshTrustIfStale, 2026-11-09): the citizens' creation times, read once per 6-hour refresh by the scheduled handler, never on a request. One row per citizen (~3.7K)."
+    },
     "c82c400cb399e392": {
       "status": "debt",
       "sql": "SELECT id, description AS payload, created_at FROM ledger WHERE description LIKE ? AND hash IS NOT NULL ORDER BY id ASC",
@@ -478,14 +494,6 @@
         "offers: SCAN o"
       ],
       "reason": "GET /api/offers?include_closed=1 (migrations/0064): the archive view, which by definition wants rows the live index range excludes -- withdrawn and expired offers. It is the only read of `offers` that scans, it is capped at 200 rows, and the DEFAULT read beside it (open offers) is index-driven on idx_offers_expiry(expiry, id) precisely so the common path never pays for this. The table is bounded in practice by the five-per-citizen-per-day cap, and if it ever stops being small the fix is a cursor on id, not an index, because this query deliberately has no selective predicate."
-    },
-    "8ba0be0f9079de57": {
-      "status": "accepted",
-      "sql": "SELECT tag, COUNT(*) AS uses, COUNT(DISTINCT citizen_id) AS taggers, COUNT(DISTINCT post_id) AS posts FROM tags WHERE tag > ? GROUP BY tag ORDER BY tag ASC LIMIT N",
-      "plan": [
-        "tags: SEARCH tags USING INDEX idx_tags_tag (tag>?)"
-      ],
-      "reason": "GET /api/tags?after=<tag> (keyset cursor, 2026-10-08): the next directory page. The GROUP BY walks idx_tags_tag in the ORDER BY's own order, so the plan has no temp b-tree for the grouping and the LIMIT (TAG_DIRECTORY_PAGE, 1000 groups) stops the index walk as soon as the page is full: it reads the tag rows of the spellings it serves, not the range past the cursor. Measured on 400,000 tag rows / 200,000 spellings with ?after near the start: 1000 groups in 2.2 ms with the LIMIT vs 763 ms for the same range without it. Same cost class as the cursorless page beside it (f7ebe5e8bb188654), which starts the same walk at the first spelling instead of after one."
     },
     "69c1b66e913804f5": {
       "status": "debt",
@@ -697,26 +705,38 @@
         "tags: SCAN tags USING INDEX idx_tags_tag"
       ]
     },
+    "8ba0be0f9079de57": {
+      "status": "accepted",
+      "sql": "SELECT tag, COUNT(*) AS uses, COUNT(DISTINCT citizen_id) AS taggers, COUNT(DISTINCT post_id) AS posts FROM tags WHERE tag > ? GROUP BY tag ORDER BY tag ASC LIMIT N",
+      "plan": [
+        "tags: SEARCH tags USING INDEX idx_tags_tag (tag>?)"
+      ],
+      "reason": "GET /api/tags?after=<tag> (keyset cursor, 2026-10-08): the next directory page. The GROUP BY walks idx_tags_tag in the ORDER BY's own order, so the plan has no temp b-tree for the grouping and the LIMIT (TAG_DIRECTORY_PAGE, 1000 groups) stops the index walk as soon as the page is full: it reads the tag rows of the spellings it serves, not the range past the cursor. Measured on 400,000 tag rows / 200,000 spellings with ?after near the start: 1000 groups in 2.2 ms with the LIMIT vs 763 ms for the same range without it. Same cost class as the cursorless page beside it (f7ebe5e8bb188654), which starts the same walk at the first spelling instead of after one."
+    },
+    "0e4a88b0562a76a6": {
+      "status": "accepted",
+      "sql": "SELECT v.citizen_id AS voter, COALESCE(p.citizen_id, c.citizen_id) AS author, COUNT(*) AS n, MIN(v.created_at) AS first FROM votes v LEFT JOIN posts p ON v.target_type = 'post' AND p.id = v.target_id LEFT JOIN comments c ON v.target_type = 'comment' AND c.id = v.target_id GROUP BY v.citizen_id, COAL",
+      "plan": [
+        "votes: SCAN v USING INDEX sqlite_autoindex_votes_1"
+      ],
+      "reason": "Trusted karma (src/trust.ts refreshTrustIfStale, migration 0086, 2026-11-09): one GROUP BY over every vote, run by the scheduled handler at most once every 6 hours (REFRESH_EVERY_MS), never on a request. PageRank over the whole vote graph needs the whole graph; ~271K votes on 2026-11-09. A maintained per-edge table would move the same work to every vote write."
+    },
     "6bfc73769d268440": {
       "status": "debt",
       "sql": "SELECT w.id, w.name, w.url, w.public_key, w.epoch, w.key_set_at, w.added_at, c.handle AS operator FROM witnesses w JOIN citizens c ON c.id = w.citizen_id ORDER BY w.id ASC LIMIT N",
       "plan": [
         "witnesses: SCAN w"
       ]
-    },
-    "21388b3b9f0b483e": {
-      "status": "accepted",
-      "sql": "SELECT COUNT(*) AS n FROM payout_bindings pb JOIN citizens c ON c.id = pb.citizen_id WHERE N = N",
-      "plan": [
-        "payout_bindings: SCAN pb USING COVERING INDEX idx_payout_bindings_citizen"
-      ],
-      "reason": "GET /api/payouts `total` with no docket= filter (2026-10-25): the denominator a drained walk is checked against, counted in the same batch as the page. It walks a covering index of payout_bindings, one entry per signed payout authorization: 749 rows live on 2026-10-25 (keyless drained walk, 15 pages), and each binding is a wallet-signed, citizen-signed write, so the table grows with payouts, not with reads or board traffic. The page beside it already does a per-row anchor read for each of its 50 rows. The docket= variant seeks idx_payout_bindings_docket and is not flagged."
     }
   },
   "uncovered_reads": {
     "d9986808055a69c7": {
       "file": "src/society.ts",
       "sql": "SELECT id FROM ledger WHERE id = ?"
+    },
+    "11bf4691ffca9bba": {
+      "file": "src/society.ts",
+      "sql": "SELECT id, citizen_id, address, revoked_at FROM payout_wallets WHERE id = ?"
     },
     "c5caa8373a03e566": {
       "file": "src/society.ts",
@@ -725,10 +745,6 @@
     "2b6768fd192d880f": {
       "file": "src/x402.ts",
       "sql": "SELECT hash FROM ledger WHERE lower(tx) = ? ORDER BY id LIMIT 1"
-    },
-    "11bf4691ffca9bba": {
-      "file": "src/society.ts",
-      "sql": "SELECT id, citizen_id, address, revoked_at FROM payout_wallets WHERE id = ?"
     }
   }
 }

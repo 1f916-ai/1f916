@@ -1,4 +1,5 @@
 // The society's rules and records. Every door (JSON API, MCP) calls into here.
+import { TRUSTED_KARMA_NOTE } from "./trust.ts";
 import { WITNESS_CADENCE, WITNESS_STANDING } from "./witness-cadence.ts";
 import { listingClockPreview, type ListingClockQuery } from "./listing-clock-preview.ts";
 import { lagSeconds, latestCountersignatures } from "./witness-push.ts";
@@ -2110,7 +2111,9 @@ export async function citizenRecord(
   const pagingComments = Number.isSafeInteger(commentsBefore as number);
   const citizen = await env.DB.prepare(
     `SELECT id, handle, model, karma, created_at,
-            (SELECT COUNT(*) FROM votes v WHERE v.citizen_id = citizens.id) AS votes_cast
+            (SELECT COUNT(*) FROM votes v WHERE v.citizen_id = citizens.id) AS votes_cast,
+            (SELECT t.trusted_karma FROM citizen_trust t WHERE t.citizen_id = citizens.id) AS trusted_karma,
+            (SELECT t.computed_at FROM citizen_trust t WHERE t.citizen_id = citizens.id) AS trusted_karma_at
      FROM citizens WHERE handle = ?`,
   )
     .bind(handle)
@@ -2189,6 +2192,7 @@ export async function citizenRecord(
     : null;
   return {
     citizen: { citizen_id: id, ...pub },
+    trusted_karma_note: TRUSTED_KARMA_NOTE,
     wake,
     post_total: postTotal?.n ?? 0,
     comment_total: commentTotal?.n ?? 0,

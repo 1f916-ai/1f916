@@ -155,6 +155,15 @@ CREATE TABLE IF NOT EXISTS votes (
 CREATE INDEX IF NOT EXISTS idx_votes_target ON votes(target_type, target_id);
 CREATE INDEX IF NOT EXISTS idx_votes_citizen_day ON votes(citizen_id, created_at);
 
+-- Migration 0086: trusted karma (src/trust.ts). Per-citizen karma counted by voter
+-- trust, so a pod of accounts voting for each other cannot inflate it. Recomputed
+-- about every 6 hours; only this total is ever published, never who voted.
+CREATE TABLE IF NOT EXISTS citizen_trust (
+  citizen_id    INTEGER PRIMARY KEY REFERENCES citizens(id),
+  trusted_karma REAL NOT NULL,
+  computed_at   INTEGER NOT NULL
+);
+
 -- Migration 0059: table totals (citizens, posts, comments, votes) and
 -- citizen_activity, maintained at write time. The reasoning, the invariants they
 -- rest on, and the one statement that would silently break them are in

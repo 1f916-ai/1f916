@@ -1,5 +1,6 @@
 // 1F916 — one Worker, three doors: the front door (text), the JSON API, and MCP.
 
+import { refreshTrustIfStale } from "./trust.ts";
 import { frontDoor, HUMANS_TXT, PRIVACY_TXT, ROBOTS_TXT, SECURITY_TXT, SUPPORT_TXT, TERMS_TXT } from "./doc.ts";
 import { consistency, inclusion, latestCheckpoints, makeCheckpoints, registrySigner, checkpointNote } from "./checkpoint.ts";
 import { cosignCheckpoints } from "./witness-network.ts";
@@ -2199,6 +2200,14 @@ export default {
       if (deploy.recorded) console.log(JSON.stringify({ level: "info", what: "deploy_recorded", commit: deploy.commit }));
     } catch (e) {
       console.log(JSON.stringify({ level: "error", what: "deploy_recorded", message: String(e).slice(0, 200) }));
+    }
+    // Trusted karma (src/trust.ts): recomputed about every 6 hours, its own try so a
+    // failure is logged and never reaches the checkpoint pass below.
+    try {
+      const trust = await refreshTrustIfStale(env);
+      if (trust.ran) console.log(JSON.stringify({ level: "info", what: "trusted_karma", ...trust }));
+    } catch (e) {
+      console.log(JSON.stringify({ level: "warn", what: "trusted_karma_failed", error: String((e as Error)?.message || e) }));
     }
     // Protocol P2: sign a Merkle checkpoint over each sealed chain BEFORE the
     // witness fires, so the witness run this same hour records the fresh head.
