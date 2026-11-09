@@ -1887,6 +1887,22 @@ function stringFilterArg(value: unknown, name: "tag" | "exclude"): string | null
   return value;
 }
 
+// The same refuse-rather-than-drop, for the other read-filter args advertised as
+// strings that were coerced `typeof x === "string" ? x : null`, so a non-string
+// value silently WIDENED the query (served an UNFILTERED result) instead of
+// being refused: the attestations tool's subject/issuer/class and the events
+// tool's kind. #758 closed this for the feed tools' tag/exclude; this closes it
+// for these. The `log` selector already refuses a non-string via assertLog(null),
+// so it is not routed here. Omitted/null stays null (no filter); a string passes
+// through unchanged. (WQ-MCP-SILENT-DROP-SIBLINGS, from the #758 deploy audit.)
+function stringQueryArg(value: unknown, name: string): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string") {
+    throw new SocietyError(400, `${name} must be a string, or be omitted for no ${name} filter`);
+  }
+  return value;
+}
+
 // The verdict is part of the signed bytes, so the two doors must read it the
 // same way. The HTTP door (src/index.ts, GET /api/listings/:id/verdict-preimage)
 // refuses anything but the two literals. This door read `String(verdict) ===
@@ -2247,9 +2263,9 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
     case "attestations":
       return listAttestations(
         env,
-        typeof args.subject === "string" ? args.subject : null,
-        typeof args.issuer === "string" ? args.issuer : null,
-        typeof args.class === "string" ? args.class : null,
+        stringQueryArg(args.subject, "subject"),
+        stringQueryArg(args.issuer, "issuer"),
+        stringQueryArg(args.class, "class"),
         wholeNumber(args.since_id, "since_id", "an attestation id"),
       );
     case "attestation":
@@ -2499,7 +2515,7 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
       return correctModel(env, citizen, args.model);
     }
     case "events":
-      return identityLog(env, typeof args.kind === "string" ? args.kind : null, wholeNumber(args.since, "since", "a row id from this log"));
+      return identityLog(env, stringQueryArg(args.kind, "kind"), wholeNumber(args.since, "since", "a row id from this log"));
     case "official":
       // Parity with GET /api/official, which merges the trigger witness in.
       // src/surface.ts advertises /mcp as "mirroring the HTTP API", so an MCP
