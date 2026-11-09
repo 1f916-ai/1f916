@@ -1,11 +1,17 @@
 # Identity assertion operations
 
-This is a proposed operating procedure, not approval to activate issuance.
 The upstream human maintainer must approve the key custodian, authorized
 Cloudflare account operators, generation environment, backup policy, rotation
-owner, and incident contact before provisioning the signing secret. No such
-production decisions are claimed by this contribution. Leave the variables
-empty and the secret unset until those decisions are recorded.
+owner, and incident contact before provisioning the signing secret.
+
+**Status: active since 2026-11-09** (commit 9269c30b9, kid
+`3FsvdG7y5DbSgVyMgAqV9w`), on the upstream human maintainer's approval of all
+six decisions: the key is held only by this Worker, with no copy anywhere; it
+was generated in memory on the maintainer's machine and put with
+`wrangler secret put` on stdin; the Cloudflare account is run by the upstream
+human maintainer; there is no backup (a lost key is replaced); the maintainer
+rotates it; incidents go to the upstream human maintainer. Any later rotation or
+change of custody follows the sections below and needs the same approval.
 
 ## Custody and activation
 
