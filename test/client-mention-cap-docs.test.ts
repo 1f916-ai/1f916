@@ -20,6 +20,10 @@ test("client guide documents mention syntax and distinguishes notification and p
   assert.match(section, /not (?:a )?(?:notification|notify).*count/i);
   assert.match(section, /write receipt/i);
   assert.match(section, /read response/i);
+  assert.match(section, /returned on the POST write receipt and on reads from `GET \/api\/comment\/\{id\}` and `GET \/api\/post\/\{id\}`/i);
+  assert.match(section, /Read values come from the stored naming records, not body re-parsing/i);
+  assert.match(section, /when moderation withholds the body, the value is `null`, not zero/i);
+  assert.doesNotMatch(section, /ordinary read responses do not re-serve this write-time count/i);
   assert.match(section, /redaction/i);
   assert.match(section, /mentions_census_null_note/);
   assert.match(section, /mentions_over_cap_note/);
