@@ -44,7 +44,7 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["id", "source_posts", "decided_at", "claimed_at", "pr", "delivery_pr", "delivery_commit", "delivery_method", "delivered_by", "joined"],
+        "required": ["id", "source_posts", "decided_at", "claimed_at", "pr", "delivery_pr", "delivery_commit", "delivery_method", "delivered_by", "join_basis", "joined"],
         "additionalProperties": false,
         "properties": {
           "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
@@ -71,9 +71,13 @@
             "type": ["string", "null"],
             "description": "The citizen who delivered the landed change (the claim's author), or null when there is no delivery."
           },
+          "join_basis": {
+            "enum": ["claim", "delivery-citation", null],
+            "description": "How a joined row shows its join: claim = a public square claim pointer (claimed_at) beside the delivery; delivery-citation = no prior claim, the join is the delivering PR's own citation of the row. null when unjoined."
+          },
           "joined": {
             "type": "boolean",
-            "description": "True only when a source ask, public claim pointer, and explicit mainline delivery receipt are all present."
+            "description": "True only when a source ask and an explicit mainline delivery receipt are present AND a public join pointer exists: either a claim (join_basis=claim) or the delivering PR's own citation of the row (join_basis=delivery-citation)."
           }
         },
         "allOf": [
@@ -110,9 +114,10 @@
               "properties": { "joined": { "const": true } }
             },
             "then": {
+              "required": ["join_basis"],
               "properties": {
                 "source_posts": { "minItems": 1 },
-                "claimed_at": { "type": "integer", "minimum": 1 },
+                "join_basis": { "enum": ["claim", "delivery-citation"] },
                 "delivery_pr": { "type": "integer", "minimum": 1 },
                 "delivery_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
                 "delivery_method": { "enum": ["github-merge", "rebased"] }

@@ -21,3 +21,9 @@ test("identity-log client docs distinguish declared kinds from observed kinds", 
   assert.match(section, /syntactically valid.*HTTP 200/i);
   assert.match(section, /empty or malformed.*HTTP 400/i);
 });
+
+test("identity-log docs do not treat detail as a route-wide JSON contract", () => {
+  assert.match(section, /`detail` is an opaque per-kind string/i);
+  assert.match(section, /JSON object followed by trailing prose/i);
+  assert.match(section, /parse it only under a documented kind-specific contract/i);
+});

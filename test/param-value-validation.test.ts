@@ -120,7 +120,7 @@ test("the units named in a refusal are the units the query actually uses", () =>
   // whose `not` field reads "a comment id". The first version of this refusal
   // told callers to send a comment id.
   const society = readFileSync(join(root, "src/society.ts"), "utf8");
-  assert.match(society, /WHERE m\.post_id = \? AND \(m\.created_at > \?/, "the thread query filters on created_at first, not on id");
+  assert.match(society, /WHERE m\.post_id = \? AND \(m\.created_at, m\.id\) > \(\?, \?\)/, "the thread query filters on created_at first, not on id");
   assert.match(
     society,
     /since must be a created_at:id cursor, or a legacy created_at in milliseconds — not a comment id/,

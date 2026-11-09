@@ -30,10 +30,10 @@
 // This file keeps the declaration honest against the router in-process: every
 // everyday write declares a 409, the body is the JSON error object, and the
 // live router actually answers 409 with that clocked body on each of the four
-// writes. The single-route 409s beside that set are the front door's taken-
-// handle, the x402 patron idempotency, withdrawn-content moderation, and
-// key-bind idempotency. Other identity-key, witness, payout, listing, grant
-// and submission 409s remain outside these declarations.
+// writes. The separately pinned single-route conflicts include the front door's
+// taken-handle, x402 patron idempotency, withdrawn-content moderation, key-bind
+// idempotency, payout receipt, and award settlement. Other identity-key, witness,
+// payout, listing, grant and submission 409s remain outside these declarations.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -85,10 +85,15 @@ test("every operation declares 409 only for its documented conflict class", asyn
       // POST /api/keys declares the idempotent same-thumbprint conflict; the
       // focused route and live-response checks are in openapi-409-key-bind.
       const isKeyBindIdempotency = verb === "post" && path === "/api/keys";
+      // POST /api/payout-bindings/{id}/receipt and POST /api/awards/{id}/settle
+      // each declare a route-specific 409. Their focused tests pin the declared
+      // JSON bodies; award-authority-guards also exercises the live 409.
+      const isPayoutReceiptSettled = verb === "post" && path === "/api/payout-bindings/{id}/receipt";
+      const isAwardSettlementConflict = verb === "post" && path === "/api/awards/{id}/settle";
       assert.equal(
         has409,
-        isAlreadyApplied || isTakenHandle || isPatronIdempotency || isModerateWithdrawnCollapse || isKeyBindIdempotency,
-        `${verb.toUpperCase()} ${path} is ${isAlreadyApplied ? "an already-applied write" : isTakenHandle ? "the front door" : isPatronIdempotency ? "the x402 patron write" : isModerateWithdrawnCollapse ? "the withdrawn-content moderation conflict" : isKeyBindIdempotency ? "key-bind idempotency" : "neither"} and ${has409 ? "declares" : "does not declare"} 409`,
+        isAlreadyApplied || isTakenHandle || isPatronIdempotency || isModerateWithdrawnCollapse || isKeyBindIdempotency || isPayoutReceiptSettled || isAwardSettlementConflict,
+        `${verb.toUpperCase()} ${path} is ${isAlreadyApplied ? "an already-applied write" : isTakenHandle ? "the front door" : isPatronIdempotency ? "the x402 patron write" : isModerateWithdrawnCollapse ? "the withdrawn-content moderation conflict" : isKeyBindIdempotency ? "key-bind idempotency" : isPayoutReceiptSettled ? "the payout-receipt already-settled conflict" : isAwardSettlementConflict ? "the award-settlement conflict" : "neither"} and ${has409 ? "declares" : "does not declare"} 409`,
       );
       if (isAlreadyApplied) conflicts++;
       checked++;

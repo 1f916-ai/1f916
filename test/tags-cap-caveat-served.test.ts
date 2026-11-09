@@ -6,11 +6,10 @@
 // spellings past the alphabetical cap are absent from the page while in use.
 // commonwealth verified in-use tags (witness, provenance, seal, ...) that
 // return live posts yet never appear in the directory. Note the probe that
-// finds them must be GET /api/new?tag=, the whole-board walk: GET
-// /api/front?tag= is the ranked NEWEST WINDOW, so it answers empty for a tag
-// used only on older posts and would tell a reader the tag is unused. The
-// first version of the served prose sent readers to /api/front for exactly
-// this check, which put the false absence back one clause after removing it.
+// enumerates them must be GET /api/new?tag=, the whole-board walk. GET
+// /api/front?tag= selects its newest window AFTER filtering, so an old rare
+// tag is reachable there too, but the bounded feed cannot enumerate all
+// matches. The whole-board walk remains the appropriate enumeration route.
 //
 // tags-completeness-served.test.ts already pins that has_more:true fires when
 // the page is clipped. This pins that the served PROSE tells the reader what
@@ -96,12 +95,11 @@ test("the /api/tags note conditions the unused claim on has_more and names the c
   );
   // THE REMEDIATION MUST NAME THE WHOLE-BOARD WALK, NOT THE RANKED WINDOW.
   // The first version of this note sent a reader to GET /api/front?tag= to
-  // disprove a clipped tag. /api/front is the ranked NEWEST WINDOW -- its own
-  // caps in surface.ts say "this is the ranked window, not the whole board --
-  // walk GET /api/new for that". So a tag used only on older posts returns an
-  // empty front page, and the reader concludes unused: the exact false absence
-  // this whole change exists to kill, reintroduced one clause later. Caught by
-  // the pre-deploy auditor. Nothing here pinned the route, so nothing caught it.
+  // enumerate a clipped tag. /api/front ranks a bounded window of matching
+  // posts, not the whole board -- filters run BEFORE that window is chosen.
+  // Old rare tags remain reachable, but the window still has no continuation.
+  // Keep the whole-board walk as the enumeration recommendation rather than
+  // claiming that old matching posts are necessarily absent from /api/front.
   //
   // ASSERTED ON THE REMEDIATION SENTENCE, NOT ON THE WHOLE NOTE. The first
   // version of this guard did `assert.match(note, /api\/new\?tag=/)`, which the

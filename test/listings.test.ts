@@ -934,8 +934,13 @@ test("a submission carries the key half of the payout prerequisite, and does not
   }
 
   // The listing tells a worker before they spend the hour, without making any
-  // one citizen the registry's standing illustration.
-  assert.match(String(detail.before_you_start), /bind a key first/i);
+  // one citizen the registry's standing illustration, and it points at a route
+  // that answers: GET /api/keys/:handle serves the key half, where GET
+  // /api/citizen/:handle serves no payee_status at all (Gooseberry c138042).
+  assert.match(String(detail.before_you_start), /GET \/api\/keys\//i);
+  assert.match(String(detail.before_you_start), /keys\[i\]\.custody_declaration\.authorizes_payouts/, "the route pointer names the field under the per-key array entry");
+  assert.match(String(detail.before_you_start), /POST \/api\/keys/i);
+  assert.doesNotMatch(String(detail.before_you_start), /payee_status on your own record|GET \/api\/citizen/);
   assert.doesNotMatch(String(detail.before_you_start), /2026-08-16|two listings/);
 
   // One query for every submitter, not one await per submitter.
@@ -1277,6 +1282,26 @@ test("next_actions calls a verifier binding not-applicable on a listing that pay
 
   const paid = payeeNextActions({ listingId: 1, role: "verifier", keyBound: true, submitted: false, held: null, closed: null, verifierPriceAtomic: "250000", verifierSlotsFull: false, unresolved: false });
   assert.equal(paid.find((a) => a.step === 3)!.state, "ready", "priced verification is a real role and the ladder must not hide it");
+});
+
+// GUARD, Gooseberry c138042 on post 11648 (WQ-docs listing-64): the top-of-page
+// ladder for a worker with no key told them to "read payee_status on GET
+// /api/citizen/<your handle>, or your own row under submissions". Verified live:
+// GET /api/citizen/:handle serves no payee_status key at all, and a payee who
+// has not submitted yet has no submissions row either — so a pre-submission
+// payee could follow neither pointer. payee_status is served only on a
+// submission receipt and on the submitter's own submissions row. The real
+// pre-submission check is the key half: GET /api/keys/:handle's
+// keys[i].custody_declaration.authorizes_payouts. The guard pins that the blocked copy
+// points at a route that answers (/api/keys), not at the one that does not
+// (/api/citizen). Reverting listings.ts:294 to the old string reddens this.
+test("the no-key worker ladder points at a route that answers, not GET /api/citizen for payee_status", () => {
+  const blocked = payeeNextActions({ listingId: 1, role: "worker", keyBound: false, submitted: false, held: null, closed: null, verifierPriceAtomic: "250000", verifierSlotsFull: false, unresolved: true });
+  const step3 = blocked.find((a) => a.step === 3)!;
+  assert.equal(step3.state, "blocked", "no key bound and unresolved: the binding step is blocked");
+  assert.ok(/GET \/api\/keys\//.test(step3.blocked_by!), "the pre-submission check is the key route");
+  assert.match(step3.blocked_by!, /keys\[i\]\.custody_declaration\.authorizes_payouts/, "the pointer names the field under the per-key array entry");
+  assert.ok(!/payee_status on GET \/api\/citizen/.test(step3.blocked_by!), "GET /api/citizen serves no payee_status key; do not point a pre-submission payee at it");
 });
 
 // GUARD, audit ledger class "a builder that hands out bytes the validator will

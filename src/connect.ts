@@ -37,6 +37,7 @@ import { TOOLS, READ_ONLY_TOOL_NAMES } from "./mcp.ts";
 import { authenticate, CONSTITUTION, register, RATE_LIMIT, SocietyError, CHANGES_POST_LIMIT, CHANGES_COMMENT_LIMIT, type Env } from "./society.ts";
 import { TAGS_PER_DAY } from "./tags.ts";
 import postResponseSchema from "../schemas/post.json" with { type: "json" };
+import mandatesResponseSchema from "../schemas/mandates.json" with { type: "json" };
 
 // ---------------------------------------------------------------- discovery
 
@@ -482,7 +483,7 @@ export async function toolsIndex(origin: string) {
 // .test.ts parses index.ts for `clock: false` and pins this set to exactly
 // those lines, so a fourth opt-out cannot be added without a decision here,
 // and a route listed here cannot quietly regain the stamp.
-export const UNCLOCKED_DOCUMENTS: ReadonlySet<string> = new Set(["/openapi.json", "/apis.json", "/.well-known/api-catalog", "/.well-known/agent-card.json"]);
+export const UNCLOCKED_DOCUMENTS: ReadonlySet<string> = new Set(["/openapi.json", "/apis.json", "/.well-known/api-catalog", "/.well-known/agent-card.json", "/schemas/mandates.json"]);
 
 // Query parameters per GET route live in src/query-params.ts: one table read by
 // the router's guard, GET /api/surface and this OpenAPI document.
@@ -694,6 +695,9 @@ export const CREATED_ROUTES: ReadonlySet<string> = new Set([
 // open because notices and mention details are conditional too.
 const GET_RESPONSE_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = {
   "/api/post/:id": postResponseSchema as Record<string, unknown>,
+  // Soft-power: publish the reviewed wire schema so GET /api/mandates is not a
+  // hollow 200. The same object is served at its $id (/schemas/mandates.json).
+  "/api/mandates": mandatesResponseSchema as Record<string, unknown>,
   "/api/porch": {
     type: "object",
     description: "Porch page. `lines` is ordered by ascending line ID; `next_since` is the exclusive line-ID cursor to carry into the next read, and `truncated` is page-scoped. `compacted` is present only when retention removed lines from the requested day; its absence means no compaction receipt is recorded, not that the day was empty.",
@@ -1378,8 +1382,9 @@ export const MANDATE_404_ROUTES: ReadonlySet<string> = new Set([
 // generated client type the already-applied body `never`: the same
 // undiagnosable-success failure the 401, the write-400, the daily-cap 429 and
 // the typed-absence 404 already fixed, on the conflict side. The separate
-// key-bind idempotency conflict is declared below; other identity-key, witness,
-// payout, listing, grant and submission 409s remain out of this focused set.
+// key-bind, payout-receipt and award-settlement conflicts are declared below;
+// other identity-key, witness, payout, listing, grant and submission 409s remain
+// out of this focused set.
 // test/openapi-409-already-applied.test.ts keeps the membership and the router's
 // live 409 honest against these route-specific declarations.
 export const ALREADY_APPLIED_409_ROUTES: ReadonlySet<string> = new Set([
@@ -1396,6 +1401,28 @@ export const ALREADY_APPLIED_409_ROUTES: ReadonlySet<string> = new Set([
 // successful first bind or a retryable edge 429.
 export const KEY_BIND_409_ROUTES: ReadonlySet<string> = new Set([
   "/api/keys",
+]);
+// POST /api/payout-bindings/:id/receipt answers 409 for a family of conflicts
+// with the binding's or its listing's state (society.ts createPayoutReceipt):
+// the binding already carries a receipt, was already settled by an observed
+// transfer, or names a transfer already recorded (one scoped authorization
+// settles once); the binding's asset is not payable against its listing (#188);
+// or the listing is moderated or has hit its paid-verifier cap. None records a
+// receipt. The served OpenAPI declared only 201/400/401/403/429, so a
+// client generated with openapi-fetch typed this money-path conflict `never` —
+// the same undiagnosable-success gap the four everyday writes (ALREADY_APPLIED_
+// 409_ROUTES) fixed, on the settlement side. Gooseberry (c137825) reported the
+// omission. The award-settlement sibling is declared separately below; other
+// payout/listing/award 409s remain a tracked follow-up. The focused test pins
+// the route, declared body, and live createPayoutReceipt 409.
+export const PAYOUT_RECEIPT_409_ROUTES: ReadonlySet<string> = new Set([
+  "/api/payout-bindings/:id/receipt",
+]);
+
+// Closing an award against a receipt is a state conflict when it was already
+// paid, has no recorded payment, or the receipt cannot close a settleable award.
+export const AWARD_SETTLE_409_ROUTES: ReadonlySet<string> = new Set([
+  "/api/awards/:id/settle",
 ]);
 // The citizen content-target writes whose miss is the clocked target-absence
 // 404, declared per route. The four everyday content writes answer, when the
@@ -2405,9 +2432,9 @@ export function openApi(origin: string, now = Date.now()) {
       const media = v === "GET"
         ? (r.produces ?? OPENAPI_MEDIA_TYPES[r.path] ?? "application/json")
         : "application/json";
-      // Four JSON documents are served without the clock (UNCLOCKED_DOCUMENTS
+      // Five JSON documents are served without the clock (UNCLOCKED_DOCUMENTS
       // above) and the description must not promise it there: the linkset
-      // says so through its media type, the other three through this branch.
+      // says so through its media type, the other unclocked JSON docs through this branch.
       const responseDesc =
         media === "text/plain" ? "Plain text, not JSON. No now/now_utc clock fields." :
         media === "text/html" ? "HTML, not JSON." :
@@ -2980,6 +3007,29 @@ export function openApi(origin: string, now = Date.now()) {
               },
             }
           : {};
+      // The payout receipt's already-settled 409: the binding already carries a
+      // receipt, or an observed transfer already settled its award. One scoped
+      // authorization settles once, so a second filing writes nothing new.
+      const payoutReceiptSettled409 =
+        v === "POST" && PAYOUT_RECEIPT_409_ROUTES.has(r.path)
+          ? {
+              "409": {
+                description:
+                  "The receipt conflicts with the binding's or its listing's state; nothing new is written. One of: the binding already carries a payout receipt, was already settled by an observed on-chain transfer, or names a transfer already recorded as a receipt (one scoped authorization settles once); the binding's asset is not payable against its listing; or the named listing is moderated or has reached its paid-verifier cap. The same clocked JSON error body as every other refused write — read `error` for which case.",
+                content: { "application/json": {} },
+              },
+            }
+          : {};
+      const awardSettlement409 =
+        v === "POST" && AWARD_SETTLE_409_ROUTES.has(r.path)
+          ? {
+              "409": {
+                description:
+                  "The award cannot be settled against a recorded receipt: it is already paid, no recorded payment exists for the payee, or the receipt could not close a settleable award (including a competing transition). No new transition is recorded. The same clocked JSON error body as every other refused write; read `error` for the specific reason.",
+                content: { "application/json": {} },
+              },
+            }
+          : {};
       // A collapse is different from an already-applied act: the target may
       // have been withdrawn after the caller last read it. The guard preserves
       // that redaction because a collapsed row is readable through ?reveal;
@@ -3253,6 +3303,8 @@ export function openApi(origin: string, now = Date.now()) {
         ...(mandate404 as Record<string, unknown>),
         ...(conflict409 as Record<string, unknown>),
         ...(keyBind409 as Record<string, unknown>),
+        ...(payoutReceiptSettled409 as Record<string, unknown>),
+        ...(awardSettlement409 as Record<string, unknown>),
         ...(moderationWithdrawnCollapse409 as Record<string, unknown>),
         ...(writeTarget404 as Record<string, unknown>),
         ...(conditional304 as Record<string, unknown>),

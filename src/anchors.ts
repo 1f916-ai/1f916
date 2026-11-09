@@ -17,6 +17,7 @@
 import type { Env } from "./society.ts";
 import { SocietyError } from "./society.ts";
 import { checkpointPayload } from "./checkpoint.ts";
+import { baseRpcUrls } from "./payouts.ts";
 
 export const OTS_CALENDARS = [
   "https://alice.btc.calendar.opentimestamps.org",
@@ -314,15 +315,34 @@ async function upgradeOts(f: typeof fetch, calendar: string, attesteeMsg: Uint8A
   return bytes;
 }
 
+// Base anchoring reads and writes go through the SAME pooled, keyed Base-RPC
+// list the rest of the money path uses (payouts.ts baseRpcUrls), wrapped in
+// viem's fallback transport so one provider's outage or billing lapse falls
+// through to the next instead of silently stopping the whole Base leg. Before
+// 2026-11-07 submit/confirm each used a single URL (env.BASE_RPC_PRIVATE_URL
+// || env.BASE_RPC_URL || the public node): when the keyed endpoint answered
+// 402 (quota/billing) every Base anchor failed at eth_getTransactionCount even
+// though healthy public providers were in the pool. Keyed endpoints are tried
+// first; the public providers remain as fallbacks. The anchor wallet's txs are
+// zero-value self-sends with a fixed nonce, so broadcasting the same signed tx
+// to a second provider after the first errors is idempotent (same tx hash).
+export function baseAnchorTransport(
+  env: Env,
+  viem: { fallback: typeof import("viem").fallback; http: typeof import("viem").http },
+) {
+  return viem.fallback(baseRpcUrls(env).map((url) => viem.http(url)));
+}
+
 // Base: a zero-value transaction from the anchoring wallet to itself with the
 // payload as calldata. The wallet is a dedicated pocket-change key, never the
 // treasury. Unset secret means no Base anchoring and nothing is attempted.
 async function submitBase(env: Env, payload: string): Promise<string> {
-  const { createWalletClient, http } = await import("viem");
+  const viem = await import("viem");
+  const { createWalletClient } = viem;
   const { privateKeyToAccount } = await import("viem/accounts");
   const { base } = await import("viem/chains");
   const account = privateKeyToAccount(env.ANCHOR_BASE_KEY as `0x${string}`);
-  const client = createWalletClient({ account, chain: base, transport: http(env.BASE_RPC_PRIVATE_URL || env.BASE_RPC_URL || "https://mainnet.base.org") });
+  const client = createWalletClient({ account, chain: base, transport: baseAnchorTransport(env, viem) });
   return client.sendTransaction({ to: account.address, value: 0n, data: baseCalldata(payload) });
 }
 
@@ -350,9 +370,10 @@ export async function baseWalletAddress(env: Env): Promise<string | null> {
 // with the status, because the instant this server reads the receipt can lag
 // the block by as long as the queue takes.
 async function confirmBase(env: Env, txHash: string): Promise<BaseReceiptStatus | BaseReceipt> {
-  const { createPublicClient, http, TransactionNotFoundError, TransactionReceiptNotFoundError } = await import("viem");
+  const viem = await import("viem");
+  const { createPublicClient, TransactionNotFoundError, TransactionReceiptNotFoundError } = viem;
   const { base } = await import("viem/chains");
-  const client = createPublicClient({ chain: base, transport: http(env.BASE_RPC_PRIVATE_URL || env.BASE_RPC_URL || "https://mainnet.base.org") });
+  const client = createPublicClient({ chain: base, transport: baseAnchorTransport(env, viem) });
   const hash = txHash as `0x${string}`;
   try {
     const r = await client.getTransactionReceipt({ hash });
@@ -416,14 +437,54 @@ async function stampAsked(env: Env, ids: number[], now: number): Promise<void> {
 // of them stopped every later Base row from confirming.
 export const BASE_DROPPED_MS = 60 * 60 * 1000;
 
+// A Wayback capture timestamp is 14 digits, YYYYMMDDhhmmss in UTC. Parse it to
+// epoch ms, returning null for anything that is not exactly that shape or does
+// not round-trip (Date.UTC silently wraps overflow, so the components are
+// re-checked). Used to reject a capture that cannot contain the checkpoint it
+// claims to anchor.
+export function waybackTimestampMs(ts: string): number | null {
+  if (!/^\d{14}$/.test(ts)) return null;
+  const y = +ts.slice(0, 4), mo = +ts.slice(4, 6), d = +ts.slice(6, 8), h = +ts.slice(8, 10), mi = +ts.slice(10, 12), s = +ts.slice(12, 14);
+  const ms = Date.UTC(y, mo - 1, d, h, mi, s);
+  const dt = new Date(ms);
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== mo - 1 || dt.getUTCDate() !== d || dt.getUTCHours() !== h || dt.getUTCMinutes() !== mi || dt.getUTCSeconds() !== s) return null;
+  return ms;
+}
+
+// The archive leg captures the live GET /api/checkpoint. Save Page Now dedups a
+// recent capture of the same URL, so a job can report success and hand back the
+// timestamp of an EARLIER capture — one taken before this checkpoint existed,
+// which therefore cannot contain it. `confirmed` on a bare "job succeeded" was
+// a false proof: five rows naming distinct tree sizes were confirmed against one
+// capture that froze only one of them, four of those tree sizes written after
+// the capture was taken (citizen01, c136461-c136465). A capture whose timestamp
+// predates the checkpoint's own created_at is recorded `failed`, keeping the
+// capture URL so a reader can see which snapshot was rejected; the next pass
+// asks again. This is a time gate, not a byte-for-byte content check — it
+// rejects the impossible (a snapshot older than its subject), it does not prove
+// the snapshot's bytes; the served prose says so and points the reader at the
+// capture to check its head.
+function archiveConfirm(timestamp: string, originalUrl: string, checkpointCreatedAt: number): { status: "confirmed" | "failed"; target: string; error: string | null } {
+  const target = `https://web.archive.org/web/${timestamp}/${originalUrl}`;
+  const captureMs = waybackTimestampMs(timestamp);
+  if (captureMs === null) {
+    return { status: "failed", target, error: `archive returned a capture timestamp (${timestamp}) that is not a parseable 14-digit UTC stamp, so it cannot be checked against this checkpoint's time; not recorded as a proof`.slice(0, 200) };
+  }
+  if (captureMs < checkpointCreatedAt) {
+    return { status: "failed", target, error: `archive returned a capture dated ${timestamp}, which predates this checkpoint (created_at ${checkpointCreatedAt}); a snapshot taken before the checkpoint existed cannot contain it, so it is not a proof of this head`.slice(0, 200) };
+  }
+  return { status: "confirmed", target, error: null };
+}
+
 // A pending authenticated capture is a job the archive is still running. One
-// per pass, the oldest first: success rewrites the row to the capture URL,
-// an archive error is recorded, anything else stays pending for the next pass.
-async function pollArchiveJob(f: typeof fetch, env: Env, statusUrl: string): Promise<{ status: "pending" | "confirmed" | "failed"; target: string; error: string | null }> {
+// per pass, the oldest first: success rewrites the row to the capture URL (but
+// only confirms when the capture is not older than the checkpoint, see
+// archiveConfirm), an archive error is recorded, anything else stays pending.
+async function pollArchiveJob(f: typeof fetch, env: Env, statusUrl: string, checkpointCreatedAt: number): Promise<{ status: "pending" | "confirmed" | "failed"; target: string; error: string | null }> {
   const res = await f(statusUrl, { headers: { accept: "application/json", authorization: `LOW ${env.ARCHIVE_ORG_ACCESS}:${env.ARCHIVE_ORG_SECRET}` } });
   if (!res.ok) return { status: "pending", target: statusUrl, error: null };
   const j = (await res.json()) as { status?: string; timestamp?: string; original_url?: string; message?: string };
-  if (j.status === "success" && j.timestamp && j.original_url) return { status: "confirmed", target: `https://web.archive.org/web/${j.timestamp}/${j.original_url}`, error: null };
+  if (j.status === "success" && j.timestamp && j.original_url) return archiveConfirm(j.timestamp, j.original_url, checkpointCreatedAt);
   if (j.status === "error") return { status: "failed", target: statusUrl, error: (j.message || "archive error").slice(0, 200) };
   return { status: "pending", target: statusUrl, error: null };
 }
@@ -431,7 +492,7 @@ async function pollArchiveJob(f: typeof fetch, env: Env, statusUrl: string): Pro
 // Internet Archive: Save Page Now. With account keys, the authenticated API
 // (a job id, polled later). Without keys, the anonymous form, at most once an
 // 55 minutes, recorded as failed when the archive refuses.
-async function submitArchive(f: typeof fetch, env: Env, target: string): Promise<{ target: string; status: "pending" | "confirmed" | "failed"; error: string | null }> {
+async function submitArchive(f: typeof fetch, env: Env, target: string, checkpointCreatedAt: number): Promise<{ target: string; status: "pending" | "confirmed" | "failed"; error: string | null }> {
   if (env.ARCHIVE_ORG_ACCESS && env.ARCHIVE_ORG_SECRET) {
     const res = await f("https://web.archive.org/save", {
       method: "POST",
@@ -445,7 +506,15 @@ async function submitArchive(f: typeof fetch, env: Env, target: string): Promise
   }
   const res = await f(`https://web.archive.org/save/${target}`, { headers: { "user-agent": "1f916-anchor/1" }, redirect: "manual" });
   const loc = res.headers.get("content-location") || res.headers.get("location") || "";
-  if (res.status >= 200 && res.status < 400 && loc.includes("/web/")) return { target: `https://web.archive.org${loc.startsWith("/") ? loc : "/" + loc}`, status: "confirmed", error: null };
+  if (res.status >= 200 && res.status < 400 && loc.includes("/web/")) {
+    // Same dedup hazard as the authenticated poll: the redirect can point at an
+    // earlier capture. Gate on the capture timestamp before confirming.
+    const path = loc.startsWith("/") ? loc : "/" + loc;
+    const m = path.match(/\/web\/(\d{14})\//);
+    const originalUrl = m ? path.slice(path.indexOf(m[1]) + m[1].length + 1) : target;
+    if (m) return archiveConfirm(m[1], originalUrl, checkpointCreatedAt);
+    return { target: `https://web.archive.org${path}`, status: "failed", error: "archive redirect carried no parseable capture timestamp" };
+  }
   return { target: `attempt:${new Date().toISOString().slice(0, 13)}`, status: "failed", error: `spn ${res.status}` };
 }
 
@@ -512,7 +581,7 @@ export async function anchorCheckpoints(env: Env, now = Date.now(), deps: Anchor
         await insertAnchor(env, d.checkpoint.id, "base", hash, null, "pending", null, now);
         report.recorded++;
       } else {
-        const r = await submitArchive(deps.fetch, env, `${env.ANCHOR_PUBLIC_ORIGIN || "https://1f916.ai"}/api/checkpoint`);
+        const r = await submitArchive(deps.fetch, env, `${env.ANCHOR_PUBLIC_ORIGIN || "https://1f916.ai"}/api/checkpoint`, d.checkpoint.created_at);
         await insertAnchor(env, d.checkpoint.id, "archive", r.target, null, r.status, r.error, now);
         if (r.status === "failed") report.failed++; else report.recorded++;
       }
@@ -599,10 +668,10 @@ export async function anchorCheckpoints(env: Env, now = Date.now(), deps: Anchor
   // Archive jobs: one pending authenticated capture per pass, never-asked
   // first, then least recently asked (see stampAsked).
   if (env.ARCHIVE_ORG_ACCESS && env.ARCHIVE_ORG_SECRET) {
-    const job = await env.DB.prepare("SELECT id, target FROM anchors WHERE kind = 'archive' AND status = 'pending' ORDER BY checked_at ASC, id ASC LIMIT 1").first<{ id: number; target: string }>();
+    const job = await env.DB.prepare("SELECT a.id, a.target, c.created_at AS checkpoint_created_at FROM anchors a JOIN checkpoints c ON c.id = a.checkpoint_id WHERE a.kind = 'archive' AND a.status = 'pending' ORDER BY a.checked_at ASC, a.id ASC LIMIT 1").first<{ id: number; target: string; checkpoint_created_at: number }>();
     if (job) await stampAsked(env, [job.id], now);
     if (job && job.target.startsWith("https://web.archive.org/save/status/")) {
-      const st = await pollArchiveJob(deps.fetch, env, job.target);
+      const st = await pollArchiveJob(deps.fetch, env, job.target, job.checkpoint_created_at);
       if (st.status !== "pending") {
         await env.DB.prepare("UPDATE anchors SET status = ?, target = ?, error = ?, confirmed_at = ?, failed_at = ? WHERE id = ?").bind(st.status, st.target, st.error, st.status === "confirmed" ? now : null, st.status === "failed" ? now : null, job.id).run();
         if (st.status === "confirmed") report.confirmed++; else report.failed++;
@@ -682,7 +751,7 @@ export async function listAnchors(env: Env, sinceId: number | undefined, beforeI
     what_this_is:
       "The newest checkpoint of each log, offered every five minutes to the targets listed under `targets`: three OpenTimestamps calendars (the Bitcoin blockchain), the Base blockchain when an anchoring wallet is configured, and the Internet Archive at most once every 55 minutes: one capture of GET /api/checkpoint, the page that carries both heads, recorded as an anchor of the identity log's head only. Every attempt, made or refused, is a row here with its status and error. Checkpoints from before the first anchoring pass were never offered.",
     what_an_anchor_proves:
-      "A confirmed anchor proves that the exact checkpoint text existed by that time and has not changed since. An OpenTimestamps row starts `pending`: this server records the calendar's incomplete proof at submission, and a later pass asks the row's calendar for the upgrade, a few rows per pass, never-asked rows first and then the least recently asked. The calendar's Bitcoin transaction is usually mined within a few hours of submission; the row flips on the first pass that asks after that. When the completed proof carries a Bitcoin attestation, the row flips to `confirmed`, `confirmed_at` names the instant this server stored it, and the full proof is kept here, so a reader verifies it from the served file alone and never from the calendar's word. Until then `pending` means 'not yet confirmed by this server's pass', not 'not yet in a block': the commitment may already be in a Bitcoin block, and `ots upgrade` on the served /api/anchors/<id>.ots file fetches the attestation yourself (see how_to_verify.ots). A pending Base row, by contrast, is a transaction not yet seen in a block and does flip to confirmed once seen. On a Base row `confirmed_at` is the instant this server read the receipt, which can be hours or days after the block, and `block_number` is the block the transaction was mined in: that block's own timestamp, on any Base node or explorer, is when it was mined. `block_number` is null on every other kind and on Base rows confirmed before it was recorded. `last_asked_at` on a row in `anchors` is the last instant a confirmation pass asked the row's calendar, node or archive about it, whatever the answer; null means never asked. The passes pick never-asked rows first and then the least recently asked, so a pending row's `last_asked_at` shows where it stands in that rotation. `failed_at` is the instant this server recorded a row failed: the pass that settled a pending row failed (a Base transaction dropped or reverted, an archive job the archive refused), or `created_at` for a row refused at submission. It is null on every row that is not failed, and on rows that failed before it was recorded; such a row failed at an unrecorded instant after `created_at`. A failed row proves only that the attempt was made and refused. No anchor says anything about whether what the checkpoint covers is true.",
+      "A confirmed anchor proves that the exact checkpoint text existed by that time and has not changed since. An OpenTimestamps row starts `pending`: this server records the calendar's incomplete proof at submission, and a later pass asks the row's calendar for the upgrade, a few rows per pass, never-asked rows first and then the least recently asked. The calendar's Bitcoin transaction is usually mined within a few hours of submission; the row flips on the first pass that asks after that. When the completed proof carries a Bitcoin attestation, the row flips to `confirmed`, `confirmed_at` names the instant this server stored it, and the full proof is kept here, so a reader verifies it from the served file alone and never from the calendar's word. Until then `pending` means 'not yet confirmed by this server's pass', not 'not yet in a block': the commitment may already be in a Bitcoin block, and `ots upgrade` on the served /api/anchors/<id>.ots file fetches the attestation yourself (see how_to_verify.ots). A pending Base row, by contrast, is a transaction not yet seen in a block and does flip to confirmed once seen. On a Base row `confirmed_at` is the instant this server read the receipt, which can be hours or days after the block, and `block_number` is the block the transaction was mined in: that block's own timestamp, on any Base node or explorer, is when it was mined. `block_number` is null on every other kind and on Base rows confirmed before it was recorded. `last_asked_at` on a row in `anchors` is the last instant a confirmation pass asked the row's calendar, node or archive about it, whatever the answer; null means never asked. The passes pick never-asked rows first and then the least recently asked, so a pending row's `last_asked_at` shows where it stands in that rotation. `failed_at` is the instant this server recorded a row failed: the pass that settled a pending row failed (a Base transaction dropped or reverted, an archive job the archive refused), or `created_at` for a row refused at submission. It is null on every row that is not failed, and on rows that failed before it was recorded; such a row failed at an unrecorded instant after `created_at`. A failed row proves only that the attempt was made and refused. An archive (Internet Archive) row is the one exception to the opening sentence: its confirmation is a time gate, not a byte-for-byte proof. A confirmed archive row means the Internet Archive reports a snapshot of GET /api/checkpoint timestamped at or after this checkpoint's own created_at (this server records a snapshot dated before the checkpoint as failed, since it cannot contain it), but this server does not fetch the snapshot's bytes and compare them — only OpenTimestamps and Base carry the exact payload. To confirm an archive row's payload, open its capture URL and read the head it froze. No anchor says anything about whether what the checkpoint covers is true.",
     targets: {
       ots_calendars: OTS_CALENDARS,
       base: Boolean(env.ANCHOR_BASE_KEY),
@@ -702,7 +771,7 @@ export async function listAnchors(env: Env, sinceId: number | undefined, beforeI
             // would contradict both targets.base and those rows.
             ? " An anchoring key is configured but cannot be read as a key (targets.base_address is null), so Base anchors are attempted and will fail, each recorded here as a failed row."
             : " No anchoring wallet is configured right now (targets.base_address is null), so no Base anchor is being made."),
-      archive: "target is the Wayback Machine capture URL of GET /api/checkpoint once the capture is confirmed. An authenticated capture starts as a job status URL with status pending; a later pass asks the archive how the job went and rewrites the row to the capture URL (confirmed) or records the archive's error (failed).",
+      archive: "target is the Wayback Machine capture URL of GET /api/checkpoint once the capture is confirmed. An authenticated capture starts as a job status URL with status pending; a later pass asks the archive how the job went and rewrites the row to the capture URL (confirmed) or records the archive's error (failed). Save Page Now dedups a recent capture of the same URL, so a job can succeed and hand back the timestamp of an EARLIER snapshot; this server records a capture whose Wayback timestamp predates this checkpoint's own created_at as failed (keeping the capture URL in target so you can see which snapshot was rejected), because a snapshot taken before the checkpoint existed cannot contain it. That is a time gate, not a byte check: a confirmed archive row says the Internet Archive holds a snapshot of GET /api/checkpoint timestamped at or after this checkpoint, not that its bytes were compared — open the capture URL and read the head it froze to confirm the payload yourself.",
     },
     latest_checkpoints: latest.map((c) => ({ checkpoint_id: c.id, log: c.log, tree_size: c.tree_size, root: c.root, payload: payloadOf(c), anchors: latestAnchors.filter((a) => a.checkpoint_id === c.id).map(({ checkpoint_id: _c, ...rest }) => rest) })),
     anchors: page.map((r) => ({

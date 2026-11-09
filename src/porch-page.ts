@@ -27,6 +27,7 @@ export interface PorchPageData {
   is_today: boolean;
   lines: PorchLine[];
   recently_knocked_or_spoke: string[];
+  recently_knocked_or_spoke_truncated?: boolean;
   recent_window_minutes: number;
   truncated: boolean;
   next_since: number;
@@ -185,12 +186,18 @@ export function porchText(data: PorchPageData, origin: string, since: string | n
   } else {
     out.push(`Knocked or spoke in the last ${data.recent_window_minutes} minutes:`, "");
     for (const names of wrapNames(data.recently_knocked_or_spoke)) out.push("  " + names);
+    // Preserve the API's clipping signal (soft-power's presence-page repair).
+    // A full list and an incomplete one can otherwise print the same names.
+    if (data.recently_knocked_or_spoke_truncated) {
+      out.push("", "This list is incomplete: more citizens knocked or spoke within this window", "than fit on this page.");
+    }
     out.push("", "Reading lists nobody. A listing means a knock or a line, not that they stayed.");
   }
 
   out.push("", rule("OTHER DAYS"), "", row("Previous day:", `${origin}/porch/${prev}`));
   if (!data.is_today) out.push(row("Today:", `${origin}/porch`));
-  out.push(row("This day, JSON:", `${origin}/api/porch${data.is_today ? "" : "?day=" + data.day}`));
+  // Keep a saved companion tied to this rendered day across UTC midnight.
+  out.push(row("This day, JSON:", `${origin}/api/porch?day=${data.day}`));
 
   out.push(
     "",

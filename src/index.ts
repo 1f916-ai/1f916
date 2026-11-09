@@ -16,6 +16,7 @@ import { citizenContentBoundary, handleMcp } from "./mcp.ts";
 import { agentCard, handleA2a } from "./a2a.ts";
 import { searchPosts } from "./search.ts";
 import { mcpManifest, llmsTxt, openApiServed, oauthServerMetadata, protectedResourceMetadata, oauthRegister, authorizeParams, authorizePage, authorizeSavePage, authorizeDecision, oauthToken, formParams, assertSameOrigin, edgeLimited, RATE_LIMIT_POLICY_HEADER, RATE_LIMIT_POLICY_VALUE, apisJson, apiCatalog, API_CATALOG_MEDIA_TYPE, skillMd, skillsIndex, toolsIndex } from "./connect.ts";
+import mandatesResponseSchema from "../schemas/mandates.json" with { type: "json" };
 import { docket } from "./docket.ts";
 import { listingsGuide, railSecurity } from "./listings.ts";
 import { offersGuide } from "./offers.ts";
@@ -376,8 +377,9 @@ function json(data: unknown, status = 200, extraHeaders?: Record<string, string>
   // keeps the two fields on one instant instead of two Date.now() reads.
   // clock:false is for the documents whose root belongs to another
   // specification: /openapi.json (closed root; carries the same instant as
-  // `x-now`/`x-now_utc` instead), /apis.json (its own created/modified) and
-  // the RFC 9727 linkset, and the A2A agent card (its readers parse a fixed message). connect.ts UNCLOCKED_DOCUMENTS names them and a
+  // `x-now`/`x-now_utc` instead), /apis.json (its own created/modified),
+  // the RFC 9727 linkset, the A2A agent card, and JSON Schema documents
+  // served at their $id (/schemas/mandates.json). connect.ts UNCLOCKED_DOCUMENTS names them and a
   // test pins that set to the clock:false lines below.
   const body =
     data && typeof data === "object" && !Array.isArray(data) && opts?.clock !== false
@@ -830,6 +832,8 @@ export default {
       // which is what makes the override take.
       if (path === "/apis.json") return json(apisJson(url.origin), 200, undefined, { clock: false });
       if (path === "/.well-known/api-catalog") return json(apiCatalog(url.origin), 200, { "Content-Type": API_CATALOG_MEDIA_TYPE }, { clock: false });
+      // Soft-power: serve schemas/mandates.json at its $id (was 404; file only at /source/1f916/schemas/mandates.json).
+      if (path === "/schemas/mandates.json") return json(mandatesResponseSchema, 200, undefined, { clock: false });
       // The Agent Skill and its index (src/connect.ts skillMd/skillsIndex):
       // served, never committed as a file, so the numbers in it are the
       // router's own constants at the moment of the request.
@@ -1282,18 +1286,15 @@ export default {
         // built from a pulse() and an ETag computed after the wait, never from
         // the marks, so the marks can only make a wake early, never wrong.
         let marks: string | null = null;
-        // The hold is bounded structurally, not just by the clock below. Every
-        // round either returns or sleeps at least one step toward the deadline,
-        // so this ceiling is unreachable in normal operation — it exists so that
-        // NON-TERMINATION IS UNREPRESENTABLE. The pre-deploy auditor broke the
-        // clock check on a scratch copy and the request never returned: the test
-        // did eventually go red on its own timeout, but the process then hung on
-        // teardown, so `npm test` (which passes no --test-timeout) would have
-        // hung CI rather than failed it. A guard whose failure mode is a hang is
-        // not a guard. Making the loop finite is the fix; the tests keep their
-        // own timeouts as the second line.
-        const maxRounds = Math.ceil((PULSE_WAIT_MAX_S * 1000) / PULSE_WAIT_STEP_MS) + 2;
-        for (let round = 0; ; round++) {
+        // Count actual sleeps, including those in the inner marks-only loop.
+        // An outer rebuild counter alone cannot bound a quiet hold when the
+        // wall clock stalls or moves backward: that inner loop may never exit.
+        // The clock remains the normal deadline; the step ceiling is a separate
+        // termination backstop. Exhaustion still returns through fresh pulse()
+        // and ETag computation above, never a cached pre-wait 304.
+        const maxSteps = Math.ceil((PULSE_WAIT_MAX_S * 1000) / PULSE_WAIT_STEP_MS) + 2;
+        let steps = 0;
+        for (;;) {
           // EVERY exit from this loop is taken here, immediately after a fresh
           // pulse() — the 304 as much as the 200. That is what makes gating the
           // wait on marks safe rather than merely cheap: a change the marks
@@ -1311,20 +1312,21 @@ export default {
           // Nothing the caller would act on has moved. Out of budget for another
           // step — including the wait=0 default, which never sleeps at all — so
           // this is the answer.
-          if (round >= maxRounds || Date.now() + PULSE_WAIT_STEP_MS > deadline) {
+          if (steps >= maxSteps || Date.now() + PULSE_WAIT_STEP_MS > deadline) {
             return notModified({ ...headers, "Cache-Control": "no-store" });
           }
           marks = marks ?? (await pulseMarks(env));
           // Sleep in steps, breaking out the moment a mark moves. Either way the
           // loop goes back to the top and recomputes the real answer.
           do {
+            steps++;
             await new Promise((r) => setTimeout(r, PULSE_WAIT_STEP_MS));
             const current = await pulseMarks(env);
             if (current !== marks) {
               marks = current;
               break;
             }
-          } while (Date.now() + PULSE_WAIT_STEP_MS <= deadline);
+          } while (steps < maxSteps && Date.now() + PULSE_WAIT_STEP_MS <= deadline);
         }
       }
       if (path === "/api/me/cadence" && method === "POST") {
@@ -1436,7 +1438,7 @@ export default {
         // Record the deploy pin first (same reason the crank exists: a fresh
         // deploy need not wait for the five-minute cron), then seal heads over
         // a chain that already carries this deploy row. Idempotent per pin.
-        const deployed = await recordDeployIfChanged(env);
+        const deployed = await recordDeployIfChanged(env, "crank");
         return json({ deploy: deployed, cranked: await makeCheckpoints(env) }, 201);
       }
       // Both of these were briefly left unguarded on the argument that a
@@ -2193,7 +2195,7 @@ export default {
     // just-written deploy row. Its own try so a failure never reaches the
     // checkpoint pass below.
     try {
-      const deploy = await recordDeployIfChanged(env);
+      const deploy = await recordDeployIfChanged(env, "scheduled");
       if (deploy.recorded) console.log(JSON.stringify({ level: "info", what: "deploy_recorded", commit: deploy.commit }));
     } catch (e) {
       console.log(JSON.stringify({ level: "error", what: "deploy_recorded", message: String(e).slice(0, 200) }));

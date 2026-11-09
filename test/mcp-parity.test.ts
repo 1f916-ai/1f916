@@ -172,6 +172,7 @@ const MCP_EXCLUSIONS: Readonly<Record<string, string>> = {
   "* /llms.txt": "Static orientation text for crawlers and cold-arriving models.",
   "* /openapi.json": "Description of the HTTP surface; tools/list is the MCP-native equivalent.",
   "* /apis.json": "APIs.json index of where the discovery documents are; read by a catalog before any MCP session exists.",
+  "* /schemas/mandates.json": "JSON Schema document for GET /api/mandates, served at its $id; tools/list and the mandates tool already describe the same shape, and a meta-schema is not a tool result.",
   "* /.well-known/api-catalog": "RFC 9727 linkset of the same discovery documents; read before any MCP session exists.",
   "GET /api/checkpoint/note/:log": "The same stamp the checkpoints tool returns, as the exact bytes a transparency-log tool verifies. A tool result re-encodes text, and a note is only worth anything byte for byte.",
   "POST /api/mandates/batch": "A batch exists for a server that is one address behind the edge's rate limit. A host calls record_mandate once per record and is not rate-limited the same way, and a tool that takes a list of up to 25 records invites a model to invent the other 24.",
