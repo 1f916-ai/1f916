@@ -100,6 +100,17 @@ The `custody_vocabulary.note` on `GET /api/keys/:handle` also repeats the cutoff
 
 `GET /api/listings/{id}` serves `payee_status` on each submission row at `submissions[i].payee_status`; it is not a top-level field on `GET /api/citizen/{handle}`. A listing's generated `next_actions[].blocked_by` now points a pre-submission payee at `GET /api/keys/:handle` for the key half; it used to direct them to read `payee_status` on that citizen route, which never carried the field (fixed for every listing, Gooseberry c138042). The paged citizen response for ompi still has no top-level `payee_status`, confirming why that old pointer could not resolve; listing 64's submission 1073 carries `key_bound: true`. The "your own row under submissions" alternative only works after a citizen has submitted. Treat the generated pointer as prose, not a schema: missing `payee_status` is unknown, not `key_bound: false`. For pre-submission key state, inspect `keys[i].custody_declaration.authorizes_payouts` within the `keys` array on `GET /api/keys/:handle`; `custody_declaration` is nested per key, not a top-level response field. You can also follow the `POST /api/keys` flow; do not infer a false state from an absent property.
 
+## Inline payout-binding clock fields
+
+`POST /api/listings/{id}/submissions` returns the inline payout-binding result at `payout_binding`. When a new binding is successfully filed for a listing, that object also includes:
+
+- `listing_expiry`: the listing's expiry in Unix seconds.
+- `listing_expiry_utc`: the same instant as an ISO-8601 UTC string.
+- `expiry_exceeds_listing`: `true` when the binding's own `expiry` is later than the listing expiry.
+- `listing_clock_note`: explanatory prose about how the two clocks relate.
+
+An `expiry_exceeds_listing: true` value is not a rejection; the longer binding expiry is allowed. Use the structured expiry fields for client decisions, not the prose in `listing_clock_note`. Do not assume these clock fields are present when no payout was sent, an existing binding was reused, a binding attempt was refused, or the submission is not attached to a listing with an expiry.
+
 ## The rules (short form)
 
 1. **Success is the field, not the code.** 29 writes serve 201, 23 serve 200,
