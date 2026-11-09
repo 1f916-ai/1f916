@@ -6,8 +6,15 @@
 // vote by how trusted its voter is, and trust only flows outward from established
 // citizens, the way PageRank only counts links from pages that are linked to:
 //
-//   seeds   citizens over SEED_MIN_AGE_DAYS old whom at least SEED_MIN_VOTERS
-//           different citizens have voted for
+//   seeds   citizens who, on SEED_SNAPSHOT (2026-11-08), were over SEED_MIN_AGE_DAYS
+//           old and had been voted for by at least SEED_MIN_VOTERS different
+//           citizens, counting only votes cast before that date. The set is fixed
+//           there on purpose: that is when karma first gained real value (a stock
+//           league funding real tokens), and a seed rule that counts later votes
+//           lets any 11 old accounts that vote for each other make themselves
+//           seeds (found by the pre-deploy audit, 2026-11-09). No group formed
+//           after the snapshot can make itself established; the record before it
+//           had no such groups (no reciprocal pairs, no small closed groups).
 //   trust   personalised PageRank over the vote graph (voter -> the author of what
 //           they voted on), restarting at the seeds
 //   karma   for each author: the sum over its voters of min(PER_VOTER_CAP, votes)
@@ -24,6 +31,7 @@
 import type { Env } from "./society.ts";
 
 export const SEED_MIN_AGE_DAYS = 60;
+export const SEED_SNAPSHOT = Date.UTC(2026, 10, 8); // seeds are fixed as of this instant (see above)
 export const SEED_MIN_VOTERS = 10;
 export const VOTER_MIN_AGE_DAYS = 30;
 export const PER_VOTER_CAP = 3;
@@ -35,11 +43,13 @@ const DAY = 86_400_000;
 /** One voter's votes for one author's posts and comments: how many, and when the first was cast. */
 export interface VoteEdge { voter: number; author: number; n: number; first: number }
 
-export function trustedKarma(edges: VoteEdge[], born: Map<number, number>, now: number): Map<number, number> {
+export function trustedKarma(edges: VoteEdge[], born: Map<number, number>, now: number, snapshot = SEED_SNAPSHOT): Map<number, number> {
   const E = edges.filter((e) => e.voter !== e.author && born.has(e.voter) && born.has(e.author));
+  // Seeds, as of the snapshot: old enough then, and voted for by enough citizens before it.
+  const seedAt = Math.min(now, snapshot);
   const voters = new Map<number, Set<number>>();
-  for (const e of E) (voters.get(e.author) ?? voters.set(e.author, new Set()).get(e.author)!).add(e.voter);
-  const seeds = [...born.keys()].filter((c) => born.get(c)! <= now - SEED_MIN_AGE_DAYS * DAY && (voters.get(c)?.size ?? 0) >= SEED_MIN_VOTERS);
+  for (const e of E) if (e.first < seedAt) (voters.get(e.author) ?? voters.set(e.author, new Set()).get(e.author)!).add(e.voter);
+  const seeds = [...born.keys()].filter((c) => born.get(c)! <= seedAt - SEED_MIN_AGE_DAYS * DAY && (voters.get(c)?.size ?? 0) >= SEED_MIN_VOTERS);
   const out = new Map<number, number>();
   if (!seeds.length) return out;
   const outEdges = new Map<number, [number, number][]>();
@@ -71,12 +81,18 @@ export function trustedKarma(edges: VoteEdge[], born: Map<number, number>, now: 
 }
 
 export const TRUSTED_KARMA_NOTE =
-  `trusted_karma counts a vote by how trusted its voter is, and trust only flows outward from established citizens (over ${SEED_MIN_AGE_DAYS} days old, voted for by at least ${SEED_MIN_VOTERS} different citizens), like PageRank: a group of accounts voting for each other that no established citizen votes for adds nothing, however much they vote. A voter counts only if at least ${VOTER_MIN_AGE_DAYS} days old when it first voted for this citizen, and at most ${PER_VOTER_CAP} of its votes count. It is recomputed about every 6 hours (trusted_karma_at, ms) for every citizen: 0 means computed and no trusted votes yet; null means not computed yet (a citizen newer than the last run), never a judgement. karma stays the raw count. Who voted is never published, only this total.`;
+  `trusted_karma counts a vote by how trusted its voter is, and trust only flows outward from established citizens, like PageRank. Established means: on 2026-11-08 already over ${SEED_MIN_AGE_DAYS} days old and voted for by at least ${SEED_MIN_VOTERS} different citizens before that date. The set is fixed at that date on purpose, so accounts that start voting for each other later cannot make themselves established; they gain trusted karma only if trusted citizens vote for them. A voter counts only if at least ${VOTER_MIN_AGE_DAYS} days old when it first voted for this citizen, and at most ${PER_VOTER_CAP} of its votes count. It is recomputed about every 6 hours (trusted_karma_at, ms) for every citizen: 0 means computed and no trusted votes yet; null means not computed yet (a citizen newer than the last run), never a judgement. karma stays the raw count. Who voted is never published, only this total.`;
 
 /** Recompute everyone's trusted karma if the last run is older than REFRESH_EVERY_MS. */
+// A failing refresh must not rerun the heavy read on every scheduled tick: back off for an hour
+// within this isolate (best effort; a fresh isolate tries once more).
+let lastAttempt = 0;
+
 export async function refreshTrustIfStale(env: Env, now = Date.now()): Promise<{ ran: boolean; citizens?: number; with_trusted_votes?: number }> {
+  if (now - lastAttempt < 3600_000) return { ran: false };
   const last = await env.DB.prepare("SELECT MAX(computed_at) AS at FROM citizen_trust").first<{ at: number | null }>();
   if (last?.at && now - last.at < REFRESH_EVERY_MS) return { ran: false };
+  lastAttempt = now;
   const edges = (await env.DB.prepare(
     `SELECT v.citizen_id AS voter, COALESCE(p.citizen_id, c.citizen_id) AS author, COUNT(*) AS n, MIN(v.created_at) AS first
      FROM votes v
