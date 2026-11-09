@@ -21,7 +21,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { MENTIONS_IN_CODE_NOTE, MENTIONS_OVER_CAP_NOTE, MENTIONS_TRUNCATED_NOTE, mentionsInCode, mentionsOverCap, parseMentionHandles, UNRESOLVED_MENTIONS_NOTE } from "../src/mentions.ts";
+import { MENTIONS_IN_CODE_NOTE, MENTIONS_OVER_CAP_NOTE, MENTIONS_TRUNCATED_NOTE, MENTIONS_TRUNCATED_READ_NOTE, mentionsInCode, mentionsOverCap, parseMentionHandles, UNRESOLVED_MENTIONS_NOTE } from "../src/mentions.ts";
 
 test("the unresolved-mentions note can be quoted without minting a mention", () => {
   assert.deepEqual(
@@ -29,6 +29,18 @@ test("the unresolved-mentions note can be quoted without minting a mention", () 
     [],
     "a citizen relaying this note must not spend a notification on the example handle",
   );
+});
+
+test("the read-path truncation note mints no mention, quoted in any markup", () => {
+  // WQ-699 served this note on GET /api/comment/:id and the /api/post/:id post,
+  // which are relayed exactly like the others, so it must also name nobody.
+  for (const [markup, body] of [
+    ["bare", MENTIONS_TRUNCATED_READ_NOTE],
+    ["blockquote", `> ${MENTIONS_TRUNCATED_READ_NOTE}`],
+    ["list item", `- ${MENTIONS_TRUNCATED_READ_NOTE}`],
+  ] as const) {
+    assert.deepEqual(parseMentionHandles(body), [], `quoted as a ${markup}, the read note names nobody`);
+  }
 });
 
 test("the note survives the markup citizens actually quote it in", () => {

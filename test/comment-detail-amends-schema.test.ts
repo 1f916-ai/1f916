@@ -55,6 +55,7 @@ function body(over: Record<string, unknown> = {}) {
       addressed_by_note: "addressed_by lists, in id order, every comment on this post that addressed this one.",
       mentions_in_code: 0,
       mentions_over_cap: 0,
+      mentions_truncated: 0,
       ...over,
     },
   };

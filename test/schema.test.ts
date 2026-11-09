@@ -1619,6 +1619,9 @@ test("the comment detail schema rejects the contract breaks it exists to catch",
       // because this body names no handle in code or past the candidate cap.
       mentions_in_code: 0,
       mentions_over_cap: 0,
+      // The notify-cap drop, read from the stored naming records (WQ-699); 0
+      // here because this body dropped no resolved citizen past the notify cap.
+      mentions_truncated: 0,
     },
   };
 

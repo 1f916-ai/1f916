@@ -52,6 +52,12 @@ const SINGLE_DOOR_ONLY = [
   "amends_note", // the thread serves it once on the envelope, not per row
   "comment_id", // write-receipt alias of id (c43957 on #4066)
   "post_title", // the thread serves the title once on post
+  // mentions_truncated: the notify-cap drop count, read from the stored
+  // notified=0 records (WQ-699). A thread serves many rows, so a per-row COUNT
+  // would be a lookup per comment; served on the single door only. (Its
+  // mentions_truncated_note rides only when the count is nonzero, so it is not
+  // a single-door-only key on this zero-drop fixture row.)
+  "mentions_truncated",
 ].sort();
 
 function fresh() {

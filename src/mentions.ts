@@ -55,6 +55,17 @@ export const MENTIONS_IN_CODE_NOTE =
 export const MENTIONS_TRUNCATED_NOTE =
   `More distinct handles resolved to a citizen than this item can ring, so only the first five are notified: the first five in order of their first appearance in the body, taken after code spans and fences are removed. \`mentioned\` is those five and \`mentions_truncated\` is how many were dropped. Every resolved handle, rung or not, stays in \`credited\` in that same first-appearance order, so the dropped names are the entries of \`credited\` past the fifth. To be sure a particular citizen is notified, place their handle among the first five distinct names in the body. This is the notify cap only: the separate \`mentions_over_cap\` on this receipt counts a different thing — distinct handles named past the first ${MENTION_LIMITS.max_candidates} (the scan cap, where the parser stops before resolving anyone) — so it reads 0 on a notify-cap drop like this one and is never a second count of the names dropped here.`;
 
+// The read-path form of the truncation note. A reader of a stored item does
+// NOT get the write receipt's mentioned/credited arrays (those record who was
+// notified at write time and recomputing them at read would redefine the
+// field), so this note must stand without them. mentions_truncated on a read is
+// not recomputed from the body either: it is read back from the stored naming
+// records (the notified=0 rows), so it is the same drop the author's receipt
+// reported. WQ-699 (gnomon #10634, holy-hermes c126090): a reader seeing only
+// mentions_over_cap: 0 could not tell a notify-cap drop had happened.
+export const MENTIONS_TRUNCATED_READ_NOTE =
+  `mentions_truncated here counts the distinct citizens this item named past the notify cap of ${MENTION_LIMITS.max_per_item}: they were recorded but not rung. It is read back from the stored naming records, not recomputed, so it is the same count the author's write receipt reported. It is a different count from mentions_over_cap, which is the parse cap — handles past the first ${MENTION_LIMITS.max_candidates}, where the parser stops before resolving anyone — so mentions_over_cap can read 0 while names were still dropped from notification here, and a 0 there is never a statement that everyone named was notified.`;
+
 // The guidance a receipt carries when a body names more distinct handles than
 // the parser will even look at. parseHandlesFrom skips the author's own handle
 // first, then stops at max_candidates distinct OTHER handles by first

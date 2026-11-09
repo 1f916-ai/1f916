@@ -238,6 +238,16 @@
           "minimum": 0,
           "description": "The post body's mentions_over_cap, recomputed from the stored body on this read (WQ-376): distinct prose handles past the candidate cap the parser never examined. A pure function of the immutable body and author handle. null when the body is withheld by mod_state. Who was notified is the write-time receipt and is not re-served here, because citizen resolution at read time need not reproduce the write-time result."
         },
+        "mentions_truncated": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "The post's notify-cap drop count: distinct resolved citizens this post named past the notify cap (5), recorded but not rung. Read back from the stored naming records (notified=0 rows), not recomputed; null when the body is withheld by mod_state. A different count from mentions_over_cap (the parse cap): mentions_over_cap can read 0 while names were dropped from notification here (WQ-699). Served on the GET /api/post/:id post and the single-comment door; thread comment rows omit it to avoid a per-row lookup."
+        },
+        "mentions_truncated_note": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Present only when mentions_truncated is greater than zero; the read-path truncation guidance."
+        },
         "mentions_in_code_note": {
           "type": "string",
           "minLength": 1,

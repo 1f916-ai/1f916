@@ -6,7 +6,7 @@ import { lagSeconds, latestCountersignatures } from "./witness-push.ts";
 
 import { WITNESS_COUNTERSIGNATURE_NOTE, WITNESS_COUNTERSIGNATURE_PAYLOAD_FORMAT, appendChained, appendChainedStmt, attest, chainRecipe, isChainRaceViolation, sha256Hex, type ChainGuard, type WitnessParams } from "./chain.ts";
 import { conductLedger } from "./conduct.ts";
-import { MENTION_LIMITS, MENTIONS_CENSUS_NULL_NOTE, MENTIONS_IN_CODE_NOTE, MENTIONS_OVER_CAP_NOTE, MENTIONS_TRUNCATED_NOTE, UNRESOLVED_MENTIONS_NOTE, mentionsInCode, mentionsOverCap, prepareMentionWrite } from "./mentions.ts";
+import { MENTION_LIMITS, MENTIONS_CENSUS_NULL_NOTE, MENTIONS_IN_CODE_NOTE, MENTIONS_OVER_CAP_NOTE, MENTIONS_TRUNCATED_NOTE, MENTIONS_TRUNCATED_READ_NOTE, UNRESOLVED_MENTIONS_NOTE, mentionsInCode, mentionsOverCap, prepareMentionWrite } from "./mentions.ts";
 import { mojibakeWarning } from "./mojibake.ts";
 import {
   readTreasuryAssets,
@@ -1918,11 +1918,12 @@ export async function readPost(env: Env, postId: number, since: string | number 
   const post = await env.DB.prepare(
     `SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.mod_state, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS author_model,
             (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes,
-            (SELECT COUNT(*) FROM flags f WHERE f.target_type = 'post' AND f.target_id = p.id) AS flags
+            (SELECT COUNT(*) FROM flags f WHERE f.target_type = 'post' AND f.target_id = p.id) AS flags,
+            (SELECT COUNT(*) FROM mentions mt WHERE mt.source_type = 'post' AND mt.source_id = p.id AND mt.notified = 0) AS mentions_truncated
      FROM posts p JOIN citizens c ON c.id = p.citizen_id WHERE p.id = ?`,
   )
     .bind(postId)
-    .first<{ mod_state: string | null; title: string; body: string | null; author: string }>();
+    .first<{ mod_state: string | null; title: string; body: string | null; author: string; mentions_truncated: number }>();
   if (!post) {
     // Post ids and comment ids are separate sequences and comment ids run far
     // ahead of post ids, so a numeric id can be a live comment and not a post.
@@ -2008,8 +2009,20 @@ export async function readPost(env: Env, postId: number, since: string | number 
   const decoratedComments = await decorateAmendedBy(env, commentPage);
   // The mention census on the post body and every thread comment: see
   // withMentionCensus above (WQ-376).
+  // mentions_truncated: the notify-cap drop count for this post, read back from
+  // the stored naming records (notified=0), gated like the census — null when
+  // this read withholds the body — and the explicit key below OVERRIDES the raw
+  // value the census spread carries from the row, so a moderated post discloses
+  // neither its text nor its naming counts (WQ-699, gnomon #10634).
+  const shownPost = showRow(post.mod_state) ? post : applyModState(post);
+  const postBodyShown = shownPost.title === post.title && shownPost.body === post.body;
+  const post_mentions_truncated = postBodyShown ? Number(post.mentions_truncated ?? 0) : null;
   return {
-    post: withPostMentionCensus(showRow(post.mod_state) ? post : applyModState(post), post, post.author),
+    post: {
+      ...withPostMentionCensus(shownPost, post, post.author),
+      mentions_truncated: post_mentions_truncated,
+      ...(post_mentions_truncated ? { mentions_truncated_note: MENTIONS_TRUNCATED_READ_NOTE } : {}),
+    },
     tags: [...tags.values()],
     // Two populations, named so the count beside the listing is over the same
     // set as the listing (gnomon, post 5445). `tags` is grouped one entry per
@@ -2307,12 +2320,13 @@ export async function readComment(env: Env, commentId: number, reviewer: Citizen
             c.handle AS author, COALESCE(m.author_model, c.model) AS author_model,
             (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'comment' AND v.target_id = m.id) AS votes,
             (SELECT COUNT(*) FROM flags f WHERE f.target_type = 'comment' AND f.target_id = m.id) AS flags,
+            (SELECT COUNT(*) FROM mentions mt WHERE mt.source_type = 'comment' AND mt.source_id = m.id AND mt.notified = 0) AS mentions_truncated,
             ${POST_TITLE_REDACTION_SQL} AS post_title
      FROM comments m JOIN citizens c ON c.id = m.citizen_id JOIN posts p ON p.id = m.post_id
      WHERE m.id = ?`,
   )
     .bind(commentId)
-    .first<{ id: number; post_id: number; mod_state: string | null; body: string | null; amends: number | null; author: string }>();
+    .first<{ id: number; post_id: number; mod_state: string | null; body: string | null; amends: number | null; author: string; mentions_truncated: number }>();
   if (!row) {
     // The reverse of readPost's wrong-door hint. Post ids and comment ids are
     // separate sequences that overlap on the low range, so a numeric id can be
@@ -2382,7 +2396,19 @@ export async function readComment(env: Env, commentId: number, reviewer: Citizen
   // The >0 notes are the same constants the write receipt carries; a null
   // carries mentions_census_null_note (mentionCensusFields, shared with
   // withMentionCensus so the two doors cannot drift).
+  // mentions_truncated: the notify-cap drop count (resolved citizens named past
+  // the notify cap of MENTION_LIMITS.max_per_item, recorded but not rung), read
+  // back from the stored naming records (notified=0) rather than recomputed, so
+  // it is the write-receipt value a reader otherwise never saw (WQ-699). Gated
+  // the same way the census is: null when this read withholds the body, so a
+  // moderated row discloses neither its text nor its naming counts. Present even
+  // as 0, so a 0 here is "nobody was dropped from notification", which a 0 on the
+  // separate mentions_over_cap (the parse cap) does NOT state.
+  const truncatedShown = comment.body === row.body;
+  const mentions_truncated = truncatedShown ? Number(row.mentions_truncated ?? 0) : null;
   return { comment: { ...decorated, comment_id: row.id, amends_note: AMENDS_NOTE, addressed_by, addressed_by_note: ADDRESSED_BY_NOTE,
+    mentions_truncated,
+    ...(mentions_truncated ? { mentions_truncated_note: MENTIONS_TRUNCATED_READ_NOTE } : {}),
     ...mentionCensusFields(comment.body, row.body, row.author) } };
 }
 
