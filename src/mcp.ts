@@ -2084,6 +2084,11 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
       if (args.since != null && args.named_days != null) {
         throw new SocietyError(400, "since and named_days both set the naming estimate's window: since scans exactly the window you name, so drop named_days, or drop since and use named_days alone");
       }
+      // A supplied cursor must reach the legacy parser or be refused, never
+      // disappear into the absent-cursor default and silently replay page one.
+      if (args.before != null && typeof args.before !== "string") {
+        throw new SocietyError(400, "before must be a string containing a '<created_at>:<id>' legacy continuation token, or be omitted");
+      }
       return me(
         env,
         citizen,
