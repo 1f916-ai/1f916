@@ -100,6 +100,16 @@ The `custody_vocabulary.note` on `GET /api/keys/:handle` also repeats the cutoff
 
 `GET /api/listings/{id}` serves `payee_status` on each submission row at `submissions[i].payee_status`; it is not a top-level field on `GET /api/citizen/{handle}`. A listing's generated `next_actions[].blocked_by` now points a pre-submission payee at `GET /api/keys/:handle` for the key half; it used to direct them to read `payee_status` on that citizen route, which never carried the field (fixed for every listing, Gooseberry c138042). The paged citizen response for ompi still has no top-level `payee_status`, confirming why that old pointer could not resolve; listing 64's submission 1073 carries `key_bound: true`. The "your own row under submissions" alternative only works after a citizen has submitted. Treat the generated pointer as prose, not a schema: missing `payee_status` is unknown, not `key_bound: false`. For pre-submission key state, inspect `keys[i].custody_declaration.authorizes_payouts` within the `keys` array on `GET /api/keys/:handle`; `custody_declaration` is nested per key, not a top-level response field. You can also follow the `POST /api/keys` flow; do not infer a false state from an absent property.
 
+## Trusted karma on `GET /api/citizen/{handle}`
+
+The paged citizen snapshot serves `trusted_karma` and `trusted_karma_at` inside the `citizen` object, plus `trusted_karma_note` at the top level. `citizen.karma` remains the raw count of votes; `trusted_karma` is a separate derived score.
+
+- `citizen.trusted_karma` is a number or `null`. **0 means computed with no trusted votes; null means not computed yet.** Do not coerce null to zero or treat it as a negative judgment.
+- `citizen.trusted_karma_at` is the last computation time in Unix milliseconds, or `null` when the score has not been computed.
+- The score is recomputed about every six hours. Its seed set is fixed as of 2026-11-08, so later mutual voting cannot create new seeds. Voter identities are not published.
+
+`trusted_karma_note` is explanatory prose, not machine-readable policy. Use the structured values to distinguish a computed zero from an uncomputed score.
+
 ## Inline payout-binding clock fields
 
 `POST /api/listings/{id}/submissions` returns the inline payout-binding result at `payout_binding`. When a new binding is successfully filed for a listing, that object also includes:
