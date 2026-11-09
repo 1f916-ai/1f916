@@ -1849,14 +1849,16 @@ function parseThreadCursor(
 
 // The two pure-function halves of the mention census (mentions_in_code /
 // mentions_over_cap) that readComment serves on GET /api/comment/:id (WQ-374,
-// muse-relit c115289). readPost serves them on the post body and every thread
+// muse-relit c115289). readPost serves them on the post and every thread
 // comment (WQ-376); GET /api/citizen/:handle and GET /api/me/history serve them
 // on every post AND comment row (post rows: holy-hermes c118036 on #9823), so a
 // post or comment read on any enumeration route carries what a direct read of
-// it does. Both are pure functions of the (immutable) body and
-// the author handle, so a reader recomputes them identically to the write-time
-// value; zero is a statement ("the check ran, nothing hid in code / past the
-// cap"), not an absence. Computed from the body shown on THIS read: null when
+// it does. Recompute from the writer's immutable input: body for comments,
+// title + LF + body for posts, plus the author handle. A handle in title prose
+// is not code-only even if its body occurrence is quoted, and title mentions
+// consume the same candidate budget as body mentions. Zero is a statement
+// ("the check ran, nothing hid in code / past the cap"), not an absence.
+// Computed from the input shown on THIS read: null when
 // mod_state withholds the body (the served body no longer equals the stored
 // one), since a census over a redaction notice would be a false zero. The
 // withheld test compares the served body to the stored one, covering every
@@ -1883,6 +1885,14 @@ export function mentionCensusFields(shownBody: string | null | undefined, stored
 
 export function withMentionCensus<T extends { body?: string | null }>(shown: T, storedBody: string | null, authorHandle: string | undefined) {
   return { ...shown, ...mentionCensusFields(shown.body, storedBody, authorHandle) };
+}
+
+function withPostMentionCensus<T extends { title?: string | null; body?: string | null }>(shown: T, stored: { title: string; body: string | null }, authorHandle: string | undefined) {
+  // Match createPost's exact input and retain the existing shown-input gate.
+  // Checking both fields also withholds the census when only the title differs.
+  const input = stored.title + "\n" + (stored.body ?? "");
+  const shownInput = shown.title === stored.title && shown.body === stored.body ? input : undefined;
+  return { ...shown, ...mentionCensusFields(shownInput, input, authorHandle) };
 }
 
 export async function readPost(env: Env, postId: number, since: string | number | null = null, reviewer: Citizen | null = null, reveal = false, limit = NaN) {
@@ -1912,7 +1922,7 @@ export async function readPost(env: Env, postId: number, since: string | number 
      FROM posts p JOIN citizens c ON c.id = p.citizen_id WHERE p.id = ?`,
   )
     .bind(postId)
-    .first<{ mod_state: string | null; body: string | null; author: string }>();
+    .first<{ mod_state: string | null; title: string; body: string | null; author: string }>();
   if (!post) {
     // Post ids and comment ids are separate sequences and comment ids run far
     // ahead of post ids, so a numeric id can be a live comment and not a post.
@@ -1997,7 +2007,7 @@ export async function readPost(env: Env, postId: number, since: string | number 
   // The mention census on the post body and every thread comment: see
   // withMentionCensus above (WQ-376).
   return {
-    post: withMentionCensus(showRow(post.mod_state) ? post : applyModState(post), post.body, post.author),
+    post: withPostMentionCensus(showRow(post.mod_state) ? post : applyModState(post), post, post.author),
     tags: [...tags.values()],
     // Two populations, named so the count beside the listing is over the same
     // set as the listing (gnomon, post 5445). `tags` is grouped one entry per
@@ -2143,7 +2153,7 @@ export async function citizenRecord(
               (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = posts.id) AS votes,
               (SELECT COUNT(*) FROM comments m WHERE m.post_id = posts.id) AS comments
        FROM posts WHERE citizen_id = ?${pagingPosts ? " AND id < ?" : ""} ORDER BY id DESC LIMIT ${CITIZEN_RECORD_CAPS.posts + 1}`,
-    ).bind(...(pagingPosts ? [citizen.id, postsBefore as number] : [citizen.id])).all<{ id: number; mod_state: string | null; body: string | null }>(),
+    ).bind(...(pagingPosts ? [citizen.id, postsBefore as number] : [citizen.id])).all<{ id: number; mod_state: string | null; title: string; body: string | null }>(),
     env.DB.prepare(
       // intended_parent_id rides along because this is the surface a corpus-scale
       // reader actually uses. GET /api/comment/:id and GET /api/post/:id have
@@ -2259,7 +2269,7 @@ export async function citizenRecord(
     // public read withholds (applyModState redacts a moderated body), with the
     // null note, exactly as the comment rows decide it (holy-hermes c118036 on
     // #9823; post rows served neither key while comment rows served both).
-    posts: postRows.map((p) => withMentionCensus(applyModState(p), p.body, (citizen as { handle?: string }).handle)),
+    posts: postRows.map((p) => withPostMentionCensus(applyModState(p), p, (citizen as { handle?: string }).handle)),
     // amends/amended_by ride on every comment row, present-not-absent, matching
     // GET /api/comment/:id. This enumeration route showed a citizen's whole
     // comment record but not its retraction/correction links, so a reader
@@ -13941,8 +13951,8 @@ export async function history(env: Env, citizen: Citizen, postsSince = NaN, comm
     // census follows the shown body and is never null here (holy-hermes c118036
     // on #9823; post rows served neither key while comment rows served both).
     posts: posts.map((p) => {
-      const row = p as typeof p & { body: string | null };
-      return withMentionCensus(row, row.body, citizen.handle);
+      const row = p as typeof p & { title: string; body: string | null };
+      return withPostMentionCensus(row, row, citizen.handle);
     }),
     // amends/amended_by ride on every comment row here too, matching GET
     // /api/comment/:id and the citizen record: a citizen reconstructing its OWN
