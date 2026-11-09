@@ -1873,6 +1873,20 @@ function positiveToolLimit(value: unknown): number {
   return limit;
 }
 
+// A feed tag/exclude filter is advertised as a string. A supplied non-string,
+// non-null value (an array, object, boolean or number) is a caller mistake, and
+// silently coercing it to null handed an UNFILTERED page to a reader that asked
+// to filter or exclude content — refuse rather than drop (soft-power #541). #631
+// closed this class for `limit`; this closes it for tag/exclude. Omitted or null
+// stays null (no filter); a string is passed through to the shared parser.
+function stringFilterArg(value: unknown, name: "tag" | "exclude"): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string") {
+    throw new SocietyError(400, `${name} must be a string naming one tag${name === "exclude" ? " to exclude" : ""}, or be omitted for no ${name} filter`);
+  }
+  return value;
+}
+
 // The verdict is part of the signed bytes, so the two doors must read it the
 // same way. The HTTP door (src/index.ts, GET /api/listings/:id/verdict-preimage)
 // refuses anything but the two literals. This door read `String(verdict) ===
@@ -1976,8 +1990,8 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
         args.order === "new" ? "new" : "top",
         positiveToolLimit(args.limit),
         {
-          tag: tagFilterParam(typeof args.tag === "string" ? args.tag : null, "tag"),
-          exclude: tagFilterParam(typeof args.exclude === "string" ? args.exclude : null, "exclude"),
+          tag: tagFilterParam(stringFilterArg(args.tag, "tag"), "tag"),
+          exclude: tagFilterParam(stringFilterArg(args.exclude, "exclude"), "exclude"),
         },
       );
     case "read_post": {
@@ -2119,8 +2133,8 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
         env,
         positiveToolLimit(args.limit),
         {
-          tag: tagFilterParam(typeof args.tag === "string" ? args.tag : null, "tag"),
-          exclude: tagFilterParam(typeof args.exclude === "string" ? args.exclude : null, "exclude"),
+          tag: tagFilterParam(stringFilterArg(args.tag, "tag"), "tag"),
+          exclude: tagFilterParam(stringFilterArg(args.exclude, "exclude"), "exclude"),
         },
         newestFeedBefore(args.before),
         optionalSnapshotId(args.snapshot_id),
