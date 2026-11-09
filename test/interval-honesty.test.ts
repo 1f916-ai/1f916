@@ -31,6 +31,9 @@ function stubEnv(): Env {
         },
         async first<T>() {
           if (sql.includes("RETURNING id")) return { id: 999 } as T;
+          // The dedup lookup contains an amendment COUNT subquery, but returns
+          // a comment row (or no match), not the aggregate count.
+          if (sql.includes("SELECT id, created_at FROM comments")) return null as T;
           if (sql.includes("COUNT(*)")) return { n: 0 } as T;
           if (sql.includes("FROM posts WHERE id")) return { id: 7 } as T;
           return null as T;

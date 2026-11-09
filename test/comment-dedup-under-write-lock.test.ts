@@ -98,7 +98,7 @@ test("a refused twin spends nothing: no mention rows, no daily-cap count", async
 test("the rule is inside the INSERT, and a null write is re-read before it is called a spent day", () => {
   const source = readFileSync(new URL("../src/society.ts", import.meta.url), "utf8");
   const fn = source.slice(source.indexOf("export async function createComment"), source.indexOf("// docket:log-the-null — the depth cap moved this reply"));
-  assert.match(fn, /extraWhere:\s*\n?\s*"NOT EXISTS \(SELECT 1 FROM comments WHERE citizen_id = \? AND post_id = \? AND body = \? AND COALESCE\(intended_parent_id, parent_id\) IS \? AND created_at > \?\)"/);
+  assert.match(fn, /extraWhere:\s*\n?\s*"NOT EXISTS \(SELECT 1 FROM comments WHERE citizen_id = \? AND post_id = \? AND body = \? AND COALESCE\(intended_parent_id, parent_id\) IS \? AND created_at > \? AND \(SELECT COUNT\(\*\) FROM comment_amends WHERE amender_id = comments\.id\) = \? AND NOT EXISTS \(SELECT 1 FROM comment_amends WHERE amender_id = comments\.id AND amended_id NOT IN \(SELECT value FROM json_each\(\?\)\)\)\)"/);
   const nullWrite = fn.indexOf("if (commentId === null) {");
   const reread = fn.indexOf("const twin = await findDuplicate();");
   const spent = fn.lastIndexOf('throw new SocietyError(429, "Daily comments spent');

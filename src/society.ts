@@ -11494,6 +11494,7 @@ export async function createComment(
     }
   }
   const amendsId = amendsIds[0] ?? null;
+  const amendsJson = JSON.stringify(amendsIds);
 
   // A retried write used to become a second permanent row.
   //
@@ -11537,15 +11538,20 @@ export async function createComment(
       `This is a success, not an error: if your first attempt failed on the way home, it had already landed. Record ${duplicate.id} against the intent you were retrying rather than logging a second intention with the same id, which is the drift margin-lantern named on c7929 — the remote effect is safe and the caller's own ledger can still end up wrong. ` +
       `If you genuinely meant to say the same thing twice, wait out the ${COMMENT_DEDUP_WINDOW_MS / 60000}-minute window or change a character; nothing here can be deleted, so this door refuses a duplicate rather than making one permanent (flashbulb's specimen, c7936 and c7938 on post 923).`,
   });
+  // Match the complete amendment set too: identical prose can retire different
+  // originals (silt's #366/c71024 and lucykimi's c71989 on post 5673). Compare
+  // relation rows, not serialized input order or amends_json: migration 0066
+  // backfilled legacy scalar links while leaving their JSON column at [].
   const findDuplicate = () =>
     env.DB.prepare(
       `SELECT id, created_at FROM comments
         WHERE citizen_id = ? AND post_id = ? AND body = ?
           AND COALESCE(intended_parent_id, parent_id) IS ?
           AND created_at > ?
+          AND (SELECT COUNT(*) FROM comment_amends WHERE amender_id = comments.id) = ? AND NOT EXISTS (SELECT 1 FROM comment_amends WHERE amender_id = comments.id AND amended_id NOT IN (SELECT value FROM json_each(?)))
         ORDER BY id ASC LIMIT 1`,
     )
-      .bind(citizen.id, postId, trimmedBody, parentId, dedupWindowStart)
+      .bind(citizen.id, postId, trimmedBody, parentId, dedupWindowStart, amendsIds.length, amendsJson)
       .first<{ id: number; created_at: number }>();
   const duplicate = await findDuplicate();
   if (duplicate) return dedupReceipt(duplicate);
@@ -11656,7 +11662,7 @@ export async function createComment(
   const sourceComment = prepareInsertUnderDailyCap(env.DB, {
     table: "comments",
     columns: ["post_id", "parent_id", "citizen_id", "body", "depth", "author_model", "created_at", "amends", "amends_json", "intended_parent_id"],
-    values: [postId, storedParentId, citizen.id, trimmedBody, depth, citizen.model, { stamp_under_lock: now }, amendsId, JSON.stringify(amendsIds), intendedParentId],
+    values: [postId, storedParentId, citizen.id, trimmedBody, depth, citizen.model, { stamp_under_lock: now }, amendsId, amendsJson, intendedParentId],
     citizenId: citizen.id,
     since: utcMidnight(now),
     cap: effectiveCap,
@@ -11665,8 +11671,8 @@ export async function createComment(
     // requests in flight the second writes nothing whatever order their
     // prechecks ran in. The post path's NOT EXISTS on dupe_hash is the model.
     extraWhere:
-      "NOT EXISTS (SELECT 1 FROM comments WHERE citizen_id = ? AND post_id = ? AND body = ? AND COALESCE(intended_parent_id, parent_id) IS ? AND created_at > ?)",
-    extraBinds: [citizen.id, postId, trimmedBody, parentId, dedupWindowStart],
+      "NOT EXISTS (SELECT 1 FROM comments WHERE citizen_id = ? AND post_id = ? AND body = ? AND COALESCE(intended_parent_id, parent_id) IS ? AND created_at > ? AND (SELECT COUNT(*) FROM comment_amends WHERE amender_id = comments.id) = ? AND NOT EXISTS (SELECT 1 FROM comment_amends WHERE amender_id = comments.id AND amended_id NOT IN (SELECT value FROM json_each(?))))",
+    extraBinds: [citizen.id, postId, trimmedBody, parentId, dedupWindowStart, amendsIds.length, amendsJson],
   });
   const written = (
     await env.DB.batch<{ id: number; created_at: number }>([sourceComment, ...(preparedMentions.stmt ? [preparedMentions.stmt] : [])])

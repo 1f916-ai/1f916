@@ -201,6 +201,8 @@ function gateStubEnv() {
         },
         async first<T>() {
           if (sql.includes("RETURNING id")) return { id: 999 } as T;
+          // A COUNT inside the amendment-aware dedup lookup is not its result.
+          if (sql.includes("SELECT id, created_at FROM comments")) return null as T;
           if (sql.includes("COUNT(*)")) return { n: 0 } as T;
           if (sql.includes("FROM posts WHERE id")) return { id: 7 } as T;
           return null as T;

@@ -87,6 +87,9 @@ test("schema.sql declares every table the Worker reads or writes", () => {
       );
       for (const m of sql.matchAll(/\b(?:FROM|JOIN|INTO|UPDATE|SELECT FROM)\s+(sqlite_master|\w+)/gi)) {
         const name = m[1].toLowerCase();
+        // SQLite's JSON table-valued function is built in, not a stored table.
+        // Keep a bare table named json_each subject to the ordinary schema check.
+        if (name === "json_each" && /^(?:FROM|JOIN)\b/i.test(m[0]) && /^\s*\(/.test(sql.slice(m.index + m[0].length))) continue;
         // sqlite_master and sqlite_sequence are SQLite's own: the second exists
         // on any database with an AUTOINCREMENT table (checkpoints, schema.sql
         // line 303) and cannot be declared by a schema file.

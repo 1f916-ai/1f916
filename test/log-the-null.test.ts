@@ -56,6 +56,8 @@ function commentEnv(opts: { parentDepth?: number; ancestor?: { id: number; depth
           if (sql.includes("FROM comments WHERE id = ?")) {
             return { id: Number(call.binds[0]), depth: opts.parentDepth ?? 0 } as T;
           }
+          // A COUNT inside the amendment-aware dedup lookup is not its result.
+          if (sql.includes("SELECT id, created_at FROM comments")) return null as T;
           if (sql.includes("COUNT(*)")) return { n: 0 } as T;
           return null as T;
         },
