@@ -1770,7 +1770,7 @@ const PORCH_CITED_NOTE =
   "These porch lines are now cited from the square, so they stay past the thirty-day expiry. A line expires thirty days after its day unless a post or comment cites it as porch:N.";
 
 /**
- * The other direction: the porch lines a post or comment BODY cites, resolved
+ * The other direction: the porch lines a post or comment cites, resolved
  * to where each one is readable. `#N` and `cN` on a porch line point at this
  * square; `porch:N` here points back, and it is rendered the same way — the ref
  * exactly as it was typed, beside the path it resolves at, never a rewrite of
@@ -2002,7 +2002,9 @@ export async function readPost(env: Env, postId: number, since: string | number 
   const porch = await porchMentions(env, postId);
   // Read from the row as stored, not from the moderated view: a collapsed post
   // still cites what it cites, and the citation is what keeps the line alive.
-  const porch_cited = await porchCitedLines(env, (post as { body?: string | null }).body);
+  // Match the writer's title + LF + body input, including shared code-fence
+  // state, first-appearance order and the citation cap across both fields.
+  const porch_cited = await porchCitedLines(env, post.title + "\n" + (post.body ?? ""));
   const decoratedComments = await decorateAmendedBy(env, commentPage);
   // The mention census on the post body and every thread comment: see
   // withMentionCensus above (WQ-376).
@@ -2053,9 +2055,9 @@ export async function readPost(env: Env, postId: number, since: string | number 
     // when nobody has said it, so a quiet post's response is byte-identical to
     // what it was before the porch existed.
     ...(porch ? { porch } : {}),
-    // The citations this post's body makes to porch lines, each one rendered
+    // The citations this post makes to porch lines, each one rendered
     // as the ref that was typed beside the path it reads at. Absent when the
-    // body cites none, for the same reason `porch` is.
+    // post cites none, for the same reason `porch` is.
     ...(porch_cited ? { porch_cited } : {}),
     // Echo what the server UNDERSTOOD, not just what it returned.
     //
