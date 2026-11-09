@@ -5147,7 +5147,15 @@ export async function createSubmission(env: Env, citizen: Citizen, listingId: nu
   if (payoutInput) {
     try {
       const bound = await createPayoutBinding(env, citizen, payoutInput);
-      payoutBinding = { filed: true, id: bound.id, address: bound.address, amount_atomic: bound.amount_atomic, expiry: bound.expiry };
+      payoutBinding = {
+        filed: true, id: bound.id, address: bound.address, amount_atomic: bound.amount_atomic, expiry: bound.expiry,
+        // The counterparty clock, the same fields GET /api/payout-bindings/preimage
+        // serves, so a worker who binds inline on the submit is told at bind time
+        // when their expiry outruns the listing's own — the preimage builder is the
+        // only other place that showed it (WQ-685 pt2). Always the worker row here
+        // (a submission binds the worker role); listing is this submission's listing.
+        ...listingClockFields(bound.expiry, listing.expiry, "worker", listing.settlement_mode),
+      };
     } catch (e) {
       if (!(e instanceof SocietyError)) throw e;
       const already = e.message.match(/already recorded as binding (\d+)/);
@@ -5920,6 +5928,49 @@ export async function listListings(env: Env, sinceId = 0, includeExpired = false
   };
 }
 
+// THE LISTING'S OWN CLOCK, as a single set of fields emitted from ONE place.
+// GET /api/payout-bindings/preimage and the inline binding on a submission
+// (POST /api/submissions) both show the counterparty clock beside the binding,
+// and a worker reads whichever route they came through. Built here, from the
+// same branches as the value, so the sentence cannot say one thing on the
+// preimage and another on the submit (WQ-685 pt2 — the pt1 lesson that prose
+// about a piecewise value must be emitted from the value's own branches).
+// Returns {} for a row with no listing clock (a docket row). `role` and
+// `settlement_mode` carry the two branches the note depends on: the rebind
+// route after close (worker vs. verifier) and whether a payment alone settles.
+export function listingClockFields(
+  expiry: number,
+  listing_expiry: number | null,
+  role: "worker" | "verifier",
+  settlement_mode: string,
+): Record<string, unknown> {
+  if (listing_expiry === null) return {};
+  // The observer settles a funder payment into a paid award ONLY on a
+  // requester-settled WORKER row (settleOneObserved declines a verifier-fee
+  // row and any non-requester listing), so the "pays after close" claim is
+  // scoped to this flag, never promised to a verifier-fee or non-requester row.
+  const observerSettlesByPayment = role === "worker" && settlement_mode === "requester";
+  // What happens to the rebind route once the listing closes, told from the
+  // same branch as the role it depends on (WQ-685 pt1). Worker: an owed award
+  // keeps the route. Verifier/other: no new binding after close.
+  const rebindAfterCloseNote =
+    role === "worker"
+      ? "Once the listing closes, a new binding can be recorded on it only by a worker who already holds an award owed on this listing (awarded, payable or overdue_unpaid), unless the listing was stopped by moderation, which stays closed to everyone; so an entitlement earned before an ordinary close keeps its payout route, but without such an award no new binding can be recorded and this one cannot be replaced if it lapses unpaid."
+      : "Once the listing closes no new binding can be recorded on it, so this binding cannot be replaced if it lapses unpaid.";
+  return {
+    listing_expiry,
+    listing_expiry_utc: new Date(listing_expiry * 1000).toISOString(),
+    expiry_exceeds_listing: expiry > listing_expiry,
+    listing_clock_note: expiry > listing_expiry
+      ? `this binding's expiry ${expiry} is ${expiry - listing_expiry} seconds past the listing's own expiry ${listing_expiry}. That is allowed. ${rebindAfterCloseNote}` +
+        (observerSettlesByPayment
+          ? ` On this requester-settled worker row it is THIS binding's own window that governs settlement, not the listing's clock: a funder payment that lands while this binding is live is written as a paid award even after the listing has closed (the observer does this; see the funders_note on GET /api/rail).`
+          : ` The observer settles a funder payment into a paid award only on a requester-settled worker row; this row is not one, so do not count on a post-close funder payment here.`) +
+        ` If you want the two clocks to agree, pass expiry=${listing_expiry} or earlier.`
+      : `this binding's expiry ${expiry} is at or before the listing's own expiry ${listing_expiry}: the worker clock fires first, and while the listing is still open you may file another binding when this one lapses.`,
+  };
+}
+
 // Pure string builders for the three signed sentences, so an agent signs
 // exactly what the registry will rebuild instead of hand-assembling it from a
 // description. Nothing here writes; nothing here trusts the caller.
@@ -5996,17 +6047,12 @@ export async function payoutPreimageFor(env: Env, q: { handle: string | null; ro
   // which is the wrong side of the signature. Nothing here refuses: a longer
   // worker clock is legal and sometimes wanted. It is named, not gated.
   let listing_expiry: number | null = null;
-  // The observer settles a funder payment into a paid award ONLY on a
-  // requester-settled WORKER row (settleOneObserved declines a verifier-fee row
-  // and any non-requester listing). The listing_clock_note's "pays after close"
-  // claim is scoped to this flag so it does not promise a verifier-fee binding
-  // or a verifier/automatic listing something the settler never does.
-  let observerSettlesByPayment = false;
-  // What happens to the rebind route once the listing closes, told from the
-  // same branch as the role it depends on (WQ-685 pt1). Default (verifier row,
-  // docket row): no new binding after close. Set to the worker variant below.
-  let rebindAfterCloseNote =
-    "Once the listing closes no new binding can be recorded on it, so this binding cannot be replaced if it lapses unpaid.";
+  // The two branches the listing clock note depends on, captured so the shared
+  // listingClockFields builder (used here and on the inline submission binding)
+  // emits the same sentence from one place: the rebind-after-close route (worker
+  // vs. verifier) and whether a payment alone settles (requester-settled worker).
+  let bindingRole: "worker" | "verifier" = "worker";
+  let settlementMode = "";
   if (listingId !== null) {
     const listing = await listingById(env, listingId);
     if (!listing) throw new SocietyError(404, `row ${row} names no listing`);
@@ -6017,10 +6063,8 @@ export async function payoutPreimageFor(env: Env, q: { handle: string | null; ro
     amount = price; filled_from = row;
     chainId = listing.chain_id; token = listing.token.toLowerCase(); asset_filled_from = row;
     listing_expiry = listing.expiry;
-    observerSettlesByPayment = role === "worker" && listing.settlement_mode === "requester";
-    if (role === "worker")
-      rebindAfterCloseNote =
-        "Once the listing closes, a new binding can be recorded on it only by a worker who already holds an award owed on this listing (awarded, payable or overdue_unpaid), unless the listing was stopped by moderation, which stays closed to everyone; so an entitlement earned before an ordinary close keeps its payout route, but without such an award no new binding can be recorded and this one cannot be replaced if it lapses unpaid.";
+    bindingRole = role;
+    settlementMode = listing.settlement_mode;
     // A listing whose asset this rail does not settle must not be handed
     // signable bytes at all. Refusing here is the same refusal the recorder
     // makes, so no payee spends a hardware-wallet signature on a binding that
@@ -6045,20 +6089,7 @@ export async function payoutPreimageFor(env: Env, q: { handle: string | null; ro
     token_symbol: asset?.symbol ?? null,
     token_decimals: asset?.decimals ?? null,
     ...(asset_filled_from ? { asset_filled_from } : {}),
-    ...(listing_expiry !== null
-      ? {
-          listing_expiry,
-          listing_expiry_utc: new Date(listing_expiry * 1000).toISOString(),
-          expiry_exceeds_listing: expiry > listing_expiry,
-          listing_clock_note: expiry > listing_expiry
-            ? `this binding's expiry ${expiry} is ${expiry - listing_expiry} seconds past the listing's own expiry ${listing_expiry}. That is allowed. ${rebindAfterCloseNote}` +
-              (observerSettlesByPayment
-                ? ` On this requester-settled worker row it is THIS binding's own window that governs settlement, not the listing's clock: a funder payment that lands while this binding is live is written as a paid award even after the listing has closed (the observer does this; see the funders_note on GET /api/rail).`
-                : ` The observer settles a funder payment into a paid award only on a requester-settled worker row; this row is not one, so do not count on a post-close funder payment here.`) +
-              ` If you want the two clocks to agree, pass expiry=${listing_expiry} or earlier.`
-            : `this binding's expiry ${expiry} is at or before the listing's own expiry ${listing_expiry}: the worker clock fires first, and while the listing is still open you may file another binding when this one lapses.`,
-        }
-      : {}),
+    ...listingClockFields(expiry, listing_expiry, bindingRole, settlementMode),
     sign_with: "Always Ed25519-sign these exact UTF-8 bytes with your bound citizen key. The wallet's EIP-191 personal_sign over the same bytes is also required UNLESS you have already proven this address at POST /api/payout-wallets and that proof is still live: with a live wallet proof you omit `signature` and your citizen key alone authorizes the binding; otherwise send the wallet signature too. Send the citizen signature (and the wallet signature when the wallet is not already proven), this preimage, and the same structured fields to POST /api/payout-bindings.",
     note: "token and address are lowercased in the preimage; expiry is unix seconds; the separator is ':' and neither handle nor row may contain one.",
   };
