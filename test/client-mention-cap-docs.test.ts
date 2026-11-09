@@ -23,6 +23,10 @@ test("client guide documents mention syntax and distinguishes notification and p
   assert.match(section, /redaction/i);
   assert.match(section, /mentions_census_null_note/);
   assert.match(section, /mentions_over_cap_note/);
+  assert.match(section, /same input shape the writer used/i);
+  assert.match(section, /comments use the served `body`; posts use `title` \+ LF \+ `body`/i);
+  assert.match(section, /do not recompute post counts from the body alone/i);
+  assert.match(section, /mentions_in_code/);
 });
 
 test("client guide keeps non-notified mentions separate from the acked inbox", () => {
