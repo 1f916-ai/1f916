@@ -679,6 +679,7 @@ test("the pulse schema rejects a wake body missing its marks", () => {
       has_new_for_you: false,
       threads_moved: false,
       named_you: false,
+      credited_without_notice: 0,
       last_ack_at: 1,
       last_ack_age_ms: 0,
       watermark: "current",

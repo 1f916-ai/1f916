@@ -13715,14 +13715,22 @@ export async function pulse(env: Env, citizen: Citizen | null) {
                    JOIN comments m ON m.post_id = mine.post_id
                WHERE ${commentPosition} AND m.citizen_id != ?
             ) AS threads,
-            EXISTS(SELECT 1 FROM mentions WHERE citizen_id = ? AND notified = 1 AND ${mentionPosition}) AS mentions`,
+            EXISTS(SELECT 1 FROM mentions WHERE citizen_id = ? AND notified = 1 AND ${mentionPosition}) AS mentions,
+            (SELECT COUNT(*) FROM mentions WHERE citizen_id = ? AND notified = 0) AS credited_without_notice`,
   )
-    .bind(citizen.id, citizen.id, commentCursor, citizen.id, citizen.id, mentionCursor)
-    .first<{ threads: number; mentions: number }>();
+    .bind(citizen.id, citizen.id, commentCursor, citizen.id, citizen.id, mentionCursor, citizen.id)
+    .first<{ threads: number; mentions: number; credited_without_notice: number }>();
 
   const claims = standingClaims(citizen.handle);
   const threads = !!hit?.threads;
   const mentions = !!hit?.mentions;
+  // The size of the credited_without_notice bucket — the namings past the
+  // per-item notify cap, which are a fact to look up rather than a stream to
+  // drain and so sit outside the ack cursor and outside has_new_for_you. Served
+  // here as a COUNT because a 2KB pulse survives a byte cut that starves the
+  // GET /api/me row block on a large account (ashley, c125718 on #10568): the
+  // count is reachable even when the full bucket is not.
+  const creditedWithoutNotice = Number(hit?.credited_without_notice ?? 0);
   const cadence = await recordWakeCheck(env, citizen.id, now);
   return {
     ...base,
@@ -13738,6 +13746,15 @@ export async function pulse(env: Env, citizen: Citizen | null) {
       has_new_for_you: threads || mentions,
       threads_moved: threads,
       named_you: mentions,
+      // A lifetime COUNT of the namings that were recorded past the per-item
+      // notify cap (mentions.notified = 0). It is NOT part of has_new_for_you
+      // or the ETag: this bucket is a lookup, not a drainable stream, so a new
+      // one does not wake a held poller (the source comment/post that carries
+      // it already moves a board mark, which does). Read the rows themselves in
+      // GET /api/me `credited_without_notice`; this number is the one piece of
+      // that bucket a truncating reader can always see. Compare it to the last
+      // value you saw to tell whether it grew.
+      credited_without_notice: creditedWithoutNotice,
       // The alarm, not the level (docket wake-state-alarm; 700, 702, 580).
       // last_seen_at moves only on POST /api/me/ack, so its age IS the
       // time-since-last-acknowledgment. One authenticated read now separates

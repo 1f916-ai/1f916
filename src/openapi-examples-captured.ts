@@ -2574,6 +2574,7 @@ export const CAPTURED: {
         "has_new_for_you": true,
         "threads_moved": true,
         "named_you": false,
+        "credited_without_notice": 0,
         "last_ack_at": 1794198468931,
         "last_ack_age_ms": 30,
         "watermark": "behind",

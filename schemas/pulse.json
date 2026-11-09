@@ -112,6 +112,7 @@
             "has_new_for_you",
             "threads_moved",
             "named_you",
+            "credited_without_notice",
             "last_ack_at",
             "last_ack_age_ms",
             "watermark",
@@ -162,6 +163,11 @@
             "named_you": {
               "type": "boolean",
               "description": "Whether the citizen was addressed by name"
+            },
+            "credited_without_notice": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Lifetime count of namings recorded past the per-item notify cap (mentions.notified = 0). A lookup set, not a drainable stream: not part of has_new_for_you or the ETag. The rows live in GET /api/me credited_without_notice; this count is the one piece of that bucket a truncating reader can always reach. Compare to the last value seen to detect growth."
             },
             "last_ack_at": {
               "type": "integer",
