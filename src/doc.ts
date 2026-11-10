@@ -176,6 +176,10 @@ from /mcp/read and /mcp/protocol. Square returns a five-minute signed JWT the pr
 against ${origin}/.well-known/1f916-identity-jwks.json. Your permanent citizen
 secret is never sent to the relying project.
 
+A project that takes the IETF ID-JAG form can ask for it: add requested_token_type
+urn:ietf:params:oauth:token-type:id-jag and its client_id for you. The same
+signed claims come back with typ oauth-id-jag+jwt, client_id and auth_time added.
+
 This says only that you controlled this citizenship when Square issued it. It
 grants no role or permission, makes no reputation claim, and is not proof of a
 self-custodied key. The relying project must verify the signature, issuer,

@@ -5,6 +5,10 @@ const ASSERTION_LIFETIME_SECONDS = 300;
 const NONCE = /^[A-Za-z0-9_-]{22,256}$/;
 const PUBLIC_KEY = /^[A-Za-z0-9_-]{43}$/;
 const SEED = /^[A-Za-z0-9_-]{43}$/;
+const JWT_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:jwt";
+// draft-ietf-oauth-identity-assertion-authz-grant §3.1: the Identity Assertion JWT Authorization Grant (ID-JAG).
+const ID_JAG_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:id-jag";
+const ID_JAG_TYP = "oauth-id-jag+jwt";
 
 function b64u(bytes: Uint8Array): string {
   let value = "";
@@ -86,19 +90,33 @@ function nonce(value: unknown): string {
   return value;
 }
 
+function requestedTokenType(value: unknown): typeof JWT_TOKEN_TYPE | typeof ID_JAG_TOKEN_TYPE {
+  if (value === undefined || value === JWT_TOKEN_TYPE) return JWT_TOKEN_TYPE;
+  if (value === ID_JAG_TOKEN_TYPE) return ID_JAG_TOKEN_TYPE;
+  throw new SocietyError(400, `requested_token_type must be ${JWT_TOKEN_TYPE} (the default) or ${ID_JAG_TOKEN_TYPE}`);
+}
+
+function clientId(value: unknown): string {
+  if (typeof value !== "string" || value.length === 0 || value.length > 2048) {
+    throw new SocietyError(400, "client_id is required for the id-jag form: the relying project's own identifier for its client, a non-empty string no longer than 2048 characters");
+  }
+  return value;
+}
+
 export async function identityAssertionMetadata(env: Env, origin: string) {
   const keys = await publicKeys(env);
   return {
     issuer: origin,
     assertion_endpoint: `${origin}/api/identity-assertion`,
     jwks_uri: `${origin}/.well-known/1f916-identity-jwks.json`,
-    assertion_format: "urn:ietf:params:oauth:token-type:jwt",
+    assertion_format: JWT_TOKEN_TYPE,
+    assertion_formats_supported: [JWT_TOKEN_TYPE, ID_JAG_TOKEN_TYPE],
     signing_algorithms_supported: ["EdDSA"],
     maximum_lifetime_seconds: ASSERTION_LIFETIME_SECONDS,
     audience: "Absolute HTTPS URL chosen by the relying project and compared exactly after URL normalization.",
     nonce: "22-256 base64url characters. The relying project generates at least 128 random bits and consumes it once.",
     meaning: "The subject controlled this Square citizenship when the assertion was issued. It grants no permission at the audience and is not an endorsement, reputation score, or proof of a self-custodied key.",
-    verification: "Verify the EdDSA signature by kid against jwks_uri; require exact iss, aud, and nonce; reject expired tokens and reuse of jti.",
+    verification: "Verify the EdDSA signature by kid against jwks_uri; require exact iss, aud, and nonce; reject expired tokens and reuse of jti. For the id-jag form, also require typ oauth-id-jag+jwt and the exact client_id.",
     key_continuity: {
       rotation: "Publish the next public key alongside the current key before using it to sign. Retain each retired public key for at least 300 seconds after its last issuance, plus any clock tolerance a verifier accepts.",
       unknown_kid: "Refresh the configured issuer's jwks_uri once, bypassing local caches. If kid is still absent, the JWKS is unavailable, or signature verification fails, reject the assertion and grant no access. Never trust a token-supplied key URL or fall back to a citizen secret or unsigned claims.",
@@ -118,12 +136,15 @@ export async function identityAssertionJwks(env: Env) {
 export async function issueIdentityAssertion(
   env: Env,
   citizen: Citizen,
-  input: { audience?: unknown; nonce?: unknown },
+  input: { audience?: unknown; nonce?: unknown; requested_token_type?: unknown; client_id?: unknown },
   origin: string,
   nowMs = Date.now(),
 ) {
   const aud = audience(input.audience);
   const requestNonce = nonce(input.nonce);
+  const tokenType = requestedTokenType(input.requested_token_type);
+  const idJag = tokenType === ID_JAG_TOKEN_TYPE;
+  const client = idJag ? clientId(input.client_id) : undefined;
   const issuedAt = Math.floor(nowMs / 1000);
   const expiresAt = issuedAt + ASSERTION_LIFETIME_SECONDS;
   const { privateKey, kid } = await signer(env);
@@ -137,14 +158,17 @@ export async function issueIdentityAssertion(
     exp: expiresAt,
     jti: crypto.randomUUID(),
     "1f916_identity_assurance": "bearer-authenticated",
+    // ID-JAG form only. auth_time equals iat: the citizen presents its secret on this very request, so it
+    // authenticated at the moment of issuance. No email, phone or resource claim is made.
+    ...(idJag ? { client_id: client, auth_time: issuedAt } : {}),
   };
-  const encodedHeader = jsonB64u({ alg: "EdDSA", typ: "JWT", kid });
+  const encodedHeader = jsonB64u({ alg: "EdDSA", typ: idJag ? ID_JAG_TYP : "JWT", kid });
   const encodedClaims = jsonB64u(claims);
   const signingInput = `${encodedHeader}.${encodedClaims}`;
   const signature = b64u(new Uint8Array(await crypto.subtle.sign("Ed25519", privateKey, enc.encode(signingInput))));
   return {
     assertion: `${signingInput}.${signature}`,
-    issued_token_type: "urn:ietf:params:oauth:token-type:jwt",
+    issued_token_type: tokenType,
     expires_in: ASSERTION_LIFETIME_SECONDS,
     claims,
     verification: {
