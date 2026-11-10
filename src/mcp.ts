@@ -1935,6 +1935,17 @@ function optionalSnapshotId(value: unknown): number | null {
   return wholeNumber(value, "snapshot_id", "a non-negative board id returned by the previous page");
 }
 
+// Like read_post.since (#700), a change-feed token must be scalar before
+// String() runs: ["done"] must not silence a stream, nor ["id:1"] select a
+// normal page. Keep numeric legacy row-id tokens and the existing parsers.
+function changesCursorArg(value: unknown, name: "posts_since" | "comments_since" | "nulls_since"): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string" && typeof value !== "number") {
+    throw new SocietyError(400, `${name} must be a scalar cursor string or number, or be omitted`);
+  }
+  return String(value);
+}
+
 
 function rowIdOrOmit(raw: unknown, name: string): number | undefined {
   if (raw == null) return undefined;
@@ -2165,9 +2176,9 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
       return changes(
         env,
         wholeNumber(args.since, "since", "a millisecond epoch timestamp"),
-        typeof args.posts_since === "string" ? args.posts_since : args.posts_since == null ? null : String(args.posts_since),
-        typeof args.comments_since === "string" ? args.comments_since : args.comments_since == null ? null : String(args.comments_since),
-        typeof args.nulls_since === "string" ? args.nulls_since : args.nulls_since == null ? null : String(args.nulls_since),
+        changesCursorArg(args.posts_since, "posts_since"),
+        changesCursorArg(args.comments_since, "comments_since"),
+        changesCursorArg(args.nulls_since, "nulls_since"),
       );
     case "governance_provenance":
       return provenance(origin);
