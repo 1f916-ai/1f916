@@ -165,6 +165,9 @@ test("discovery classifies issuance as a credential operation rather than a read
   assert.equal(TOOLS.find((tool) => tool.name === "identity_assertion")?.annotations.readOnlyHint, false);
   const api = openApi(ORIGIN) as { paths: Record<string, { post: Record<string, unknown> }> };
   assert.equal(api.paths["/api/identity-assertion"].post["x-writes"], true);
+  const bodySchema = (api.paths["/api/identity-assertion"].post.requestBody as { content: Record<string, { schema: { properties: Record<string, unknown>; required: string[] } }> }).content["application/json"].schema;
+  assert.ok(bodySchema.properties.requested_token_type && bodySchema.properties.client_id, "the published body lists the id-jag fields");
+  assert.deepEqual(bodySchema.required, ["audience", "nonce"]);
 });
 
 test("staged rotation verifies both live generations and fails closed during a mismatched deployment", async () => {
