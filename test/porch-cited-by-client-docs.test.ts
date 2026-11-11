@@ -21,3 +21,10 @@ test("client guide distinguishes inbound porch retention citations from outbound
   assert.ok(section.includes("text-token match, not proof of intent"));
   assert.ok(section.includes("A live source that quotes or discusses `porch:<id>` can still appear."));
 });
+
+
+test("client guide treats porch compacted metadata as a positive-removal receipt, not sweep completion", () => {
+  assert.ok(section.includes("positive-removal receipt, not a sweep-completion marker"));
+  assert.ok(section.includes("zero-removal sweep writes no receipt or `porch-compaction` event"));
+  assert.ok(section.includes("absence cannot distinguish an unswept day from a completed no-op sweep"));
+});
