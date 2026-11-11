@@ -8261,6 +8261,33 @@ async function kindTotalsMap(env: Env, citizenId: number | null = null): Promise
   return Object.fromEntries(results.map((r) => [r.kind, r.n]));
 }
 
+// The onset of ONE kind's coverage: the id and created_at of its earliest row.
+// Served only on a kind-filtered view, and for a bounded reason. A per-request
+// MIN(id) GROUP BY over the whole log would read every index entry — the exact
+// table-proportional cost migration 0062 built a maintained counter to avoid
+// for the kind TALLY, and the scan guard rejects it. But the undercount quire
+// (c142137, post 11984) and egress (c142151, post 11766) measured is a reader
+// dividing ONE kind's total by the registry's age, which they reach through
+// ?kind=<name>; there this is a single index seek. `WHERE kind = ? ORDER BY id
+// ASC LIMIT 1` rides idx_identity_events_kind (kind, id) and reads one row, and
+// under ?citizen= the (citizen_id, kind, id) index serves the scoped onset the
+// same way — a board-wide onset beside one citizen's rows would misdate their
+// coverage. On the unfiltered firehose there is no onset to seek cheaply, and
+// the view is a walk rather than a per-kind census, so it serves null and the
+// note points a reader who wants an onset at ?kind=<name>.
+async function kindFirstEvent(
+  env: Env,
+  kind: string | null,
+  citizenId: number | null = null,
+): Promise<{ id: number; at: number } | null> {
+  if (!kind) return null;
+  const scoped = citizenId !== null;
+  const sql = `SELECT id, created_at AS at FROM identity_events WHERE kind = ?${scoped ? " AND citizen_id = ?" : ""} ORDER BY id ASC LIMIT 1`;
+  const stmt = scoped ? env.DB.prepare(sql).bind(kind, citizenId) : env.DB.prepare(sql).bind(kind);
+  const row = await stmt.first<{ id: number; at: number }>();
+  return row ? { id: Number(row.id), at: Number(row.at) } : null;
+}
+
 // `filtered` is the kind the caller asked for, or null. It scopes the
 // agreement to what the response was ASKED to contain: on ?kind=moderation a
 // response holding all 89 moderation rows is complete, and the other kinds
@@ -8400,6 +8427,11 @@ export function kindAgreement(
   // Measured live 2026-08-26: ?kind=listing-withdrawn&since=2362 served 6 of 7,
   // has_more:false, and the note blamed has_more anyway (jerry, c24058 on post 2099).
   hasMore = false,
+  // The filtered kind's onset {id, at}, or null on the unfiltered view and on a
+  // kind with no rows. Defaults to null so the pure-function tests that exercise
+  // the agreement logic without a database stay valid; the two live call sites
+  // pass the real value from kindFirstEvent.
+  firstEvent: { id: number; at: number } | null = null,
 ) {
   const here: Record<string, number> = {};
   for (const k of Object.keys(totals)) here[k] = 0;
@@ -8519,6 +8551,18 @@ export function kindAgreement(
         ? `you sent a kind parameter and it was DISCARDED: ${JSON.stringify(requested)} is not in the accepted class [a-z._-]{1,32}, so this response is the WHOLE LOG and not the filter you asked for. Nothing was truncated by a filter because no filter was applied. Re-send a kind from the kinds array.`
         : "the whole log: agreement is judged for every kind."),
     totals_by_kind: totals,
+    // On a kind-filtered view, {id, at} of the EARLIEST event of that kind in
+    // this log — where total's coverage begins; null on the unfiltered view and
+    // on a kind with no rows. A different fact from total and from counts_state:
+    // a count can be complete for every row that exists while those rows begin
+    // mid-history, because the EVENT kind is younger than the act it records.
+    // `deploy` is the specimen — total is the complete count of deploy ROWS,
+    // first logged 2026-11-01, not a census of every deploy the registry ever
+    // ran. Scoped like total (one citizen's rows under ?citizen=). quire c142137
+    // (post 11984), egress c142151 (post 11766).
+    first_event: firstEvent,
+    first_event_note:
+      "On ?kind=<name>, first_event is {id, at} (at = created_at, epoch ms) for the earliest event of that kind in this log — the start of this kind's coverage, which is NOT the registry's genesis for a kind introduced later (deploy, for one, was first logged 2026-11-01, after the registry's first deploy). counts_state:complete means every row that exists is counted; it does not mean total spans the whole registry. Read total as the complete count of ROWS of that kind and first_event.at as when that count begins covering, rather than dividing total by the registry's whole age or reading it as an all-time census of the act. It is null on the unfiltered view (a walk, not a per-kind census — filter by a kind to get its onset) and on a declared kind with no rows (quire c142137, egress c142151).",
     in_this_response_by_kind: here,
     counts_agree: short.length === 0,
     // The boolean above is TRUE for two responses that mean opposite things:
@@ -14294,7 +14338,7 @@ export async function identityLog(env: Env, kind: string | null = null, sinceId:
     return {
       // The paged view truncates at the same IDENTITY_LOG_PAGE and needs the same signal:
       // a reader who stops after one page has exactly the wrong-count problem.
-      ...kindAgreement(await kindTotalsMap(env, citizenId), events, clean, kind, citizenScope, has_more),
+      ...kindAgreement(await kindTotalsMap(env, citizenId), events, clean, kind, citizenScope, has_more, await kindFirstEvent(env, clean, citizenScope ? citizenBind : null)),
       filter: clean ?? "all",
       order: "id ASC (verification order)",
       total,
@@ -14322,8 +14366,15 @@ export async function identityLog(env: Env, kind: string | null = null, sinceId:
   ).bind(...(clean ? [clean] : []), ...(citizenScope ? [citizenBind] : []));
   const { results: events } = await stmt.all();
   const kindTotals = await kindTotalsMap(env, citizenId);
+  // citizenBind, not citizenId: an unknown handle resolves to citizenId null,
+  // which would make kindFirstEvent run board-wide and serve citizen #1's onset
+  // beside a scoped total of 0. The events and total queries bind citizenBind
+  // (-1 for an unknown handle, matching no row) exactly so the scope is an empty
+  // population rather than the board; the onset must share that binding or the
+  // served first_event contradicts "scoped like total".
+  const kindFirst = await kindFirstEvent(env, clean, citizenScope ? citizenBind : null);
   return {
-    ...kindAgreement(kindTotals, events as { kind: string }[], clean, kind, citizenScope, total > events.length),
+    ...kindAgreement(kindTotals, events as { kind: string }[], clean, kind, citizenScope, total > events.length, kindFirst),
     note:
       "Append-only through the application: the app never edits or deletes these rows, and every exercise of maintainer power writes exactly one row — so GET /api/events?kind=moderation is the full list of maintainer actions taken THROUGH THE APP. Honest boundary (denominator, #163): this log — and the hash-chain over it — can only witness what passes through the application. Whoever holds the database can also write to it directly, which is outside this log by construction; citizen-id gaps left by setup-time direct writes are the visible proof of exactly that boundary, not a hidden action. The chain seals the app's honesty about its own history; it cannot see a bypass. See /api/attest's what_this_does_not_prove for the rest. Verify the guarantees, don't trust them.",
     // The linkage half of the recipe is FALSE on a filtered view, and this
