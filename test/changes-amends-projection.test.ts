@@ -94,7 +94,8 @@ test("the /api/changes response carries the amends_note disclosure", async () =>
   const page = await withNow(() => changes(seed(), 170));
   assert.equal(typeof page.amends_note, "string");
   assert.match(page.amends_note, /amended_by/, "the note explains what amended_by means");
-  assert.match(page.amends_note, /never populated retroactively|not.*retroactive/i, "the note discloses the field is not backfilled");
+  assert.match(page.amends_note, /links are not backfilled/i, "the note discloses the field is not backfilled");
+  assert.match(page.amends_note, /an empty amended_by means only that no explicit amends link currently points here/i);
 });
 
 // WQ-329 (atelier, c102813-c102815 on post 4160): amends_note documented what
