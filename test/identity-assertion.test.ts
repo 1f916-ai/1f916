@@ -165,6 +165,9 @@ test("discovery classifies issuance as a credential operation rather than a read
   assert.equal(TOOLS.find((tool) => tool.name === "identity_assertion")?.annotations.readOnlyHint, false);
   const api = openApi(ORIGIN) as { paths: Record<string, { post: Record<string, unknown> }> };
   assert.equal(api.paths["/api/identity-assertion"].post["x-writes"], true);
+  const bodySchema = (api.paths["/api/identity-assertion"].post.requestBody as { content: Record<string, { schema: { properties: Record<string, unknown>; required: string[] } }> }).content["application/json"].schema;
+  assert.ok(bodySchema.properties.requested_token_type && bodySchema.properties.client_id, "the published body lists the id-jag fields");
+  assert.deepEqual(bodySchema.required, ["audience", "nonce"]);
 });
 
 test("staged rotation verifies both live generations and fails closed during a mismatched deployment", async () => {
@@ -191,4 +194,86 @@ test("staged rotation verifies both live generations and fails closed during a m
   const parts = nextToken.assertion.split(".");
   parts[1] = Buffer.from(JSON.stringify({ ...nextToken.claims, sub: "citizen:999" })).toString("base64url");
   assert.equal((await verify(parts.join("."), next)).valid, false);
+});
+
+const ID_JAG = "urn:ietf:params:oauth:token-type:id-jag";
+const JWT = "urn:ietf:params:oauth:token-type:jwt";
+const CLIENT_ID = "client-at-world.example";
+
+test("the default request returns exactly today's header and claims (id-jag is additive)", async () => {
+  const env = await configuredEnv();
+  for (const input of [{ audience: AUDIENCE, nonce: NONCE }, { audience: AUDIENCE, nonce: NONCE, requested_token_type: JWT }]) {
+    const issued = await issueIdentityAssertion(env, CITIZEN, input, ORIGIN, 1_800_000);
+    const decoded = await verify(issued.assertion, env);
+    assert.equal(decoded.valid, true);
+    assert.deepEqual(Object.keys(decoded.header), ["alg", "typ", "kid"]);
+    assert.equal(decoded.header.typ, "JWT");
+    assert.deepEqual(Object.keys(decoded.claims), ["iss", "sub", "preferred_username", "aud", "nonce", "iat", "exp", "jti", "1f916_identity_assurance"]);
+    assert.equal(issued.issued_token_type, JWT);
+  }
+});
+
+test("the id-jag form adds typ, client_id and auth_time, and verifies against the same JWKS", async () => {
+  const env = await configuredEnv();
+  const issued = await issueIdentityAssertion(env, CITIZEN, { audience: AUDIENCE, nonce: NONCE, requested_token_type: ID_JAG, client_id: CLIENT_ID }, ORIGIN, 1_800_000);
+  const decoded = await verify(issued.assertion, env);
+  assert.equal(decoded.valid, true);
+  assert.equal(decoded.header.typ, "oauth-id-jag+jwt");
+  assert.equal(decoded.header.alg, "EdDSA");
+  assert.equal(decoded.claims.client_id, CLIENT_ID);
+  assert.equal(decoded.claims.auth_time, decoded.claims.iat);
+  assert.equal(decoded.claims.sub, "citizen:42");
+  assert.equal(decoded.claims.aud, AUDIENCE);
+  assert.equal(issued.issued_token_type, ID_JAG);
+  for (const absent of ["email", "email_verified", "phone_number", "phone_number_verified", "resource"]) {
+    assert.equal(absent in decoded.claims, false, `${absent} must not be asserted`);
+  }
+});
+
+test("the id-jag form refuses a missing client_id, and any other requested_token_type is refused", async () => {
+  const env = await configuredEnv();
+  for (const client_id of [undefined, "", 7, "x".repeat(2049)]) {
+    await assert.rejects(
+      () => issueIdentityAssertion(env, CITIZEN, { audience: AUDIENCE, nonce: NONCE, requested_token_type: ID_JAG, client_id }, ORIGIN),
+      (error: { status?: number; message?: string }) => error.status === 400 && /client_id is required/.test(error.message || ""),
+    );
+  }
+  await assert.rejects(
+    () => issueIdentityAssertion(env, CITIZEN, { audience: AUDIENCE, nonce: NONCE, requested_token_type: "urn:ietf:params:oauth:token-type:access_token" }, ORIGIN),
+    (error: { status?: number; message?: string }) => error.status === 400 && /requested_token_type must be/.test(error.message || ""),
+  );
+});
+
+test("metadata lists both formats and keeps assertion_format", async () => {
+  const metadata = await identityAssertionMetadata(await configuredEnv(), ORIGIN);
+  assert.equal(metadata.assertion_format, JWT);
+  assert.deepEqual(metadata.assertion_formats_supported, [JWT, ID_JAG]);
+  assert.match(metadata.verification, /oauth-id-jag\+jwt/);
+});
+
+test("HTTP and MCP both carry the id-jag request through", async () => {
+  const env = await configuredEnv();
+  const headers = { "Content-Type": "application/json", Authorization: "Bearer a-square-secret" };
+  const args = { audience: AUDIENCE, nonce: NONCE, requested_token_type: ID_JAG, client_id: CLIENT_ID };
+  const http = await worker.fetch(new Request(`${ORIGIN}/api/identity-assertion`, { method: "POST", headers, body: JSON.stringify(args) }), env);
+  assert.equal(http.status, 200);
+  const httpBody = await http.json() as { assertion: string; issued_token_type: string };
+  assert.equal(httpBody.issued_token_type, ID_JAG);
+  assert.equal((await verify(httpBody.assertion, env)).header.typ, "oauth-id-jag+jwt");
+
+  const missing = await worker.fetch(new Request(`${ORIGIN}/api/identity-assertion`, { method: "POST", headers, body: JSON.stringify({ ...args, client_id: undefined }) }), env);
+  assert.equal(missing.status, 400);
+
+  const response = await worker.fetch(new Request(`${ORIGIN}/mcp`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "identity_assertion", arguments: args } }),
+  }), env);
+  const body = await response.json() as { result?: { isError?: boolean; content?: Array<{ text: string }> } };
+  assert.equal(body.result?.isError ?? false, false);
+  const issued = JSON.parse(body.result?.content?.[0]?.text || "{}") as { assertion: string; issued_token_type: string };
+  assert.equal(issued.issued_token_type, ID_JAG);
+  const decoded = await verify(issued.assertion, env);
+  assert.equal(decoded.valid, true);
+  assert.equal(decoded.claims.client_id, CLIENT_ID);
 });

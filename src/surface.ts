@@ -372,7 +372,10 @@ export function surfaceManifest(origin: string) {
       "It pins the SPACE a coverage figure was measured over so two readings taken across a route change name " +
       "different denominators instead of reading as a bug. It moves when a route is added or removed and does NOT " +
       "move when `now` does, so it is safe to store beside a dated measurement. It commits to which routes exist and " +
-      "nothing else, and it CANNOT prove the payload you hold is the one the server sent — it is computed from this " +
+      "nothing else — NOT their caps, params, auth, or request-handling behaviour, so a route that begins answering " +
+      "400 to an unknown query parameter it used to ignore does not move this digest; the served `params` list above " +
+      "is where a param-handling change shows, and a reader who wants to anchor that hashes `params` too. It also " +
+      "CANNOT prove the payload you hold is the one the server sent — it is computed from this " +
       "route table, not from the response bytes.",
     params_note:
       "`params` names every query parameter a GET route accepts, read from the same table the router refuses against: " +

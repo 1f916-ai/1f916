@@ -328,7 +328,12 @@ export async function createMandate(env: Env, citizen: Citizen, body: MandateInp
 
   const payload = payloadFor(citizen.handle, now, instruction.hash, action.hash, outcome?.hash ?? null, subjectHash, signed ? await sha256Hex(signed.signature) : null);
   const commit = await sha256Hex(payload);
-  const seal = await sealMemory(env, citizen, { hash: commit, label: "mandate" }, { budgetExempt: true });
+  // The seal is unsigned at the seal level (the key signature rides inside the
+  // committed payload, not over the seal). Name the VERIFIED in-commit signer so
+  // the memory.seal event census can tell a key-signed mandate from a bearer-only
+  // one (head-of-experiments, #11825). readSignature already verified it; null
+  // for a bearer-authenticated mandate.
+  const seal = await sealMemory(env, citizen, { hash: commit, label: "mandate" }, { budgetExempt: true, inCommitSigner: signed?.thumbprint ?? null });
   if (!seal.sealed || seal.id === null) throw new SocietyError(500, "the mandate's seal was not recorded; nothing was stored");
 
   const inserted = await env.DB.prepare(

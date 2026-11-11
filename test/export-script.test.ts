@@ -37,8 +37,8 @@ function fakeRegistry(opts: { flaky429?: boolean } = {}) {
     }
     if (u.pathname === "/api/changes") {
       const p = u.searchParams.get("posts_since"), c = u.searchParams.get("comments_since");
-      if (p === "0" && c === "0") return json({ posts: [{ id: 1, body: "a" }, { id: 2, body: "b" }], comments: [{ id: 10, post_id: 1, body: "x" }], has_more: true, next_posts_since: 2, next_comments_since: 10 });
-      if (p === "2" && c === "10") return json({ posts: [], comments: [{ id: 11, post_id: 2, body: "y" }, { id: 12, post_id: 2, body: "z" }], has_more: true, next_posts_since: 2, next_comments_since: 12 });
+      if (p === "0" && c === "0") return json({ posts: [{ id: 1, body: "a" }, { id: 2, body: "b" }], comments: [{ id: 10, post_id: 1, body: "x" }], has_more: true, has_more_streams: ["posts", "comments"], continuation_covers: ["posts", "comments"], next_posts_since: 2, next_comments_since: 10 });
+      if (p === "2" && c === "10") return json({ posts: [], comments: [{ id: 11, post_id: 2, body: "y" }, { id: 12, post_id: 2, body: "z" }], has_more: true, has_more_streams: ["posts", "comments"], continuation_covers: ["posts", "comments"], next_posts_since: 2, next_comments_since: 12 });
       if (p === "2" && c === "12") return json({ posts: [{ id: 3, body: "c" }], comments: [], has_more: false, next_posts_since: 3, next_comments_since: 12 });
       return json({ error: `unexpected tokens ${p}/${c}` }, 400);
     }
@@ -87,6 +87,37 @@ test("changes are paged to has_more false, both tokens carried", async () => {
   assert.equal(manifest.files["posts.jsonl"].last_id, 3);
 });
 
+test("changes reject a continuation that leaves a has_more stream uncovered", async () => {
+  let calls = 0;
+  const partial = async () => {
+    calls++;
+    return json({
+      posts: [{ id: 1, body: "a" }],
+      comments: [],
+      has_more: true,
+      has_more_streams: ["comments"],
+      continuation_covers: ["posts"],
+      next_posts_since: "id:1",
+      next_comments_since: "id:0",
+    });
+  };
+  const walk = exp.walkChanges("https://registry.test", { fetchImpl: partial, gapMs: 1 });
+  await assert.rejects(walk.next(), /uncovered streams: comments/);
+  assert.equal(calls, 1, "fail before following an incomplete continuation");
+});
+
+test("changes refuse to claim a lossless continuation when coverage metadata is absent", async () => {
+  const oldPage = async () => json({
+    posts: [{ id: 1, body: "a" }],
+    comments: [],
+    has_more: true,
+    next_posts_since: "id:1",
+    next_comments_since: "id:0",
+  });
+  const walk = exp.walkChanges("https://registry.test", { fetchImpl: oldPage, gapMs: 1 });
+  await assert.rejects(walk.next(), /continuation coverage metadata/);
+});
+
 test("nulls are silenced: a refusal is not a record", async () => {
   const { reg } = await run();
   for (const u of reg.asked.filter((x) => x.includes("/api/changes"))) {
@@ -101,7 +132,7 @@ test("a cursor that stops moving stops the walk", async () => {
     const u = new URL(url);
     if (u.pathname === "/api/changes") {
       calls++;
-      return json({ posts: [{ id: 1 }], comments: [], has_more: true, next_posts_since: 0, next_comments_since: 0 });
+      return json({ posts: [{ id: 1 }], comments: [], has_more: true, has_more_streams: ["posts"], continuation_covers: ["posts"], next_posts_since: 0, next_comments_since: 0 });
     }
     return json({});
   };

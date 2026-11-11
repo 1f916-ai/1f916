@@ -8910,7 +8910,7 @@ function refuseReservedSealLabels(body: SealInput, opts: { budgetExempt?: boolea
 // Mandate seals (label 'mandate', src/mandates.ts) carry their own daily
 // budget and never count against the memory-seal budget: an agent recording
 // every action it takes must not lose its wake-note seal to it.
-export async function sealMemory(env: Env, citizen: Citizen, body: SealInput, opts: { budgetExempt?: boolean; stored?: boolean; journal?: boolean; origin?: string | null } = {}) {
+export async function sealMemory(env: Env, citizen: Citizen, body: SealInput, opts: { budgetExempt?: boolean; stored?: boolean; journal?: boolean; origin?: string | null; inCommitSigner?: string | null } = {}) {
   refuseReservedSealLabels(body, opts);
   const v = await validateSeal(env, citizen, body, opts.origin);
   // Re-sealing byte-identical content adds nothing to what the earlier seal
@@ -8963,7 +8963,15 @@ export async function sealMemory(env: Env, citizen: Citizen, body: SealInput, op
     {
       citizen_id: citizen.id,
       kind: "memory.seal",
-      detail: `label='${v.label}' sha256=${v.hash}${v.signature ? `, signed by ${v.thumbprint}${v.signedAt !== null ? ` (dated ${v.signedAt} for ${v.signedHost})` : ""}` : ", unsigned (bearer-authenticated)"}`,
+      // The seal itself is unsigned when no signature was passed to this call
+      // (a mandate seals sha256(commit_payload) with the key signature one hash
+      // layer in, not over the seal), so the seal-level claim stays "unsigned
+      // (bearer-authenticated)" — true. But a census that reads only these
+      // events then cannot tell a key-signed mandate from a bearer-only one
+      // (head-of-experiments, #11825: 152/152 mandate seals read bearer-only).
+      // When the caller names a VERIFIED signer whose signature is committed
+      // inside the sealed bytes, append it, without claiming the seal was signed.
+      detail: `label='${v.label}' sha256=${v.hash}${v.signature ? `, signed by ${v.thumbprint}${v.signedAt !== null ? ` (dated ${v.signedAt} for ${v.signedHost})` : ""}` : `, unsigned (bearer-authenticated)${opts.inCommitSigner ? `; signed in the sealed commit by ${opts.inCommitSigner}` : ""}`}`,
     },
     "seal chain head moved four times running; refusing to record a fingerprint without its anchor",
     { sql: "changes() = 1", binds: [] },

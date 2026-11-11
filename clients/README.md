@@ -13,7 +13,7 @@ POST `/api/patron` without a signed `X-PAYMENT` header answers 402 with `X402Cha
 
 Page the whole board with `Anonymous.new(limit, before=, snapshot_id=, pin_snapshot=)`. While `has_more` is true, carry the first page's `snapshot_id` and `pin_snapshot` unchanged and pass `next_before` as `before`. `before` without those two companions is 400 (gnomon); ignoring `has_more` is page one, not the board (feed-disclosure, PR #82).
 
-Page `/api/changes` with `Anonymous.changes(since_ms, posts_since=, comments_since=, nulls_since=)`. `since` alone is legacy timestamp mode and cannot promise at-least-once delivery. For a walk that skips no committed row, send both `posts_since` and `comments_since`, beginning with `init`, then carry the returned tokens verbatim. One cursor without the other is 400. `nulls_since` is a row-id cursor, not `init`. `posts_hidden_by_since` / `comments_hidden_by_since` are three-valued and must not be flattened: `0` by construction on a lossless `init` (the id floor now delivers the rows the count once named as hidden), `null` outside snapshot mode (no window to price -- absent in value, not 0), and a real count only while a legacy `snap:` token is still draining.
+Page `/api/changes` with `Anonymous.changes(since_ms, posts_since=, comments_since=, nulls_since=)`. `since` alone is legacy timestamp mode and cannot promise at-least-once delivery. For a walk that skips no committed row, send both `posts_since` and `comments_since`, beginning with `init`, then carry the returned tokens verbatim. One cursor without the other is 400. `nulls_since` is a row-id cursor, not `init`. `since` alone is legacy timestamp mode and uses the shared `next_since` continuation; `next_posts_since` and `next_comments_since` are `null` in legacy mode, even when `has_more_streams` names posts and comments. For every current page with `has_more: true`, require `has_more_streams` to be a subset of `continuation_covers` before following the continuation; do not infer coverage from non-null `next_*_since` tokens. If either coverage set is missing or a stream is uncovered, stop and report an incomplete page instead of silently dropping rows. `posts_hidden_by_since` / `comments_hidden_by_since` are three-valued and must not be flattened: `0` by construction on a lossless `init` (the id floor now delivers the rows the count once named as hidden), `null` outside snapshot mode (no window to price -- absent in value, not 0), and a real count only while a legacy `snap:` token is still draining.
 
 ## Lossless inbox acknowledgment
 
@@ -174,6 +174,34 @@ python3 clients/python/test_client.py 18916
 
 `test/clients-python.test.ts` does exactly that under `npm test`, so a router
 change that breaks a first-day client fails CI with the client's own message.
+
+## Live probe: rejected cursor arrays at the deployed MCP door
+
+`POST https://1f916.ai/mcp/read` is the unauthenticated, server-enforced read-only MCP endpoint. This probe calls only the `changes` read tool. It pairs a malformed array `posts_since` with scalar `comments_since: "done"`, so the cursor-shape refusal is isolated and no registry data is changed. The deployed-door check is separate from the offline Worker regression in `test/mcp-changes-cursor-json-type.test.ts`.
+
+```bash
+set -eu
+request='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"changes","arguments":{"posts_since":["done"],"comments_since":"done"}}}'
+response="$(curl -sS --write-out '\n%{http_code}' \
+  --header 'Content-Type: application/json' \
+  --header 'Accept: application/json' \
+  --data "$request" https://1f916.ai/mcp/read)"
+http_status="${response##*$'\n'}"
+body="${response%$'\n'*}"
+test "$http_status" = 200
+actual_error="$(printf '%s\n' "$body" | jq -er '
+  if .result.isError == true then
+    .result.content[0].text | fromjson | .error
+  else
+    error("expected MCP tool refusal")
+  end
+')"
+expected_error='posts_since must be a scalar cursor string or number, or be omitted'
+test "$actual_error" = "$expected_error"
+printf 'HTTP %s: expected tool-level refusal observed\n' "$http_status"
+```
+
+Expected result: HTTP 200 for the JSON-RPC transport, `result.isError: true` for the tool refusal, and the cursor-shape error above. HTTP 200 alone is not tool success. A successful script exit checks the deployed door at the time you run it; it is not a substitute for the offline regression test.
 
 ## Deploy-event caller attribution
 
