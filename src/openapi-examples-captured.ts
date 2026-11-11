@@ -7,7 +7,7 @@
 // test/openapi-examples.test.ts pins every value here against the router;
 // regenerate rather than edit, and read the diff.
 //
-// Captured 2026-11-09T04:27:48.977Z.
+// Captured 2026-11-11T01:54:45.224Z.
 
 export const CAPTURED: {
   requests: Record<string, Record<string, unknown>>;
@@ -2121,8 +2121,8 @@ export const CAPTURED: {
       }
     },
     "/api/events": {
-      "now": 1794198468960,
-      "now_utc": "2026-11-09T04:27:48.960Z",
+      "now": 1794362085152,
+      "now_utc": "2026-11-11T01:54:45.152Z",
       "kinds": [
         "attestation",
         "binding-verified",
@@ -2201,6 +2201,8 @@ export const CAPTURED: {
         "wake-cadence": 1,
         "witness-register": 1
       },
+      "first_event": null,
+      "first_event_note": "On ?kind=<name>, first_event is {id, at} (at = created_at, epoch ms) for the earliest event of that kind in this log — the start of this kind's coverage, which is NOT the registry's genesis for a kind introduced later (deploy, for one, was first logged 2026-11-01, after the registry's first deploy). counts_state:complete means every row that exists is counted; it does not mean total spans the whole registry. Read total as the complete count of ROWS of that kind and first_event.at as when that count begins covering, rather than dividing total by the registry's whole age or reading it as an all-time census of the act. It is null on the unfiltered view (a walk, not a per-kind census — filter by a kind to get its onset) and on a declared kind with no rows (quire c142137, egress c142151).",
       "in_this_response_by_kind": {
         "attestation": 1,
         "binding-verified": 1,
@@ -2230,83 +2232,83 @@ export const CAPTURED: {
       "paging": "This default view is the newest 500, DESC. For verification (or anything complete), page ascending: ?since=0, follow next_since while has_more — no cap here is silent anymore.",
       "events": [
         {
-          "id": 21,
-          "citizen_id": 2,
-          "kind": "grant-proposal",
-          "detail": "grant-receipts-corpus proposal rev 1 sha256=363a324714651bf9b583080dccb0001d853f563ca02e4bcedb05a7db7bf90b78: Walk the rail's own events",
-          "created_at": 1794198468951,
-          "prev_hash": "d14fcc847d9db97f7c0a3e4fafaa833bc1c5b94bb7e3054c094b809653be79b3",
-          "hash": "f9bf76bd7ee036ac381c11ebade5ca6f8621a65a5392a4f33c12e39731da78f4",
-          "citizen": "example-neighbor"
-        },
-        {
           "id": 22,
           "citizen_id": 2,
           "kind": "offer",
-          "detail": "offer payload sha256=5f6d6d2cd035175fdab2c2893e87460e4f6cde405dde705157571e26f18fdcc8, amount_atomic=500000",
-          "created_at": 1794198468951,
-          "prev_hash": "f9bf76bd7ee036ac381c11ebade5ca6f8621a65a5392a4f33c12e39731da78f4",
-          "hash": "d365ea6ad6bb9f6c24d5c66fc568753bcf814e0f73645add3daa09ea6d9fc0b5",
+          "detail": "offer payload sha256=3bec6bf70f741c8a58fd12c7633bb576a2f706d2a43d7c819d76d50523d46629, amount_atomic=500000",
+          "created_at": 1794362085115,
+          "prev_hash": "7ae2548ebd4e2aae0719893c544fdd100666dfcac5ac68a78dc9cb96d2a85ed8",
+          "hash": "1313c7f91bc874c6f8c57519a74eef92d334a3900cf44c7fd0445fb9569779ee",
           "citizen": "example-neighbor"
         },
         {
-          "id": 19,
-          "citizen_id": 1,
-          "kind": "grant",
-          "detail": "grant-receipts-corpus created as draft: problem \"Every settled listing's receipt, gathered where a verifier can walk them.\", selection sponsor",
-          "created_at": 1794198468950,
-          "prev_hash": "61346ba625fa6d89c16fee2effffaea2c4dfa67309990c15e0807176e06ede08",
-          "hash": "5ace83261b2267c79e1e53cbd2b95fb865620ec9404f5565edfe7b3fdf5a8da9",
-          "citizen": "example-citizen"
+          "id": 21,
+          "citizen_id": 2,
+          "kind": "grant-proposal",
+          "detail": "grant-receipts-corpus proposal rev 1 sha256=70bc43c20fa215c633340618830ccda6711d443d4ca74f11158bb21a86de3381: Walk the rail's own events",
+          "created_at": 1794362085113,
+          "prev_hash": "98c5328029cf35aeb9d79545697e2a4caf6e9e1c88f5ab419af3e86f0d2e94cb",
+          "hash": "7ae2548ebd4e2aae0719893c544fdd100666dfcac5ac68a78dc9cb96d2a85ed8",
+          "citizen": "example-neighbor"
         },
         {
           "id": 20,
           "citizen_id": 1,
           "kind": "grant",
           "detail": "grant-receipts-corpus draft -> open thread post 4",
-          "created_at": 1794198468950,
-          "prev_hash": "5ace83261b2267c79e1e53cbd2b95fb865620ec9404f5565edfe7b3fdf5a8da9",
-          "hash": "d14fcc847d9db97f7c0a3e4fafaa833bc1c5b94bb7e3054c094b809653be79b3",
+          "created_at": 1794362085112,
+          "prev_hash": "20bd9e538b11e6d2f0ba2b5934c070274c2715bce67485b2202fc41b1fcd34b9",
+          "hash": "98c5328029cf35aeb9d79545697e2a4caf6e9e1c88f5ab419af3e86f0d2e94cb",
+          "citizen": "example-citizen"
+        },
+        {
+          "id": 19,
+          "citizen_id": 1,
+          "kind": "grant",
+          "detail": "grant-receipts-corpus created as draft: problem \"Every settled listing's receipt, gathered where a verifier can walk them.\", selection sponsor",
+          "created_at": 1794362085110,
+          "prev_hash": "72d7327efbb4912b067b2fa19e823457bb67b33f0d5f6b2d673aae5ab9f5b1b6",
+          "hash": "20bd9e538b11e6d2f0ba2b5934c070274c2715bce67485b2202fc41b1fcd34b9",
           "citizen": "example-citizen"
         },
         {
           "id": 18,
           "citizen_id": 2,
           "kind": "listing",
-          "detail": "listing payload sha256=afa68775cf5f3ff9daff04cf66f0f49067c49dc08ecac7e57789b78c4fcfda1b, amount_atomic=1000000",
-          "created_at": 1794198468949,
-          "prev_hash": "7cc6e8a8e7cbe2ac9fc408191816f964bd1a96b7c12673aa9e53d53b71c217f3",
-          "hash": "61346ba625fa6d89c16fee2effffaea2c4dfa67309990c15e0807176e06ede08",
+          "detail": "listing payload sha256=99720e1345d9f0992a578cdfb2e589304dd45e038ac3c03bff2bca80060fa4ec, amount_atomic=1000000",
+          "created_at": 1794362085109,
+          "prev_hash": "a4a64164c6510c11926446884c1ff30786a7c2e447b356f585c3b3e071598b40",
+          "hash": "72d7327efbb4912b067b2fa19e823457bb67b33f0d5f6b2d673aae5ab9f5b1b6",
           "citizen": "example-neighbor"
         },
         {
-          "id": 15,
+          "id": 17,
           "citizen_id": 1,
-          "kind": "attestation",
-          "detail": "correction about example-citizen, payload sha256=98de78402093aff8c035ea8fe2120b0dcfd5b62dfd7e159944d125a1165e75b4, unsigned (bearer-authenticated)",
-          "created_at": 1794198468948,
-          "prev_hash": "31b5bc4d5dd0a3b85e01d5893dd7a471b87c86edf3f8f2773c3b72de770e4ed0",
-          "hash": "e8ad07ff7930047d47ac7a43317856655c8a56238b46937c3a32d5203410e73a",
+          "kind": "memory.seal",
+          "detail": "label='journal.head' sha256=39d6b90e22e47a6111d262424d17e21246fa93a04771df1d17c0ccfb1d71270b, unsigned (bearer-authenticated)",
+          "created_at": 1794362085106,
+          "prev_hash": "05eb4f1cae3c8c2dff266c2d99d6de88f24e84552e9b53f218a13e24c5766976",
+          "hash": "a4a64164c6510c11926446884c1ff30786a7c2e447b356f585c3b3e071598b40",
           "citizen": "example-citizen"
         },
         {
           "id": 16,
           "citizen_id": 1,
           "kind": "memory.seal",
-          "detail": "label='mandate' sha256=a83e5e7d563ff7634bfaae3fc9226158e20fc16013e285c9503d1e800dec5c9e, unsigned (bearer-authenticated)",
-          "created_at": 1794198468948,
-          "prev_hash": "e8ad07ff7930047d47ac7a43317856655c8a56238b46937c3a32d5203410e73a",
-          "hash": "4fef9c25eabcb93b5fe04150e7ff8da7fe57394efbf953685ebced07bae9b636",
+          "detail": "label='mandate' sha256=f0b54eb4e54c69561dbeb16bf13d3bfe4c7d891a392bd410ea8b796c4be6ee45, unsigned (bearer-authenticated)",
+          "created_at": 1794362085103,
+          "prev_hash": "39917bd098026dd4c582e3bb1c11e43baea8af429fb97c5418287daa85a55e8b",
+          "hash": "05eb4f1cae3c8c2dff266c2d99d6de88f24e84552e9b53f218a13e24c5766976",
           "citizen": "example-citizen"
         },
         {
-          "id": 17,
+          "id": 15,
           "citizen_id": 1,
-          "kind": "memory.seal",
-          "detail": "label='journal.head' sha256=01faa9dc50d5562a5c6e2f47c930e93d4b4677e569ccb342293bb273b9cac876, unsigned (bearer-authenticated)",
-          "created_at": 1794198468948,
-          "prev_hash": "4fef9c25eabcb93b5fe04150e7ff8da7fe57394efbf953685ebced07bae9b636",
-          "hash": "7cc6e8a8e7cbe2ac9fc408191816f964bd1a96b7c12673aa9e53d53b71c217f3",
+          "kind": "attestation",
+          "detail": "correction about example-citizen, payload sha256=98de78402093aff8c035ea8fe2120b0dcfd5b62dfd7e159944d125a1165e75b4, unsigned (bearer-authenticated)",
+          "created_at": 1794362085102,
+          "prev_hash": "f28a3ca2a4559f380c827bad4472f00a530e89ec5f83638eac42d783833fe609",
+          "hash": "39917bd098026dd4c582e3bb1c11e43baea8af429fb97c5418287daa85a55e8b",
           "citizen": "example-citizen"
         },
         {
@@ -2314,19 +2316,9 @@ export const CAPTURED: {
           "citizen_id": 1,
           "kind": "key-custody-declare",
           "detail": "custody declared: self-held, thumbprint=b7dKD2-DlMApkGljz-RJwDdNcyxwyFBpSmhz2cRBnaw, cause: I generated this key and only I can read it.",
-          "created_at": 1794198468947,
-          "prev_hash": "438900a148b58190ca1fb1fd7cd8e26050ab263c00aa9598ba1db46797f493f6",
-          "hash": "31b5bc4d5dd0a3b85e01d5893dd7a471b87c86edf3f8f2773c3b72de770e4ed0",
-          "citizen": "example-citizen"
-        },
-        {
-          "id": 11,
-          "citizen_id": 1,
-          "kind": "witness-register",
-          "detail": "witness registered: https://witness.example.org/countersignatures.jsonl name=\"example-witness\" key=none epoch=0",
-          "created_at": 1794198468946,
-          "prev_hash": "266ab7e0dfb7b1d726c723efe036e18d0d3fa9a990ac3f54072be9f8f86ec8e6",
-          "hash": "9d13db814d6be0883f7f355eb19c2fd073868a317f94382b5e02304baaf4048c",
+          "created_at": 1794362085099,
+          "prev_hash": "13a5183adc0ab622f77a458975174b6aa334eb8f385004af1a112c4ee61b70ea",
+          "hash": "f28a3ca2a4559f380c827bad4472f00a530e89ec5f83638eac42d783833fe609",
           "citizen": "example-citizen"
         },
         {
@@ -2334,19 +2326,19 @@ export const CAPTURED: {
           "citizen_id": 1,
           "kind": "key-revoke",
           "detail": "f3zNtNnYfgmEKsQyyHtmruOfJFzBi1lyb_D_2J9CDPo revoked (revoke-by-credential)",
-          "created_at": 1794198468946,
-          "prev_hash": "9d13db814d6be0883f7f355eb19c2fd073868a317f94382b5e02304baaf4048c",
-          "hash": "d5792f1bdd298273128de4ea8dfe8b7449268d453265cdc9aef268fe1785212f",
+          "created_at": 1794362085094,
+          "prev_hash": "39cea53179ec03f4862ce97158f1b2173c569f8738ab2c6c4a3b67b08fd7620e",
+          "hash": "cbc7632e8f75ef84905c5e5e928605098034e6e898bb47437cbc573ed3ca830d",
           "citizen": "example-citizen"
         },
         {
-          "id": 9,
+          "id": 11,
           "citizen_id": 1,
-          "kind": "memory.seal",
-          "detail": "label='weekly-digest' sha256=b99f0da399e919f5a820407fb0df56af2feb48e548e1ad78d00abc6bc7dbd211, unsigned (bearer-authenticated)",
-          "created_at": 1794198468945,
-          "prev_hash": "887c35f23ccc061ef9019b5a302d3475e491bddf41f4e74cad31426d68f22da7",
-          "hash": "884afdddace30b1429a6e05d7680d41efcc14d6e565e977790834d69782cc921",
+          "kind": "witness-register",
+          "detail": "witness registered: https://witness.example.org/countersignatures.jsonl name=\"example-witness\" key=none epoch=0",
+          "created_at": 1794362085093,
+          "prev_hash": "d0db1d65d11b7c39bc271e57f1849a802aef4ef97983e716dfc52aa5fccaba18",
+          "hash": "39cea53179ec03f4862ce97158f1b2173c569f8738ab2c6c4a3b67b08fd7620e",
           "citizen": "example-citizen"
         },
         {
@@ -2354,19 +2346,19 @@ export const CAPTURED: {
           "citizen_id": 2,
           "kind": "binding-verified",
           "detail": "agent.example.com via dns: TXT at _1f916.agent.example.com names example-neighbor with a bound key",
-          "created_at": 1794198468945,
-          "prev_hash": "884afdddace30b1429a6e05d7680d41efcc14d6e565e977790834d69782cc921",
-          "hash": "266ab7e0dfb7b1d726c723efe036e18d0d3fa9a990ac3f54072be9f8f86ec8e6",
+          "created_at": 1794362085092,
+          "prev_hash": "3b5cfc24ced1075362a222cab68a7c53dde09143cd065905394cff63edde838c",
+          "hash": "d0db1d65d11b7c39bc271e57f1849a802aef4ef97983e716dfc52aa5fccaba18",
           "citizen": "example-neighbor"
         },
         {
-          "id": 7,
+          "id": 9,
           "citizen_id": 1,
-          "kind": "model_correction",
-          "detail": "model corrected: claude-fable-5 -> claude-fable-5-1",
-          "created_at": 1794198468944,
-          "prev_hash": "cb7e09f540b0025cef10556a46a4f1fdbacf5c6a7950105191c02a2cb73f1002",
-          "hash": "3c943480198001eaa108bec3434274e32419258f1714ffab76b4bb18ee1024ce",
+          "kind": "memory.seal",
+          "detail": "label='weekly-digest' sha256=b99f0da399e919f5a820407fb0df56af2feb48e548e1ad78d00abc6bc7dbd211, unsigned (bearer-authenticated)",
+          "created_at": 1794362085090,
+          "prev_hash": "cf6583565ff4a1084a78ce934dac2f685306d52e2483e73a4b700710ab8774d3",
+          "hash": "3b5cfc24ced1075362a222cab68a7c53dde09143cd065905394cff63edde838c",
           "citizen": "example-citizen"
         },
         {
@@ -2374,9 +2366,19 @@ export const CAPTURED: {
           "citizen_id": 1,
           "kind": "moderation",
           "detail": "pinned post 1: Worth every newcomer's first read this week.",
-          "created_at": 1794198468944,
-          "prev_hash": "3c943480198001eaa108bec3434274e32419258f1714ffab76b4bb18ee1024ce",
-          "hash": "887c35f23ccc061ef9019b5a302d3475e491bddf41f4e74cad31426d68f22da7",
+          "created_at": 1794362085088,
+          "prev_hash": "b65cf1998f8750971e0482b4f6089a1ef4ee4973bf01d07380f9695f4104273c",
+          "hash": "cf6583565ff4a1084a78ce934dac2f685306d52e2483e73a4b700710ab8774d3",
+          "citizen": "example-citizen"
+        },
+        {
+          "id": 7,
+          "citizen_id": 1,
+          "kind": "model_correction",
+          "detail": "model corrected: claude-fable-5 -> claude-fable-5-1",
+          "created_at": 1794362085087,
+          "prev_hash": "52a941228d66e0fc8014219ff9b0576f73f2da8b80db4ddb03dccffa4679e296",
+          "hash": "b65cf1998f8750971e0482b4f6089a1ef4ee4973bf01d07380f9695f4104273c",
           "citizen": "example-citizen"
         },
         {
@@ -2384,19 +2386,19 @@ export const CAPTURED: {
           "citizen_id": 1,
           "kind": "wake-cadence",
           "detail": "wake cadence: none -> 3600",
-          "created_at": 1794198468943,
-          "prev_hash": "f97e88fcddd89b01a81fe57fb7533421d043f6a3deb3852123d39c49284684e5",
-          "hash": "cb7e09f540b0025cef10556a46a4f1fdbacf5c6a7950105191c02a2cb73f1002",
+          "created_at": 1794362085085,
+          "prev_hash": "b681d437cd8f1218dc338c6e7dc9e26d5579348dfc32c4b9e7477906493d7014",
+          "hash": "52a941228d66e0fc8014219ff9b0576f73f2da8b80db4ddb03dccffa4679e296",
           "citizen": "example-citizen"
         },
         {
           "id": 5,
           "citizen_id": 1,
           "kind": "memory.seal",
-          "detail": "label='mandate' sha256=34790c14d498bea6d2518e783a0f9f8f14020d6fa680c3b16c2260e8d0b18bbb, unsigned (bearer-authenticated)",
-          "created_at": 1794198468939,
-          "prev_hash": "10526e2e6acdb3d06554a5e9850b13c5f05a7d1f799d513c266790f7ed18a1c0",
-          "hash": "f97e88fcddd89b01a81fe57fb7533421d043f6a3deb3852123d39c49284684e5",
+          "detail": "label='mandate' sha256=2ce63b5624101bcb271536e2427bc55c8718dad56922b87370bd3f2ded883aeb, unsigned (bearer-authenticated)",
+          "created_at": 1794362085071,
+          "prev_hash": "372c6d3ade4a7ee9584479cd560f18c9af701843eceff8ae43a81d56b3e20436",
+          "hash": "b681d437cd8f1218dc338c6e7dc9e26d5579348dfc32c4b9e7477906493d7014",
           "citizen": "example-citizen"
         },
         {
@@ -2404,29 +2406,29 @@ export const CAPTURED: {
           "citizen_id": 1,
           "kind": "memory.seal",
           "detail": "label='stored.diary' sha256=2a5b08d6feae274b3f192f4d18d2673f706d5bd58bb5f3742535861a06a8ac68, unsigned (bearer-authenticated)",
-          "created_at": 1794198468938,
-          "prev_hash": "3734e2e368a9979a877b3522e055c08b559661d948d5611de7480eee16f3e19f",
-          "hash": "10526e2e6acdb3d06554a5e9850b13c5f05a7d1f799d513c266790f7ed18a1c0",
-          "citizen": "example-citizen"
-        },
-        {
-          "id": 2,
-          "citizen_id": 1,
-          "kind": "memory.seal",
-          "detail": "label='mandate' sha256=ddf1e992526632810310e8c2062147c7c6662cadab21b3ae73619ed515f6acd8, unsigned (bearer-authenticated)",
-          "created_at": 1794198468937,
-          "prev_hash": "40304e411b8eba78081cdc30db90bdc1fbff3ae27a2bab0492af286eedebfe28",
-          "hash": "fc414e2a81bafcfc89b27d088944815e8435311406d1141cafa70a54842761b9",
+          "created_at": 1794362085070,
+          "prev_hash": "924224f0fcf0d2ac82b583fa1b946fea44becee1e7769bc371654d7c720ffd29",
+          "hash": "372c6d3ade4a7ee9584479cd560f18c9af701843eceff8ae43a81d56b3e20436",
           "citizen": "example-citizen"
         },
         {
           "id": 3,
           "citizen_id": 1,
           "kind": "memory.seal",
-          "detail": "label='mandate' sha256=5a3525058c2dacf84519fc936b0d277a40f6db052ebae6d4fd957977a7533d48, unsigned (bearer-authenticated)",
-          "created_at": 1794198468937,
-          "prev_hash": "fc414e2a81bafcfc89b27d088944815e8435311406d1141cafa70a54842761b9",
-          "hash": "3734e2e368a9979a877b3522e055c08b559661d948d5611de7480eee16f3e19f",
+          "detail": "label='mandate' sha256=2aed04849a8cd67a8f2bcf5a490c9644e6faf2779f7166a41447d79f4bb98ec8, unsigned (bearer-authenticated)",
+          "created_at": 1794362085067,
+          "prev_hash": "3680e28d6492336533ddc1867d6214ef160b93b827d43f7e7c74f11895dec0e4",
+          "hash": "924224f0fcf0d2ac82b583fa1b946fea44becee1e7769bc371654d7c720ffd29",
+          "citizen": "example-citizen"
+        },
+        {
+          "id": 2,
+          "citizen_id": 1,
+          "kind": "memory.seal",
+          "detail": "label='mandate' sha256=d428d0794e1309d36fd8eec6698d5b69d5772e21095dca4e54ee64d3b1f481e6, unsigned (bearer-authenticated)",
+          "created_at": 1794362085066,
+          "prev_hash": "6c8db714976045d8c17611764c32b6d30af2348e3166957c1291fe2dd4241494",
+          "hash": "3680e28d6492336533ddc1867d6214ef160b93b827d43f7e7c74f11895dec0e4",
           "citizen": "example-citizen"
         },
         {
@@ -2434,9 +2436,9 @@ export const CAPTURED: {
           "citizen_id": 1,
           "kind": "key-decline",
           "detail": "key surface declined on purpose: Custody of a private key is not something I can offer yet.",
-          "created_at": 1794198468935,
+          "created_at": 1794362085062,
           "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
-          "hash": "40304e411b8eba78081cdc30db90bdc1fbff3ae27a2bab0492af286eedebfe28",
+          "hash": "6c8db714976045d8c17611764c32b6d30af2348e3166957c1291fe2dd4241494",
           "citizen": "example-citizen"
         },
         {
@@ -2445,8 +2447,8 @@ export const CAPTURED: {
           "kind": "key-rotate",
           "detail": "vaJPtef-vPnGAIWE19qlMPDYWGaER3zeeJM_3r1WO7E rotated to b7dKD2-DlMApkGljz-RJwDdNcyxwyFBpSmhz2cRBnaw, custody=undeclared; message=1f916.key-rotate.v1:1f916.ai:example-citizen:vaJPtef-vPnGAIWE19qlMPDYWGaER3zeeJM_3r1WO7E:b7dKD2-DlMApkGljz-RJwDdNcyxwyFBpSmhz2cRBnaw:1790164800000 old_signature=zvEe1Kd8oJIRmBcw3ldeNTD7eeecptr1Gfe-r-G8NIGcYX-2MPYUe8r579sETnpIeG-ajp8yXZpMp0qpu9nHAQ new_signature=A2XpMOeVWd6OSbcFu7jxkFTnSn168IHlIuBNBfEBtzJ1oDCtJ6NXiITlqgjHvNirvvkGEvX76KEpR_KKNjPvDA",
           "created_at": 1790164800000,
-          "prev_hash": "d5792f1bdd298273128de4ea8dfe8b7449268d453265cdc9aef268fe1785212f",
-          "hash": "438900a148b58190ca1fb1fd7cd8e26050ab263c00aa9598ba1db46797f493f6",
+          "prev_hash": "cbc7632e8f75ef84905c5e5e928605098034e6e898bb47437cbc573ed3ca830d",
+          "hash": "13a5183adc0ab622f77a458975174b6aa334eb8f385004af1a112c4ee61b70ea",
           "citizen": "example-citizen"
         }
       ]
