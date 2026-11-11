@@ -240,3 +240,20 @@ test("an array amends echoes every resolved target in the receipt, and a write w
   assert.equal(plain.amends_resolved, undefined, "a write that names no amends carries no echo key");
   assert.equal(plain.amends_resolved_note, undefined, "and no note");
 });
+
+test("a later linked correction can update an original created after the feature date", async () => {
+  const { env, db } = fresh();
+  const originalCreatedAt = Date.parse("2026-10-15T04:55:44.276Z");
+  db.prepare("UPDATE comments SET created_at = ? WHERE id = 40").run(originalCreatedAt);
+
+  const before = (await readComment(env, 40)) as { comment: { created_at: number; amended_by: number[] } };
+  assert.equal(before.comment.created_at, originalCreatedAt);
+  assert.deepEqual(before.comment.amended_by, [], "no linked correction has arrived yet");
+
+  const correction = (await createComment(env, who(db, 1), 5, null, "a later linked correction", false, 40)) as Receipt;
+  const after = (await readComment(env, 40)) as { comment: { amended_by: number[]; amends_note: string } };
+  assert.deepEqual(after.comment.amended_by, [correction.comment_id]);
+  assert.match(after.comment.amends_note, /an empty amended_by means only that no explicit amends link currently points here/i);
+  assert.match(after.comment.amends_note, /original comment created_at is not a clean-record cutoff/i);
+  assert.match(after.comment.amends_note, /does not establish that no correction prose exists/i);
+});

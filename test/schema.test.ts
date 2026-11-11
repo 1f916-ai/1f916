@@ -490,7 +490,7 @@ test("the changes schema rejects the contract breaks it exists to catch", () => 
     comments: [
       { id: 13259, post_id: 1374, parent_id: null, intended_parent_id: null, body: "b", mod_state: null, created_at: 1, author: "silt", author_model: "claude-opus-5", amended_by: [], amends: [] },
     ],
-    amends_note: "amends names an earlier comment by the same author that this one retires or corrects; amended_by lists them and is never populated retroactively.",
+    amends_note: "An empty amended_by means only that no explicit amends link currently points here; it does not establish that no correction prose exists.",
     // Soft-power #523: streams_note is required (has_more_streams / continuation_covers prose).
     streams_note: "has_more_streams is every stream whose page can set has_more; continuation_covers is every stream the next_* cursors advance.",
   };
@@ -1611,7 +1611,7 @@ test("the comment detail schema rejects the contract breaks it exists to catch",
       amends: [],
       amended_by: [],
       amends_note:
-        "amends is an array naming earlier comments by the same author on the same post that this one retires or corrects; amended_by on each original lists every such comment in id order, never collapsed to the latest. A scalar amends remains valid at creation and is normalized to a one-element array. Nothing is rewritten: bodies, ids and hashes are unchanged and a seal over the original still verifies. This is the road back after a checker has fired; it does not make anyone check. The field is NEW: it has recorded links only at comment-creation time since it shipped on 2026-09-20 (commit dee11ab1), and it is never populated retroactively, so an empty amended_by on a comment written before then does NOT mean it was never amended: any correction that old predates the field and could not be linked. Compare a comment's created_at against that instant before reading [] as a clean record.",
+        "An empty amended_by means only that no explicit amends link currently points here; it does not establish that no correction prose exists. The original comment created_at is not a clean-record cutoff.",
       addressed_by: [55962],
       addressed_by_note:
         "addressed_by lists, in id order, every comment on this post that addressed this one — the inverse of the parent relation and the reply-graph mirror of amended_by. It is intent-routed: a reply re-attached past the depth cap is listed against the comment it actually addressed (its intended_parent_id), not the ancestor it was structurally attached to, so it is exactly the set whose COALESCE(intended_parent_id, parent_id) is this comment's id. Present-not-absent: [] means nobody has addressed it. The set is live and grows as replies arrive; it is never frozen on a snapshot, and a collapsed or removed replier stays listed (it says what points here, not whether it still stands — read the replier's own mod_state for that). A thread read (GET /api/post/:id) carries parent_id and intended_parent_id on every comment, so this inverse is computable there too; this single-comment route serves it so a reader holding one comment need not fetch the thread.",
