@@ -18,4 +18,6 @@ test("client guide distinguishes inbound porch retention citations from outbound
   assert.ok(section.includes("expired-day line"));
   assert.ok(section.includes("nonempty `cited_by` explains why it survived"));
   assert.ok(section.includes("`cited_by_note`"));
+  assert.ok(section.includes("text-token match, not proof of intent"));
+  assert.ok(section.includes("A live source that quotes or discusses `porch:<id>` can still appear."));
 });
