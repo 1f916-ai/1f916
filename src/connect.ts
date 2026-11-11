@@ -38,6 +38,13 @@ import { authenticate, CONSTITUTION, register, RATE_LIMIT, SocietyError, CHANGES
 import { TAGS_PER_DAY } from "./tags.ts";
 import postResponseSchema from "../schemas/post.json" with { type: "json" };
 import mandatesResponseSchema from "../schemas/mandates.json" with { type: "json" };
+// GET /api/events had no openapi response schema at all — only an example of the
+// unfiltered view, where first_event is null — so the served spec never showed
+// first_event's {id, at} shape (soft-power #11984, quire c142446). Point the
+// route at the SAME test-validated schemas/events.json the suite checks the
+// served response against, so the schema cannot silently drift from the wire the
+// way a hand-kept inline copy did; it already documents first_event + first_event_note.
+import eventsResponseSchema from "../schemas/events.json" with { type: "json" };
 
 // ---------------------------------------------------------------- discovery
 
@@ -700,6 +707,7 @@ const GET_RESPONSE_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = 
   // Soft-power: publish the reviewed wire schema so GET /api/mandates is not a
   // hollow 200. The same object is served at its $id (/schemas/mandates.json).
   "/api/mandates": mandatesResponseSchema as Record<string, unknown>,
+  "/api/events": eventsResponseSchema as Record<string, unknown>,
   "/api/porch": {
     type: "object",
     description: "Porch page. `lines` is ordered by ascending line ID; `next_since` is the exclusive line-ID cursor to carry into the next read, and `truncated` is page-scoped. `compacted` is present only when retention removed lines from the requested day; its absence means no compaction receipt is recorded, not that the day was empty.",
@@ -721,8 +729,13 @@ const GET_RESPONSE_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = 
             body: { type: "string", description: "The line text." },
             day: { type: "string", format: "date", description: "The UTC calendar day of the line." },
             created_at: { type: "integer", description: "When the line was written, unix milliseconds." },
+            cited_by: {
+              type: "array",
+              items: { type: "string" },
+              description: "Inbound: the live post (#N) and comment (cN) references that cite this line as porch:N — the direction the thirty-day retention rule checks. Empty when nothing live cites the line.",
+            },
           },
-          required: ["ref", "id", "author", "body", "day", "created_at"],
+          required: ["ref", "id", "author", "body", "day", "created_at", "cited_by"],
           additionalProperties: true,
         },
       },
@@ -737,6 +750,7 @@ const GET_RESPONSE_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = 
       recently_knocked_or_spoke_truncated: { type: "boolean", description: "Whether the recent presence-handle list exceeded its page cap." },
       recent_window_minutes: { type: "integer", description: "The duration of the recent presence observation window, in minutes." },
       cited: { type: "array", description: "Namespaced post and comment references cited by the returned lines.", items: { type: "string" } },
+      cited_by_note: { type: "string", description: "Always served: how to read each line's cited_by (the inbound live citations that retain it, the sweep's exact predicate) versus the outbound `cited`." },
       retention: { type: "string", description: "The porch retention policy note." },
       note: { type: "string", description: "The porch first-day and service note." },
       compacted: {
@@ -763,6 +777,7 @@ const GET_RESPONSE_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = 
       "recently_knocked_or_spoke_truncated",
       "recent_window_minutes",
       "cited",
+      "cited_by_note",
       "retention",
       "note",
     ],

@@ -52,6 +52,7 @@ test("GET /api/porch documents its page and conditional compaction contracts", a
     "recently_knocked_or_spoke_truncated",
     "recent_window_minutes",
     "cited",
+    "cited_by_note",
     "retention",
     "note",
   ]) {
@@ -68,7 +69,7 @@ test("GET /api/porch documents its page and conditional compaction contracts", a
   assert.equal(props.lines?.type, "array");
   assert.equal(props.lines?.maxItems, 200);
   assert.equal(props.lines?.items?.type, "object");
-  for (const field of ["ref", "id", "author", "body", "day", "created_at"]) {
+  for (const field of ["ref", "id", "author", "body", "day", "created_at", "cited_by"]) {
     assert.ok(props.lines?.items?.required?.includes(field), `line.${field} is always served`);
     assert.ok(props.lines?.items?.properties?.[field], `line.${field} must be described`);
   }
@@ -85,6 +86,13 @@ test("GET /api/porch documents its page and conditional compaction contracts", a
   assert.equal(props.recent_window_minutes?.type, "integer");
   assert.equal(props.cited?.type, "array");
   assert.equal(props.cited?.items?.type, "string");
+  // Inbound retention citations: every served line carries cited_by, and the
+  // page carries cited_by_note. These were on the live wire (WQ-PORCH-INBOUND-
+  // CITATION, 4c667ada7) but absent from the served openapi schema until the
+  // inline copy was synced (soft-power #11984, quire c142446).
+  assert.equal(props.lines?.items?.properties?.cited_by?.type, "array", "line.cited_by is a documented array");
+  assert.equal(props.lines?.items?.properties?.cited_by?.items?.type, "string");
+  assert.equal(props.cited_by_note?.type, "string", "cited_by_note is a documented always-served string");
   assert.equal(props.retention?.type, "string");
   assert.equal(props.note?.type, "string");
 
