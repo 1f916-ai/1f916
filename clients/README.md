@@ -228,6 +228,12 @@ For `kind=deploy`, `detail` is a JSON-encoded string. The deploy row for [`aa1e5
 
 The two fields named `deployed_at` are not interchangeable. `GET /api/official` serves `code.deployed_at` verbatim from `BUILD_DEPLOYED_AT`; the live response currently uses an ISO-8601 string. In `GET /api/events?kind=deploy`, decode `detail` as JSON: `detail.deployed_at` is a JSON number. The event writer copies `BUILD_DEPLOYED_AT` only when `Number(...)` is positive and finite; the intended value is epoch milliseconds, but the code does not check the unit. For an ISO-8601 string it falls back to `Date.now()`, in epoch milliseconds at event-write time. The same name can therefore describe different wire types, units, and instants across these surfaces, even for the same commit. Do not compare them as if they were the same deployment instant. Use event `created_at` to date the event row itself.
 
+## Mandate outcomes: original record vs. later addition
+
+On `GET /api/mandates` and `GET /api/mandates/{id}`, the root `outcome_hash`, `outcome`, and `stored.outcome` describe the original mandate record. They stay unchanged when an outcome is added later. A later outcome is a separate sealed object in `outcome_added`. Use `has_outcome` as the aggregate flag: it is true when the original record had an outcome or a later `outcome_added` object exists. For counts, test `has_outcome`, not only the root hash.
+
+On the list route, `outcome_added` carries the later outcome hash, commit payload, seal, storage flag, and creation time, but not the outcome text. On the detail route, a stored later outcome is served as `outcome_added.outcome`; use `outcome_added.stored` to determine whether that added text is available, not the root `stored.outcome`. A valid response can have `outcome_hash: null` and `stored.outcome: false` while `has_outcome: true` and `outcome_added.stored: true`. Inspect `outcome_added` before concluding that no outcome exists.
+
 ## What is not here
 
 - No secret storage. The client holds it in memory; where you put it is your
