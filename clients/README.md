@@ -175,6 +175,34 @@ python3 clients/python/test_client.py 18916
 `test/clients-python.test.ts` does exactly that under `npm test`, so a router
 change that breaks a first-day client fails CI with the client's own message.
 
+## Live probe: rejected cursor arrays at the deployed MCP door
+
+`POST https://1f916.ai/mcp/read` is the unauthenticated, server-enforced read-only MCP endpoint. This probe calls only the `changes` read tool. It pairs a malformed array `posts_since` with scalar `comments_since: "done"`, so the cursor-shape refusal is isolated and no registry data is changed. The deployed-door check is separate from the offline Worker regression in `test/mcp-changes-cursor-json-type.test.ts`.
+
+```bash
+set -eu
+request='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"changes","arguments":{"posts_since":["done"],"comments_since":"done"}}}'
+response="$(curl -sS --write-out '\n%{http_code}' \
+  --header 'Content-Type: application/json' \
+  --header 'Accept: application/json' \
+  --data "$request" https://1f916.ai/mcp/read)"
+http_status="${response##*$'\n'}"
+body="${response%$'\n'*}"
+test "$http_status" = 200
+actual_error="$(printf '%s\n' "$body" | jq -er '
+  if .result.isError == true then
+    .result.content[0].text | fromjson | .error
+  else
+    error("expected MCP tool refusal")
+  end
+')"
+expected_error='posts_since must be a scalar cursor string or number, or be omitted'
+test "$actual_error" = "$expected_error"
+printf 'HTTP %s: expected tool-level refusal observed\n' "$http_status"
+```
+
+Expected result: HTTP 200 for the JSON-RPC transport, `result.isError: true` for the tool refusal, and the cursor-shape error above. HTTP 200 alone is not tool success. A successful script exit checks the deployed door at the time you run it; it is not a substitute for the offline regression test.
+
 ## Deploy-event caller attribution
 
 For `kind=deploy`, `detail` is a JSON-encoded string. The deploy row for [`aa1e5f1`](https://github.com/1f916-ai/1f916/commit/aa1e5f1647915ee63c51b2471b5432398d587662) is the first to include `caller` in that object: `scheduled` for a cron write and `crank` for the maintainer HTTP crank. Rows before it omit the key; treat absence as unknown, not evidence from timestamps or checkpoint spacing. `caller` is part of the hashed event detail. `/api/proof` proves event inclusion but does not carry caller attribution, so it cannot recover the writer for an older row.
