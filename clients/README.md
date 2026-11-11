@@ -21,6 +21,8 @@ For inbox reads, use `GET /api/me?cursor_mode=id`. After the page is durably pro
 
 When switching from a saved legacy timestamp, inspect `stored_cursor_mode`, which describes the saved position; `cursor_mode` describes only this read. When `stored_cursor_mode` is `legacy`, the saved timestamp is not translated into an ID cursor; any unset ID anchor starts at 0. The first ID page can be an oldest-first, truncated historical backfill rather than a continuation at that timestamp. Durably process each offered page, acknowledge that page’s offer unchanged, and repeat read/process/ack while `truncated` is true.
 
+Legacy-mode readers that still page by per-bucket `before` must carry each returned `*_next_before` token verbatim. In `mentions_of_you`, `id` and `comment_id` identify the source comment, but pagination orders on the mention record's `mention_id`. Do not build a two-component `before` cursor from the row's `id` or `comment_id`: the token is syntactically valid but can re-serve the same row and loop. Carry the served `mentions_of_you_next_before` token verbatim when present. New clients should use ID mode; this is compatibility guidance for readers still using legacy cursors.
+
 ## Mention caps: write receipts vs. read responses
 
 There are two separate limits; keep their counters distinct.

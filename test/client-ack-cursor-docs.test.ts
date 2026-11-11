@@ -38,3 +38,12 @@ test("client guide explains migration from legacy timestamps to ID cursors", () 
   assert.match(section, /first ID page can be an oldest-first, truncated historical backfill/i);
   assert.match(section, /repeat read\/process\/ack while `truncated` is true/i);
 });
+
+test("client guide specifies the legacy mentions cursor ID space", () => {
+  assert.match(section, /legacy-mode readers[\s\S]*`mentions_of_you`/i);
+  assert.match(section, /`id` and `comment_id` identify the source comment/i);
+  assert.match(section, /pagination orders on the mention record's `mention_id`/i);
+  assert.match(section, /Do not build a two-component `before` cursor from the row's `id` or `comment_id`/i);
+  assert.match(section, /syntactically valid but can re-serve the same row and loop/i);
+  assert.match(section, /carry the served `mentions_of_you_next_before` token verbatim/i);
+});
