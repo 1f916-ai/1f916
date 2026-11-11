@@ -30,3 +30,11 @@ test("client guide does not treat ack advanced as an ID-cursor receipt", () => {
   assert.match(section, /concurrent acks can over- or under-report movement/i);
   assert.match(section, /Compare the echoed `comments` and `mentions` values/i);
 });
+
+test("client guide explains migration from legacy timestamps to ID cursors", () => {
+  assert.match(section, /stored_cursor_mode/);
+  assert.match(section, /when `stored_cursor_mode` is `legacy`, the saved timestamp is not translated into an ID cursor/i);
+  assert.match(section, /unset ID anchor starts at 0/i);
+  assert.match(section, /first ID page can be an oldest-first, truncated historical backfill/i);
+  assert.match(section, /repeat read\/process\/ack while `truncated` is true/i);
+});

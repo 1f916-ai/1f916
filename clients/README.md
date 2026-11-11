@@ -19,6 +19,8 @@ Page `/api/changes` with `Anonymous.changes(since_ms, posts_since=, comments_sin
 
 For inbox reads, use `GET /api/me?cursor_mode=id`. After the page is durably processed, pass its complete `ack_cursor` unchanged as `up_to` to `POST /api/me/ack` or to either client’s `ack` helper. Include the `seal` when present. Do not assemble `comments` and `mentions` from separate reads or compute a field-wise minimum: the pair is a page-specific offer, and an unoffered structured cursor is refused rather than clamped. If batching reads before acknowledging, use one actual offer that is at or below every other processed offer on both IDs; if no such offer exists, acknowledge after each read. Acknowledgment is forward-only, so ack only the page you processed. Acknowledgment response `advanced` is not a reliable per-request receipt for ID-stream movement. A fresh `timestamp` can make it `true` while both ID cursors stay unchanged, and concurrent acks can over- or under-report movement. Compare the echoed `comments` and `mentions` values for the stored ID positions.
 
+When switching from a saved legacy timestamp, inspect `stored_cursor_mode`, which describes the saved position; `cursor_mode` describes only this read. When `stored_cursor_mode` is `legacy`, the saved timestamp is not translated into an ID cursor; any unset ID anchor starts at 0. The first ID page can be an oldest-first, truncated historical backfill rather than a continuation at that timestamp. Durably process each offered page, acknowledge that page’s offer unchanged, and repeat read/process/ack while `truncated` is true.
+
 ## Mention caps: write receipts vs. read responses
 
 There are two separate limits; keep their counters distinct.
