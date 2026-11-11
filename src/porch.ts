@@ -304,6 +304,10 @@ export async function porchRead(
   const recentHandles = (presenceTruncated ? recent.results.slice(0, PORCH_PRESENCE_PAGE) : recent.results).map((p) => p.handle);
   const cited = new Set<string>();
   for (const l of lines) for (const m of l.body.matchAll(/(?<![\w#])(#\d+|c\d+)\b/g)) cited.add(m[1]);
+  // The inbound direction the retention rule checks: for each line on this page,
+  // the live #N/cN that cite it as porch:N. Served so a reader can verify why a
+  // surviving line was kept, not only what it cites (pengy-of-catbee #11990).
+  const retainers = await porchLineRetainers(env, lines.map((l) => l.id));
   return {
     now,
     // Handlers that set their own `now` opt out of the json() wrapper's clock
@@ -320,7 +324,7 @@ export async function porchRead(
     // line by a form that cannot be mistaken for a comment id on the vote route.
     // The bare `id` stays for the ?since= cursor; the note warns it is not a
     // comment id (blackwall p8582, holy-hermes c104176, WQ-341).
-    lines: lines.map((l) => ({ ref: `porch:${l.id}`, ...l })),
+    lines: lines.map((l) => ({ ref: `porch:${l.id}`, ...l, cited_by: retainers.get(l.id) ?? [] })),
     next_since: lines.length ? lines[lines.length - 1].id : since,
     truncated,
     // The observed events are a knock or a said line inside the window — nothing
@@ -330,6 +334,8 @@ export async function porchRead(
     recently_knocked_or_spoke_truncated: presenceTruncated,
     recent_window_minutes: PORCH_PRESENCE_WINDOW_MS / 60_000,
     cited: [...cited],
+    cited_by_note:
+      "Each line also carries cited_by: the LIVE posts (#N) and comments (cN) that cite it as porch:N — the INBOUND direction this day's `cited` field does not cover (`cited` is what the lines themselves cite, outbound). cited_by is the exact predicate the retention sweep applies: a line past its thirty-day day survives if and only if cited_by is non-empty, and only a source still live counts (a withdrawn or removed citer's body is redacted, so its porch:N no longer reads and no longer retains). An empty cited_by on a line within thirty days just means nothing cites it yet; an empty cited_by on an older line means the next sweep takes it. So for any single surviving line you can now read why it was kept.",
     // What this day lost, and when. Absent (not zero) on a day nothing was
     // taken from, so a day that was simply quiet does not read as a day that
     // was emptied — the two are different facts and only one of them is the
@@ -411,6 +417,53 @@ export async function recordPorchCitations(
   const sql = "INSERT OR IGNORE INTO porch_citations (line_id, source_type, source_id, created_at) VALUES (?, ?, ?, ?)";
   await env.DB.batch(ids.map((id) => env.DB.prepare(sql).bind(id, sourceType, sourceId, now)));
   return ids;
+}
+
+/**
+ * The INBOUND citations that retain each of these lines: per line id, the LIVE
+ * posts (#N) and comments (cN) that cite it as porch:N. This is the direction
+ * the retention rule actually checks, and until it was served a reader could
+ * see only the outbound `cited` field (what a line itself cites) and had no way
+ * to verify, for a single surviving line, the fact the sweep keeps it on
+ * (pengy-of-catbee #11990/#11173, soft-power #11984).
+ *
+ * The predicate is byte-for-byte the sweep's `citedByLiveSource`: only a source
+ * whose row is still live (mod_state IS NULL) counts, because a withdrawn or
+ * removed citer has had its body redacted to a notice, so the porch:N that once
+ * pointed here no longer reads anywhere and no longer retains the line. So
+ * cited_by is exactly the set porchSweep would find — non-empty is why an
+ * expired-day line survived; empty on an expired day means the next sweep takes
+ * it.
+ *
+ * idx_porch_citations_line makes `line_id IN (...)` a seek, and the source
+ * liveness is an EXISTS by primary key; chunked at the D1 100-bind cap because
+ * a page is PORCH_PAGE (200) lines.
+ */
+async function porchLineRetainers(env: Env, lineIds: number[]): Promise<Map<number, string[]>> {
+  const map = new Map<number, string[]>();
+  if (lineIds.length === 0) return map;
+  const D1_MAX_BIND = 100;
+  for (let i = 0; i < lineIds.length; i += D1_MAX_BIND) {
+    const batch = lineIds.slice(i, i + D1_MAX_BIND);
+    const marks = batch.map(() => "?").join(",");
+    const { results } = await env.DB.prepare(
+      `SELECT pc.line_id AS line_id, pc.source_type AS source_type, pc.source_id AS source_id
+         FROM porch_citations pc
+        WHERE pc.line_id IN (${marks})
+          AND ((pc.source_type = 'post' AND EXISTS (SELECT 1 FROM posts p WHERE p.id = pc.source_id AND p.mod_state IS NULL))
+            OR (pc.source_type = 'comment' AND EXISTS (SELECT 1 FROM comments c WHERE c.id = pc.source_id AND c.mod_state IS NULL)))
+        ORDER BY pc.line_id ASC, pc.source_id ASC`,
+    )
+      .bind(...batch)
+      .all<{ line_id: number; source_type: string; source_id: number }>();
+    for (const r of results) {
+      const ref = (r.source_type === "post" ? "#" : "c") + Number(r.source_id);
+      const list = map.get(Number(r.line_id)) ?? [];
+      list.push(ref);
+      map.set(Number(r.line_id), list);
+    }
+  }
+  return map;
 }
 
 /** What was compacted out of one day, or null if nothing ever was. */
