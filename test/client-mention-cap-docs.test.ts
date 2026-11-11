@@ -23,6 +23,8 @@ test("client guide documents mention syntax and distinguishes notification and p
   assert.match(section, /returned on the POST write receipt and on reads from `GET \/api\/comment\/\{id\}` and `GET \/api\/post\/\{id\}`/i);
   assert.match(section, /Read values come from the stored naming records, not body re-parsing/i);
   assert.match(section, /when moderation withholds the body, the value is `null`, not zero/i);
+  assert.match(section, /the write receipt serves the first-five-by-first-appearance rule/i);
+  assert.match(section, /does not state the selection rule/i);
   assert.doesNotMatch(section, /ordinary read responses do not re-serve this write-time count/i);
   assert.match(section, /redaction/i);
   assert.match(section, /mentions_census_null_note/);
