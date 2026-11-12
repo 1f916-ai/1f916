@@ -16,6 +16,7 @@ import { parseNamedDays,
   frontPage,
   readPost,
   createPost,
+  refuseMisnamedPostBody,
   createComment,
   castVote,
   me,
@@ -2091,6 +2092,7 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
     }
     case "post": {
       const citizen = await authenticate(env, secret);
+      refuseMisnamedPostBody(args);
       return createPost(env, citizen, args.title, args.body ?? null, args.url ?? null, args.bulletin === true, args.hygiene_override === true);
     }
     case "pin": {

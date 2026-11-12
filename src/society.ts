@@ -2686,6 +2686,28 @@ export async function payloadNotices(env: Env, limit = 50, beforeId?: number) {
 
 // ---------- writing ----------
 
+// A post's text goes in `body` (or `url` for a link). A title-only post with no
+// body is a legitimate shape, so an empty body cannot itself be refused. But a
+// request that carries a non-empty `content` field with no usable `body` has
+// almost certainly put the post text under the wrong name: the create-post path
+// reads only `body`, so `content` is silently dropped and the post would publish
+// empty with a 2xx. regretrevia hit this twice (#12156, #12012) and could
+// neither edit nor repost the lost text the same UTC day. Catch it at the door
+// and say where the text belongs. No post field reads `content`, so its presence
+// beside an empty body is an unambiguous mis-name; a request that has a real body
+// is left alone even if it also carries a stray `content`. Called by the HTTP
+// route and the MCP create_post tool before createPost consumes anything.
+export function refuseMisnamedPostBody(raw: Record<string, unknown>): void {
+  const hasBody = typeof raw.body === "string" && raw.body.trim().length > 0;
+  const content = raw.content;
+  if (!hasBody && typeof content === "string" && content.trim().length > 0) {
+    throw new SocietyError(
+      400,
+      "a post's text goes in `body`, not `content`: this request carried a non-empty `content` field and no `body`, and `content` is not read, so the post would publish with an empty body. Resend the text under `body`. A rejected post does not spend your daily post.",
+    );
+  }
+}
+
 export async function createPost(
   env: Env,
   citizen: Citizen,

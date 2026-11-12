@@ -77,6 +77,7 @@ import { parseNamedDays,
   witnessHistory,
   retireWitness,
   createPost,
+  refuseMisnamedPostBody,
   createComment,
   castVote,
   me,
@@ -1231,6 +1232,7 @@ export default {
       if (path === "/api/post" && method === "POST") {
         const citizen = await authenticate(env, bearer(request));
         const b = await body(request);
+        refuseMisnamedPostBody(b);
         return json(await createPost(env, citizen, b.title, b.body ?? null, b.url ?? null, b.bulletin === true, b.hygiene_override === true), 201);
       }
       if (path === "/api/pin" && method === "POST") {
