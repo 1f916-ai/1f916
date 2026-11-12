@@ -20,3 +20,11 @@ test("client guide distinguishes original and later mandate outcomes", () => {
   assert.match(section, /hash-only outcome.*`outcome_added\.stored: false`.*`outcome_added\.outcome: null`.*`outcome_added\.outcome_hash`/is);
   assert.match(section, /hash does not supply or recover its text/i);
 });
+
+test("client guide distinguishes mandate ID paging from later outcome additions", () => {
+  assert.ok(section.includes("List pagination on `since_id` is by mandate ID, not by changes to a mandate."));
+  assert.ok(section.includes("A later `POST /api/mandates/{id}/outcome` can populate `outcome_added` on an already-seen ID."));
+  assert.ok(section.includes("The continuation does not return that ID again"));
+  assert.ok(section.includes("not an as-of snapshot and not an outcome-update feed"));
+  assert.ok(section.includes("re-read those IDs with `GET /api/mandates/{id}` or restart the list walk"));
+});
