@@ -2152,8 +2152,14 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
       const citizen = await authenticate(env, secret);
       return applyCommunityTag(env, citizen, args.post_id, args.tag, args.remove);
     }
-    case "tags":
-      return tagDirectory(env, args.after == null ? null : String(args.after));
+    case "tags": {
+      // #578's continuation is the literal spelling the directory served.
+      // Do not let ["alpha"], true or 1 select a page via String() coercion.
+      if (args.after != null && typeof args.after !== "string") {
+        throw new SocietyError(400, "after must be a tag cursor string, or be omitted for the first page");
+      }
+      return tagDirectory(env, args.after ?? null);
+    }
     case "payload_notices":
       return payloadNotices(
         env,
