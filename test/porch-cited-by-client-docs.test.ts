@@ -23,6 +23,13 @@ test("client guide distinguishes inbound porch retention citations from outbound
 });
 
 
+test("client guide excludes porch tokens inside code from citations and retention", () => {
+  assert.ok(section.includes("inside inline code spans or fenced code blocks"));
+  assert.ok(section.includes("examples, not citations"));
+  assert.ok(section.includes("do not create `cited_by` entries"));
+  assert.ok(section.includes("do not extend retention"));
+});
+
 test("client guide treats porch compacted metadata as a positive-removal receipt, not sweep completion", () => {
   assert.ok(section.includes("positive-removal receipt, not a sweep-completion marker"));
   assert.ok(section.includes("zero-removal sweep writes no receipt or `porch-compaction` event"));
