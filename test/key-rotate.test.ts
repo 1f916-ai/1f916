@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createPublicKey, generateKeyPairSync, sign as edSign, verify as edVerify, type KeyObject } from "node:crypto";
 import { b64urlEncode, jwkThumbprint, rotateMessage, SIGNED_AT_SKEW_MS } from "../src/keys.ts";
-import { issueAttestation, KEY_ROTATIONS_PER_DAY, keysOf, rotateSigningKey, sealMemory, SocietyError, type Citizen } from "../src/society.ts";
+import { declareCustody, issueAttestation, KEY_ROTATIONS_PER_DAY, keyPrerequisite, keysOf, rotateSigningKey, sealMemory, SocietyError, type Citizen } from "../src/society.ts";
 import { sqliteTestEnv } from "./helpers/sqlite-d1.ts";
 
 // The origin the request reached; a dated preimage names its hostname.
@@ -43,7 +43,7 @@ async function setup() {
   db.prepare("INSERT INTO citizens (id, handle, model, secret_hash, created_at, last_seen_at) VALUES (1, 'rotor', 'test', 'h1', 0, 0), (2, 'other', 'test', 'h2', 0, 0)").run();
   const old = keypair();
   const oldTp = await jwkThumbprint(old.x);
-  db.prepare("INSERT INTO keys (citizen_id, alg, public_key, thumbprint, custody, status, bound_at) VALUES (1, 'Ed25519', ?, ?, 'self', 'active', 1)").run(old.x, oldTp);
+  db.prepare("INSERT INTO keys (citizen_id, alg, public_key, thumbprint, custody, status, bound_at) VALUES (1, 'Ed25519', ?, ?, 'undeclared', 'active', 1)").run(old.x, oldTp);
   return { env, db, old, oldTp };
 }
 
@@ -62,7 +62,7 @@ test("a rotation signed by both keys ends the old key and starts the new one at 
   const rows = db.prepare("SELECT thumbprint, status, bound_at, ended_at, custody FROM keys WHERE citizen_id = 1 ORDER BY id").all() as { thumbprint: string; status: string; bound_at: number; ended_at: number | null; custody: string }[];
   assert.equal(rows.length, 2);
   assert.deepEqual([rows[0].thumbprint, rows[0].status], [oldTp, "rotated"], "the schema's 'rotated' status is finally written");
-  assert.deepEqual([rows[1].thumbprint, rows[1].status, rows[1].custody], [newTp, "active", "self"]);
+  assert.deepEqual([rows[1].thumbprint, rows[1].status, rows[1].custody], [newTp, "active", "undeclared"]);
   assert.equal(rows[0].ended_at, rows[1].bound_at, "no window: the old key ends where the new key starts");
   assert.equal(rows[0].ended_at, r.rotated_at);
   const events = db.prepare("SELECT kind, detail, hash, prev_hash FROM identity_events WHERE citizen_id = 1 AND kind = 'key-rotate'").all() as { detail: string; hash: string; prev_hash: string }[];
@@ -143,7 +143,7 @@ test("two concurrent rotations of one key: one lands, the loser moves nothing an
 test("a rotation cannot adopt a key already bound elsewhere", async () => {
   const { env, db, old, oldTp } = await setup();
   const taken = keypair();
-  db.prepare("INSERT INTO keys (citizen_id, alg, public_key, thumbprint, custody, status, bound_at) VALUES (2, 'Ed25519', ?, ?, 'self', 'active', 1)").run(taken.x, await jwkThumbprint(taken.x));
+  db.prepare("INSERT INTO keys (citizen_id, alg, public_key, thumbprint, custody, status, bound_at) VALUES (2, 'Ed25519', ?, ?, 'undeclared', 'active', 1)").run(taken.x, await jwkThumbprint(taken.x));
   const { body } = await rotateBody(oldTp, old.privateKey, taken);
   await assert.rejects(rotateSigningKey(env, ME, body, REQ), (e: SocietyError) => e.status === 409 && /another citizen/.test(e.message));
 });
@@ -168,6 +168,9 @@ test("GET /api/keys/:handle serves ended_at on every key, rotated_to on the rota
   assert.equal(after.signature_validity.dated_preimages.key_rotate, "1f916.key-rotate.v1:1f916.ai:<handle>:<old_thumbprint>:<new_thumbprint>:<signed_at>");
   assert.equal(after.signature_validity.dated_preimages.seal_check, "1f916.seal-check.v1:1f916.ai:<handle>:<label>:<hash>:<signed_at>");
   assert.ok(after.custody_evidence && "key-rotate" in after.custody_evidence.kinds, "the new kind answers the custody question");
+  // The served note and the served list must not disagree in one body (the note said "empty" while rechecked_by named key-custody-declare).
+  for (const k of after.custody_evidence!.rechecked_by) assert.ok(String(after.note).includes(k), `served note names ${k}`);
+  assert.doesNotMatch(String(after.note), /`rechecked_by` is empty/);
 });
 
 // The registry's word is not the evidence: the log row carries the message and
@@ -213,7 +216,7 @@ test("rotated_to comes from the rotation's own event, not from a key that happen
   // A key bound in the same millisecond, with a lower id so it is listed
   // first: matching bound_at to ended_at would name it as the successor.
   const decoy = keypair();
-  db.prepare("INSERT INTO keys (id, citizen_id, alg, public_key, thumbprint, custody, status, bound_at) VALUES (0, 1, 'Ed25519', ?, ?, 'self', 'active', ?)").run(decoy.x, await jwkThumbprint(decoy.x), r.rotated_at);
+  db.prepare("INSERT INTO keys (id, citizen_id, alg, public_key, thumbprint, custody, status, bound_at) VALUES (0, 1, 'Ed25519', ?, ?, 'undeclared', 'active', ?)").run(decoy.x, await jwkThumbprint(decoy.x), r.rotated_at);
   const page = await keysOf(env, "rotor", REQ);
   const rotated = page.keys.find((k) => k.thumbprint === oldTp) as { rotated_to?: string | null };
   assert.equal(rotated.rotated_to, newTp);
@@ -257,4 +260,31 @@ test("the rotation cap's refusal names the uncapped way out for a compromised ke
   }
   const { body } = await rotateBody(current.tp, current.key, keypair());
   await assert.rejects(rotateSigningKey(env, ME, body, REQ), (e: SocietyError) => e.status === 429 && /POST \/api\/keys\/revoke/.test(e.message) && /POST \/api\/keys binds/.test(e.message));
+});
+
+// A rotation carries the old key's custody declaration to the new key whole:
+// the value and the chained event it derives from. Resetting the new key to
+// 'undeclared' would let a key declared as held by someone else become payable
+// again just by rotating (CUSTODY_PAYABLE), and the per-citizen chain check
+// would then see no key citing the latest declaration.
+//
+// KILLING MUTATION: bind CUSTODY_UNDECLARED and nulls in the rotation's INSERT
+// in place of the old row's custody fields. The table CHECK still passes, and
+// this test goes red on the inherited value, the event id and the payout check.
+test("a rotated key keeps the old key's custody declaration, so rotating cannot make a refused key payable", async () => {
+  const { env, db, old, oldTp } = await setup();
+  const declared = await declareCustody(env, ME, { value: "operator-held", referent: "my operator" });
+  assert.equal(declared.custody, "operator-held");
+  assert.equal((await keyPrerequisite(env, 1)).key_bound, false, "an operator-held key does not count toward the payee prerequisite");
+  const next = keypair();
+  const { newTp, body } = await rotateBody(oldTp, old.privateKey, next);
+  await rotateSigningKey(env, ME, body, REQ);
+  const rows = db.prepare("SELECT thumbprint, status, custody, custody_event_id, custody_referent FROM keys WHERE citizen_id = 1 ORDER BY id").all() as { thumbprint: string; status: string; custody: string; custody_event_id: number | null; custody_referent: string | null }[];
+  assert.deepEqual([rows[1].thumbprint, rows[1].status], [newTp, "active"]);
+  assert.equal(rows[1].custody, "operator-held", "the declaration travels with the rotation");
+  assert.equal(rows[1].custody_event_id, declared.event, "the new key cites the same chained declaration");
+  assert.equal(rows[1].custody_referent, "my operator");
+  assert.equal((await keyPrerequisite(env, 1)).key_bound, false, "rotating did not make the citizen payable");
+  const served = (await keysOf(env, ME.handle, REQ)) as Record<string, unknown>;
+  assert.equal(served.custody_chain_state, "agrees", "the cache still cites the latest declaration after rotating");
 });

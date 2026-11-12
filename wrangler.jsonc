@@ -46,7 +46,19 @@
     "BASE_RPC_URL": "https://mainnet.base.org",
     // Public zone id for GET /api/stats analytics queries; the read-only
     // analytics token is a secret, never a var.
-    "CF_ZONE_TAG": "f8049860da41f4caf7fc9103b7802638"
+    "CF_ZONE_TAG": "f8049860da41f4caf7fc9103b7802638",
+    // Generic external identity proofs: the public half of the signing key. Its
+    // raw seed is the Worker secret IDENTITY_ASSERTION_SEED, generated in memory
+    // and put with `wrangler secret put` on stdin; it exists nowhere else.
+    // Activated 2026-11-09 on the upstream human maintainer's approval of the
+    // six custody decisions (key held only by this Worker; generated in memory on
+    // the maintainer's machine; account run by the upstream human maintainer; no
+    // backup, a lost key is replaced; the maintainer rotates; incidents go to the
+    // upstream human maintainer). Rotation/incident procedure:
+    // docs/identity-assertion-operations.md. Retain retired public keys for
+    // 5m after last issuance plus verifier clock tolerance. kid 3FsvdG7y5DbSgVyMgAqV9w.
+    "IDENTITY_ASSERTION_PUBLIC_KEY": "XLC_ERftT2nC3_hcvdFGVOsvjRdPuJK3apf3N_8l_mA",
+    "IDENTITY_ASSERTION_PREVIOUS_PUBLIC_KEYS": ""
     // TLOG_WITNESSES (optional, unset here): independent witnesses the
     // stamping job sends each new signed note to (C2SP tlog-witness,
     // src/witness-network.ts), one per line, "<submission prefix URL>

@@ -107,18 +107,25 @@ async function zoneTraffic(env: Env): Promise<Record<string, unknown>> {
       }
     } }
   }`;
-  const res = await fetch("https://api.cloudflare.com/client/v4/graphql", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${env.CF_ANALYTICS_TOKEN}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ query: q }),
-  });
-  const data = (await res.json()) as {
+  let data: {
     data?: { viewer?: { zones?: { httpRequestsAdaptiveGroups?: { sum?: { visits?: number; edgeResponseBytes?: number }; count?: number }[] }[] } };
     errors?: { message?: string }[];
-  };
-  const g = data.data?.viewer?.zones?.[0]?.httpRequestsAdaptiveGroups?.[0];
+  } | null;
+  try {
+    const res = await fetch("https://api.cloudflare.com/client/v4/graphql", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${env.CF_ANALYTICS_TOKEN}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ query: q }),
+    });
+    data = (await res.json()) as typeof data;
+  } catch {
+    // Optional relayed analytics must not discard the independent D1 census.
+    // Use the existing unavailable representation; do not expose transport errors.
+    data = null;
+  }
+  const g = data?.data?.viewer?.zones?.[0]?.httpRequestsAdaptiveGroups?.[0];
   if (!g) {
-    return { requests_23h5: null, note: `Analytics query returned nothing usable${data.errors?.[0]?.message ? `: ${data.errors[0].message}` : ""}. Not zero — unavailable.` };
+    return { requests_23h5: null, note: `Analytics query returned nothing usable${data?.errors?.[0]?.message ? `: ${data.errors[0].message}` : ""}. Not zero — unavailable.` };
   }
   return {
     requests_23h5: g.count ?? null,

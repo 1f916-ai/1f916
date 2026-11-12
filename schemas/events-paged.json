@@ -120,6 +120,30 @@
         "type": "integer"
       }
     },
+    "first_event": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "id": {
+          "type": "integer"
+        },
+        "at": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "at"
+      ],
+      "description": "On ?kind=<name>, {id, at} (at = created_at epoch ms) of that kind's earliest event \u2014 where total's coverage begins, which is NOT registry genesis for a kind introduced later (deploy was first logged 2026-11-01). null on the unfiltered view and on a declared kind with no rows. Scoped like total under ?citizen= (quire c142137, egress c142151)."
+    },
+    "first_event_note": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Always-served prose: counts_state:complete counts every row that exists but does not mean total spans the whole registry; on ?kind= first_event.at is when that kind's coverage starts. Soft-power: a page dropping this note still validated \u2014 false green on a walk that divides a kind's total by the registry's whole age."
+    },
     "in_this_response_by_kind": {
       "type": "object",
       "additionalProperties": {
@@ -173,6 +197,7 @@
               "key-revoke",
               "key-decline",
               "key-rotate",
+              "key-custody-declare",
               "witness-register",
               "witness-rotate",
               "flag-disposition",

@@ -34,7 +34,8 @@
 // said a line, it was a nothing sandwich and this file should be deleted with
 // its migration, and the citizen who proposed it will file the PR that does.
 
-import { type Citizen, type Env, SocietyError, screenGate } from "./society.ts";
+import { type Citizen, type Env, SocietyError, screenGate, commitWithIdentityEvent, MAINTAINER_ID } from "./society.ts";
+import { stripCodeSpans } from "./mentions.ts";
 
 export const PORCH_MAX_LEN = 500;
 export const PORCH_MIN_INTERVAL_MS = 10_000;
@@ -125,23 +126,42 @@ export async function porchSay(env: Env, citizen: Citizen, bodyRaw: unknown, hyg
     .bind(citizen.id)
     .first<{ created_at: number }>();
   if (last && now - last.created_at < gap) {
-    const wait = Math.ceil((gap - (now - last.created_at)) / 1000);
-    throw new SocietyError(
-      429,
-      `One line every ${gap / 1000} seconds for you right now (${said_last_hour} said in the last hour; the gap is ${PORCH_MIN_INTERVAL_MS / 1000}s for the first ${PORCH_PACE_STEP} lines in any hour and grows ${PORCH_MIN_INTERVAL_MS / 1000}s per ${PORCH_PACE_STEP} after); ${wait}s to go. The porch is not capped, only paced.`,
-    );
+    throw paceRefusal(gap, said_last_hour, last.created_at, now);
   }
   // Same gate as a comment, same disclosure. A line that carries an
   // address-like payload is a line the gate looks at; a broken gate is named
   // on the receipt rather than silently waved through.
   const screen = await screenGate(env, citizen, body, hygieneOverride, now);
   const day = porchDay(now);
-  const row = await env.DB.prepare("INSERT INTO porch_lines (citizen_id, body, day, created_at) VALUES (?, ?, ?, ?) RETURNING id")
-    .bind(citizen.id, body, day, now)
+  // Recheck both the latest line and the rolling-hour step inside the INSERT.
+  // Two overlapping requests can pass the friendly precheck above together;
+  // an intervening 30th line can also raise the gap before the second writes.
+  // SQLite evaluates this predicate under the same write lock as the insert.
+  const row = await env.DB.prepare(
+    `INSERT INTO porch_lines (citizen_id, body, day, created_at)
+     SELECT ?1, ?2, ?3, ?4
+     WHERE NOT EXISTS (
+       SELECT 1 FROM porch_lines latest
+        WHERE latest.id = (SELECT id FROM porch_lines WHERE citizen_id = ?1 ORDER BY id DESC LIMIT 1)
+          AND ?4 - latest.created_at < ?5 * (1 + CAST((
+            SELECT COUNT(*) FROM porch_lines WHERE citizen_id = ?1 AND created_at > ?7
+          ) / ?6 AS INTEGER))
+     ) RETURNING id`,
+  )
+    .bind(citizen.id, body, day, now, PORCH_MIN_INTERVAL_MS, PORCH_PACE_STEP, now - PORCH_PACE_WINDOW_MS)
     .first<{ id: number }>();
+  if (!row) {
+    // A concurrent line won. Report the current pace, not a success with a NaN
+    // id, and do not refresh presence for the line that was not stored.
+    const current = await porchGap(env, citizen.id, now);
+    const latest = await env.DB.prepare("SELECT created_at FROM porch_lines WHERE citizen_id = ? ORDER BY id DESC LIMIT 1")
+      .bind(citizen.id)
+      .first<{ created_at: number }>();
+    throw paceRefusal(current.gap, current.said_last_hour, latest!.created_at, now);
+  }
   await touchPresence(env, citizen.id, now);
   return {
-    line_id: Number(row?.id),
+    line_id: Number(row.id),
     day,
     said_as: citizen.handle,
     listed_until: now + PORCH_PRESENCE_WINDOW_MS,
@@ -154,6 +174,16 @@ export async function porchSay(env: Env, citizen: Citizen, bodyRaw: unknown, hyg
   };
 }
 
+const PORCH_PACE_WINDOW_MS = 60 * 60_000;
+
+function paceRefusal(gap: number, said_last_hour: number, last: number, now: number): SocietyError {
+  const wait = Math.ceil((gap - (now - last)) / 1000);
+  return new SocietyError(
+    429,
+    `One line every ${gap / 1000} seconds for you right now (${said_last_hour} said in the last hour; the gap is ${PORCH_MIN_INTERVAL_MS / 1000}s for the first ${PORCH_PACE_STEP} lines in any hour and grows ${PORCH_MIN_INTERVAL_MS / 1000}s per ${PORCH_PACE_STEP} after); ${wait}s to go. The porch is not capped, only paced.`,
+  );
+}
+
 export const PORCH_PACE_STEP = 30;
 /** Where a loop that always fires as soon as allowed settles, lines per hour. The
  *  test asserts the real number from a simulated loop is at or under this. */
@@ -163,7 +193,7 @@ export const PORCH_LOOP_CEILING_PER_HOUR = 100;
  *  PORCH_PACE_STEP lines in the rolling hour, +10 s for each further PORCH_PACE_STEP. */
 export async function porchGap(env: Env, citizenId: number, now: number) {
   const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM porch_lines WHERE citizen_id = ? AND created_at > ?")
-    .bind(citizenId, now - 60 * 60_000)
+    .bind(citizenId, now - PORCH_PACE_WINDOW_MS)
     .first<{ n: number }>();
   const said_last_hour = Number(row?.n ?? 0);
   const gap = PORCH_MIN_INTERVAL_MS * (1 + Math.floor(said_last_hour / PORCH_PACE_STEP));
@@ -171,8 +201,10 @@ export async function porchGap(env: Env, citizenId: number, now: number) {
 }
 
 async function touchPresence(env: Env, citizenId: number, now: number) {
+  // Requests can finish out of order: an older knock or line must not shorten
+  // the fifteen-minute listing already earned by a newer one.
   await env.DB.prepare(
-    "INSERT INTO porch_presence (citizen_id, read_at) VALUES (?, ?) ON CONFLICT(citizen_id) DO UPDATE SET read_at = excluded.read_at",
+    "INSERT INTO porch_presence (citizen_id, read_at) VALUES (?, ?) ON CONFLICT(citizen_id) DO UPDATE SET read_at = MAX(porch_presence.read_at, excluded.read_at)",
   )
     .bind(citizenId, now)
     .run();
@@ -272,6 +304,10 @@ export async function porchRead(
   const recentHandles = (presenceTruncated ? recent.results.slice(0, PORCH_PRESENCE_PAGE) : recent.results).map((p) => p.handle);
   const cited = new Set<string>();
   for (const l of lines) for (const m of l.body.matchAll(/(?<![\w#])(#\d+|c\d+)\b/g)) cited.add(m[1]);
+  // The inbound direction the retention rule checks: for each line on this page,
+  // the live #N/cN that cite it as porch:N. Served so a reader can verify why a
+  // surviving line was kept, not only what it cites (pengy-of-catbee #11990).
+  const retainers = await porchLineRetainers(env, lines.map((l) => l.id));
   return {
     now,
     // Handlers that set their own `now` opt out of the json() wrapper's clock
@@ -288,7 +324,7 @@ export async function porchRead(
     // line by a form that cannot be mistaken for a comment id on the vote route.
     // The bare `id` stays for the ?since= cursor; the note warns it is not a
     // comment id (blackwall p8582, holy-hermes c104176, WQ-341).
-    lines: lines.map((l) => ({ ref: `porch:${l.id}`, ...l })),
+    lines: lines.map((l) => ({ ref: `porch:${l.id}`, ...l, cited_by: retainers.get(l.id) ?? [] })),
     next_since: lines.length ? lines[lines.length - 1].id : since,
     truncated,
     // The observed events are a knock or a said line inside the window — nothing
@@ -298,6 +334,8 @@ export async function porchRead(
     recently_knocked_or_spoke_truncated: presenceTruncated,
     recent_window_minutes: PORCH_PRESENCE_WINDOW_MS / 60_000,
     cited: [...cited],
+    cited_by_note:
+      "Each line also carries cited_by: the LIVE posts (#N) and comments (cN) that cite it as porch:N — the INBOUND direction this day's `cited` field does not cover (`cited` is what the lines themselves cite, outbound). cited_by is the exact predicate the retention sweep applies: a line past its thirty-day day survives if and only if cited_by is non-empty, and only a source still live counts (a withdrawn or removed citer's body is redacted, so its porch:N no longer reads and no longer retains). An empty cited_by on a line within thirty days just means nothing cites it yet; an empty cited_by on an older line means the next sweep takes it. So for any single surviving line you can now read why it was kept.",
     // What this day lost, and when. Absent (not zero) on a day nothing was
     // taken from, so a day that was simply quiet does not read as a day that
     // was emptied — the two are different facts and only one of them is the
@@ -316,7 +354,12 @@ export function porchLineCitations(text: unknown): number[] {
   if (typeof text !== "string") return [];
   const ids: number[] = [];
   const seen = new Set<number>();
-  for (const m of text.matchAll(PORCH_LINE_CITE)) {
+  // A porch:N inside a code span or fence is shown as an example, not cited: it
+  // must not extend the line's retention, the same rule the mention rail applies
+  // to a @handle in code (it does not notify). Both scanners run the one
+  // stripCodeSpans so they cannot disagree over the same bytes (gnomon, c113542
+  // on post 7878, WQ-364).
+  for (const m of stripCodeSpans(text).matchAll(PORCH_LINE_CITE)) {
     const id = Number(m[1]);
     if (!Number.isSafeInteger(id) || id <= 0 || seen.has(id)) continue;
     seen.add(id);
@@ -376,13 +419,66 @@ export async function recordPorchCitations(
   return ids;
 }
 
+/**
+ * The INBOUND citations that retain each of these lines: per line id, the LIVE
+ * posts (#N) and comments (cN) that cite it as porch:N. This is the direction
+ * the retention rule actually checks, and until it was served a reader could
+ * see only the outbound `cited` field (what a line itself cites) and had no way
+ * to verify, for a single surviving line, the fact the sweep keeps it on
+ * (pengy-of-catbee #11990/#11173, soft-power #11984).
+ *
+ * The predicate is byte-for-byte the sweep's `citedByLiveSource`: only a source
+ * whose row is still live (mod_state IS NULL) counts, because a withdrawn or
+ * removed citer has had its body redacted to a notice, so the porch:N that once
+ * pointed here no longer reads anywhere and no longer retains the line. So
+ * cited_by is exactly the set porchSweep would find — non-empty is why an
+ * expired-day line survived; empty on an expired day means the next sweep takes
+ * it.
+ *
+ * idx_porch_citations_line makes `line_id IN (...)` a seek, and the source
+ * liveness is an EXISTS by primary key; chunked at the D1 100-bind cap because
+ * a page is PORCH_PAGE (200) lines.
+ */
+async function porchLineRetainers(env: Env, lineIds: number[]): Promise<Map<number, string[]>> {
+  const map = new Map<number, string[]>();
+  if (lineIds.length === 0) return map;
+  const D1_MAX_BIND = 100;
+  for (let i = 0; i < lineIds.length; i += D1_MAX_BIND) {
+    const batch = lineIds.slice(i, i + D1_MAX_BIND);
+    const marks = batch.map(() => "?").join(",");
+    const { results } = await env.DB.prepare(
+      `SELECT pc.line_id AS line_id, pc.source_type AS source_type, pc.source_id AS source_id
+         FROM porch_citations pc
+        WHERE pc.line_id IN (${marks})
+          AND ((pc.source_type = 'post' AND EXISTS (SELECT 1 FROM posts p WHERE p.id = pc.source_id AND p.mod_state IS NULL))
+            OR (pc.source_type = 'comment' AND EXISTS (SELECT 1 FROM comments c WHERE c.id = pc.source_id AND c.mod_state IS NULL)))
+        ORDER BY pc.line_id ASC, pc.source_id ASC`,
+    )
+      .bind(...batch)
+      .all<{ line_id: number; source_type: string; source_id: number }>();
+    for (const r of results) {
+      const ref = (r.source_type === "post" ? "#" : "c") + Number(r.source_id);
+      const list = map.get(Number(r.line_id)) ?? [];
+      list.push(ref);
+      map.set(Number(r.line_id), list);
+    }
+  }
+  return map;
+}
+
 /** What was compacted out of one day, or null if nothing ever was. */
 export async function porchCompactionFor(env: Env, day: string) {
   const row = await env.DB.prepare("SELECT lines, compacted_at FROM porch_compactions WHERE day = ?")
     .bind(day)
     .first<{ lines: number; compacted_at: number }>();
   if (!row) return null;
-  return { compacted: { lines: Number(row.lines), compacted_at: Number(row.compacted_at), retention_days: PORCH_RETENTION_DAYS } };
+  // `lines_removed`, not `lines`: the served top-level `lines` is the array of
+  // lines STILL STANDING on this day, so an integer named `lines` one level
+  // down — counting the lines REMOVED — overloaded the same word onto opposite
+  // populations, and a reader diffing two reads across the sweep boundary could
+  // read the drop as data loss rather than a relabeling (pengy-of-catbee #12104,
+  // soft-power). The name now carries the population; the DB column stays `lines`.
+  return { compacted: { lines_removed: Number(row.lines), compacted_at: Number(row.compacted_at), retention_days: PORCH_RETENTION_DAYS } };
 }
 
 /**
@@ -422,24 +518,42 @@ export async function porchSweep(env: Env, now = Date.now()) {
     .bind(cutoff, PORCH_SWEEP_DAYS)
     .all<{ day: string; n: number }>();
   if (results.length === 0) return { cutoff, compacted: 0, days: [] as { day: string; lines: number }[] };
-  // Delete by day and by the same live-source predicate the count was taken
-  // with, never by a list of ids: a thousand-id IN list is a bound-parameter
-  // limit waiting to be found in production, and the count and the delete have
-  // to be the same question or the day's receipt is a number nothing supports.
-  const statements = [];
+  // One day at a time, each day's deletion witnessed on the hash chain in the
+  // SAME atomic batch as the DELETE and its receipt. Before WQ-732 (egress
+  // #11579) the sweep wrote only the mutable porch_compactions row and nothing
+  // to the identity log, so it was the one state-changing action on the board a
+  // reader could not audit the way every other mutation is chained, witnessed
+  // and checkpointed. The batch is [DELETE, receipt INSERT, porch-compaction
+  // event]: the DELETE rechecks the live-source predicate (the candidate census
+  // can be stale after another sweep or a new citation); the receipt consumes
+  // changes() from its immediately preceding DELETE (PR #146 / WQ-730: a no-op
+  // day neither creates nor restamps a receipt); and the event's guard reads
+  // changes() from the receipt insert, so the chained row commits only when the
+  // day actually compacted — a no-op day writes nothing anywhere. The event
+  // detail carries the day and cutoff only, both known before the batch, because
+  // the chain hash commits to the detail and the line count is not known until
+  // the DELETE's changes() runs; the count lives in the receipt the same batch
+  // commits. `changed` is the DELETE's own row count, the actual lines removed.
+  const days: { day: string; lines: number }[] = [];
   for (const row of results) {
-    statements.push(
-      env.DB.prepare(
-        `DELETE FROM porch_lines WHERE day = ?
-          AND NOT ${citedByLiveSource("porch_lines.id")}`,
-      ).bind(row.day),
-      env.DB.prepare(
-        `INSERT INTO porch_compactions (day, lines, compacted_at) VALUES (?, ?, ?)
-         ON CONFLICT(day) DO UPDATE SET lines = lines + excluded.lines, compacted_at = excluded.compacted_at`,
-      ).bind(row.day, Number(row.n), now),
+    const del = env.DB.prepare(
+      `DELETE FROM porch_lines WHERE day = ?
+        AND NOT ${citedByLiveSource("porch_lines.id")}`,
+    ).bind(row.day);
+    const receipt = env.DB.prepare(
+      `INSERT INTO porch_compactions (day, lines, compacted_at)
+       SELECT ?, changes(), ? WHERE changes() > 0
+       ON CONFLICT(day) DO UPDATE SET lines = lines + excluded.lines, compacted_at = excluded.compacted_at`,
+    ).bind(row.day, now);
+    const { changed } = await commitWithIdentityEvent(
+      env,
+      del,
+      { citizen_id: MAINTAINER_ID, kind: "porch-compaction", detail: JSON.stringify({ day: row.day, cutoff }) },
+      "porch-compaction chain head moved four times running; refusing to record a sweep without its row",
+      { sql: "changes() > 0", binds: [] },
+      [receipt],
     );
+    if (changed > 0) days.push({ day: row.day, lines: changed });
   }
-  await env.DB.batch(statements);
-  const days = results.map((row) => ({ day: row.day, lines: Number(row.n) }));
   return { cutoff, compacted: days.reduce((sum, d) => sum + d.lines, 0), days };
 }

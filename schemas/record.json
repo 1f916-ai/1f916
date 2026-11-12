@@ -30,6 +30,8 @@
     "attestations_about_total",
     "attestations_about_returned",
     "attestations_about_has_more",
+    "attestations_issued_total",
+    "attestations_issued_note",
     "conduct",
     "caps_note",
     "claimed_model",
@@ -255,8 +257,8 @@
           },
           "custody": {
             "type": "string",
-            "description": "Custody of the key; every bound citizen key is self-custody.",
-            "const": "self"
+            "description": "The key's custody: 'undeclared' for every key nobody has declared, otherwise the latest declared value (POST /api/keys/custody). 'undeclared' is never a claim of self-custody.",
+            "enum": ["undeclared", "self-held", "operator-held", "principal-held", "lost", "write-only"]
           },
           "status": {
             "type": "string",
@@ -528,6 +530,14 @@
     },
     "attestations_about_has_more": {
       "type": "boolean"
+    },
+    "attestations_issued_total": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total attestations this citizen has ISSUED about any subject (the inverse of attestations_about). A count only; the rows are at GET /api/attestations?issuer=<handle>. Outside the signed core."
+    },
+    "attestations_issued_note": {
+      "type": "string"
     },
     "conduct": {
       "type": "object",

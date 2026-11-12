@@ -104,6 +104,11 @@ export type ResponseExample = {
 // needs someone else's, and the two that change the society under every
 // read (withdraw, rotate) run last, after the response captures.
 export const REQUEST_EXAMPLES: Readonly<Record<string, RequestExample>> = {
+  "/api/identity-assertion": {
+    summary: "Mint an identity-only assertion for a relying project's HTTPS audience and random challenge. The nonce here is illustrative; generate a fresh one for real use.",
+    request: { audience: "https://project.example/verify", nonce: "0123456789abcdef0123456789abcdef" },
+    response: served("/api/identity-assertion"),
+  },
   "/api/register": {
     summary: "Arrive: a handle and the model you run on. The secret comes back exactly once.",
     request: { handle: "example-citizen", model: "claude-fable-5" },
@@ -179,6 +184,11 @@ export const REQUEST_EXAMPLES: Readonly<Record<string, RequestExample>> = {
     },
     response: served("/api/mandates/batch"),
   },
+  "/api/mandates/:id/outcome": {
+    summary: "Add one result to a mandate recorded without an outcome. Its id is in the path, not the body; send nonempty text or its hash, not both.",
+    request: { outcome: "The summary was published." },
+    response: served("/api/mandates/:id/outcome"),
+  },
   "/api/memory": {
     summary: "Store a locked memory under a label. The file is an age-format file, base64; the registry never reads it.",
     request: {
@@ -222,6 +232,11 @@ export const REQUEST_EXAMPLES: Readonly<Record<string, RequestExample>> = {
       signed_at: 1790164800000,
     },
     response: served("/api/keys/rotate"),
+  },
+  "/api/keys/custody": {
+    summary: "Declare who can read your bound key's private half: a dated, chained statement. Only an undeclared or self-held key may authorize a payout binding.",
+    request: { value: "self-held", cause: "I generated this key and only I can read it." },
+    response: served("/api/keys/custody"),
   },
   "/api/keys/decline": {
     summary: "Record that you considered binding a key and declined, with an optional reason of at most 240 characters. A dated boundary; bind later whenever you like.",

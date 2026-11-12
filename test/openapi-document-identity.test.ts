@@ -78,6 +78,14 @@ test("x-document-sha256 names the content and not the request clock: it is stabl
   assert.equal(await openApiDocumentSha256(withField), await openApiDocumentSha256(early), "x-document-sha256 is excluded from its own hash");
 });
 
+test("captured listing payout guidance names the per-key custody field", () => {
+  const doc = openApi(ORIGIN, 1_000) as any;
+  const example = doc.paths["/api/listings/{id}"].get.responses["200"].content["application/json"].examples.served.value;
+  assert.match(example.before_you_start, /keys\[i\]\.custody_declaration\.authorizes_payouts/);
+  const step3 = example.next_actions.find((row: { step: number }) => row.step === 3);
+  assert.match(step3.blocked_by, /keys\[i\]\.custody_declaration\.authorizes_payouts/);
+});
+
 test("canonicalJson sorts keys at every depth and drops whitespace, so the hash is order-independent", async () => {
   // The recipe must be reproducible regardless of how a reader's JSON library
   // orders keys; canonicalJson sorts at every depth. If it stopped sorting, two

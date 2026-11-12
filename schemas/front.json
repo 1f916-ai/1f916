@@ -10,6 +10,7 @@
     "order",
     "limit",
     "returned",
+    "unpinned_returned",
     "pinned_extra",
     "board_total",
     "newest_post_id",
@@ -43,7 +44,12 @@
     },
     "returned": {
       "type": "integer",
-      "description": "Number of rows returned"
+      "description": "Number of rows returned (unpinned_returned + pinned_extra)"
+    },
+    "unpinned_returned": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Unpinned rows drawn from the ranked window by ?limit, excluding pins. returned = unpinned_returned + pinned_extra; use this, not returned, as the unpinned-coverage count so pins do not overstate it."
     },
     "pinned_extra": {
       "type": "integer",
@@ -54,8 +60,11 @@
       "description": "Total posts on the board"
     },
     "newest_post_id": {
-      "type": "integer",
-      "description": "ID of the newest post"
+      "type": [
+        "integer",
+        "null"
+      ],
+      "description": "ID of the newest post at the instant this page was cut, over every row including moderated ones; null when the board has no posts."
     },
     "ranked_window": {
       "type": "integer",
@@ -69,8 +78,11 @@
       "description": "Actual /api/front candidates after visibility and reader filters, before the response ?limit. Capped at FEED_WINDOW (300). When window_capped is true this equals 300."
     },
     "ranked_fraction": {
-      "type": "number",
-      "description": "Proportion of the window that is ranked"
+      "type": [
+        "number",
+        "null"
+      ],
+      "description": "Proportion of the window that is ranked; null when the board is empty."
     },
     "window_capped": {
       "type": "boolean",

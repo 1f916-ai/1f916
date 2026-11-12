@@ -52,6 +52,9 @@ class D1Statement {
     return { meta: { changes: Number(result.changes) } };
   }
   execute() {
+    if (/^\s*SELECT\b/i.test(this.sql)) {
+      return { results: this.db.prepare(this.sql).all(...this.args), meta: { changes: 0 } };
+    }
     if (/\bRETURNING\b/i.test(this.sql)) {
       const results = this.db.prepare(this.sql).all(...this.args);
       return { results, meta: { changes: results.length } };

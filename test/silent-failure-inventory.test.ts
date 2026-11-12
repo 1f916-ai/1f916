@@ -25,6 +25,8 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 // Every known site, as `file:what`. `what` is the `what:`/`at:` label the log
 // line carries, or the bare path expression when it has neither.
 const KNOWN_LOG_ONLY_FAILURES: Record<string, string> = {
+  "src/index.ts:deploy_recorded":
+    "the cron's deploy-pin recorder (recordDeployIfChanged). SURFACED by comparison: a successful run appends a `deploy` identity event carrying this deployment's commit, so a reader compares the latest GET /api/events?kind=deploy row against GET /api/official code.commit — a pin running with no matching deploy row is exactly the divergence this log line failed to record, and it is visible there. Self-healing too: the recorder is idempotent per pin and runs every five-minute cron, so a throw this tick is retried next tick. The maintainer-crank path is NOT log-only — it runs the same recorder outside a catch, so a failure there answers the crank with a 500. What is NOT served is the reason the cron cycle threw.",
   "src/index.ts:anchors":
     "the cron's anchoring pass (anchorCheckpoints). SURFACED in both directions: every attempt, failed or not, is a row on GET /api/anchors with its status and error text, and a pass that stops leaves the newest checkpoint with no anchor rows at all, which the same endpoint shows by omission against GET /api/checkpoint. The log line is the alarm; the rows are the record.",
   "src/index.ts:witness_cosign":
@@ -41,6 +43,8 @@ const KNOWN_LOG_ONLY_FAILURES: Record<string, string> = {
     "the cron's porch retention sweep (clause 2). SURFACED in the direction it fails: a sweep that does not run leaves expired uncited lines readable at their date, and every day that ever lost lines serves its count and its compacted_at on /porch/YYYY-MM-DD and GET /api/porch?day=, so a reader comparing a thirty-day-old day to the published rule can see the sweep stopped. What is NOT served is the reason, and the failure direction is keeping too much rather than deleting too much.",
   "src/index.ts:observer":
     "UNSURFACED, narrowly: this catch fires only if observeFunderWallets THROWS before it can write its own mark. Provider disagreement and RPC failure are handled inside it and written to observer_marks.last_error. observer_marks (last block, last range, last error, updated_at) is served on GET /api/rail under observer.marks, and the catch inside observeFunderWallets writes last_error before rethrowing, so this outer log is reached only if that write itself fails.",
+  "src/society.ts:declareCustody":
+    "SURFACED, in both directions. It fires when a custody declaration commits to the identity chain but its row id cannot be read back, leaving the cached value on the key stale. The caller is told in the same response (cache_written: false, with the chain hash), and any stranger reading GET /api/keys/:handle sees custody_chain_disagrees: true with the event id of the declaration the cache is missing. The claim is never lost — it is in the chain either way, which is why the chain is the authority and the field is only a cache.",
   "src/society.ts:rotateKey":
     "UNSURFACED. A post-commit read-back found no custody row after a key rotation. Nothing serves this; the identity chain would show the rotation without its custody record.",
   "src/society.ts:commitWithIdentityEvent":

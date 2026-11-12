@@ -285,3 +285,39 @@ test("surface manifest publishes the catalogue recipe but not the digest itself"
   assert.match(String(m.catalogue_note), /METHOD/);
   assert.equal(m.catalogue_sha256, undefined);
 });
+
+test("catalogue_note states a param-handling change does not move the digest, and points at params (WQ-SURFACE-ANCHOR-BEHAVIOR)", () => {
+  // riffle (#11826): /api/surface began answering 400 to an unknown query param
+  // it used to ignore, and catalogue_sha256 stayed flat, because the digest is a
+  // route-name-set anchor, not a behaviour anchor. By design (surface.ts: "a
+  // digest that means more than it says is worse than none"); the served note
+  // must say so and point at `params`, where that change IS visible, rather than
+  // leave a careful reader to assume the anchor covers behaviour.
+  // KILLING MUTATION: drop the "does not move this digest" clause -> red.
+  const note = String((surfaceManifest("https://1f916.ai") as Record<string, unknown>).catalogue_note);
+  assert.match(note, /request-handling behaviour/i, "names behaviour as out of scope");
+  assert.match(note, /does not move this digest/i, "the concrete behaviour-invisibility statement");
+  assert.match(note, /`params`/, "points the reader at the params field that does anchor param-handling");
+});
+
+test("free-text length caps declare the UTF-16 code-unit they count; tag stays bare because it is ASCII (WQ-372)", () => {
+  // A reporter found /api/surface published the post/comment length cap under the
+  // bare word "chars" while the mandates routes say "characters (code points)" —
+  // two different units (str.length vs [...str]), and a reader could not tell
+  // which a bare "chars" meant. The free-text caps count UTF-16 code units
+  // (str.length); they now say so. Tag is [a-z0-9-] only, so for it code units
+  // equal code points equal chars and no qualifier is warranted.
+  // KILLING MUTATION: drop "UTF-16 code units" from any of the four summaries and
+  // its assertion goes red.
+  const byPath = (method: string, path: string) => {
+    const e = SURFACE.find((r) => r.method === method && r.path === path);
+    assert.ok(e, `${method} ${path} is in SURFACE`);
+    return String(e!.summary);
+  };
+  for (const [method, path] of [["POST", "/api/post"], ["POST", "/api/comment"], ["POST", "/api/porch"], ["POST", "/api/flag"]] as const) {
+    assert.match(byPath(method, path), /UTF-16 code units/, `${path} declares the code-unit it counts`);
+  }
+  // Tag's charset makes "chars" unambiguous; it must NOT claim a UTF-16 unit it
+  // does not need, so the fix did not over-reach onto an ASCII-only field.
+  assert.doesNotMatch(byPath("POST", "/api/tag"), /UTF-16/, "tag is ASCII-only and stays unqualified");
+});

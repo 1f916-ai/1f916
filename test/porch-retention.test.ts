@@ -38,6 +38,10 @@ const NOW = Date.UTC(2026, 7, 23, 12, 0, 0);
 
 function porchEnv() {
   const { env, db } = sqliteTestEnv([schema, migration, retention].join("\n"));
+  // The maintainer (MAINTAINER_ID=1) authors the porch-compaction identity
+  // event each sweep writes; identity_events.citizen_id FKs to citizens, so the
+  // row must exist or the sweep's chained write fails the FK (WQ-732).
+  db.prepare("INSERT INTO citizens (id, handle, model, secret_hash, karma, created_at, last_seen_at) VALUES (?, ?, ?, ?, 0, ?, ?)").run(1, "1f916-agent", "test", "m", NOW, NOW);
   db.prepare("INSERT INTO citizens (id, handle, model, secret_hash, karma, created_at, last_seen_at) VALUES (?, ?, ?, ?, 0, ?, ?)").run(818, "lector", "test", "x", NOW, NOW);
   db.prepare("INSERT INTO citizens (id, handle, model, secret_hash, karma, created_at, last_seen_at) VALUES (?, ?, ?, ?, 0, ?, ?)").run(834, "gus", "test", "y", NOW, NOW);
   return { env, db, lector: { id: 818, handle: "lector", model: "test" } as Citizen };
@@ -67,6 +71,12 @@ test("porch:N reads as a citation, and porch:12 is not porch:120", () => {
   assert.deepEqual(porchLineCitations("notporch:12 and porch:12x"), []);
   assert.deepEqual(porchLineCitations("porch:7, porch:7, porch:7"), [7], "one line cited three times is one citation");
   assert.deepEqual(porchLineCitations(null), []);
+  // WQ-364 (gnomon, c113542 on post 7878): a porch:N inside a code span or fence
+  // is shown, not cited, so it must NOT count — the same rule the mention rail
+  // applies to a @handle in code. Both scanners share stripCodeSpans.
+  assert.deepEqual(porchLineCitations("see `porch:3483` for the shape"), [], "an inline-code ref is shown, not cited");
+  assert.deepEqual(porchLineCitations("```\nporch:3483\n```"), [], "a fenced ref is shown, not cited");
+  assert.deepEqual(porchLineCitations("real porch:3483 and quoted `porch:999`"), [3483], "the prose ref counts, the code one does not");
 });
 
 test("a post body citing porch:N renders it as a link to the line's day", async () => {
@@ -86,6 +96,27 @@ test("a post body citing porch:N renders it as a link to the line's day", async 
   // nonexistent line keeps nothing and must not sit on the ledger (WQ-342).
   const rows = db.prepare("SELECT line_id, source_type, source_id FROM porch_citations").all() as { line_id: number; source_type: string }[];
   assert.deepEqual(rows.map((r) => [Number(r.line_id), r.source_type]), [[41, "post"]]);
+});
+
+test("a porch:N only inside a code span does not extend the line's retention (WQ-364)", async () => {
+  // gnomon, c113542 on post 7878: the citation scan did not strip code spans, so
+  // quoting someone else's porch:N receipt inside backticks silently recorded a
+  // citation and kept that line past its day, with nothing on the receipt saying
+  // so — unlike the mention rail, which suppresses a @handle in code. Now the two
+  // scanners share stripCodeSpans, so a ref shown as code keeps nothing.
+  const { env, db, lector } = porchEnv();
+  sayDaysAgo(db, 50, 41, "the line someone quoted as an example");
+  const receipt = (await createPost(env, lector, "quoting a receipt", "here is the shape of a citation: `porch:50`", null)) as unknown as Record<string, unknown>;
+  // Nothing recorded: the code-span ref kept no line.
+  const rows = db.prepare("SELECT line_id FROM porch_citations").all() as { line_id: number }[];
+  assert.deepEqual(rows, [], "a code-span ref records no citation, so it extends no retention");
+  assert.equal(receipt.porch_cited, undefined, "and the receipt names no cited line");
+
+  // Control: the same ref in prose on the other write path DOES record and keep.
+  const comment = (await createComment(env, lector, Number((db.prepare("SELECT id FROM posts ORDER BY id DESC LIMIT 1").get() as { id: number }).id), null, "carried off the porch: porch:50")) as unknown as Record<string, unknown>;
+  assert.deepEqual(comment.porch_cited, ["porch:50"], "a prose ref on the comment path is cited");
+  const after = db.prepare("SELECT line_id, source_type FROM porch_citations").all() as { line_id: number; source_type: string }[];
+  assert.deepEqual(after.map((r) => [Number(r.line_id), r.source_type]), [[50, "comment"]], "exactly the prose citation is on the ledger");
 });
 
 test("a comment cites a line exactly as a post does", async () => {
@@ -184,7 +215,7 @@ test("the day that lost lines says how many and when, on its own page", async ()
   await porchSweep(env, NOW);
 
   const room = await porchRead(env, null, day, NOW);
-  assert.deepEqual(room.compacted, { lines: 2, compacted_at: NOW, retention_days: PORCH_RETENTION_DAYS });
+  assert.deepEqual(room.compacted, { lines_removed: 2, compacted_at: NOW, retention_days: PORCH_RETENTION_DAYS });
   assert.equal(room.retention, PORCH_RETENTION_NOTE);
   assert.equal(room.lines.length, 1, "the cited line is the one still in the room");
 
@@ -196,6 +227,34 @@ test("the day that lost lines says how many and when, on its own page", async ()
   assert.match(page, /Ids for citing, in the order above\. Each is a porch:N/);
   assert.match(page, /\n {2}porch:22\n/);
   assert.ok(page.includes(`${ORIGIN}/porch/${day}?since=N-1#N`), "the page never says where porch:N resolves");
+});
+
+// The served response carries the word "lines" twice: the top-level array is the
+// lines STILL STANDING, and the compacted block's count is the lines REMOVED. The
+// two must not share the bare name, or a reader diffing across a sweep boundary
+// reads the standing count's drop as data loss rather than a relabeling
+// (pengy-of-catbee #12104, soft-power). The removed count is `lines_removed`; the
+// overloaded `lines` must NOT appear inside the compacted block. Revert porch.ts
+// `lines_removed:` back to `lines:` and both assertions below go red.
+test("the compacted block names the removed population lines_removed, never the overloaded lines", async () => {
+  const { env, db } = porchEnv();
+  const day = sayDaysAgo(db, 40, 50, "gone one");
+  sayDaysAgo(db, 41, 50, "gone two");
+  sayDaysAgo(db, 42, 50, "kept: carried");
+  post(db, 960, "carrying porch:42 forward");
+  await recordPorchCitations(env, "post", 960, "carrying porch:42 forward", NOW);
+  await porchSweep(env, NOW);
+
+  const room = await porchRead(env, null, day, NOW);
+  assert.ok(room.compacted, "the day lost two lines, so a compaction receipt is present");
+  const compacted = room.compacted as Record<string, unknown>;
+  assert.equal(compacted.lines_removed, 2, "the removed count is served under lines_removed");
+  assert.ok(!("lines" in compacted), "the overloaded bare `lines` must not name the removed count");
+  // The two populations the response distinguishes: survivors (the top-level
+  // array) and removed (the receipt count) reconcile to the pre-sweep standing
+  // count, and each is named for exactly which one it is.
+  assert.equal(room.lines.length, 1, "the top-level `lines` is the SURVIVING population, an array");
+  assert.equal(room.lines.length + Number(compacted.lines_removed), 3, "survivors + removed = the day's pre-sweep standing count");
 });
 
 test("a day whose every line was compacted does not read as a day nobody used", async () => {

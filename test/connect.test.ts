@@ -249,6 +249,14 @@ async function authorize(env: Env, clientId: string, redirect: string, challenge
   return worker.fetch(req("/oauth/authorize", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded", "CF-Connecting-IP": "203.0.113.9" }, body: body.toString() }), env);
 }
 
+// The secret as the save page prints it, read the way a person would: the one
+// selectable block. Exactly one match, or the page is not the save page.
+function secretOnSavePage(html: string): string {
+  const m = [...html.matchAll(/<code class="secret" id="secret">([^<]+)<\/code>/g)];
+  assert.equal(m.length, 1, "the save page shows the secret exactly once as text");
+  return m[0][1];
+}
+
 async function exchange(env: Env, form: Record<string, string>) {
   const r = await worker.fetch(req("/oauth/token", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(form).toString() }), env);
   return { status: r.status, body: (await r.json()) as Record<string, unknown> };
@@ -279,6 +287,41 @@ test("OAuth round trip with an existing citizen hands the host that citizen's se
   assert.equal(JSON.parse(meJ.result.content[0].text).handle, "searcher");
 });
 
+test("an authorization code is single-use: a second exchange of the same code+verifier is refused", async () => {
+  // SEC-2 (GHSA-gj52-whqg-cp74): the code is a stateless sealed blob, so before
+  // the one-time consume the same valid code+verifier could be redeemed again
+  // within the five-minute window and hand the attacker the citizen's permanent
+  // secret a second time.
+  // KILLING MUTATION: delete the oauth_consumed_codes INSERT/changes guard in
+  // src/connect.ts oauthToken (return the secret straight after the verifier
+  // check) -> the second exchange answers 200 again and this test goes red.
+  const env = await makeEnv();
+  const redirect = "https://chatgpt.com/connector_platform_oauth_redirect";
+  const clientId = await registerClient(env, redirect);
+  const { verifier, challenge } = await pkce();
+  const r = await authorize(env, clientId, redirect, challenge, { mode: "existing", secret: SECRET });
+  assert.equal(r.status, 303);
+  const code = new URL(r.headers.get("Location")!).searchParams.get("code")!;
+  const grant = { grant_type: "authorization_code", code, client_id: clientId, redirect_uri: redirect, code_verifier: verifier };
+  const first = await exchange(env, grant);
+  assert.equal(first.status, 200, "the first valid exchange succeeds");
+  assert.equal(first.body.access_token, SECRET);
+  const second = await exchange(env, grant);
+  assert.equal(second.status, 400, "the identical replay is refused");
+  assert.equal(second.body.error, "invalid_grant");
+  assert.match(String(second.body.error_description), /already redeemed/);
+  // A wrong verifier must NOT burn the code: the consume happens only after the
+  // verifier check, so an attacker holding only the code cannot deny the real
+  // client its one redemption.
+  const { verifier: v2, challenge: c2 } = await pkce();
+  const r2 = await authorize(env, clientId, redirect, c2, { mode: "existing", secret: SECRET });
+  const code2 = new URL(r2.headers.get("Location")!).searchParams.get("code")!;
+  const wrongVerifier = await exchange(env, { grant_type: "authorization_code", code: code2, client_id: clientId, redirect_uri: redirect, code_verifier: b64u(crypto.getRandomValues(new Uint8Array(32))) });
+  assert.equal(wrongVerifier.status, 400, "a wrong verifier is refused");
+  const good = await exchange(env, { grant_type: "authorization_code", code: code2, client_id: clientId, redirect_uri: redirect, code_verifier: v2 });
+  assert.equal(good.status, 200, "and the real client can still redeem that code once");
+});
+
 test("OAuth can register a new citizen for the assistant, and a wrong secret stays on the page", async () => {
   const env = await makeEnv();
   const redirect = "claude://oauth/callback";
@@ -292,17 +335,69 @@ test("OAuth can register a new citizen for the assistant, and a wrong secret sta
   const wrongCt = wrong.headers.get("content-type") ?? "";
   assert.match(wrongCt, /text\/html/, "a refused authorize answers text/html, not JSON");
   assert.match(await wrong.text(), /class="err"/);
-  const r = await authorize(env, clientId, redirect, challenge, { mode: "register", handle: "phone-assistant", model: "gpt-5" });
+  // Registering answers the save page, not the redirect: the person sees the
+  // secret before anything leaves for the client (authorizeSavePage).
+  const saved = await authorize(env, clientId, redirect, challenge, { mode: "register", handle: "phone-assistant", model: "gpt-5" });
+  assert.equal(saved.status, 200);
+  assert.equal(saved.headers.get("Location"), null);
+  const shown = secretOnSavePage(await saved.text());
+  const r = await authorize(env, clientId, redirect, challenge, { mode: "existing", secret: shown, saved: "1" });
   assert.equal(r.status, 303);
   const code = new URL(r.headers.get("Location")!).searchParams.get("code")!;
   const ok = await exchange(env, { grant_type: "authorization_code", code, client_id: clientId, code_verifier: verifier });
   assert.equal(ok.status, 200);
   const token = ok.body.access_token as string;
-  assert.equal(typeof token, "string");
+  assert.equal(token, shown, "the host receives exactly the secret the person was shown");
   const row = await env.DB.prepare("SELECT handle FROM citizens WHERE secret_hash = ?").bind(await sha256Hex(token)).first<{ handle: string }>();
   assert.equal(row?.handle, "phone-assistant");
   // A code is single-purpose by construction: a sealed client_id is not a code.
   assert.equal((await exchange(env, { grant_type: "authorization_code", code: clientId, client_id: clientId, code_verifier: verifier })).status, 400);
+});
+
+// Killing mutation: in src/connect.ts authorizeDecision, put the register
+// branch back to `secret = minted.secret;` (fall through to the code and the
+// 303). This goes red on the first status assertion. A citizen registered
+// through ChatGPT on 2026-10-16 was orphaned exactly that way: the redirect
+// carried the only copy of the secret and the host dropped it.
+test("registering on the authorize page shows the secret once, mints no code, and the continue form connects that citizen", async () => {
+  const env = await makeEnv();
+  const redirect = "https://chatgpt.com/connector_platform_oauth_redirect";
+  const clientId = await registerClient(env, redirect);
+  const { verifier, challenge } = await pkce();
+  const r = await authorize(env, clientId, redirect, challenge, { mode: "register", handle: "kept-secret", model: "gpt-5" });
+  assert.equal(r.status, 200, "no redirect: nothing is sent to the client yet");
+  assert.equal(r.headers.get("Location"), null);
+  assert.match(r.headers.get("content-type") ?? "", /text\/html/);
+  assert.equal(r.headers.get("Cache-Control"), "no-store", "a page holding a live secret is never cached");
+  assert.equal(r.headers.get("Referrer-Policy"), "no-referrer");
+  assert.doesNotMatch(r.headers.get("Content-Security-Policy") ?? "", /script-src/, "no script runs on the page that holds the secret");
+  const html = await r.text();
+  assert.doesNotMatch(html, /<script/i);
+  const secret = secretOnSavePage(html);
+  assert.match(html, /The citizen <strong>kept-secret<\/strong> is registered/);
+  assert.match(html, /no recovery/);
+  assert.match(html, /choose <em>Already a citizen<\/em> with this secret/);
+  assert.match(html, /secret will be sent to <strong>chatgpt\.com<\/strong>/);
+  // The shown secret is the citizen's credential.
+  const row = await env.DB.prepare("SELECT handle FROM citizens WHERE secret_hash = ?").bind(await sha256Hex(secret)).first<{ handle: string }>();
+  assert.equal(row?.handle, "kept-secret");
+  // The continue form goes back through the existing branch, with the checkbox required.
+  const form = html.slice(html.indexOf("<form"), html.indexOf("</form>"));
+  assert.match(form, /method="post" action="https:\/\/1f916\.ai\/oauth\/authorize"/);
+  assert.match(form, /<input type="hidden" name="secret" value="[^"]+">/);
+  assert.match(form, /<input type="checkbox" name="saved" value="1" required>/);
+  assert.match(form, /<button name="mode" value="existing">Continue to chatgpt\.com<\/button>/);
+  for (const k of ["client_id", "redirect_uri", "state", "code_challenge"]) assert.match(form, new RegExp(`<input type="hidden" name="${k}" value="[^"]*">`), k);
+  // Pressing continue: a fresh code, redeemed for exactly the shown secret.
+  const go = await authorize(env, clientId, redirect, challenge, { mode: "existing", secret, saved: "1" });
+  assert.equal(go.status, 303);
+  const loc = new URL(go.headers.get("Location")!);
+  assert.equal(loc.searchParams.get("state"), "st8");
+  const ok = await exchange(env, { grant_type: "authorization_code", code: loc.searchParams.get("code")!, client_id: clientId, redirect_uri: redirect, code_verifier: verifier });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.body.access_token, secret);
+  // One registration, not two.
+  assert.equal(await env.DB.prepare("SELECT COUNT(*) AS n FROM citizens WHERE handle = 'kept-secret'").first<{ n: number }>().then((x) => x?.n), 1);
 });
 
 test("authorize accepts ChatGPT's ui_locales hint", async () => {
@@ -332,7 +427,9 @@ test("POST /oauth/authorize accepts an opaque origin the browser vouches for, an
 
   // The reported case: sandboxed browser context, opaque origin, same-site nav.
   const sandboxed = await post("sandboxed-bot", { Origin: "null", "Sec-Fetch-Site": "same-origin" });
-  assert.equal(sandboxed.status, 303, "an opaque origin the browser calls same-origin is our own page");
+  assert.equal(sandboxed.status, 200, "an opaque origin the browser calls same-origin is our own page");
+  assert.match(await sandboxed.text(), /Save this secret before you continue/);
+  assert.equal(await env.DB.prepare("SELECT COUNT(*) AS n FROM citizens WHERE handle = ?").bind("sandboxed-bot").first<{ n: number }>().then((r) => r?.n), 1);
 
   // The controls: the same literal "null" must NOT be a skeleton key.
   const crossSite = await post("cross-site-bot", { Origin: "null", "Sec-Fetch-Site": "cross-site" });
@@ -426,7 +523,8 @@ test("POST /oauth/authorize refuses a cross-site form, and hostile redirect sche
   assert.equal(csrf.status, 403);
   assert.equal(await env.DB.prepare("SELECT COUNT(*) AS n FROM citizens WHERE handle = 'victim-bot'").first<{ n: number }>().then((r) => r?.n), 0);
   const own = await worker.fetch(req("/oauth/authorize", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded", Origin: ORIGIN, "Sec-Fetch-Site": "same-origin" }, body: body.toString() }), env);
-  assert.equal(own.status, 303);
+  assert.equal(own.status, 200, "our own page registers, then shows the secret");
+  assert.equal(await env.DB.prepare("SELECT COUNT(*) AS n FROM citizens WHERE handle = 'victim-bot'").first<{ n: number }>().then((r) => r?.n), 1);
   for (const bad of ["javascript:alert(1)", "data:text/html,x", "https://a.example/" + "n".repeat(3000)]) {
     const r = await worker.fetch(req("/oauth/register", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ redirect_uris: [bad] }) }), env);
     assert.equal(r.status, 400, bad.slice(0, 30));

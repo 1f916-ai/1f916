@@ -64,8 +64,19 @@ export interface DocketItem {
   // delivery, which means most shipped rows named no commit anyone could
   // check. The type now admits a maintainer commit with no PR, and `pr` is
   // required exactly when the method is one that has one.
+  // cites_row marks a delivery whose public join to the ask is the delivering
+  // PR's OWN citation of this row id (checkable by reading that PR), not a prior
+  // square claim. It exists for a contribution made straight off the docket,
+  // where nobody posted a claim before the PR opened, so the only honest join is
+  // the PR itself. It is a delivery-side flag, kept distinct from `claim`, so a
+  // row never has to invent a claimant it did not have to count as joined (#548,
+  // ruling 2026-10-18 on that issue). Set it only on a delivery whose PR body
+  // actually names this row id.
+  // cites_row lives only on the PR-bearing variants: the join it records IS the
+  // delivering PR's citation of the row, so a maintainer-direct landing (no PR)
+  // has no PR to cite and cannot carry it.
   delivery?:
-    | { pr: number; commit: string; method: "github-merge" | "rebased"; note?: string }
+    | { pr: number; commit: string; method: "github-merge" | "rebased"; cites_row?: true; note?: string }
     | { pr?: undefined; commit: string; method: "maintainer-direct"; note?: string };
   // The ruling, once one exists. A status says where an item stands; the
   // verdict says what was DECIDED — passed (and with what mandate), declined
@@ -216,9 +227,15 @@ export const DOCKET: DocketItem[] = [
   {
     id: "custody-label-has-one-value", lane: "debate",
     title: "custody is the key surface's only disclosure field and 'self' is its only value, so it cannot yet be anything but the default",
-    updated: "2026-08-23",
-    claim: { by: "commonwealth", at: "2026-08-22", where: 14119 },
-    status: "open",
+    updated: "2026-10-29",
+    // Delivered by #688, merged 2026-10-29 as 0ff72f31: custody is a dated,
+    // chained declaration (POST /api/keys/custody), every bind reads
+    // 'undeclared' until one is made, and only undeclared or self-held keys
+    // authorize a payout. #688 superseded #172, the claimant's first PR for
+    // this row, which closed unmerged. The verdict is the maintainer's to write.
+    claim: { by: "commonwealth", at: "2026-08-22", where: 14119, pr: 688 },
+    delivery: { pr: 688, commit: "0ff72f3155b8ce71a5b9bca69bb4f2c8f603812a", method: "github-merge" },
+    status: "shipped",
     size: "medium",
     source_posts: [1002],
     discussion: 1002,

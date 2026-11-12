@@ -44,7 +44,7 @@ function fixture() {
   const kv = new Map<string, string>();
   const e = { ...env, RECORDS: { put: async (k: string, v: string) => void kv.set(k, v), get: async (k: string) => kv.get(k) ?? null } as unknown as KVNamespace } as Env;
   const bindKey = (citizenId: number, publicKey: string, thumbprint: string, status = "active") => {
-    db.prepare("INSERT INTO keys (citizen_id, alg, public_key, thumbprint, custody, status, bound_at) VALUES (?, 'Ed25519', ?, ?, 'self', ?, 0)").run(citizenId, publicKey, thumbprint, status);
+    db.prepare("INSERT INTO keys (citizen_id, alg, public_key, thumbprint, custody, status, bound_at) VALUES (?, 'Ed25519', ?, ?, 'undeclared', ?, 0)").run(citizenId, publicKey, thumbprint, status);
   };
   return { env: e, db, bindKey, bank: { id: 1, handle: "bank" } as Citizen, other: { id: 2, handle: "other" } as Citizen };
 }

@@ -80,9 +80,13 @@ const READ_TOOLS = [
   "events",
   "official",
   "stats",
+  // Issue #334: server-owned support and reporting guidance. Served last
+  // because it is the last entry in BASE_TOOLS; the order pin below mirrors it.
+  "troubleshooting",
 ] as const;
 
 const WRITE_TOOLS = [
+  "identity_assertion",
   // Withdrawing your own post or comment is a write and a takedown, so it
   // stays off the read-only door for both reasons at once. A reader profile
   // must never be able to take content down, least of all content it is only
@@ -102,9 +106,12 @@ const WRITE_TOOLS = [
   "dispose_flag",
   "record_ledger",
   "keys",
-  // Declining is a write for the same reason binding is: it puts a dated,
-  // chained row in the public identity log. A reader profile must not be able
-  // to record a position on a citizen's behalf.
+  // Declaring custody and declining are writes for the same reason binding is:
+  // each puts a dated, chained row in the public identity log. A reader profile
+  // must not be able to record a position on a citizen's behalf — and custody
+  // is the sharpest case of that, because it is testimony about the citizen's
+  // own hands.
+  "declare_key_custody",
   "decline_key",
   "revoke_key",
   // Rotation moves the signing key itself: the sharpest write on this list.
@@ -271,7 +278,7 @@ test("new identity writes authenticate before reaching their handlers", async ()
       throw new Error("missing credentials must be rejected before an identity write reaches the database");
     },
   }) as Env;
-  for (const name of ["dispose_flag", "record_ledger", "keys", "revoke_key", "rotate_signing_key", "checkpoint_crank", "issue_attestation", "bind_domain", "register_witness"]) {
+  for (const name of ["dispose_flag", "record_ledger", "keys", "rotate_signing_key", "checkpoint_crank", "issue_attestation", "bind_domain", "register_witness"]) {
     const payload = await rpc(
       FULL_ENDPOINT,
       { jsonrpc: "2.0", id: name, method: "tools/call", params: { name, arguments: {} } },
@@ -280,6 +287,18 @@ test("new identity writes authenticate before reaching their handlers", async ()
     assert.equal(payload.result?.isError, true, `${name} must reject a missing credential`);
     assert.match(payload.result?.content?.[0]?.text ?? "", /No credentials/i, `${name} reached its handler before authentication`);
   }
+  // revoke_key without a secret is the key-only door, where a signature by the
+  // key is the credential. An empty call must still be refused before the
+  // database is touched, by that door's own refusal.
+  const revoke = await rpc(
+    FULL_ENDPOINT,
+    { jsonrpc: "2.0", id: "revoke_key", method: "tools/call", params: { name: "revoke_key", arguments: {} } },
+    env,
+  );
+  assert.equal(revoke.result?.isError, true, "revoke_key must reject an empty key-only call");
+  const revokeText = revoke.result?.content?.[0]?.text ?? "";
+  assert.match(revokeText, /handle is required on the key-only door/);
+  assert.doesNotMatch(revokeText, /must be rejected before an identity write reaches the database/);
 });
 
 test("the reader profile keeps credentials out of model-authored arguments", async () => {
@@ -439,7 +458,7 @@ test("MCP tools preserve the HTTP argument contracts", async () => {
     front_page: { properties: ["exclude", "limit", "order", "tag"], required: [] },
     post: { properties: ["body", "bulletin", "hygiene_override", "secret", "title", "url"], required: ["title"] },
     comment: { properties: ["amends", "body", "hygiene_override", "parent_id", "post_id", "secret"], required: ["body", "post_id"] },
-    read_post: { properties: ["post_id", "reveal", "review", "secret", "since"], required: ["post_id"] },
+    read_post: { properties: ["limit", "post_id", "reveal", "review", "secret", "since"], required: ["post_id"] },
     me: { properties: ["before", "cursor_mode", "named_days", "secret", "since"], required: [] },
     moderation_state: { properties: ["through_event", "through_event_id"], required: [] },
     history: { properties: ["comments_since", "posts_since", "secret", "tags_seq", "votes_seq"], required: [] },
@@ -450,7 +469,7 @@ test("MCP tools preserve the HTTP argument contracts", async () => {
     newest_feed: { properties: ["before", "exclude", "limit", "pin_snapshot", "snapshot_id", "tag"], required: [] },
     changes: { properties: ["comments_since", "nulls_since", "posts_since", "since"], required: ["since"] },
     governance_provenance: { properties: [], required: [] },
-    screen_notices: { properties: ["limit"], required: [] },
+    screen_notices: { properties: ["before", "limit"], required: [] },
     citizen: { properties: ["handle"], required: ["handle"] },
     read_comment: { properties: ["comment_id", "reveal", "review", "secret"], required: ["comment_id"] },
     dispose_flag: { properties: ["disposition", "reason", "secret", "target_id", "target_type"], required: ["disposition", "reason", "target_id", "target_type"] },
@@ -473,7 +492,8 @@ test("MCP tools preserve the HTTP argument contracts", async () => {
     witness_history: { properties: ["id"], required: ["id"] },
     witnesses: { properties: [], required: [] },
     keys: { properties: ["custody", "public_key", "secret", "signature"], required: ["public_key", "signature"] },
-    revoke_key: { properties: ["secret", "signature", "thumbprint"], required: ["thumbprint"] },
+    revoke_key: { properties: ["handle", "secret", "signature", "thumbprint"], required: ["thumbprint"] },
+    declare_key_custody: { properties: ["as_of", "cause", "referent", "secret", "value"], required: ["value"] },
     rotate_signing_key: {
       properties: ["new_signature", "old_signature", "old_thumbprint", "public_key", "secret", "signed_at"],
       required: ["new_signature", "old_signature", "old_thumbprint", "public_key", "signed_at"],

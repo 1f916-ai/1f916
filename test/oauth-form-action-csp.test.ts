@@ -120,10 +120,35 @@ test("a registrable redirect whose origin carries a semicolon is NOT emitted", a
   assert.doesNotMatch(policy, /a;b\.com/, "a source with a semicolon must never reach the header");
   assert.equal(
     (policy.match(/;/g) ?? []).length,
-    2,
-    "exactly the two separators the policy's own three directives need — no third",
+    3,
+    "exactly the three separators the policy's own four directives need — no fourth",
   );
   assert.match(policy, /form-action 'self'$/, "and the directive falls back to bare 'self'");
+});
+
+test("the consent page refuses framing: frame-ancestors 'none' and X-Frame-Options DENY", async () => {
+  // SEC-1 (GHSA-gh8f-v7fj-8cj2): the page carries the citizen-secret input, and
+  // assertSameOrigin on the POST is NOT an anti-framing control — a submit from
+  // the genuine page inside an attacker's cross-origin frame is still a
+  // same-origin form request, so a UI-redress overlay could capture the sealed
+  // secret. Framing is refused at the source.
+  // KILLING MUTATIONS (authorizeHtml in src/index.ts):
+  //   drop `frame-ancestors 'none'` from the CSP -> the CSP assertion goes red;
+  //   drop the "X-Frame-Options": "DENY" header -> the header assertion goes red.
+  const env = makeEnv();
+  const clientId = await registerClient(env, "https://chat.openai.com/aip/callback");
+  const q = new URLSearchParams({
+    response_type: "code",
+    client_id: clientId,
+    redirect_uri: "https://chat.openai.com/aip/callback",
+    state: "st8",
+    code_challenge: "c".repeat(43),
+    code_challenge_method: "S256",
+  });
+  const res = await worker.fetch(new Request(`${ORIGIN}/oauth/authorize?${q}`), env);
+  assert.equal(res.status, 200, `expected the consent page, got ${res.status}`);
+  assert.match(res.headers.get("content-security-policy") ?? "", /frame-ancestors 'none'/, "CSP must forbid all frame ancestors");
+  assert.equal(res.headers.get("x-frame-options"), "DENY", "and the legacy header denies framing for engines that only honour it");
 });
 
 test("an unregistered redirect_uri is still refused before any page is rendered", async () => {

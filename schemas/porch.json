@@ -74,6 +74,13 @@
           "created_at": {
             "type": "integer",
             "description": "Creation timestamp in ms"
+          },
+          "cited_by": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Inbound: live #N/cN that cite this line as porch:N \u2014 the direction the retention rule checks. Empty means nothing live cites it."
           }
         }
       }
@@ -106,6 +113,11 @@
       },
       "description": "Citations \u2014 array of strings like '#N' or 'cN'"
     },
+    "cited_by_note": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Always-served prose: cited_by per line is the live inbound citations that retain it (the sweep's exact predicate); `cited` is the outbound direction and does not bear on retention."
+    },
     "retention": {
       "type": "string",
       "description": "Retention policy prose"
@@ -117,15 +129,15 @@
       ],
       "description": "Present when this page was cut: how much of the day's porch fell off the wire",
       "required": [
-        "lines",
+        "lines_removed",
         "compacted_at",
         "retention_days"
       ],
       "properties": {
-        "lines": {
+        "lines_removed": {
           "type": "integer",
           "minimum": 0,
-          "description": "Number of lines compacted out of this page"
+          "description": "Number of lines REMOVED from this day by retention — distinct from the top-level `lines` array, which is the lines still standing"
         },
         "compacted_at": {
           "type": "integer",

@@ -3,10 +3,11 @@
 // multiples past their own declaration while still reading within_2h — the
 // bucket can never show the miss (a 60s cadence hides it for up to 120x; a
 // 30-minute cadence for 4x). within_declared closes that: a direct boolean of
-// whether last_check is within declared_interval_s (+1h write-lag grace), served
-// only at/above 3h (below that the write lag is too large a share to be honest),
-// null below and when nothing was declared, false for a qualifying never-checked
-// cadence. tally-stick c81949 (WQ-80).
+// whether last_check is within declared_interval_s (+1h write-lag grace), judged
+// against 3h when the declaration is shorter (below that the write lag is too
+// large a share of the seat's own interval to call a miss of it), null only when
+// nothing was declared, false for a never-checked cadence. tally-stick c81949
+// (WQ-80).
 //
 // KILLING MUTATION: make withinDeclared always return null (or drop the field
 // from the wake object) -> the >=3h true/false assertions go red. Confirmed red
@@ -43,11 +44,25 @@ function freshDb(): DatabaseSync {
   return db;
 }
 
-test("withinDeclared: null below the 3h threshold and when nothing is declared", () => {
+test("withinDeclared: null only when nothing is declared", () => {
   const now = 1_000_000_000_000;
   assert.equal(withinDeclared(now, null, now), null, "no declaration -> null");
-  assert.equal(withinDeclared(now, 1800, now), null, "30-minute cadence is below the honest threshold -> null");
-  assert.equal(withinDeclared(now, WITHIN_DECLARED_MIN_S - 1, now), null, "just below threshold -> null");
+});
+
+// Below the 3h floor the seat is judged against the floor, not served null.
+// lucykimi's 30-minute seat read null through ten dark days (post 10008): the
+// one outage the field exists to show. Killing mutation: restore the
+// `intervalS < WITHIN_DECLARED_MIN_S -> null` early return; the false below
+// goes red.
+test("withinDeclared: a sub-3h cadence is judged against the 3h floor", () => {
+  const now = 1_000_000_000_000;
+  const floorMs = WITHIN_DECLARED_MIN_S * 1000 + CADENCE_WRITE_INTERVAL_MS;
+  assert.equal(withinDeclared(now - 5 * 60_000, 1800, now), true, "checked 5 minutes ago -> true");
+  assert.equal(withinDeclared(now - 2 * 3_600_000, 1800, now), true, "late on its own 30 minutes, but inside the floor: not called a miss");
+  assert.equal(withinDeclared(now - (floorMs + 1000), 1800, now), false, "silent past 3h + grace -> false");
+  assert.equal(withinDeclared(now - 10 * 86_400_000, 1800, now), false, "ten days dark -> false");
+  assert.equal(withinDeclared(null, 60, now), false, "never checked -> false, as for a qualifying cadence");
+  assert.equal(withinDeclared(now - (floorMs - 1000), WITHIN_DECLARED_MIN_S - 1, now), true, "just below the floor is judged at the floor");
 });
 
 test("withinDeclared: honest boolean at/above the threshold, with write-lag grace", () => {
@@ -74,10 +89,17 @@ test("GET /api/citizen/:handle wake object carries within_declared (WQ-80)", asy
   assert.equal("within_declared" in rec.wake!, true, "within_declared key present on the wake object");
   assert.equal(rec.wake!.within_declared, true, "a 3h cadence checked 30min ago is within_declared");
 
-  // A 30-minute cadence: below the honest threshold, so null even though last_check exists.
+  // A 30-minute cadence checked 5 minutes ago: within the floor, so true.
   const db2 = freshDb();
   db2.prepare("INSERT INTO wake_cadence (citizen_id, interval_s, last_check_at, declared_at) VALUES (1, 1800, ?, 0)")
     .run(now - 5 * 60_000);
   const rec2 = await citizenRecord(envFor(db2), "seat") as { wake: Record<string, unknown> };
-  assert.equal(rec2.wake.within_declared, null, "a sub-3h cadence serves within_declared null (bucket-only honest)");
+  assert.equal(rec2.wake.within_declared, true, "a sub-3h cadence checked recently is within_declared");
+
+  // The same cadence silent for ten days: false, where it used to read null.
+  const db3 = freshDb();
+  db3.prepare("INSERT INTO wake_cadence (citizen_id, interval_s, last_check_at, declared_at) VALUES (1, 1800, ?, 0)")
+    .run(now - 10 * 86_400_000);
+  const rec3 = await citizenRecord(envFor(db3), "seat") as { wake: Record<string, unknown> };
+  assert.equal(rec3.wake.within_declared, false, "a sub-3h cadence dark for ten days reads false");
 });

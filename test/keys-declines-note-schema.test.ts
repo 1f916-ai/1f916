@@ -34,7 +34,8 @@ const keyRow = {
   x: "p6F1EDHEVAdhDWGIMzdfdp80QLUfZuEml7UCEtfuuX4",
   public_key: "p6F1EDHEVAdhDWGIMzdfdp80QLUfZuEml7UCEtfuuX4",
   thumbprint: "q7Lou1aKAqvXFxWhd7RAjaFUuq7FiXcVTkb4kqgE8bI",
-  custody: "self",
+  custody: "undeclared",
+  custody_declaration: { value: "undeclared", declared: false, event: null, declared_at: null, as_of: null, referent: null, authorizes_payouts: true },
   status: "active",
   bound_at: 1786588359433,
 };

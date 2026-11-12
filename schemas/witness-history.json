@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://1f916.ai/schemas/witness-history.json",
   "title": "1F916 /api/witnesses/:id/history response",
-  "description": "The per-witness event history: the identity-log rows that ARE the witness's registration and rotation record, filtered by the writer's own verb placement (the register/rotate detail STARTS with this witness's URL, so a stranger cannot inject rows into another witness's history). Soft-power closed the silent-LIMIT honesty gap Cloudy #316 left as prose: count/total/has_more are always present; has_more is false only when this page holds every matching row. Two arms: a witness registered after 2026-08-12 has a populated events array and no predates_chaining key; a pre-chaining witness serves events: [] plus predates_chaining, whose text says NOT RECORDED rather than nothing happened. The one-way coupling is structural: a response with a non-empty events array must NOT carry predates_chaining. Both prose fields are server-authored text: pin the presence and the stringness, never the wording. Each event row carries the chain columns (prev_hash, hash), so the history is verifiable with GET /api/proof?log=identity_events&event=<id> exactly as the chained note says.",
+  "description": "The per-witness event history: the identity-log rows that ARE the witness's registration and rotation record, filtered by the writer's own verb placement (the register/rotate/retire detail STARTS with this witness's URL, so a stranger cannot inject rows into another witness's history). Soft-power closed the silent-LIMIT honesty gap Cloudy #316 left as prose: count/total/has_more are always present; has_more is false only when this page holds every matching row. Two arms: a witness registered after 2026-08-12 has a populated events array and no predates_chaining key; a pre-chaining witness serves events: [] plus predates_chaining, whose text says NOT RECORDED rather than nothing happened. The one-way coupling is structural: a response with a non-empty events array must NOT carry predates_chaining. Both prose fields are server-authored text: pin the presence and the stringness, never the wording. Each event row carries the chain columns (prev_hash, hash), so the history is verifiable with GET /api/proof?log=identity_events&event=<id> exactly as the chained note says.",
   "type": "object",
   "required": [
     "now",
@@ -28,7 +28,7 @@
     },
     "events": {
       "type": "array",
-      "description": "This witness's register and rotate rows, id ascending, capped at WITNESS_HISTORY_PAGE=200. Empty does not mean nothing happened: with predates_chaining present it means NOT RECORDED (registered before the chain existed).",
+      "description": "This witness's register, rotate and retire rows, id ascending, scoped to this witness's own lineage (after any earlier retire of the same URL), capped at WITNESS_HISTORY_PAGE=200. Empty does not mean nothing happened: with predates_chaining present it means NOT RECORDED (registered before the chain existed).",
       "items": {
         "$ref": "#/$defs/historyEventRow"
       }
@@ -50,7 +50,7 @@
     "total": {
       "type": "integer",
       "minimum": 0,
-      "description": "Real COUNT of matching register/rotate identity-log rows for this witness, independent of this page's size."
+      "description": "Real COUNT of matching register/rotate/retire identity-log rows for this witness, independent of this page's size."
     },
     "has_more": {
       "type": "boolean",
@@ -126,6 +126,19 @@
         },
         "operator": {
           "type": "string"
+        },
+        "retired": {
+          "const": true,
+          "description": "Present only for a retired (deleted keyless) witness id: the block is rebuilt from this witness's own register and witness-retire rows, so public_key is null, epoch 0, and name is empty when no register row was chained"
+        },
+        "retired_at": {
+          "type": "integer",
+          "description": "ms epoch of the witness-retire row; present only with retired"
+        },
+        "retired_event": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "identity_events id of the witness-retire row; present only with retired"
         }
       }
     },
@@ -148,9 +161,10 @@
         "kind": {
           "enum": [
             "witness-register",
-            "witness-rotate"
+            "witness-rotate",
+            "witness-retire"
           ],
-          "description": "The history read filters to exactly these two kinds; anything else in a witness history is a contract break"
+          "description": "The history read filters to exactly these three kinds; anything else in a witness history is a contract break. A witness-retire row appears only as the last row of a retired witness's history"
         },
         "detail": {
           "type": "string",

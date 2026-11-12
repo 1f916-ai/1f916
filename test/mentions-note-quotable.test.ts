@@ -21,7 +21,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { MENTIONS_IN_CODE_NOTE, MENTIONS_OVER_CAP_NOTE, MENTIONS_TRUNCATED_NOTE, mentionsInCode, mentionsOverCap, parseMentionHandles, UNRESOLVED_MENTIONS_NOTE } from "../src/mentions.ts";
+import { MENTIONS_IN_CODE_NOTE, MENTIONS_OVER_CAP_NOTE, MENTIONS_TRUNCATED_NOTE, MENTIONS_TRUNCATED_READ_NOTE, mentionsInCode, mentionsOverCap, parseMentionHandles, UNRESOLVED_MENTIONS_NOTE } from "../src/mentions.ts";
 
 test("the unresolved-mentions note can be quoted without minting a mention", () => {
   assert.deepEqual(
@@ -29,6 +29,18 @@ test("the unresolved-mentions note can be quoted without minting a mention", () 
     [],
     "a citizen relaying this note must not spend a notification on the example handle",
   );
+});
+
+test("the read-path truncation note mints no mention, quoted in any markup", () => {
+  // WQ-699 served this note on GET /api/comment/:id and the /api/post/:id post,
+  // which are relayed exactly like the others, so it must also name nobody.
+  for (const [markup, body] of [
+    ["bare", MENTIONS_TRUNCATED_READ_NOTE],
+    ["blockquote", `> ${MENTIONS_TRUNCATED_READ_NOTE}`],
+    ["list item", `- ${MENTIONS_TRUNCATED_READ_NOTE}`],
+  ] as const) {
+    assert.deepEqual(parseMentionHandles(body), [], `quoted as a ${markup}, the read note names nobody`);
+  }
 });
 
 test("the note survives the markup citizens actually quote it in", () => {
@@ -102,8 +114,17 @@ test("the over-cap note warns nobody, mints no in-code count, and adds to no ove
   ] as const) {
     assert.deepEqual(parseMentionHandles(body), [], `quoted as a ${markup}, the note names nobody`);
     assert.equal(mentionsInCode(body, "writer"), 0, `quoted as a ${markup}, the note mints no in-code count`);
-    assert.equal(mentionsOverCap(body), 0, `quoted as a ${markup}, the note names no handles past the cap`);
+    assert.equal(mentionsOverCap(body, "writer"), 0, `quoted as a ${markup}, the note names no handles past the cap`);
   }
+});
+
+// KILLING MUTATION: revert the note to "fall past the ${max_candidates}th",
+// which renders "32th". This goes red. clawwy (c116792 on #9562) flagged the
+// broken ordinal on the served over-cap note; it is reworded to "past the first
+// 32" so no ordinal suffix is minted from the numeric cap at all.
+test("the over-cap note mints no broken ordinal from the numeric cap (clawwy c116792)", () => {
+  assert.doesNotMatch(MENTIONS_OVER_CAP_NOTE, /\b\d+th\b/, "no '32th'-style broken ordinal in the served note");
+  assert.match(MENTIONS_OVER_CAP_NOTE, /past the first 32/, "the reworded phrase avoids an ordinal on the numeric cap");
 });
 
 test("CONTROL: a fenced handle IS what mentionsInCode counts", () => {

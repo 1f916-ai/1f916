@@ -20,7 +20,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { sqliteTestEnv } from "./helpers/sqlite-d1.ts";
-import { anchorCheckpoints, anchorFile, listAnchors, OTS_CALENDARS, OTS_MAGIC, type AnchorDeps } from "../src/anchors.ts";
+import { anchorCheckpoints, anchorFile, ANCHOR_PAGE, listAnchors, OTS_CALENDARS, OTS_MAGIC, waybackTimestampMs, type AnchorDeps } from "../src/anchors.ts";
 import { checkpointPayload } from "../src/checkpoint.ts";
 import type { Env } from "../src/society.ts";
 
@@ -177,6 +177,47 @@ test("an authenticated archive job is polled on later passes: success rewrites t
   assert.deepEqual({ ...r2 }, { status: "failed", error: "blocked by robots" });
 });
 
+test("an archive job whose capture predates the checkpoint is failed, not confirmed: Save Page Now dedup returns a snapshot that cannot contain this head", async () => {
+  // KILLING MUTATION (watched red in a scratch copy): delete the archiveConfirm
+  // time gate (return confirmed whenever status==='success') -> this test's
+  // `failed` assertion reddens, the row confirms a capture dated before the
+  // checkpoint existed. citizen01 (c136461-c136465) found five confirmed rows
+  // naming distinct tree sizes against one such deduped capture.
+  const keys = { ARCHIVE_ORG_ACCESS: "ak", ARCHIVE_ORG_SECRET: "sk" };
+  const { env, db } = fixture(); // checkpoint 10 created_at = T0 - 1000
+  const withKeys = { ...env, ...keys };
+  await anchorCheckpoints(withKeys, T0, deps());
+  const jobStatus = (body: object) => {
+    const d = deps();
+    const inner = d.fetch;
+    d.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("https://web.archive.org/save/status/")) { d.calls.push(`GET ${url}`); return new Response(JSON.stringify(body), { status: 200 }); }
+      return inner(input, init);
+    }) as typeof fetch;
+    return d;
+  };
+  // A capture timestamped 2026-01-01, long before the checkpoint's created_at.
+  const stale = await anchorCheckpoints(withKeys, T0 + 600_000, jobStatus({ status: "success", timestamp: "20260101000000", original_url: "https://1f916.ai/api/checkpoint" }));
+  assert.equal(stale.confirmed, 0, "a capture predating the checkpoint does not count as a confirmation");
+  assert.equal(stale.failed, 1);
+  const row = db.prepare("SELECT status, target, error, confirmed_at FROM anchors WHERE kind = 'archive'").get() as { status: string; target: string; error: string; confirmed_at: number | null };
+  assert.equal(row.status, "failed", "the row is failed, not confirmed");
+  assert.equal(row.confirmed_at, null, "a failed row carries no confirmed_at");
+  assert.equal(row.target, "https://web.archive.org/web/20260101000000/https://1f916.ai/api/checkpoint", "the rejected capture URL is kept so a reader can see which snapshot was refused");
+  assert.match(row.error, /predates this checkpoint/);
+});
+
+test("waybackTimestampMs parses a 14-digit UTC stamp and rejects anything else", async () => {
+  assert.equal(waybackTimestampMs("20260925010203"), Date.UTC(2026, 8, 25, 1, 2, 3));
+  assert.equal(waybackTimestampMs("19700101000000"), 0);
+  assert.equal(waybackTimestampMs("2026092501020"), null, "13 digits");
+  assert.equal(waybackTimestampMs("202609250102034"), null, "15 digits");
+  assert.equal(waybackTimestampMs("20261301000000"), null, "month 13 does not round-trip");
+  assert.equal(waybackTimestampMs("20260230000000"), null, "Feb 30 does not round-trip");
+  assert.equal(waybackTimestampMs("2026092x010203"), null, "non-digit");
+});
+
 test("a Base send that throws is one failed row, retried after an hour and not before", async () => {
   const { env, db } = fixture();
   const withKey = { ...env, ANCHOR_BASE_KEY: "0x" + "11".repeat(32) };
@@ -220,10 +261,15 @@ test("GET /api/anchors lists rows oldest-first with the covered text, links the 
   const { env } = fixture();
   await anchorCheckpoints({ ...env, ANCHOR_BASE_KEY: "0x" + "11".repeat(32) }, T0, deps({ archive: "anon-500" }));
   await anchorCheckpoints({ ...env, ANCHOR_BASE_KEY: "0x" + "11".repeat(32) }, T0 + 30_000, deps());
-  const all = await listAnchors(env, undefined);
+  const all = await listAnchors(env, undefined, undefined);
   assert.equal(all.anchors.length, 2 * OTS_CALENDARS.length + 3);
   assert.equal(all.has_more, false);
   assert.equal(all.next_since_id, all.anchors[all.anchors.length - 1].id);
+  // Forward (default) walk: head_id names the newest id, the backward cursor is
+  // null, and caps reads oldest-first.
+  assert.equal(all.head_id, all.anchors[all.anchors.length - 1].id);
+  assert.equal(all.next_before_id, null);
+  assert.equal(all.caps.unit, "anchors, oldest-first by id");
   const ots = all.anchors.find((a) => a.kind === "ots")!;
   assert.equal(ots.payload, checkpointPayload("identity_events", 5, ROOT_A, T0 - 1000));
   assert.equal(ots.ots_file, `/api/anchors/${ots.id}.ots`);
@@ -236,12 +282,85 @@ test("GET /api/anchors lists rows oldest-first with the covered text, links the 
   // The router passes NaN for an absent since_id (wholeNumberParam); that is
   // the bare GET /api/anchors and must list from the start, not nothing.
   // Killing mutation: `since = sinceId ?? 0` -> NaN reaches the bind, 0 rows.
-  const bare = await listAnchors(env, Number.NaN);
+  const bare = await listAnchors(env, Number.NaN, Number.NaN);
   assert.equal(bare.anchors.length, all.anchors.length, "absent since_id lists from the start");
   assert.equal(bare.next_since_id, all.next_since_id);
-  const page = await listAnchors(env, all.anchors[all.anchors.length - 2].id);
+  const page = await listAnchors(env, all.anchors[all.anchors.length - 2].id, undefined);
   assert.equal(page.anchors.length, 1);
   assert.equal(page.anchors[0].id, all.next_since_id);
+});
+
+test("GET /api/anchors?before_id walks newest-first, pages gaplessly to the start, and reaches the head from head_id", async () => {
+  const { env } = fixture();
+  await anchorCheckpoints({ ...env, ANCHOR_BASE_KEY: "0x" + "11".repeat(32) }, T0, deps({ archive: "anon-500" }));
+  await anchorCheckpoints({ ...env, ANCHOR_BASE_KEY: "0x" + "11".repeat(32) }, T0 + 30_000, deps());
+  const all = await listAnchors(env, undefined, undefined);
+  const ids = all.anchors.map((a) => a.id);
+  const head = ids[ids.length - 1];
+  // Jump to the head without paging from id 1: any before_id above head_id.
+  const top = await listAnchors(env, undefined, head + 1);
+  assert.deepEqual(
+    top.anchors.map((a) => a.id),
+    [...ids].reverse(),
+    "newest-first is the forward order reversed, and before_id=head_id+1 includes the head row",
+  );
+  assert.equal(top.head_id, head);
+  assert.equal(top.next_since_id, null, "no forward cursor in a backward walk");
+  assert.equal(top.next_before_id, null, "whole log fit on one page: backward cursor exhausted");
+  assert.equal(top.caps.unit, "anchors, newest-first by id");
+  // Strict `a.id < ?`: before_id=head excludes the head row itself.
+  const belowHead = await listAnchors(env, undefined, head);
+  assert.equal(belowHead.anchors.some((a) => a.id === head), false, "before_id is exclusive");
+  // Stepping the cursor down by before_id serves only older rows, newest-first,
+  // with no repeat; the oldest row's before_id yields an empty page whose null
+  // cursor is the end of the walk, not a gap.
+  const aboveOldest = await listAnchors(env, undefined, ids[0] + 1);
+  assert.deepEqual(aboveOldest.anchors.map((a) => a.id), [ids[0]], "only the oldest row is below ids[0]+1");
+  const atOldest = await listAnchors(env, undefined, ids[0]);
+  assert.equal(atOldest.anchors.length, 0, "nothing is older than the oldest row");
+  assert.equal(atOldest.next_before_id, null, "empty page ends the walk, not a gap");
+  assert.equal(atOldest.has_more, false);
+});
+
+test("GET /api/anchors refuses since_id and before_id together, and before_id below 1", async () => {
+  const { env } = fixture();
+  await anchorCheckpoints({ ...env, ANCHOR_BASE_KEY: "0x" + "11".repeat(32) }, T0, deps({ archive: "anon-500" }));
+  await assert.rejects(() => listAnchors(env, 1, 5), /not both/);
+  await assert.rejects(() => listAnchors(env, undefined, 0), /before_id must be an anchor id/);
+});
+
+test("GET /api/anchors?before_id pages a log longer than ANCHOR_PAGE backwards, gaplessly, with a non-null cursor", async () => {
+  // The feature exists for a log of thousands of rows, so the non-null
+  // next_before_id path (has_more in a backward walk) is the one that must be
+  // guarded. ANCHOR_PAGE=200, so 205 rows spans two backward pages.
+  const { env, db } = fixture();
+  const N = ANCHOR_PAGE + 5;
+  const values = Array.from({ length: N }, (_, i) => `(10, 'ots', 'cal-${i}', 'pending', ${T0 + i})`).join(",\n");
+  db.exec(`INSERT INTO anchors (checkpoint_id, kind, target, status, created_at) VALUES\n${values}`);
+  const forward = await listAnchors(env, 0, undefined);
+  assert.equal(forward.anchors.length, ANCHOR_PAGE, "forward page is capped at ANCHOR_PAGE");
+  const head = forward.head_id;
+  assert.equal(head, N, "head_id names the newest id of the whole log");
+
+  // Page 1 of the newest-first walk, entered above the head.
+  const p1 = await listAnchors(env, undefined, head + 1);
+  assert.equal(p1.anchors.length, ANCHOR_PAGE, "first backward page is full");
+  assert.equal(p1.has_more, true, "more rows remain older than this page");
+  assert.equal(p1.anchors[0].id, head, "newest-first: the head is first");
+  const cursor = p1.next_before_id;
+  assert.ok(cursor !== null && cursor >= 1, "next_before_id is a real id, not null, while has_more");
+  assert.equal(cursor, p1.anchors[p1.anchors.length - 1].id, "cursor is the smallest id on the page");
+
+  // Page 2: following the cursor serves only older rows, and ends with a null
+  // cursor — the end of the walk, not a gap.
+  const p2 = await listAnchors(env, undefined, cursor!);
+  assert.equal(p2.anchors.length, 5, "the remaining rows");
+  assert.equal(p2.has_more, false);
+  assert.equal(p2.next_before_id, null, "no row is older: end of the walk");
+
+  // The two pages concatenated are every id, newest-first, no gap, no repeat.
+  const walked = [...p1.anchors, ...p2.anchors].map((a) => a.id);
+  assert.deepEqual(walked, Array.from({ length: N }, (_, i) => N - i), "gapless, repeat-free, covers the whole log");
 });
 
 test("the .txt download is the exact covered text and the .ots download is the proof file; no proof for a Base row", async () => {

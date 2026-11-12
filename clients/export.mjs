@@ -53,12 +53,24 @@ export async function paced(url, { fetchImpl = fetch, gapMs = REQUEST_GAP_MS, lo
 /**
  * Walk /api/changes in ID mode from the beginning. Posts and comments arrive
  * together, each with its own token; the nulls stream is silenced, since a
- * refusal is not a record. Yields {posts, comments} per page.
+ * refusal is not a record. Before yielding a continuing page, verify every
+ * has_more_streams entry is covered by continuation_covers so an incomplete
+ * continuation cannot silently shorten the export. Yields {posts, comments}
+ * per page.
  */
 export async function* walkChanges(origin, opts) {
   let posts = "0", comments = "0", pages = 0;
   for (;;) {
     const d = await paced(`${origin}/api/changes?since=0&posts_since=${posts}&comments_since=${comments}&nulls_since=done`, opts);
+    if (d.has_more) {
+      const moreStreams = d.has_more_streams;
+      const continuationCovers = d.continuation_covers;
+      if (!Array.isArray(moreStreams) || !Array.isArray(continuationCovers)) {
+        throw new Error("has_more without continuation coverage metadata; refusing incomplete changes export");
+      }
+      const uncovered = moreStreams.filter((stream) => !continuationCovers.includes(stream));
+      if (uncovered.length) throw new Error(`has_more with uncovered streams: ${uncovered.join(", ")}`);
+    }
     pages++;
     yield { posts: d.posts ?? [], comments: d.comments ?? [], page: pages };
     const np = d.next_posts_since, nc = d.next_comments_since;

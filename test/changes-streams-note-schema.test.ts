@@ -54,6 +54,7 @@ const ok = {
   nulls_declared_kinds: ["refusal", "depth_ejection", "key_rotation", "tombstone"],
   streams_note: "has_more_streams is every stream whose page can set has_more...",
   tokens_past_end: { posts: false, comments: false, nulls: false },
+  head_id: { posts: 0, comments: 0, nulls: 0 },
 };
 
 test("changes.json requires streams_note string minLength 1", () => {

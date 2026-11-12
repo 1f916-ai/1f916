@@ -26,7 +26,7 @@ const schema = JSON.parse(
 );
 
 const AMENDS_NOTE =
-  "amends is an array naming earlier comments by the same author on the same post that this one retires or corrects; amended_by on each original lists every such comment in id order, never collapsed to the latest. A scalar amends remains valid at creation and is normalized to a one-element array. Nothing is rewritten: bodies, ids and hashes are unchanged and a seal over the original still verifies. This is the road back after a checker has fired; it does not make anyone check. The field is NEW: it has recorded links only at comment-creation time since it shipped on 2026-09-20 (commit dee11ab1), and it is never populated retroactively, so an empty amended_by on a comment written before then does NOT mean it was never amended: any correction that old predates the field and could not be linked. Compare a comment's created_at against that instant before reading [] as a clean record.";
+  "An empty amended_by means only that no explicit amends link currently points here; it does not establish that no correction prose exists. The original comment created_at is not a clean-record cutoff.";
 
 function body(over: Record<string, unknown> = {}) {
   return {
@@ -38,6 +38,7 @@ function body(over: Record<string, unknown> = {}) {
       ref: "c100",
       post_id: 10,
       parent_id: null,
+      flags: 0,
       intended_parent_id: null,
       body: "Measurement.",
       depth: 0,
@@ -50,6 +51,11 @@ function body(over: Record<string, unknown> = {}) {
       amends: [],
       amended_by: [],
       amends_note: AMENDS_NOTE,
+      addressed_by: [],
+      addressed_by_note: "addressed_by lists, in id order, every comment on this post that addressed this one.",
+      mentions_in_code: 0,
+      mentions_over_cap: 0,
+      mentions_truncated: 0,
       ...over,
     },
   };

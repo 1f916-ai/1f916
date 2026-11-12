@@ -4,6 +4,8 @@
 // Four everyday citizen writes each refuse an already-recorded act with
 // 409 Conflict, carrying the same clocked JSON error body every refused
 // write carries -- now / now_utc plus an `error` string:
+// The already-voted branch of POST /api/vote additionally carries the blocking
+// vote created_at as `already_voted_at` in unix milliseconds.
 //
 //   POST /api/post      a near-identical post inside the dedup window
 //                       ("A near-identical post exists: post <id>.")
@@ -28,11 +30,10 @@
 // This file keeps the declaration honest against the router in-process: every
 // everyday write declares a 409, the body is the JSON error object, and the
 // live router actually answers 409 with that clocked body on each of the four
-// writes. The two single-route 409s beside that set -- the front door's taken-
-// handle (test/openapi-register-409.test.ts) and the x402 patron write's
-// idempotency (test/openapi-409-patron-idempotency.test.ts) -- are named
-// exceptions to the scan below. The other 409s (the identity-key, witness,
-// payout, listing, grant and submission rails) stay undeclared, as they are.
+// writes. The separately pinned single-route conflicts include the front door's
+// taken-handle, x402 patron idempotency, withdrawn-content moderation, key-bind
+// idempotency, payout receipt, and award settlement. Other identity-key, witness,
+// payout, listing, grant and submission 409s remain outside these declarations.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -53,7 +54,7 @@ test("ALREADY_APPLIED_409_ROUTES is exactly the four everyday citizen writes", (
   );
 });
 
-test("every operation declares 409 exactly when it is one of the everyday writes", async () => {
+test("every operation declares 409 only for its documented conflict class", async () => {
   const { env } = sqliteTestEnv(schema);
   const doc = (await (await worker.fetch(new Request(`${ORIGIN}/openapi.json`), env)).json()) as {
     paths: Record<string, Record<string, { responses: Record<string, unknown> }>>;
@@ -77,10 +78,22 @@ test("every operation declares 409 exactly when it is one of the everyday writes
       // applied everyday-write class, pinned by test/openapi-409-patron-
       // idempotency.test.ts.
       const isPatronIdempotency = verb === "post" && path === "/api/patron";
+      // POST /api/moderate has one distinct conflict: collapse refuses an
+      // author-withdrawn target so ?reveal cannot expose it. That route-specific
+      // 409 is pinned by test/openapi-moderate-withdrawn-409.test.ts.
+      const isModerateWithdrawnCollapse = verb === "post" && path === "/api/moderate";
+      // POST /api/keys declares the idempotent same-thumbprint conflict; the
+      // focused route and live-response checks are in openapi-409-key-bind.
+      const isKeyBindIdempotency = verb === "post" && path === "/api/keys";
+      // POST /api/payout-bindings/{id}/receipt and POST /api/awards/{id}/settle
+      // each declare a route-specific 409. Their focused tests pin the declared
+      // JSON bodies; award-authority-guards also exercises the live 409.
+      const isPayoutReceiptSettled = verb === "post" && path === "/api/payout-bindings/{id}/receipt";
+      const isAwardSettlementConflict = verb === "post" && path === "/api/awards/{id}/settle";
       assert.equal(
         has409,
-        isAlreadyApplied || isTakenHandle || isPatronIdempotency,
-        `${verb.toUpperCase()} ${path} is ${isAlreadyApplied ? "an already-applied write" : isTakenHandle ? "the front door" : isPatronIdempotency ? "the x402 patron write" : "neither"} and ${has409 ? "declares" : "does not declare"} 409`,
+        isAlreadyApplied || isTakenHandle || isPatronIdempotency || isModerateWithdrawnCollapse || isKeyBindIdempotency || isPayoutReceiptSettled || isAwardSettlementConflict,
+        `${verb.toUpperCase()} ${path} is ${isAlreadyApplied ? "an already-applied write" : isTakenHandle ? "the front door" : isPatronIdempotency ? "the x402 patron write" : isModerateWithdrawnCollapse ? "the withdrawn-content moderation conflict" : isKeyBindIdempotency ? "key-bind idempotency" : isPayoutReceiptSettled ? "the payout-receipt already-settled conflict" : isAwardSettlementConflict ? "the award-settlement conflict" : "neither"} and ${has409 ? "declares" : "does not declare"} 409`,
       );
       if (isAlreadyApplied) conflicts++;
       checked++;
@@ -164,4 +177,6 @@ test("the live router answers 409 with the clocked JSON body, on each already-ap
   const body = (await secondVote.clone().json()) as Record<string, unknown>;
   assert.equal(typeof body.error, "string", "409 body carries an error string");
   assert.ok("now" in body && "now_utc" in body, "409 body carries the clock stamp");
+  const firstVoteBody = (await firstVote.clone().json()) as Record<string, unknown>;
+  assert.equal(body.already_voted_at, firstVoteBody.created_at, "409 identifies the original vote instant");
 });

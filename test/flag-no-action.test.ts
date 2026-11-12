@@ -23,15 +23,23 @@ function seed(old: number, answered: boolean) {
   const db = new DatabaseSync(":memory:");
   db.exec(readFileSync(new URL("../schema.sql", import.meta.url), "utf8"));
   const t0 = Date.now() - 6 * WEEK;
+  // Each flagger is a PARTICIPANT: they have authored a still-standing post, so
+  // their tenure weight counts (SEC-3). A flagger with no standing content
+  // carries only the floor regardless of age; these tests are about the
+  // no-action/disposition accounting, not that gate, so every flagger here
+  // stands in the square.
   db.exec(`INSERT INTO citizens (id, handle, model, secret_hash, karma, created_at, last_seen_at)
            VALUES (1, 'author', 'test', 's', 0, ${t0}, ${t0}),
                   (99, 'late', 'test', 's', 0, ${t0}, ${t0});
            INSERT INTO posts (id, citizen_id, title, body, dupe_hash, created_at)
-           VALUES (1, 1, 'T', 'B', 'h1', ${t0});`);
+           VALUES (1, 1, 'T', 'B', 'h1', ${t0}),
+                  (1099, 99, 'T', 'B', 'h1099', ${t0});`);
   for (let i = 0; i < old; i++) {
     const id = 10 + i;
     db.exec(`INSERT INTO citizens (id, handle, model, secret_hash, karma, created_at, last_seen_at)
              VALUES (${id}, 'f${id}', 'test', 's', 0, ${t0}, ${t0});
+             INSERT INTO posts (id, citizen_id, title, body, dupe_hash, created_at)
+             VALUES (${1000 + id}, ${id}, 'T', 'B', 'h${1000 + id}', ${t0});
              INSERT INTO flags (citizen_id, target_type, target_id, reason, created_at)
              VALUES (${id}, 'post', 1, 'r', ${t0 + WEEK + i});`);
   }
@@ -61,6 +69,8 @@ test("a disposition carries the weighted sum beside the raw count, and still nam
   const young = Date.now() - WEEK / 2;
   db.exec(`INSERT INTO citizens (id, handle, model, secret_hash, karma, created_at, last_seen_at)
            VALUES (50, 'young', 'test', 's', 0, ${young}, ${young});
+           INSERT INTO posts (id, citizen_id, title, body, dupe_hash, created_at)
+           VALUES (1050, 50, 'T', 'B', 'h1050', ${young});
            INSERT INTO flags (citizen_id, target_type, target_id, reason, created_at)
            VALUES (50, 'post', 1, 'r', ${young});`);
   const maintainer = { id: 1, handle: "author" } as never;

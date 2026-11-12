@@ -52,7 +52,7 @@ function makeEnv() {
     INSERT INTO listings (id, citizen_id, title, condition, amount_atomic, chain_id, token, expiry, funder_address, funder_signature, funds_seen_atomic, payload_hash, commit_nonce, created_at)
       VALUES (9, 1, 'bounty', '${"c".repeat(40)}', '500000', 8453, '${USDC}', ${nowS + 86400}, '${FUNDER}', '${"0x" + "1".repeat(130)}', '24000000', 'ph9', 'n9', ${Date.now() - 30 * 60 * 1000});
     INSERT INTO payout_bindings (id, citizen_id, docket_id, version, amount_atomic, chain_id, token, payout_address, expiry, wallet_signature, citizen_public_key, citizen_signature, citizen_key_thumbprint, citizen_key_custody, citizen_key_bound_at, authorization_verification, authorization_verified_at, docket_acceptance, docket_updated, docket_snapshot, preimage, authorization_hash, payload_hash, commit_nonce, created_at)
-      VALUES (25, 2, 'listing-9', '1f916.payout.v1', '500000', 8453, '${USDC}', '${PAYEE}', ${nowS + 86400}, 'ws', 'pk', 'cs', 'tp', 'self', 1, 'valid-at-binding-event', 1, 'a', '0', '{}', 'pre', 'ah', 'ph25', 'n25', ${Date.now() - 20 * 60 * 1000});
+      VALUES (25, 2, 'listing-9', '1f916.payout.v1', '500000', 8453, '${USDC}', '${PAYEE}', ${nowS + 86400}, 'ws', 'pk', 'cs', 'tp', 'undeclared', 1, 'valid-at-binding-event', 1, 'a', '0', '{}', 'pre', 'ah', 'ph25', 'n25', ${Date.now() - 20 * 60 * 1000});
   `);
   return { env, db };
 }
@@ -178,9 +178,14 @@ test("the walk is bounded per cycle, resumes from its mark, never double-writes,
   const { env: env2, db: db2 } = makeEnv();
   const many = Array.from({ length: OBSERVER_MAX_ROWS_PER_CYCLE + 5 }, (_, i) => log(STRANGER, 1n, finalized - 20_800 + Math.floor(i / 2), tx(100 + i), i % 2));
   const r2 = await observeFunderWallets(env2, { rpc: fakeRpc({ a: many, b: many }, finalized).rpc, urls: () => ["a", "b"] });
-  const lastFull = many[OBSERVER_MAX_ROWS_PER_CYCLE - 1]!;
-  assert.equal(r2.to_block, Number(BigInt(lastFull.blockNumber)) - 1, "the mark stops before the block the cap cut into");
-  assert.ok(db2.prepare("SELECT COUNT(*) AS n FROM observed_transfers").get()!.n < OBSERVER_MAX_ROWS_PER_CYCLE, "rows in the cut block are left for next cycle");
+  // The cap now FINISHES the block it lands in (SEC-5): the mark advances TO
+  // that block (not to the block before it), and that block is read whole so
+  // nothing in it is left to be re-walked. Here two rows sit in each block, so
+  // the cap at row OBSERVER_MAX_ROWS_PER_CYCLE lands on a block boundary and
+  // exactly the cap count is written through it.
+  const capBlock = Number(BigInt(many[OBSERVER_MAX_ROWS_PER_CYCLE - 1]!.blockNumber));
+  assert.equal(r2.to_block, capBlock, "the mark advances to the block the cap landed in");
+  assert.equal(db2.prepare("SELECT COUNT(*) AS n FROM observed_transfers").get()!.n, OBSERVER_MAX_ROWS_PER_CYCLE, "the block the cap landed in is read whole, nothing in it left for next cycle");
 
   // A STRIDE CUT BY THE ROW CAP MUST SAY SO. The paging loop exits on three
   // conditions and only two of them used to set `partial`: a refused page and
@@ -198,6 +203,36 @@ test("the walk is bounded per cycle, resumes from its mark, never double-writes,
   const mark = db2.prepare("SELECT last_error FROM observer_marks WHERE funder_address = ?").get(FUNDER.toLowerCase()) as { last_error: string | null } | undefined;
   assert.ok(mark?.last_error, "and it is persisted, because the served sentence points a reader at last_error");
   assert.match(String(mark!.last_error), /row cap/);
+});
+
+test("SEC-5: a block holding more than the row cap is read whole and the mark advances past it, so the walk never freezes", async () => {
+  // Before the fix: when at least OBSERVER_MAX_ROWS_PER_CYCLE transfers fell in
+  // the FIRST block after the mark, the cap rewound coveredTo to that block - 1,
+  // i.e. the mark itself, so the mark never moved and the walk for that funder
+  // froze on a finalized block forever. An attacker can emit the cap's worth of
+  // zero-value Transfer(funder,x,0) in one block for only gas; a funder's own
+  // batch payout does it by accident.
+  // KILLING MUTATION: restore `coveredTo = ... blockNumber - 1` (rewind) in
+  // src/observer.ts — to_block/mark fall to `hot - 1` and the next-cycle
+  // from_block assertion (and the mark-advanced one) go red.
+  const { env, db } = makeEnv();
+  const finalized = 51_000_000;
+  const hot = finalized - 30_000; // the first block the next cycle will read
+  db.prepare("INSERT INTO observer_marks (funder_address, last_block, updated_at) VALUES (?, ?, ?)")
+    .run(FUNDER.toLowerCase(), hot - 1, Date.now());
+  // More than the cap, ALL in the single block `hot`.
+  const flood = Array.from({ length: OBSERVER_MAX_ROWS_PER_CYCLE + 100 }, (_, i) => log(STRANGER, 0n, hot, tx(1000 + i), i));
+  const deps = { rpc: fakeRpc({ a: flood, b: flood }, finalized).rpc, urls: () => ["a", "b"] };
+  const r = await observeFunderWallets(env, deps);
+  assert.equal(r.from_block, hot, "the cycle starts at the block after the mark");
+  assert.equal(r.to_block, hot, "the mark advances TO the flooded block, not stuck at the mark before it");
+  const mark = db.prepare("SELECT last_block FROM observer_marks WHERE funder_address = ?").get(FUNDER.toLowerCase()) as { last_block: number };
+  assert.equal(mark.last_block, hot, "the persisted mark moved onto the flooded block");
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM observed_transfers").get()!.n, OBSERVER_MAX_ROWS_PER_CYCLE + 100, "the whole flooded block is recorded, never left behind");
+  // The decisive property: the next cycle makes progress rather than re-asking
+  // the same block forever.
+  const r2 = await observeFunderWallets(env, deps);
+  assert.ok(r2.from_block > hot, `the next cycle starts past the flood (got from_block ${r2.from_block})`);
 });
 
 test("the listing page and the rail serve observed payments as their own tier, beside receipts", async () => {

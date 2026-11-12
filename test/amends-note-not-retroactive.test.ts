@@ -1,19 +1,11 @@
-// amends_note discloses that amended_by is NOT retroactive: an empty array on a
-// comment older than the column does not mean "never amended".
+// amends_note explains that amended_by is the live inverse of explicit links.
+// An empty array is not a verdict that no correction prose exists.
 //
-// Wotuu (issue #326): amends/amended_by (PR #322) shipped over a board with an
-// existing correction history. The write path only accepts amends at creation
-// and nothing backfills, so every correction published before the field existed
-// serves amended_by [] with no way to tell "nothing amended this" from "the
-// amendment predates the column." The fix (Wotuu's own suggestion, following
-// totals_capped / paging_note precedent) is a served-constant disclosure in
-// amends_note: the field is new, records only at creation time since it shipped,
-// is never populated retroactively, so [] on an older comment is uninformative
-// rather than negative. No backfill, no schema change.
+// The feature added an explicit amends link, not a backfill of board history.
+// Later comments can still link to originals from any date, so the original
+// comment created_at is not a clean-record cutoff.
 //
-// Killing mutation: revert AMENDS_NOTE to the pre-#326 string (drop the "never
-// populated retroactively / written before then does NOT mean it was never
-// amended" clause) and this test goes red.
+// This test pins the shared API note on single-comment and thread reads.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -37,17 +29,21 @@ function fresh(): Env {
   return env;
 }
 
-test("amends_note states the field is new, not retroactive, so [] on an old comment is not a clean record", async () => {
+test("amends_note treats amended_by as live explicit links, not an age-based verdict", async () => {
   const env = fresh();
   const { comment } = (await readComment(env, 40)) as { comment: { amended_by: number[]; amends_note: string } };
 
-  assert.deepEqual(comment.amended_by, [], "the fixture comment has no recorded amendment");
-  // The disclosure the empty array now carries with it.
-  assert.match(comment.amends_note, /never populated retroactively/, "the note says the field is not backfilled");
-  assert.match(comment.amends_note, /does NOT mean it was never amended/, "so [] on an older comment is not read as a clean record");
-  assert.match(comment.amends_note, /2026-09-20/, "and names when the field began recording links");
+  assert.deepEqual(comment.amended_by, [], "the fixture has no linked amendment");
+  assert.match(comment.amends_note, /links are not backfilled/, "the note discloses missing historical links");
+  assert.match(comment.amends_note, /live inverse of those explicit links/, "the inverse reflects linked comments");
+  assert.match(comment.amends_note, /an empty amended_by means only that no explicit amends link currently points here/i);
+  assert.match(comment.amends_note, /does not establish that no correction prose exists/i);
+  assert.match(comment.amends_note, /original comment created_at is not a clean-record cutoff/i);
+  assert.match(comment.amends_note, /2026-09-20/, "the note names when link recording began");
 
-  // Served on the thread read too, where amended_by also appears.
   const thread = (await readPost(env, 5)) as { amends_note: string };
-  assert.match(thread.amends_note, /never populated retroactively/, "the thread read carries the same disclosure");
+  assert.match(thread.amends_note, /original comment created_at is not a clean-record cutoff/i, "the thread read carries the same note");
+  const guide = readFileSync(fileURLToPath(new URL("../clients/README.md", import.meta.url)), "utf8");
+  assert.match(guide, /an empty amended_by means only that no explicit amends link currently points here/i);
+  assert.match(guide, /original comment created_at is not a clean-record cutoff/i);
 });

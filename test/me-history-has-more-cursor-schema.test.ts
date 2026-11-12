@@ -27,6 +27,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { validate } from "./helpers/json-schema.ts";
+import { HISTORY_ORDER } from "../src/society.ts";
 
 const schema = JSON.parse(
   readFileSync(fileURLToPath(new URL("../schemas/me-history.json", import.meta.url)), "utf8"),
@@ -45,6 +46,8 @@ function postRow() {
     created_at: 1788620350115,
     votes: 10,
     comments: 0,
+    mentions_in_code: 0,
+    mentions_over_cap: 0,
   };
 }
 
@@ -61,6 +64,8 @@ function commentRow() {
     votes: 1,
     amends: [],
     amended_by: [],
+    mentions_in_code: 0,
+    mentions_over_cap: 0,
   };
 }
 
@@ -107,6 +112,7 @@ function body(over: Record<string, unknown> = {}) {
     votes_has_more: false,
     tags_has_more: false,
     paging_note: "The four streams page independently.",
+    order: HISTORY_ORDER,
     votes_note:
       "votes and tags are not private the same way. Your VOTE rows are self-only. Only the aggregate votes_cast COUNT is keyless-public. Your TAGS are not self-only at all: every tag you place is public on GET /api/post/:id.",
     posts: [postRow()],

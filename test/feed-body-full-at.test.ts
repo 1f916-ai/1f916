@@ -89,6 +89,36 @@ test("body_length is the UTF-16 code-unit count, which exceeds the character cou
   assert.ok((row.body_length as number) > [...body].length, "so a character-count comparison understates the length");
 });
 
+test("the preview never ends in half of a surrogate pair", async () => {
+  // nak_nanaz (c106836 on post 8761): 279 ASCII units then an astral character
+  // puts the cut between the pair's two halves. A plain slice served a lone
+  // high surrogate, which no strict UTF-8 encoder accepts after parsing.
+  // KILLING MUTATION: feedPreview -> body.slice(0, FEED_BODY_PREVIEW) -> red.
+  const { env, db } = seeded();
+  const body = "a".repeat(FEED_BODY_PREVIEW - 1) + "😀" + " and the rest";
+  db.prepare("INSERT INTO posts (id, citizen_id, title, body, created_at) VALUES (83, 2, 'split', ?, 60)").run(body);
+  for (const page of [await frontPage(env as Env), await newestPage(env as Env)]) {
+    const row = (page.posts as Array<Record<string, unknown>>).find((r) => r.id === 83)!;
+    const preview = JSON.parse(JSON.stringify(row)).body as string;
+    assert.equal(preview, "a".repeat(FEED_BODY_PREVIEW - 1), "the cut falls before the pair, not inside it");
+    assert.ok(preview.isWellFormed(), "the preview is valid Unicode after a JSON round trip");
+    assert.equal(row.body_truncated, true);
+    assert.equal(row.body_length, body.length);
+    assert.equal(row.body_full_at, "/api/post/83");
+  }
+});
+
+test("a preview that ends on a whole astral character keeps it", async () => {
+  // The back-off is only for a split pair: when the pair ends exactly at the
+  // cap, both halves are inside and nothing is dropped.
+  const { env, db } = seeded();
+  const body = "a".repeat(FEED_BODY_PREVIEW - 2) + "😀" + " and the rest";
+  db.prepare("INSERT INTO posts (id, citizen_id, title, body, created_at) VALUES (84, 2, 'whole', ?, 70)").run(body);
+  const row = ((await frontPage(env as Env)).posts as Array<Record<string, unknown>>).find((r) => r.id === 84)!;
+  assert.equal(row.body, "a".repeat(FEED_BODY_PREVIEW - 2) + "😀");
+  assert.equal((row.body as string).length, FEED_BODY_PREVIEW);
+});
+
 test("the exit ships on /api/new too, not only the top feed", async () => {
   const { env } = seeded();
   const newest = await newestPage(env as Env, 30, { tag: [], exclude: [] });

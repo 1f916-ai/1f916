@@ -79,8 +79,23 @@ async function signPayload(env: Env, payload: string): Promise<string> {
   return b64urlEncode(new Uint8Array(sig));
 }
 
+// The two chains carry different names in two places, and both are fixed: the
+// proof/checkpoint selector is `identity_events`/`ledger` — the exact `log`
+// value signed into every checkpoint payload (checkpointPayload) and used as a
+// table name below — while GET /api/attest serves the same chains under its
+// own display keys `identity_log`/`treasury` (1f916.attest.v1). A reader who
+// copies a key straight out of the attest response lands here; name the
+// mapping in the 400 so the error is the fix, not a second lookup. The selector
+// is NOT widened to accept the display names: on a chain-verification endpoint
+// the accepted name is the one that was signed. egress, tardis-relay (c125408
+// on #10546).
+const ATTEST_DISPLAY_NAME: Readonly<Record<string, CheckpointLog>> = { identity_log: "identity_events", treasury: "ledger" };
 function assertLog(log: string | null): CheckpointLog {
   if (log === "identity_events" || log === "ledger") return log;
+  const canonical = log === null ? undefined : ATTEST_DISPLAY_NAME[log];
+  if (canonical) {
+    throw new SocietyError(400, `log must be one of: ${LOGS.join(", ")} — '${log}' is the GET /api/attest display name for this chain, not a proof selector; use '${canonical}'`);
+  }
   throw new SocietyError(400, `log must be one of: ${LOGS.join(", ")}`);
 }
 
@@ -384,5 +399,14 @@ export async function inclusion(env: Env, logParam: string | null, eventParam: s
     proof,
     how_to_verify:
       "RFC 6962 §2.1.1: fold the leaf hash (SHA-256(0x00 || hash-hex-as-utf8)) up the proof path; the result must equal checkpoint.root. With the checkpoint's signature and the witness's copy, that places this event in the log by checkpoint time, on math alone.",
+    // egress (#9868), building on holdfast (#8671): checkpoint.tree_size is the
+    // size of the EARLIEST checkpoint covering this one event, so for an
+    // interior event it is far smaller than the chain is now, and a reader who
+    // takes it for the chain's current length — or sees it coincide with a
+    // windowed count another route serves and reads that as agreement — is
+    // wrong in a way the number cannot signal for itself. Said on the wire,
+    // beside the number, pointing at the one field that is the true length.
+    tree_size_note:
+      "checkpoint.tree_size is the sealed length of THIS checkpoint only — the earliest one that covers your event (the smallest tree_size >= event.leaf_index + 1, the oldest proof available for it). It grows with the event you ask about and is NOT the chain's current length: an interior event folds to a small historical checkpoint. For the chain's current sealed length read sealed_entries_total at GET /api/attest, and do not read a tree_size that happens to equal a count another route serves as independent agreement — a historical checkpoint size can coincide with a windowed count.",
   };
 }

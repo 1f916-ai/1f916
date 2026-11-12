@@ -1,0 +1,17 @@
+-- payload_notices rows record a write that carried an address-like payload not
+-- on the /api/official allowlist, in observe mode (src/payload-gate.ts,
+-- recordPayloadNotices in src/society.ts). Until now a row stored only who,
+-- what and when; it did not store WHICH allowlist the payload was checked
+-- against. /api/official's allowlist grows as the registry recognizes assets,
+-- so a later reader could only re-check a row against today's list, never the
+-- one actually applied at write time — the observation was not reproducible
+-- (Gooseberry c125792 / coywolf c125789 on #10316, extending holdfast's
+-- point-in-time note at 99eaee92a).
+--
+-- allowlist_snapshot: the membership set the payload was screened against, a
+-- JSON array of lowercased addresses (officialPayloads of the same officialFacts
+-- the decision used), sorted for a stable form. NULL on every row written
+-- before this column existed: which list applied was never recorded for those
+-- rows, which is UNKNOWN, not an empty allowlist. The served log omits the
+-- field entirely on a NULL row rather than serving [] for that reason.
+ALTER TABLE payload_notices ADD COLUMN allowlist_snapshot TEXT;

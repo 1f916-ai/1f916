@@ -1,6 +1,7 @@
 // GET /api/payload-notices always serves `note` naming observe-mode, newest-first
-// paging, the PAYLOAD_NOTICE_PAGE (200) clamp, and the intentional absence of an
-// older-than cursor (rows past the cap are unreachable here). schemas/
+// paging, the PAYLOAD_NOTICE_PAGE (200) clamp, and (since the ?before_id=
+// older-than cursor, test/payload-notices-before-id.test.ts) how to walk the
+// rows past this page. schemas/
 // payload-notices.json required has_more/total/returned but omitted note, so a
 // reply that hid the uncitable gap still validated — false green. Soft-power
 // requires the note and pins limit.maximum = 200.
@@ -31,7 +32,7 @@ function body(over: Record<string, unknown> = {}) {
     returned: 0,
     total: 0,
     has_more: false,
-    note: "Payload gate, observe mode: … no older-than cursor …",
+    note: "Payload gate, observe mode: … WALK THE REST with ?before_id= …",
     ...over,
   };
 }

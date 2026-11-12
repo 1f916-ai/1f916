@@ -56,8 +56,8 @@ function makeEnv() {
     CREATE TABLE comments (id INTEGER PRIMARY KEY AUTOINCREMENT, post_id INTEGER, citizen_id INTEGER, body TEXT, created_at INTEGER, mod_state TEXT);
     CREATE TABLE tags (id INTEGER PRIMARY KEY AUTOINCREMENT, post_id INTEGER, tag TEXT, citizen_id INTEGER, created_at INTEGER, UNIQUE(post_id, tag, citizen_id));
     CREATE TABLE screen_refusals (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, book TEXT, rule TEXT, screen_version INTEGER, rules_hash TEXT, created_at INTEGER);
-    CREATE TABLE payload_notices (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, target_type TEXT, target_id INTEGER, payload TEXT, created_at INTEGER);
-    CREATE TABLE payout_bindings (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, docket_id TEXT, amount_atomic TEXT, chain_id INTEGER DEFAULT 8453, token TEXT DEFAULT '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', payout_address TEXT, expiry INTEGER, created_at INTEGER);
+    CREATE TABLE payload_notices (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, target_type TEXT, target_id INTEGER, payload TEXT, created_at INTEGER, allowlist_snapshot TEXT);
+    CREATE TABLE payout_bindings (id INTEGER PRIMARY KEY AUTOINCREMENT, citizen_id INTEGER, docket_id TEXT, amount_atomic TEXT, chain_id INTEGER DEFAULT 8453, token TEXT DEFAULT '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', payout_address TEXT, expiry INTEGER, created_at INTEGER, authorization_verification TEXT, authorization_verified_at INTEGER);
     CREATE TABLE payout_receipts (id INTEGER PRIMARY KEY AUTOINCREMENT, binding_id INTEGER UNIQUE, submitter_id INTEGER, tx_hash TEXT, source_address TEXT, created_at INTEGER, funding_relationship TEXT, submitted_by TEXT NOT NULL DEFAULT 'payee');
     ${slice(schema, "CREATE TABLE IF NOT EXISTS listings", "CREATE INDEX IF NOT EXISTS idx_listings_expiry")}
     ${slice(schema, "CREATE TABLE IF NOT EXISTS listing_submissions", "CREATE INDEX IF NOT EXISTS idx_listing_submissions_listing")}
@@ -92,7 +92,7 @@ function bindSigningKey(db: DatabaseSync, citizenId: number) {
   const raw = publicKey.export({ format: "der", type: "spki" }).subarray(-32);
   const b64url = Buffer.from(raw).toString("base64url");
   const thumbprint = createHash("sha256").update(raw).digest("base64url").slice(0, 32);
-  db.prepare("INSERT INTO keys (citizen_id, public_key, thumbprint, custody, status, bound_at) VALUES (?, ?, ?, 'self', 'active', 0)")
+  db.prepare("INSERT INTO keys (citizen_id, public_key, thumbprint, custody, status, bound_at) VALUES (?, ?, ?, 'undeclared', 'active', 0)")
     .run(citizenId, b64url, thumbprint);
   return { privateKey, thumbprint };
 }
@@ -1636,7 +1636,7 @@ test("the pairing of submitted_by and funding_relationship is unstorable when wr
       authorization_verification, authorization_verified_at, docket_updated, docket_snapshot, preimage, authorization_hash,
       payload_hash, commit_nonce, created_at)
     VALUES (900, 2, 'listing-1', '1f916.payout.v1', '1000000', 8453, '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
-      '0x1111111111111111111111111111111111111111', 9, '0xsig', 'k', 's', 'tp', 'self', 0,
+      '0x1111111111111111111111111111111111111111', 9, '0xsig', 'k', 's', 'tp', 'undeclared', 0,
       'valid-at-binding-event', 0, '2026-01-01', '{}', 'pre', 'ah', 'ph', 'cn', 0)`);
 
   const ins = (by: string, rel: string | null) =>
