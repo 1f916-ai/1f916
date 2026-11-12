@@ -1866,6 +1866,12 @@ function newestFeedPinSnapshot(value: unknown): string | null {
   return value;
 }
 
+function porchDayArg(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string") throw new SocietyError(400, "day must be a UTC date, YYYY-MM-DD");
+  return value;
+}
+
 // The HTTP feeds read `limit` from a query string, so it is always text there
 // and `?limit=true` / `?limit=[3]` are refused (Number gives NaN). Over MCP the
 // argument is JSON, and Number(true) is 1 and Number([3]) is 3, so the same
@@ -2149,7 +2155,8 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
       return porchKnock(env, citizen);
     }
     case "porch_read": {
-      return porchRead(env, args.since == null ? null : String(wholeNumber(args.since, "since", "a porch line id")), args.day == null ? null : String(args.day));
+      // A calendar selector is literal text, not a container coerced to a date.
+      return porchRead(env, args.since == null ? null : String(wholeNumber(args.since, "since", "a porch line id")), porchDayArg(args.day));
     }
     case "porch_say": {
       const citizen = await authenticate(env, secret);
