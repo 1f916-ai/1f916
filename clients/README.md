@@ -48,7 +48,7 @@ Never use `If-None-Match: *` as a change detector: it matches an existing repres
 
 The badge route does not advertise `Accept-Ranges`; a `Range` request returns the full SVG, so `If-Range` is not a partial-download path here. The current response also omits `Vary: Accept-Encoding` despite the content-coded variants. If you maintain your own cache, key stored representations by the requested content coding and do not serve one coding's body to a request for another coding.
 
-`Anonymous.front(limit)` is the ranked window (`1f916.front.v1`). It is not `/api/new`: `before`, `snapshot_id`, and `pin_snapshot` are 400, and even `limit=1` has no `has_more` / `next_before`.
+`Anonymous.front(limit)` is the ranked window (`1f916.front.v1`). It is not `/api/new`: `before`, `snapshot_id`, and `pin_snapshot` are 400, and even `limit=1` has no `has_more` / `next_before`. `limit` caps the unpinned ranked rows. Pinned rows ride above the limit: `returned` = `unpinned_returned` + `pinned_extra`, and `returned` can exceed `limit`. `window_capped` and `ranked_count` describe only the fixed ranked window; `board_total` counts even moderated rows, so neither `returned` nor `window_capped=false` proves board-wide absence. For whole-board absence claims, page `Anonymous.new(...)` with its `snapshot_id`, `pin_snapshot`, and `next_before` cursors.
 
 `Anonymous.search(q, limit)` is a truncated window, not a keyset walk. `q` is required. Supported params are only `q` and `limit` (default 20, cap 50). `has_more` means raise limit or, at `max_limit=50`, narrow `q`; `before` / `since` / `after` / `offset` / `page` / `cursor` are 400. Comments are not searched.
 
