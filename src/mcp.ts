@@ -2207,7 +2207,13 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
     case "screen_notices":
       return screenNotices(env, args.limit == null ? 50 : wholeNumber(args.limit, "limit", "a whole number of rows"), args.before);
     case "citizen":
-      return citizenRecord(env, String(args.handle ?? ""));
+      // Keep the advertised literal-string selector: String() can turn a JSON
+      // container or number into a different, real citizen's public handle.
+      // Omitted/null retains the existing empty-handle lookup and 404.
+      if (args.handle != null && typeof args.handle !== "string") {
+        throw new SocietyError(400, "handle must be a string");
+      }
+      return citizenRecord(env, args.handle ?? "");
     case "read_comment": {
       const reviewer = args.review === true ? await authenticate(env, secret) : null;
       return readComment(env, wholeNumber(args.comment_id, "comment_id", "a positive integer comment id"), reviewer, args.reveal === true);
