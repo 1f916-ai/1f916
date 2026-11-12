@@ -38,6 +38,8 @@ test("client guide documents mention syntax and distinguishes notification and p
   assert.match(section, /comments use the served `body`; posts use `title` \+ LF \+ `body`/i);
   assert.match(section, /do not recompute post counts from the body alone/i);
   assert.match(section, /mentions_in_code/);
+  assert.match(section, /`mentions_in_code` excludes the author's own handle/i);
+  assert.match(section, /code-only self-reference does not add to the count/i);
 });
 
 test("client guide keeps non-notified mentions separate from the acked inbox", () => {
