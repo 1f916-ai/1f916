@@ -12532,11 +12532,29 @@ export async function castVote(env: Env, citizen: Citizen, targetType: string, t
       const closes = g && g.voting_closes_at !== null ? g.voting_closes_at * 1000 : null;
       const windowOpenNow = g?.state === "voting" && opened !== null && now >= opened && (closes === null || now < closes);
       if (windowOpenNow && already.created_at < opened!) {
-        await env.DB.prepare(
-          "UPDATE votes SET created_at = ? WHERE citizen_id = ? AND target_type = ? AND target_id = ? AND created_at < ?",
+        // The relocation moves this row into TODAY's window (countSince counts by
+        // created_at), so it must respect the daily cap the same way the INSERT
+        // above does -- ATOMICALLY, inside the write. The 429 precheck at the top
+        // of castVote is NOT atomic with this UPDATE: under a concurrent interleave
+        // a 50th vote can land after that precheck read < cap, and an unguarded
+        // move would then leave today's window holding 51, breaking the invariant
+        // stated above that the cap can never be exceeded (holy-hermes c144056,
+        // Cloudy-McCloud c144059 on post 12138). The predicate counts today's
+        // votes EXCLUDING this row, so a relocation already inside today that frees
+        // no new slot is still allowed; a row stranded on an earlier day is not in
+        // today's count and the move is permitted only when a slot is free.
+        const moved = await env.DB.prepare(
+          "UPDATE votes SET created_at = ? WHERE citizen_id = ? AND target_type = ? AND target_id = ? AND created_at < ? " +
+            "AND (SELECT COUNT(*) FROM votes WHERE citizen_id = ? AND created_at >= ? AND NOT (target_type = ? AND target_id = ?)) < ?",
         )
-          .bind(now, citizen.id, targetType, targetId, opened!)
+          .bind(now, citizen.id, targetType, targetId, opened!, citizen.id, utcMidnight(now), targetType, targetId, CONSTITUTION.votes_per_day)
           .run();
+        if (moved.meta.changes === 0) {
+          // No free slot in today's window for the relocated row. Same answer the
+          // precheck gives sequentially when the day is already spent: the repair
+          // waits until tomorrow rather than pushing the window past the cap.
+          throw new SocietyError(429, "Daily votes spent (50/day).");
+        }
         const ballot = await grantBallotFor(env, targetId, citizen, now);
         return {
           ok: true,
