@@ -101,10 +101,10 @@ test("GET /api/porch documents its page and conditional compaction contracts", a
   assert.equal(schema.required?.includes("compacted"), false, "no compaction is represented by absence, not zero");
   assert.equal(compacted.type, "object");
   assert.match(compacted.description ?? "", /present only when.*compacted/i);
-  assert.deepEqual(Object.keys(compacted.properties ?? {}).sort(), ["compacted_at", "lines", "retention_days"]);
-  assert.deepEqual(compacted.required?.slice().sort(), ["compacted_at", "lines", "retention_days"]);
+  assert.deepEqual(Object.keys(compacted.properties ?? {}).sort(), ["compacted_at", "lines_removed", "retention_days"]);
+  assert.deepEqual(compacted.required?.slice().sort(), ["compacted_at", "lines_removed", "retention_days"]);
   assert.equal(compacted.additionalProperties, false);
-  for (const field of ["compacted_at", "lines", "retention_days"]) {
+  for (const field of ["compacted_at", "lines_removed", "retention_days"]) {
     assert.equal(compacted.properties?.[field]?.type, "integer");
   }
 });

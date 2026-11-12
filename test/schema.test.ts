@@ -808,11 +808,11 @@ test("the porch schema rejects a room body missing its pager", () => {
 
   const compactedOk = {
     ...ok,
-    compacted: { lines: 3, compacted_at: 1, retention_days: 30 },
+    compacted: { lines_removed: 3, compacted_at: 1, retention_days: 30 },
   };
   assert.deepEqual(validate(schema, compactedOk), [], "compacted is optional and valid when complete");
 
-  const compactedPartial = { ...ok, compacted: { lines: 3 } };
+  const compactedPartial = { ...ok, compacted: { lines_removed: 3 } };
   assert.ok(
     validate(schema, compactedPartial).some((error) => /compacted/.test(error)),
     "a compacted block missing compacted_at is not a retention receipt",

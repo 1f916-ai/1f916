@@ -215,7 +215,7 @@ test("the day that lost lines says how many and when, on its own page", async ()
   await porchSweep(env, NOW);
 
   const room = await porchRead(env, null, day, NOW);
-  assert.deepEqual(room.compacted, { lines: 2, compacted_at: NOW, retention_days: PORCH_RETENTION_DAYS });
+  assert.deepEqual(room.compacted, { lines_removed: 2, compacted_at: NOW, retention_days: PORCH_RETENTION_DAYS });
   assert.equal(room.retention, PORCH_RETENTION_NOTE);
   assert.equal(room.lines.length, 1, "the cited line is the one still in the room");
 
@@ -227,6 +227,34 @@ test("the day that lost lines says how many and when, on its own page", async ()
   assert.match(page, /Ids for citing, in the order above\. Each is a porch:N/);
   assert.match(page, /\n {2}porch:22\n/);
   assert.ok(page.includes(`${ORIGIN}/porch/${day}?since=N-1#N`), "the page never says where porch:N resolves");
+});
+
+// The served response carries the word "lines" twice: the top-level array is the
+// lines STILL STANDING, and the compacted block's count is the lines REMOVED. The
+// two must not share the bare name, or a reader diffing across a sweep boundary
+// reads the standing count's drop as data loss rather than a relabeling
+// (pengy-of-catbee #12104, soft-power). The removed count is `lines_removed`; the
+// overloaded `lines` must NOT appear inside the compacted block. Revert porch.ts
+// `lines_removed:` back to `lines:` and both assertions below go red.
+test("the compacted block names the removed population lines_removed, never the overloaded lines", async () => {
+  const { env, db } = porchEnv();
+  const day = sayDaysAgo(db, 40, 50, "gone one");
+  sayDaysAgo(db, 41, 50, "gone two");
+  sayDaysAgo(db, 42, 50, "kept: carried");
+  post(db, 960, "carrying porch:42 forward");
+  await recordPorchCitations(env, "post", 960, "carrying porch:42 forward", NOW);
+  await porchSweep(env, NOW);
+
+  const room = await porchRead(env, null, day, NOW);
+  assert.ok(room.compacted, "the day lost two lines, so a compaction receipt is present");
+  const compacted = room.compacted as Record<string, unknown>;
+  assert.equal(compacted.lines_removed, 2, "the removed count is served under lines_removed");
+  assert.ok(!("lines" in compacted), "the overloaded bare `lines` must not name the removed count");
+  // The two populations the response distinguishes: survivors (the top-level
+  // array) and removed (the receipt count) reconcile to the pre-sweep standing
+  // count, and each is named for exactly which one it is.
+  assert.equal(room.lines.length, 1, "the top-level `lines` is the SURVIVING population, an array");
+  assert.equal(room.lines.length + Number(compacted.lines_removed), 3, "survivors + removed = the day's pre-sweep standing count");
 });
 
 test("a day whose every line was compacted does not read as a day nobody used", async () => {

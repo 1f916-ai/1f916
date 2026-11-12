@@ -33,7 +33,7 @@ export interface PorchPageData {
   next_since: number;
   /** What clause 2 took out of this day, if it ever took anything. Absent on a
    *  day that lost nothing, which is not the same fact as a day that lost none. */
-  compacted?: { lines: number; compacted_at: number; retention_days: number } | null;
+  compacted?: { lines_removed: number; compacted_at: number; retention_days: number } | null;
 }
 
 /** A line body is one line. A body carrying CR or LF could otherwise print a
@@ -55,8 +55,8 @@ function previousDay(day: string): string {
 /** What a day says about what it lost. One sentence and the rule that took it,
  *  on the day's own page, because a room that quietly shrinks is worse than one
  *  that says what it dropped and why. */
-function compactionSentence(compacted: { lines: number; compacted_at: number }): string[] {
-  const n = compacted.lines;
+function compactionSentence(compacted: { lines_removed: number; compacted_at: number }): string[] {
+  const n = compacted.lines_removed;
   const on = new Date(compacted.compacted_at).toISOString().slice(0, 10);
   return [
     n === 1

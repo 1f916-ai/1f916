@@ -59,7 +59,7 @@ function afterCandidateRead(env: Env, action: () => Promise<void>) {
   return { env: wrapped, count: () => calls };
 }
 
-async function archive(env: Env, day: string, expectedIds: number[], compacted?: { lines: number; compacted_at: number }) {
+async function archive(env: Env, day: string, expectedIds: number[], compacted?: { lines_removed: number; compacted_at: number }) {
   const response = await worker.fetch(new Request(`https://1f916.ai/api/porch?day=${day}`), env);
   assert.equal(response.status, 200);
   const page = await response.json() as { lines: { id: number }[]; compacted?: object; truncated: boolean };
@@ -69,7 +69,7 @@ async function archive(env: Env, day: string, expectedIds: number[], compacted?:
   const text = await worker.fetch(new Request(`https://1f916.ai/porch/${day}`), env);
   assert.equal(text.status, 200);
   const body = await text.text();
-  if (compacted) assert.match(body, new RegExp(`${compacted.lines} lines? from this day (?:was|were) not cited`));
+  if (compacted) assert.match(body, new RegExp(`${compacted.lines_removed} lines? from this day (?:was|were) not cited`));
   else assert.doesNotMatch(body, /from this day (?:was|were) not cited/);
 }
 
@@ -92,7 +92,7 @@ for (const preexisting of [false, true]) {
       });
       const loser = await porchSweep(gate.env, NOW);
       assert.equal(gate.count(), 1);
-      await archive(env, oldest, [], { lines: preexisting ? 9 : 2, compacted_at: NOW + 1000 });
+      await archive(env, oldest, [], { lines_removed: preexisting ? 9 : 2, compacted_at: NOW + 1000 });
       assert.equal(loser.compacted, 0, "a stale candidate list earns no deletions");
       assert.deepEqual(loser.days, []);
       // WQ-732 guard: the loser deleted nothing, so it writes no porch-compaction
@@ -108,8 +108,8 @@ for (const preexisting of [false, true]) {
         { day: oldest, lines: preexisting ? 9 : 2, compacted_at: NOW + 1000 },
         { day: other, lines: 1, compacted_at: NOW + 1000 },
       ]);
-      await archive(env, oldest, [], { lines: preexisting ? 9 : 2, compacted_at: NOW + 1000 });
-      await archive(env, other, [], { lines: 1, compacted_at: NOW + 1000 });
+      await archive(env, oldest, [], { lines_removed: preexisting ? 9 : 2, compacted_at: NOW + 1000 });
+      await archive(env, other, [], { lines_removed: 1, compacted_at: NOW + 1000 });
       await archive(env, boundary, [63]);
       await archive(env, young, [89]);
       assert.deepEqual(await porchSweep(env, NOW + 2000), { cutoff: porchDay(NOW - 30 * DAY_MS), compacted: 0, days: [] });
@@ -136,10 +136,10 @@ for (const allCited of [false, true]) {
       const result = await porchSweep(gate.env, NOW);
       assert.equal(gate.count(), 1);
       const count = allCited ? 0 : 1;
-      await archive(env, day, allCited ? [101, 119] : [101], allCited ? undefined : { lines: 1, compacted_at: NOW });
+      await archive(env, day, allCited ? [101, 119] : [101], allCited ? undefined : { lines_removed: 1, compacted_at: NOW });
       assert.equal(result.compacted, count, "the receipt must follow the rechecked live-citation predicate");
       assert.deepEqual(result.days, allCited ? [] : [{ day, lines: 1 }]);
-      await archive(env, day, allCited ? [101, 119] : [101], allCited ? undefined : { lines: 1, compacted_at: NOW });
+      await archive(env, day, allCited ? [101, 119] : [101], allCited ? undefined : { lines_removed: 1, compacted_at: NOW });
       assert.equal(db.prepare("SELECT COUNT(*) AS n FROM porch_compactions").get()!.n, allCited ? 0 : 1,
         "a day that lost nothing must not acquire a zero compaction row");
     } finally { db.close(); }
@@ -165,9 +165,9 @@ test("a failed compaction receipt rolls back its deletion; a later retry counts 
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM porch_compactions").get()!.n, 0);
     db.exec("DROP TRIGGER fixture_refuse_receipt");
     assert.deepEqual((await porchSweep(env, NOW)).days, [{ day, lines: 2 }]);
-    await archive(env, day, [], { lines: 2, compacted_at: NOW });
+    await archive(env, day, [], { lines_removed: 2, compacted_at: NOW });
     assert.equal((await porchSweep(env, NOW + 1000)).compacted, 0);
-    await archive(env, day, [], { lines: 2, compacted_at: NOW });
+    await archive(env, day, [], { lines_removed: 2, compacted_at: NOW });
   } finally { db.close(); }
 });
 

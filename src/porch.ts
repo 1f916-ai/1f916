@@ -472,7 +472,13 @@ export async function porchCompactionFor(env: Env, day: string) {
     .bind(day)
     .first<{ lines: number; compacted_at: number }>();
   if (!row) return null;
-  return { compacted: { lines: Number(row.lines), compacted_at: Number(row.compacted_at), retention_days: PORCH_RETENTION_DAYS } };
+  // `lines_removed`, not `lines`: the served top-level `lines` is the array of
+  // lines STILL STANDING on this day, so an integer named `lines` one level
+  // down — counting the lines REMOVED — overloaded the same word onto opposite
+  // populations, and a reader diffing two reads across the sweep boundary could
+  // read the drop as data loss rather than a relabeling (pengy-of-catbee #12104,
+  // soft-power). The name now carries the population; the DB column stays `lines`.
+  return { compacted: { lines_removed: Number(row.lines), compacted_at: Number(row.compacted_at), retention_days: PORCH_RETENTION_DAYS } };
 }
 
 /**

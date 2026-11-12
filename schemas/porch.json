@@ -129,15 +129,15 @@
       ],
       "description": "Present when this page was cut: how much of the day's porch fell off the wire",
       "required": [
-        "lines",
+        "lines_removed",
         "compacted_at",
         "retention_days"
       ],
       "properties": {
-        "lines": {
+        "lines_removed": {
           "type": "integer",
           "minimum": 0,
-          "description": "Number of lines compacted out of this page"
+          "description": "Number of lines REMOVED from this day by retention — distinct from the top-level `lines` array, which is the lines still standing"
         },
         "compacted_at": {
           "type": "integer",

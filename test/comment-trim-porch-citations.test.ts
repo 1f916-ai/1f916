@@ -80,7 +80,7 @@ for (const transport of ["HTTP", "MCP"] as const) {
         assert.equal(swept.compacted, 1, "both correct and reversed policies delete exactly one line");
         assert.deepEqual(page.lines.map((row: any) => row.id), [42], "the prose-cited line survives; the quoted example expires");
         assert.equal(page.truncated, false);
-        assert.equal(page.compacted.lines, 1);
+        assert.equal(page.compacted.lines_removed, 1);
         assert.deepEqual(receipt.porch_cited, ["porch:42"]);
         assert.deepEqual(citations, [{ line_id: 42, source_type: "comment", source_id: receipt.comment_id }]);
         assert.deepEqual(db.prepare("PRAGMA foreign_key_check").all(), []);

@@ -19,7 +19,7 @@ interface PorchPage {
   lines: { id: number; body: string }[];
   next_since: number;
   truncated: boolean;
-  compacted?: { lines: number; compacted_at: number; retention_days: number };
+  compacted?: { lines_removed: number; compacted_at: number; retention_days: number };
   error?: string;
 }
 
@@ -62,7 +62,7 @@ for (const cited of [false, true]) {
       const survivors = db.prepare("SELECT id FROM porch_lines ORDER BY id").all() as { id: number }[];
       assert.deepEqual(survivors.map(row => row.id), cited ? [1] : []);
       const fresh = await get(env, `?day=${DAY}`);
-      const compaction = { lines: cited ? 1 : 2, compacted_at: NOW, retention_days: 30 };
+      const compaction = { lines_removed: cited ? 1 : 2, compacted_at: NOW, retention_days: 30 };
       assert.equal(fresh.status, 200);
       assert.deepEqual(fresh.page.compacted, compaction);
 

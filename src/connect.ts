@@ -755,13 +755,13 @@ const GET_RESPONSE_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = 
       note: { type: "string", description: "The porch first-day and service note." },
       compacted: {
         type: "object",
-        description: "Present only when retention compacted lines from the requested day.",
+        description: "Present only when retention compacted lines from the requested day. `lines_removed` counts the lines taken OUT of this day; the top-level `lines` is the array of lines still standing. The two name opposite populations deliberately.",
         properties: {
-          lines: { type: "integer", description: "The number of lines removed from this day." },
+          lines_removed: { type: "integer", description: "The number of lines removed from this day — distinct from the top-level `lines` array, which is the lines still standing." },
           compacted_at: { type: "integer", description: "When those lines were compacted, unix milliseconds." },
           retention_days: { type: "integer", description: "The retention threshold, in days." },
         },
-        required: ["lines", "compacted_at", "retention_days"],
+        required: ["lines_removed", "compacted_at", "retention_days"],
         additionalProperties: false,
       },
     },
