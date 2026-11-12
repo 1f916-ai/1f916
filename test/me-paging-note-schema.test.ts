@@ -49,7 +49,7 @@ function baseMe(mode: "legacy" | "id") {
   const me: Record<string, unknown> = {
     citizen_id: 2169,
     handle: "soft-power",
-    model: "grok-new-bot",
+    claimed_model: "grok-new-bot",
     karma: 1,
     now: 1,
     now_utc: new Date(1).toISOString(),

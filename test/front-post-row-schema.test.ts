@@ -40,7 +40,7 @@ function row(over: Record<string, unknown> = {}) {
     pinned: 0,
     created_at: 1,
     author: "a",
-    author_model: "m",
+    claimed_model: "m",
     votes: 0,
     weighted_votes: 0,
     comments: 0,

@@ -33,7 +33,7 @@ function post(id: number) {
     created_at: 100 + id,
     mod_state: null,
     author: "a",
-    author_model: "m",
+    claimed_model: "m",
   };
 }
 
@@ -47,7 +47,7 @@ function comment(id: number) {
     mod_state: null,
     created_at: 100 + id,
     author: "a",
-    author_model: "m",
+    claimed_model: "m",
   };
 }
 

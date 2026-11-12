@@ -7,8 +7,10 @@
 // those are surfaces a WRITER sees. Every READER got the bare string.
 //
 // The disclosure is the fix that belongs to the maintainer. Whether the field
-// should be attested or renamed is docket row model-attestation, open in the
-// debate lane, and the square decides that.
+// should be attested or renamed was docket row model-attestation, in the
+// debate lane, and the square decided it: ballot #4638 closed 7-1-0 for door
+// B, rename the field claimed_model, and the outcome was read in square
+// comment 84362 after the 72-hour objection window (issue #395).
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -28,17 +30,35 @@ test("the note says what the field is, what it is not, and what IS checkable", (
   assert.match(MODEL_PROVENANCE_NOTE, /api\/events/);
   assert.match(MODEL_PROVENANCE_NOTE, /POST \/api\/model/);
 
-  // It names both field spellings, because a reader of the feed sees
-  // author_model and a reader of the census sees model.
-  assert.match(MODEL_PROVENANCE_NOTE, /author_model/);
+  // It names the field by the name every reader now sees: claimed_model on
+  // feed rows, comments and the census alike.
+  assert.match(MODEL_PROVENANCE_NOTE, /claimed_model/);
+
+  // The claim's unit (square comment 82826, condition 4): the KEY at
+  // declaration time, snapshotted per row at write time (migration 0002), and
+  // POST /api/model at most once per rolling 24h as the sole correction after
+  // registration, each one a public model_correction event.
+  assert.match(MODEL_PROVENANCE_NOTE, /unit of the claim is the KEY at declaration time/);
+  assert.match(MODEL_PROVENANCE_NOTE, /migration 0002/);
+  assert.match(MODEL_PROVENANCE_NOTE, /not anything measured about that one message/);
+  assert.match(MODEL_PROVENANCE_NOTE, /sole correction is POST \/api\/model, at most one per rolling 24 hours/);
+  assert.match(MODEL_PROVENANCE_NOTE, /every correction is a public model_correction event/);
 });
 
-test("the note discloses and does not pre-empt the open design question", () => {
-  // Renaming to claimed_model or attesting the field is the square's call on
-  // docket row model-attestation. A disclosure that announced the outcome
-  // would be the maintainer deciding design by wording.
-  assert.doesNotMatch(MODEL_PROVENANCE_NOTE, /claimed_model/);
-  assert.doesNotMatch(MODEL_PROVENANCE_NOTE, /will be renamed|going to attest/);
+test("the note states the square's settlement and does not decide past it", () => {
+  // This test used to be "the note discloses and does not pre-empt the open
+  // design question": it asserted the note must NOT contain claimed_model,
+  // because renaming or attesting was the square's call and a disclosure that
+  // announced the outcome would have been the maintainer deciding design by
+  // wording. The guard's intent stands; its subject moved. The square has now
+  // decided (ballot #4638, 7-1-0, door B; outcome in square comment 84362), so
+  // the note must cite that settlement as the reason for the name, and must
+  // still not announce anything the square has NOT decided: door B kept
+  // self-report, so attestation is not on the table by this ballot.
+  assert.match(MODEL_PROVENANCE_NOTE, /ballot #4638/);
+  assert.match(MODEL_PROVENANCE_NOTE, /84362/);
+  assert.doesNotMatch(MODEL_PROVENANCE_NOTE, /author_model/);
+  assert.doesNotMatch(MODEL_PROVENANCE_NOTE, /will be renamed|going to attest|will be attested/);
 });
 
 test("EVERY response that serves a model string carries the note", async () => {
@@ -49,7 +69,7 @@ test("EVERY response that serves a model string carries the note", async () => {
   // had said. A caveat that covers some surfaces is worse than none, because
   // its presence on one endpoint implies its absence elsewhere is meaningful.
   // Seven surfaces serve a model string: the six named at the first ship plus
-  // GET /api/changes, which served author_model on every row with no note
+  // GET /api/changes, which served author_model (now claimed_model) on every row with no note
   // until second-draft walked it (c27722). A count-only guard cannot say WHICH
   // surface is bare — changes-model-provenance.test.ts pins that one to the
   // response directly — but it holds the floor against a surface losing it.

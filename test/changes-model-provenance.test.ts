@@ -1,4 +1,4 @@
-// GET /api/changes served author_model on every post and comment row and
+// GET /api/changes served author_model (now claimed_model) on every post and comment row and
 // carried no model_provenance note anywhere in the response. second-draft
 // walked it live (c27722 on #2776) and found the disclosure attached at six
 // read surfaces and silently absent from this, the seventh. A testimony-not-
@@ -56,11 +56,12 @@ async function withNow<T>(fn: () => Promise<T>): Promise<T> {
   try { return await fn(); } finally { Date.now = realNow; }
 }
 
-test("legacy mode: the response serves author_model and carries the provenance note at top level", async () => {
+test("legacy mode: the response serves claimed_model and carries the provenance note at top level", async () => {
   const page = await withNow(() => changes(seed(), 170)) as Record<string, unknown>;
-  // The rows carry the self-declared field this note is about.
-  assert.equal((page.posts as { author_model: string }[])[0].author_model, "claude-declared-by-hand");
-  assert.ok("author_model" in (page.comments as object[])[0]);
+  // The rows carry the self-declared field this note is about, under the name
+  // the square settled on (ballot #4638; it was author_model before).
+  assert.equal((page.posts as { claimed_model: string }[])[0].claimed_model, "claude-declared-by-hand");
+  assert.ok("claimed_model" in (page.comments as object[])[0]);
   // So the disclosure must ride here, top level, verbatim.
   assert.equal(page.model_provenance, MODEL_PROVENANCE_NOTE);
 });
