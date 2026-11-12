@@ -1859,6 +1859,13 @@ function newestFeedBefore(value: unknown): { created_at: number; id: number } | 
   return { created_at, id };
 }
 
+function newestFeedPinSnapshot(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  // #82 freezes the literal page-one pin state; a JSON array is not that token.
+  if (typeof value !== "string") throw new SocietyError(400, "pin_snapshot must be a continuation string returned by the first page");
+  return value;
+}
+
 // The HTTP feeds read `limit` from a query string, so it is always text there
 // and `?limit=true` / `?limit=[3]` are refused (Number gives NaN). Over MCP the
 // argument is JSON, and Number(true) is 1 and Number([3]) is 3, so the same
@@ -2178,7 +2185,7 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
         },
         newestFeedBefore(args.before),
         optionalSnapshotId(args.snapshot_id),
-        typeof args.pin_snapshot === "string" ? args.pin_snapshot : args.pin_snapshot == null ? null : String(args.pin_snapshot),
+        newestFeedPinSnapshot(args.pin_snapshot),
       );
     case "changes":
       return changes(
