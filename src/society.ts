@@ -13787,7 +13787,7 @@ export async function pulseMarks(env: Env): Promise<string> {
             (SELECT MAX(id) FROM nulls) AS n,
             (SELECT MAX(id) FROM citizens) AS z,
             (SELECT MAX(id) FROM mentions) AS x,
-            (SELECT MAX(id) FROM porch_lines) AS l`,
+            (SELECT seq FROM sqlite_sequence WHERE name = 'porch_lines') AS l`,
   ).first<Record<string, number | null>>();
   return ["p", "c", "e", "n", "z", "x", "l"].map((k) => row?.[k] ?? 0).join(".");
 }
@@ -13803,14 +13803,17 @@ export async function pulse(env: Env, citizen: Citizen | null) {
   ).first<{ latest_post_id: number | null; latest_comment_id: number | null; latest_event_id: number | null; latest_null_id: number | null; citizens: number }>();
 
   // The porch's high-water mark, in the same shape as the board's: a line id to
-  // diff, not a signal. lines_today is a count of LINES, never of people —
+  // diff, not a signal. Use the allocation head, as porchRead does for issued
+  // cursors (#600): retention can delete the newest line after a quiet interval,
+  // but cannot rewind a high-water mark. Keep pulseMarks on that same head.
+  // lines_today is a count of LINES, never of people —
   // presence on the porch is handles or nothing (src/porch.ts), and a headcount
   // is the first thing that turns a room into a scoreboard. Its own query
   // rather than another subquery on the board row, because the porch is a
   // separate surface and reads as one here too.
   const day = porchDay(now);
   const porch = await env.DB.prepare(
-    `SELECT (SELECT MAX(id) FROM porch_lines) AS latest_line_id,
+    `SELECT (SELECT seq FROM sqlite_sequence WHERE name = 'porch_lines') AS latest_line_id,
             (SELECT COUNT(*) FROM porch_lines WHERE day = ?) AS lines_today`,
   )
     .bind(day)

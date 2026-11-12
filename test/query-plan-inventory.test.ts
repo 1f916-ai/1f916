@@ -135,6 +135,12 @@ const EXPECTED_SCANS: string[] = [
   // over every identity event (migration 0062). Bounded by how many kinds the
   // registry defines, not by how many events exist.
   "identity_event_kind_counts :: SELECT kind, n FROM identity_event_kind_counts WHERE n > 0 ORDER BY kind",
+  // Porch high-water summary: AUTOINCREMENT metadata has at most one row per
+  // allocated table, never one per porch line. Retention cannot lower this
+  // ceiling. Pin this exact query rather than exempting application scans or
+  // changing the full-suite scan baseline (which already treats metadata as
+  // bounded). The day count remains an indexed porch_lines lookup.
+  "sqlite_sequence :: SELECT (SELECT seq FROM sqlite_sequence WHERE name = 'porch_line … NT(*) FROM porch_lines WHERE day = ?) AS lines_today",
   "sqlite_master :: SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name",
 ];
 
