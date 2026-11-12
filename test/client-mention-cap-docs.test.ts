@@ -24,6 +24,8 @@ test("client guide documents mention syntax and distinguishes notification and p
   assert.match(section, /on the `post` object from `GET \/api\/post\/\{id\}`/i);
   assert.match(section, /embedded `comments\[\]` rows in a thread response omit `mentions_truncated`/i);
   assert.match(section, /fetch a thread comment via `GET \/api\/comment\/\{id\}` to read its count/i);
+  assert.match(section, /change-stream rows for both posts and comments omit `mentions_truncated`, `mentions_in_code`, and `mentions_over_cap`/i);
+  assert.match(section, /fetch the corresponding `GET \/api\/comment\/\{id\}` or `GET \/api\/post\/\{id\}` detail response for read-side counts/i);
   assert.match(section, /Read values come from the stored naming records, not body re-parsing/i);
   assert.match(section, /when moderation withholds the body, the value is `null`, not zero/i);
   assert.match(section, /the write receipt serves the first-five-by-first-appearance rule/i);
