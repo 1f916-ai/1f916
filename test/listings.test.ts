@@ -497,6 +497,62 @@ test("proof of funds: the paying wallet signs the listing, two providers vouch f
   assert.doesNotThrow(() => assertPaidFromListingFunder(null, other.address));
 });
 
+test("GET /api/listings/:id serves funds_age_ms: the age of the one-time, hash-committed funds snapshot", async (t) => {
+  // The funds snapshot is read once at posting and committed in payload_hash, so
+  // funds_checked_at never changes. On a long-open listing that bare timestamp can
+  // equal created_at and read as fresh (larry-synctzn #12120, Jaybob #12121,
+  // bellwether c143728). funds_age_ms serves now - funds_checked_at so the
+  // staleness is checkable, with a note on what the age does and does not mean.
+  //
+  // KILLING MUTATION: delete the `funds_age_ms:` line from the getListing return.
+  // The age assertion goes red (undefined !== T_READ - checkedAt).
+  const T_POST = 1_793_000_000_000; // a fixed posting instant, unix ms
+  const T_READ = T_POST + 36 * 3_600_000; // the listing is read 36 hours later
+  let clock = T_POST;
+  t.mock.method(Date, "now", () => clock);
+
+  const ed = generateKeyPairSync("ed25519");
+  const publicKey = (ed.publicKey.export({ format: "jwk" }) as { x: string }).x;
+  const { env } = makeEnv(publicKey);
+  const funderWallet = privateKeyToAccount(generatePrivateKey());
+  const title = "Serve the funds snapshot age";
+  const expiry = Math.floor(T_POST / 1000) + 30 * 86400; // comfortably open past T_READ
+  const preimage = listingPreimage({
+    handle: FUNDER.handle,
+    titleSha256: createHash("sha256").update(title).digest("hex"),
+    amountAtomic: "5000000",
+    verifierPriceAtomic: "1000000",
+    maxVerifiers: 1,
+    chainId: 8453,
+    token: BASE_USDC,
+    expiry,
+  });
+  const signature = await funderWallet.signMessage({ message: preimage });
+  const listing = await createListing(
+    env,
+    FUNDER as never,
+    { title, condition: CONDITION, amount_atomic: "5000000", verifier_price_atomic: "1000000", expiry, funder_address: funderWallet.address, funder_signature: signature },
+    { readBalance: async () => ({ balanceAtomic: "6000000", blockNumber: 101, sources: 3 }) },
+  );
+  assert.equal(listing.funds_checked_at, T_POST, "the snapshot is stamped at posting time");
+
+  clock = T_READ;
+  const detail = await getListing(env, 1) as Record<string, unknown>;
+  assert.equal(detail.funds_checked_at, T_POST, "the hash-committed snapshot timestamp is the same on every read — it never refreshes");
+  assert.equal(detail.funds_age_ms, T_READ - T_POST, "funds_age_ms is now - funds_checked_at");
+  assert.match(String(detail.funds_checked_at_note), /committed in payload_hash and is never re-run/);
+  assert.match(String(detail.funds_checked_at_note), /NOT evidence the balance is still there/);
+
+  // A listing naming no wallet has no snapshot: funds_age_ms is null (absence,
+  // not a zero age) and the note is absent — never invent an age for a check that
+  // never ran.
+  const bare = await createListing(env, FUNDER as never, { title: "No wallet named here", condition: CONDITION, amount_atomic: "1000000", expiry });
+  const bareDetail = await getListing(env, bare.id as number) as Record<string, unknown>;
+  assert.equal(bareDetail.funds_checked_at, null, "no wallet, no snapshot timestamp");
+  assert.equal(bareDetail.funds_age_ms, null, "no snapshot means null age, never 0");
+  assert.equal("funds_checked_at_note" in bareDetail, false, "and no age note on a listing that never had a funds check");
+});
+
 test("withdraw: funder only, public reason, chained; stops submissions and bindings but existing ones stand", async () => {
   const ed = generateKeyPairSync("ed25519");
   const publicKey = (ed.publicKey.export({ format: "jwk" }) as { x: string }).x;

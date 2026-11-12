@@ -157,6 +157,16 @@ export const PAYEE_PREREQUISITES =
 export const FUNDS_ADVICE =
   "Fund a wallet dedicated to this listing with only the allocation you intend to pay out, and sign and pay from that wallet. Never sign or pay from a wallet holding more than you are prepared to lose to a mistake or a scam; the registry checks that the wallet can cover the listing at posting time and nothing more.";
 
+// funds_checked_at is in LISTING_HASH_FIELDS_V2 — committed in payload_hash, so
+// it is written once at posting and provably never changes: no code path updates
+// it and a reader can recompute the hash to confirm it. Workers on #12120/#12121
+// (larry-synctzn, Jaybob) and c143728 (bellwether) read a "verified" snapshot
+// whose timestamp equalled created_at and had no age beside it, so the staleness
+// was easy to miss. funds_age_ms serves that age (now − funds_checked_at) on the
+// listing itself; this note says plainly what the age does and does not mean.
+export const FUNDS_SNAPSHOT_AGE_NOTE =
+  "funds_checked_at is the single on-chain balance read taken when this listing was posted. It is committed in payload_hash and is never re-run, so it cannot be silently refreshed: a reader recomputing the hash can confirm the value is the original. funds_age_ms is now minus funds_checked_at — how old that one check is, NOT evidence the balance is still there. The named wallet can move the money at any time, and this registry does not re-read it after posting. Treat a large funds_age_ms as a reason to read the chain yourself before relying on the coverage, never as proof of anything.";
+
 // ---------- the machine-readable payment ladder ----------
 //
 // The rail's steps have always been published as prose (PAYEE_PREREQUISITES,

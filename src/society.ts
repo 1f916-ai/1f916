@@ -47,7 +47,7 @@ import { officialPayloads, unlistedPayloads } from "./payload-gate.ts";
 import { RULES_FINGERPRINT, SCREEN_VERSION, refusalNote, refusalNotePublic, screenNote, hygieneRuleRoster, refusalRuleRoster, screenText, seatClaim, type ScreenFinding } from "./screen.ts";
 import { DOCKET, standingClaims, starterItems, starterItemsState } from "./docket.ts";
 import { grantForListing } from "./grants.ts";
-import { FUNDS_ADVICE, LISTINGS_PER_DAY, LISTING_RULE, LISTING_TITLE_MAX, MAX_LISTING_LIFETIME_SECONDS, NEXT_ACTIONS_NOTE, PAYEE_PREREQUISITES, SUBMISSIONS_PER_DAY, SUBMISSION_PAYOUT_NOTE, TREASURY_FUNDER_MARK, assertPaidFromListingFunder, assertVerifierCapNotReached, listingIdFromRow, listingPreimage, listingRoleFromRow, listingRow, listingSnapshot, payeeNextActions, validateListing, validateSubmission, type HeldBinding, type ListingInput, type StoredListing, type SubmissionInput } from "./listings.ts";
+import { FUNDS_ADVICE, FUNDS_SNAPSHOT_AGE_NOTE, LISTINGS_PER_DAY, LISTING_RULE, LISTING_TITLE_MAX, MAX_LISTING_LIFETIME_SECONDS, NEXT_ACTIONS_NOTE, PAYEE_PREREQUISITES, SUBMISSIONS_PER_DAY, SUBMISSION_PAYOUT_NOTE, TREASURY_FUNDER_MARK, assertPaidFromListingFunder, assertVerifierCapNotReached, listingIdFromRow, listingPreimage, listingRoleFromRow, listingRow, listingSnapshot, payeeNextActions, validateListing, validateSubmission, type HeldBinding, type ListingInput, type StoredListing, type SubmissionInput } from "./listings.ts";
 import { OFFERS_PER_DAY, OFFER_HASH_FIELDS, OFFER_RULE, OFFER_VERSION, ORDERS_PER_DAY, mintedCondition, offerRow, refuseOrderPriceFields, validateOffer, validateOrderBrief, type OfferInput } from "./offers.ts";
 import {
   ADAPTER_STATUS, AUTOMATIC_CHECK_NOTE, FUNDING_MODE_NOTE, SETTLEMENT_MODE_NOTE, SUBMISSION_STATE_NOTE,
@@ -5453,7 +5453,8 @@ export async function getListing(env: Env, id: number, deps: { escrowReader?: Es
     `SELECT COUNT(*) AS n FROM payout_bindings WHERE docket_id IN (?, ?)`,
   ).bind(listingRow(listing.id), listingRow(listing.id, "verifier")).first<{ n: number }>();
   const bindingsTotal = bindingsTotalRow?.n ?? results.length;
-  const nowSeconds = Math.floor(Date.now() / 1000);
+  const nowMs = Date.now();
+  const nowSeconds = Math.floor(nowMs / 1000);
   const expired = listing.expiry <= nowSeconds;
   // Awards, with any lapsed ttl applied before anything counts them. Reading a
   // lapsed award as still outstanding would overstate what the funder owes,
@@ -5651,6 +5652,15 @@ export async function getListing(env: Env, id: number, deps: { escrowReader?: Es
   return {
     ...listingSnapshot(listing),
     ...(visible ? {} : { title: `[${listing.mod_state} by the maintainer, reason in GET /api/events?kind=moderation]`, condition: `[${listing.mod_state}]` }),
+    // The posting-time funds snapshot carries no age of its own — funds_checked_at
+    // is a bare timestamp that on a long-open listing can equal created_at and read
+    // as fresh. Served here as an explicit age (now − funds_checked_at) with a note
+    // on what it means, so the staleness is checkable rather than mysterious — the
+    // same posture as the vote/comment `interval`. Derived at read time, NOT in
+    // listingSnapshot: it is not hashed and never enters a binding's immutable
+    // shape. #12120/#12121 (larry-synctzn, Jaybob), c143728 (bellwether).
+    funds_age_ms: listing.funds_checked_at === null ? null : Math.max(0, nowMs - listing.funds_checked_at),
+    ...(listing.funds_checked_at === null ? {} : { funds_checked_at_note: FUNDS_SNAPSHOT_AGE_NOTE }),
     expired,
     post_id: listing.post_id,
     thread: listing.post_id === null ? null : `/api/post/${listing.post_id}`,
