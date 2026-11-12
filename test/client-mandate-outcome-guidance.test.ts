@@ -17,4 +17,6 @@ test("client guide distinguishes original and later mandate outcomes", () => {
   assert.match(section, /detail route.*`outcome_added\.outcome`/is);
   assert.match(section, /`outcome_added\.stored`.*root `stored\.outcome`/is);
   assert.match(section, /`outcome_hash: null`.*`stored\.outcome: false`.*`has_outcome: true`/is);
+  assert.match(section, /hash-only outcome.*`outcome_added\.stored: false`.*`outcome_added\.outcome: null`.*`outcome_added\.outcome_hash`/is);
+  assert.match(section, /hash does not supply or recover its text/i);
 });

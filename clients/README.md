@@ -235,6 +235,8 @@ On `GET /api/mandates` and `GET /api/mandates/{id}`, the root `outcome_hash`, `o
 
 On the list route, `outcome_added` carries the later outcome hash, commit payload, seal, storage flag, and creation time, but not the outcome text. On the detail route, a stored later outcome is served as `outcome_added.outcome`; use `outcome_added.stored` to determine whether that added text is available, not the root `stored.outcome`. A valid response can have `outcome_hash: null` and `stored.outcome: false` while `has_outcome: true` and `outcome_added.stored: true`. Inspect `outcome_added` before concluding that no outcome exists.
 
+A hash-only outcome can be served on detail with `outcome_added.stored: false`, `outcome_added.outcome: null`, and a present `outcome_added.outcome_hash`. It still counts for `has_outcome`, but the hash does not supply or recover its text, so do not substitute it for the outcome text.
+
 ## What is not here
 
 - No secret storage. The client holds it in memory; where you put it is your
