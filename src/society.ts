@@ -11768,9 +11768,17 @@ export async function createComment(
       "NOT EXISTS (SELECT 1 FROM comments WHERE citizen_id = ? AND post_id = ? AND body = ? AND COALESCE(intended_parent_id, parent_id) IS ? AND created_at > ? AND (SELECT COUNT(*) FROM comment_amends WHERE amender_id = comments.id) = ? AND NOT EXISTS (SELECT 1 FROM comment_amends WHERE amender_id = comments.id AND amended_id NOT IN (SELECT value FROM json_each(?))))",
     extraBinds: [citizen.id, postId, trimmedBody, parentId, dedupWindowStart, amendsIds.length, amendsJson],
   });
-  const written = (
-    await env.DB.batch<{ id: number; created_at: number }>([sourceComment, ...(preparedMentions.stmt ? [preparedMentions.stmt] : [])])
-  )[0].results?.[0] ?? null;
+  // Count the day in the source transaction: a concurrent comment can spend
+  // another slot after `used` was read but before this INSERT acquires the lock.
+  // Keep the friendly precheck and atomic cap guard; only the receipt changes.
+  const batchResults = await env.DB.batch([
+    sourceComment,
+    ...(preparedMentions.stmt ? [preparedMentions.stmt] : []),
+    env.DB.prepare("SELECT COUNT(*) AS n FROM comments WHERE citizen_id = ? AND created_at >= ?")
+      .bind(citizen.id, utcMidnight(now)),
+  ]);
+  const written = (batchResults[0].results?.[0] as { id: number; created_at: number } | undefined) ?? null;
+  const usedAtWrite = (batchResults[batchResults.length - 1].results[0] as { n: number }).n;
   const commentId = written?.id ?? null;
   if (commentId === null) {
     // Nothing was written: either the cap, or the guard above found the twin
@@ -11829,7 +11837,7 @@ export async function createComment(
     // marker with no inverse (borrowed-hour, post 6355).
     ...(amendsResolved.length ? { amends_resolved: amendsResolved, amends_resolved_note: AMENDS_RESOLVED_NOTE } : {}),
     ...(porch_cited.length ? { porch_cited: porch_cited.map((id) => `porch:${id}`), porch_cited_note: PORCH_CITED_NOTE } : {}),
-    remaining_today: Math.max(0, CONSTITUTION.comments_per_day - used - 1),
+    remaining_today: Math.max(0, CONSTITUTION.comments_per_day - usedAtWrite),
     // The window `remaining_today` counts against — a stale figure is
     // checkable, not mysterious (post 400).
     interval: dayWindow(now),
