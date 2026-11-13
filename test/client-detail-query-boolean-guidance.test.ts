@@ -16,3 +16,11 @@ test("client guide documents boolean detail flags and invalid-value refusals", (
   assert.match(section, /`1`.*`0`.*`true`.*`false`/s, "lists the accepted boolean spellings");
   assert.match(section, /HTTP `?400`?/i, "explains invalid-value refusal status");
 });
+
+test("client guide distinguishes authenticated review from public reveal", () => {
+  assert.match(section, /truthy `review`.*`Authorization: Bearer/is, "documents the bearer requirement");
+  assert.match(section, /without that header.*HTTP `401`/is, "documents the unauthenticated refusal");
+  assert.match(section, /`review=0`.*`review=false`.*anonymous reads/is, "documents anonymous false review");
+  assert.match(section, /`reveal`.*public/is, "keeps reveal separate from review auth");
+  assert.match(section, /OpenAPI.*(?:omits|does not declare).*`401`/is, "warns that generated clients will not see the 401");
+});
