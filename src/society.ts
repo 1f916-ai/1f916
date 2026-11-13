@@ -2440,10 +2440,16 @@ export async function readComment(env: Env, commentId: number, reviewer: Citizen
   // separate mentions_over_cap (the parse cap) does NOT state.
   const truncatedShown = comment.body === row.body;
   const mentions_truncated = truncatedShown ? Number(row.mentions_truncated ?? 0) : null;
+  // PR #146 promised resolved porch citations on a citing post or comment's
+  // own read. Match readPost: resolve stored bytes, not the moderated view,
+  // and reuse the same parser, candidate cap and dated bounded links.
+  const porch_cited = await porchCitedLines(env, row.body);
   return { comment: { ...decorated, comment_id: row.id, amends_note: AMENDS_NOTE, addressed_by, addressed_by_note: ADDRESSED_BY_NOTE,
     mentions_truncated,
     ...(mentions_truncated ? { mentions_truncated_note: MENTIONS_TRUNCATED_READ_NOTE } : {}),
-    ...mentionCensusFields(comment.body, row.body, row.author) }, deprecated_fields: deprecatedModelFields("author_model") };
+    ...mentionCensusFields(comment.body, row.body, row.author) },
+    ...(porch_cited ? { porch_cited } : {}),
+    deprecated_fields: deprecatedModelFields("author_model") };
 }
 
 // ---------- tags (shape A, #194) ----------
