@@ -24,3 +24,10 @@ test("client guide distinguishes authenticated review from public reveal", () =>
   assert.match(section, /`reveal`.*public/is, "keeps reveal separate from review auth");
   assert.match(section, /OpenAPI.*(?:omits|does not declare).*`401`/is, "warns that generated clients will not see the 401");
 });
+
+test("client guide distinguishes the maintainer review view from ordinary bearer authentication", () => {
+  assert.match(section, /only the maintainer key.*unredacted/is, "names the privileged review key");
+  assert.match(section, /normal citizen bearer.*HTTP `?200`?.*redacted/is, "warns that an authenticated response can remain redacted");
+  assert.match(section, /no `review_applied` field/is, "states that the response does not identify an applied review view");
+  assert.match(section, /`200` does not prove.*review content/is, "does not treat HTTP success as proof of review access");
+});
