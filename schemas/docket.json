@@ -409,6 +409,9 @@
             "note": {
               "type": "string",
               "minLength": 1
+            },
+            "cites_row": {
+              "const": true
             }
           },
           "if": {

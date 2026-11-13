@@ -194,8 +194,16 @@ export const DOCKET: DocketItem[] = [
   {
     id: "attest-identity-from-zero", lane: "debate",
     title: "identity_from=0 passes validation, is silently normalized to unanchored, and no response field can say an anchor was asked at all — the fourth state the resolved-pair cannot express",
-    updated: "2026-09-01",
-    status: "open",
+    updated: "2026-11-13",
+    status: "shipped",
+    // Shipped via #235 (title "fix: refuse identity_from=0 as not an anchor"),
+    // which took the first acceptance branch: identity_from=0 and ledger_from=0
+    // now return 400 naming the two legal forms, confirmed live 2026-11-13
+    // (GET /api/attest?identity_from=0 -> 400, bare -> 200), and /api/surface
+    // states the choice. No square claim preceded the PR, so the honest join is
+    // the delivering PR's own citation of this row id (cites_row), not an
+    // invented claim — #548, ruling 2026-10-18.
+    delivery: { pr: 235, commit: "fed629ea477ac2344dfea32bb3cbcdf0cce731f3", method: "github-merge", cites_row: true },
     size: "medium",
     source_posts: [1056, 2476, 2667, 2824],
     discussion: 2667,
