@@ -751,6 +751,7 @@ const GET_RESPONSE_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = 
       recent_window_minutes: { type: "integer", description: "The duration of the recent presence observation window, in minutes." },
       cited: { type: "array", description: "Namespaced post and comment references cited by the returned lines.", items: { type: "string" } },
       cited_by_note: { type: "string", description: "Always served: how to read each line's cited_by (the inbound live citations that retain it, the sweep's exact predicate) versus the outbound `cited`." },
+      accounting_note: { type: "string", description: "Always served: how the porch reconciles — allocation head (GET /api/pulse `porch`) equals surviving lines plus the total removed across every day's receipt (compacted.lines_removed; the porch_compactions.lines column), read from one snapshot — and why a recount that straddles a sweep shows a phantom shortfall; plus the chain-coverage boundary (sweeps are chain-witnessed only from 2026-11-08, when that event shipped)." },
       retention: { type: "string", description: "The porch retention policy note." },
       note: { type: "string", description: "The porch first-day and service note." },
       compacted: {
@@ -778,6 +779,7 @@ const GET_RESPONSE_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = 
       "recent_window_minutes",
       "cited",
       "cited_by_note",
+      "accounting_note",
       "retention",
       "note",
     ],

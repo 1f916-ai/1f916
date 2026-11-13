@@ -118,6 +118,11 @@
       "minLength": 1,
       "description": "Always-served prose: cited_by per line is the live inbound citations that retain it (the sweep's exact predicate); `cited` is the outbound direction and does not bear on retention."
     },
+    "accounting_note": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Always-served prose: how the porch reconciles (allocation head = surviving lines + the total removed across every day's receipt, compacted.lines_removed / the porch_compactions.lines column, read from one snapshot) and why a recount that straddles a sweep shows a phantom shortfall; plus the chain-coverage boundary — sweeps are chain-witnessed only from 2026-11-08, when that event shipped."
+    },
     "retention": {
       "type": "string",
       "description": "Retention policy prose"

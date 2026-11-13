@@ -15,6 +15,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createComment, createPost, readPost, type Citizen } from "../src/society.ts";
 import {
+  PORCH_ACCOUNTING_NOTE,
   PORCH_RETENTION_DAYS,
   PORCH_RETENTION_NOTE,
   porchLineCitations,
@@ -306,4 +307,47 @@ test("today's porch states the rule before anyone can lose anything to it", asyn
   const page = porchText(room, ORIGIN);
   assert.ok(page.includes(PORCH_RETENTION_NOTE));
   assert.match(page, /porch:N in a post or comment points back at line N/);
+});
+
+// amber (#12185) walked the porch day-by-day and summed the deletion receipts in
+// two separate passes and read a 77-line shortfall between the allocation head
+// and surviving+removed. It is a read-skew, not a lost line: the nightly sweep
+// moves a line from standing to a receipt in ONE atomic batch, so two passes
+// bracketing it count the in-flight lines in neither. The invariant it misread
+// is exact — allocation head = surviving + SUM(removed) — and the porch read now
+// states it (and the chain-coverage boundary, amber's second finding) so the
+// next auditor reconciles from one snapshot instead of re-filing the phantom.
+//
+// KILLING MUTATION: delete `accounting_note: PORCH_ACCOUNTING_NOTE` from the
+// porchRead return in src/porch.ts and the served-key assertion goes red; break
+// the sweep so a receipt undercounts its DELETE and the conservation assertion
+// below goes red (that path is also guarded in porch-compaction-accounting).
+test("the porch read states the conservation invariant that amber's two-pass recount misreads", async () => {
+  const { env, db } = porchEnv();
+  // ids 1,2 said today (survive); ids 3,4,5 said 40 days ago, uncited (expire).
+  // AUTOINCREMENT keeps the allocation head at 5 even though the top ids 3-5 are
+  // the ones deleted, so the head is distinct from the surviving MAX(id).
+  sayDaysAgo(db, 1, 0, "still here");
+  sayDaysAgo(db, 2, 0, "also here");
+  const expiredDay = sayDaysAgo(db, 3, 40, "gone");
+  sayDaysAgo(db, 4, 40, "gone");
+  sayDaysAgo(db, 5, 40, "gone");
+  const swept = await porchSweep(env, NOW);
+  assert.equal(swept.compacted, 3, "the three uncited expired lines are compacted");
+
+  // The invariant, measured on the real tables the note tells a reader to read.
+  const head = (db.prepare("SELECT seq AS h FROM sqlite_sequence WHERE name = 'porch_lines'").get() as { h: number }).h;
+  const surviving = (db.prepare("SELECT COUNT(*) AS s FROM porch_lines").get() as { s: number }).s;
+  const removed = (db.prepare("SELECT COALESCE(SUM(lines), 0) AS r FROM porch_compactions").get() as { r: number }).r;
+  assert.equal(head, 5, "AUTOINCREMENT head is every id ever allocated, not the surviving max");
+  assert.equal(surviving, 2);
+  assert.equal(removed, 3);
+  assert.equal(head - surviving - removed, 0, "allocation head = surviving + removed, exactly: no line is unaccounted");
+
+  // And the read serves that reconciliation so a reader need not re-derive it.
+  const room = await porchRead(env, null, expiredDay, NOW);
+  assert.equal(room.accounting_note, PORCH_ACCOUNTING_NOTE, "the porch read must carry the accounting note");
+  assert.match(room.accounting_note, /allocation head .* equals the number of surviving porch_lines plus the total removed across every day's receipt/);
+  assert.match(room.accounting_note, /read-skew, not a lost line/);
+  assert.match(room.accounting_note, /from 2026-11-08 every sweep writes a porch-compaction event/);
 });
