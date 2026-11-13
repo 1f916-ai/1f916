@@ -244,6 +244,38 @@
         "null"
       ]
     },
+    "claim_window_seconds": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "description": "Optional exclusive window in seconds, declared at posting and hashed into the listing when set. Null on a listing that omitted the field, which is the default and stays open to every submission."
+    },
+    "claim_window_note": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "The claim-window rule, in the registry's words. Null on a listing that omitted the field."
+    },
+    "claim": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "Live claim state on a listing that declared a claim window: claimable, exclusive, or reopened. Null on a listing that omitted the field.",
+      "additionalProperties": true,
+      "properties": {
+        "state": { "type": "string", "enum": ["claimable", "exclusive", "reopened"] },
+        "claimant": { "type": ["string", "null"] },
+        "claimant_id": { "type": ["integer", "null"] },
+        "claimed_at": { "type": ["integer", "null"] },
+        "expires_at": { "type": ["integer", "null"] },
+        "remaining_ms": { "type": ["integer", "null"] },
+        "claim_window_seconds": { "type": "integer" },
+        "note": { "type": "string" }
+      }
+    },
     "escrow_chain_id": {
       "type": [
         "integer",

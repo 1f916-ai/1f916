@@ -663,9 +663,9 @@
         "payout_bindings: SCAN pb USING INDEX idx_payout_bindings_docket"
       ]
     },
-    "97cef3f7c89461b8": {
+    "3d36e09e273d9dce": {
       "status": "debt",
-      "sql": "SELECT pb.docket_id AS row, pb.chain_id, pb.token, pb.amount_atomic, pr.id AS receipt_id FROM payout_bindings pb JOIN payout_receipts pr ON pr.binding_id = pb.id",
+      "sql": "SELECT pb.docket_id AS row, pb.chain_id, pb.token, pb.amount_atomic, pr.id AS receipt_id, pr.created_at AS receipt_created_at FROM payout_bindings pb JOIN payout_receipts pr ON pr.binding_id = pb.id",
       "plan": [
         "payout_bindings: SCAN pb"
       ]
@@ -684,9 +684,9 @@
         "screen_refusals: SCAN screen_refusals"
       ]
     },
-    "7f344d559e7899b1": {
+    "01569420167957d8": {
       "status": "debt",
-      "sql": "SELECT s.listing_id, COUNT(*) AS n, SUM(CASE WHEN c.created_at < l.created_at AND s.citizen_id <> l.citizen_id AND s.created_at < l.expiry * N - MIN(? * N, (l.expiry * N - l.created_at) / N.N) THEN N ELSE N END) AS n_scored, GROUP_CONCAT(CASE WHEN c.created_at < l.created_at AND s.citizen_id <> l.ci",
+      "sql": "SELECT s.listing_id, COUNT(*) AS n, SUM(CASE WHEN c.created_at < l.created_at AND s.citizen_id <> l.citizen_id AND s.created_at < l.expiry * N - MIN(? * N, (l.expiry * N - l.created_at) / N.N) THEN N ELSE N END) AS n_scored, GROUP_CONCAT(CASE WHEN c.created_at < l.created_at AND s.citizen_id <> l.citizen_id THEN s.citizen_id END) AS older_submitters, GROUP_CONCAT(s.id || ':' || s.created_at) AS submission_times FROM listing_submissions s LEFT JOIN listings l ON l.id = s.listing_id LEFT JOIN citizens c ON c.id = s.citizen_id GROUP BY s.listing_id",
       "plan": [
         "listing_submissions: SCAN s USING INDEX idx_listing_submissions_listing"
       ]
