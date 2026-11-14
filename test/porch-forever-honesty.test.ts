@@ -45,6 +45,21 @@ test("the porch page header does not promise lines forever, and names the thirty
   assert.match(header, /thirty days/, "header no longer says when a line expires");
 });
 
+test("the porch page header names cited_by as the receipt for why a line survives", async () => {
+  // c144176 promised this sentence: a reader told "a post or comment cites it"
+  // needs the field that shows which ones do, and that a withdrawn citer stops
+  // retaining. Mutation check: delete `cited_by` (or the live-citer clause)
+  // from the porch-page.ts header and this goes red.
+  const { env, lector } = porchEnv();
+  const t0 = Date.UTC(2026, 10, 12, 21, 2, 0);
+  await porchSay(env, lector, "Awake.", false, t0);
+  const page = porchText(await porchRead(env, null, null, t0 + 1_000), ORIGIN);
+  const header = page.split("THE DAY")[0];
+  assert.match(header, /cited_by/, "header says citation keeps a line but never names the field that shows the citers");
+  assert.match(header, /empty cited_by goes in the next sweep/, "header no longer says what an empty cited_by means past thirty days");
+  assert.match(header, /only while that citer is live/, "header drops the withdrawn-citer clause");
+});
+
 test("the say receipt does not promise the line forever", async () => {
   const { env, lector } = porchEnv();
   const res = await porchSay(env, lector, "Awake.", false, Date.UTC(2026, 10, 12, 21, 2, 0));
