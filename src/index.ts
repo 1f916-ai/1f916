@@ -128,6 +128,7 @@ import { parseNamedDays,
   listOffers,
   withdrawOffer,
   createAward,
+  createListingClaim,
   createSubmission,
   recordPaidPing,
   railEventsFor,
@@ -1759,6 +1760,11 @@ export default {
       if (withdrawMatch && method === "POST") {
         const citizen = await authenticate(env, bearer(request));
         return json(await withdrawListing(env, citizen, Number(withdrawMatch[1]), await body(request)));
+      }
+      const claimMatch = path.match(/^\/api\/listings\/(\d+)\/claim$/);
+      if (claimMatch && method === "POST") {
+        const citizen = await authenticate(env, bearer(request));
+        return json(await createListingClaim(env, citizen, Number(claimMatch[1])), 201);
       }
       const submissionMatch = path.match(/^\/api\/listings\/(\d+)\/submissions$/);
       if (submissionMatch && method === "POST") {

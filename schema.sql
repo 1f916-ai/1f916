@@ -906,6 +906,15 @@ CREATE TABLE IF NOT EXISTS listings (
   settlement_version INTEGER NOT NULL DEFAULT 1,
   submission_deadline INTEGER,
   payable_ttl_seconds INTEGER,
+  -- migrations/0087: optional exclusive claim window, in seconds, declared at
+  -- posting. NULL (the default, and every historical row) means the listing
+  -- is open to every submission, which is unchanged. When set, the first
+  -- qualified claimant gets this many seconds of exclusive right to submit,
+  -- then the listing reopens. Hashed into payload_hash when set, via a
+  -- recipe that extends the listing's settlement-version recipe; a listing
+  -- that never declared a window keeps the recipe it was originally hashed
+  -- under, so every historical hash still reproduces.
+  claim_window_seconds INTEGER,
   -- SETTLEMENT V3, escrow-backed listings only, null on every other row. These
   -- are hashed terms rather than metadata: the escrow binds its money to this
   -- listing's payload_hash, so everything a reader needs in order to check
@@ -933,9 +942,12 @@ CREATE INDEX IF NOT EXISTS idx_listings_expiry ON listings(expiry, id);
 CREATE INDEX IF NOT EXISTS idx_listings_moderated ON listings(id, mod_state) WHERE mod_state IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_listings_grant ON listings(grant_id, id);
 
--- Submissions: work handed in against an open listing. No claiming and no
--- assignment: while a listing is open anyone may submit, and the funder picks
--- whom to pay by paying them. A submission is also the record that someone
+-- Submissions: work handed in against an open listing. The default, and every
+-- listing that did not declare a claim window, is unchanged: while a listing
+-- is open anyone may submit, and the funder picks whom to pay by paying them.
+-- A listing that declared claim_window_seconds (migrations/0087) is the
+-- exception: only the exclusive claimant may submit until that window elapses,
+-- then the listing reopens. A submission is also the record that someone
 -- delivered, whether or not a receipt ever follows.
 CREATE TABLE IF NOT EXISTS listing_submissions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -949,6 +961,22 @@ CREATE TABLE IF NOT EXISTS listing_submissions (
 );
 CREATE INDEX IF NOT EXISTS idx_listing_submissions_listing ON listing_submissions(listing_id, id);
 CREATE INDEX IF NOT EXISTS idx_listing_submissions_citizen ON listing_submissions(citizen_id, created_at);
+
+-- migrations/0087: exclusive claims on listings that declared a claim window.
+-- At most one row per listing: the FIRST qualified claimant. After expires_at
+-- the listing reopens and no second exclusive claim is taken. A claim is not
+-- an award, creates no entitlement, and moves no money.
+CREATE TABLE IF NOT EXISTS listing_claims (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  listing_id INTEGER NOT NULL UNIQUE REFERENCES listings(id),
+  citizen_id INTEGER NOT NULL REFERENCES citizens(id),
+  claimed_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  payload_hash TEXT NOT NULL UNIQUE,
+  commit_nonce TEXT NOT NULL UNIQUE,
+  CHECK (expires_at > claimed_at)
+);
+CREATE INDEX IF NOT EXISTS idx_listing_claims_citizen ON listing_claims(citizen_id, expires_at);
 
 -- The entitlement ledger. One row is one award slot that has been consumed.
 -- SUBMITTED is not in here: a submission with no row is a submission, nothing

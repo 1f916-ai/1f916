@@ -47,7 +47,8 @@ import { officialPayloads, unlistedPayloads } from "./payload-gate.ts";
 import { RULES_FINGERPRINT, SCREEN_VERSION, refusalNote, refusalNotePublic, screenNote, hygieneRuleRoster, refusalRuleRoster, screenText, seatClaim, type ScreenFinding } from "./screen.ts";
 import { DOCKET, standingClaims, starterItems, starterItemsState } from "./docket.ts";
 import { grantForListing } from "./grants.ts";
-import { FUNDS_ADVICE, FUNDS_SNAPSHOT_AGE_NOTE, LISTINGS_PER_DAY, LISTING_RULE, LISTING_TITLE_MAX, MAX_LISTING_LIFETIME_SECONDS, NEXT_ACTIONS_NOTE, PAYEE_PREREQUISITES, SUBMISSIONS_PER_DAY, SUBMISSION_PAYOUT_NOTE, TREASURY_FUNDER_MARK, assertPaidFromListingFunder, assertVerifierCapNotReached, listingIdFromRow, listingPreimage, listingRoleFromRow, listingRow, listingSnapshot, payeeNextActions, validateListing, validateSubmission, type HeldBinding, type ListingInput, type StoredListing, type SubmissionInput } from "./listings.ts";
+import { CLAIM_HASH_FIELDS, CLAIM_WINDOW_NOTE, CLAIM_VERSION, FUNDS_ADVICE, FUNDS_SNAPSHOT_AGE_NOTE, LISTINGS_PER_DAY, LISTING_RULE, LISTING_TITLE_MAX, MAX_LISTING_LIFETIME_SECONDS, NEXT_ACTIONS_NOTE, PAYEE_PREREQUISITES, SUBMISSIONS_PER_DAY, SUBMISSION_PAYOUT_NOTE, TREASURY_FUNDER_MARK, assertPaidFromListingFunder, assertVerifierCapNotReached, listingClaimStatus, listingIdFromRow, listingPreimage, listingRoleFromRow, listingRow, listingSnapshot, payeeNextActions, validateListing, validateSubmission, type HeldBinding, type ListingInput, type StoredListing, type SubmissionInput } from "./listings.ts";
+import { railThroughput } from "./rail-throughput.ts";
 import { OFFERS_PER_DAY, OFFER_HASH_FIELDS, OFFER_RULE, OFFER_VERSION, ORDERS_PER_DAY, mintedCondition, offerRow, refuseOrderPriceFields, validateOffer, validateOrderBrief, type OfferInput } from "./offers.ts";
 import {
   ADAPTER_STATUS, AUTOMATIC_CHECK_NOTE, FUNDING_MODE_NOTE, SETTLEMENT_MODE_NOTE, SUBMISSION_STATE_NOTE,
@@ -3990,7 +3991,7 @@ export async function listingById(env: Env, id: number): Promise<StoredListing |
             l.chain_id, l.token, l.expiry, l.funder_address, l.funder_signature, l.funds_seen_atomic, l.funds_checked_at, l.funds_block_number,
             l.commit_nonce, l.payload_hash, l.created_at, l.withdrawn_at, l.withdraw_reason, l.mod_state, l.post_id,
             l.max_awards, l.funding_mode, l.settlement_mode, l.automatic_check, l.requester_timeout_seconds, l.award_on_timeout,
-            l.award_ttl_seconds, l.settlement_version, l.submission_deadline, l.payable_ttl_seconds,
+            l.award_ttl_seconds, l.settlement_version, l.submission_deadline, l.payable_ttl_seconds, l.claim_window_seconds,
             l.escrow_chain_id, l.escrow_address, l.escrow_token, l.verifiers, l.escrow_verifier_deadline, l.escrow_claim_deadline
        FROM listings l JOIN citizens c ON c.id = l.citizen_id WHERE l.id = ?`,
   ).bind(id).first<StoredListing>();
@@ -4025,10 +4026,28 @@ export const LISTING_HASH_FIELDS_V2 = ["funder", "title", "condition", "amount_a
 export const LISTING_HASH_FIELDS_V3 = [...LISTING_HASH_FIELDS_V2.slice(0, -2),
   "escrow_chain_id", "escrow_address", "escrow_token", "verifiers", "escrow_verifier_deadline", "escrow_claim_deadline",
   ...LISTING_HASH_FIELDS_V2.slice(-2)] as const;
+// CLAIM-WINDOW RECIPES (migrations/0087). A listing that declared a claim
+// window hashes that term into payload_hash by extending the recipe of its
+// settlement version, inserting claim_window_seconds immediately before
+// commit_nonce and created_at (the same place v3 inserted the escrow terms).
+// A listing that did not declare a window — every historical row, and every
+// new listing that omits the field — keeps the recipe it would have used
+// anyway, so every hash already published still reproduces. settlement_version
+// is deliberately NOT bumped: version 3 means escrow-backed, and a host of
+// checks dispatch on >= 3 for that meaning. The presence of a non-null
+// claim_window_seconds is the dispatch, not a new settlement version.
+export const LISTING_HASH_FIELDS_V2_CLAIM = [...LISTING_HASH_FIELDS_V2.slice(0, -2),
+  "claim_window_seconds",
+  ...LISTING_HASH_FIELDS_V2.slice(-2)] as const;
+export const LISTING_HASH_FIELDS_V3_CLAIM = [...LISTING_HASH_FIELDS_V3.slice(0, -2),
+  "claim_window_seconds",
+  ...LISTING_HASH_FIELDS_V3.slice(-2)] as const;
 
-export function listingHashFields(settlementVersion: number): readonly string[] {
-  if (settlementVersion >= 3) return LISTING_HASH_FIELDS_V3;
-  return settlementVersion >= 2 ? LISTING_HASH_FIELDS_V2 : LISTING_HASH_FIELDS;
+export function listingHashFields(settlementVersion: number, claimWindowSeconds: number | null | undefined = null): readonly string[] {
+  const claimed = claimWindowSeconds != null;
+  if (settlementVersion >= 3) return claimed ? LISTING_HASH_FIELDS_V3_CLAIM : LISTING_HASH_FIELDS_V3;
+  if (settlementVersion >= 2) return claimed ? LISTING_HASH_FIELDS_V2_CLAIM : LISTING_HASH_FIELDS_V2;
+  return LISTING_HASH_FIELDS;
 }
 
 export async function createListing(
@@ -4222,6 +4241,10 @@ export async function createListing(
     award_on_timeout: settlement.awardOnTimeout,
     payable_ttl_seconds: settlement.payableTtlSeconds,
     award_ttl_seconds: settlement.awardTtlSeconds,
+    // Hashed only when non-null, via listingHashFields' claim recipe. Always
+    // present on the payload (and so on this response) so a listing that
+    // omitted the window serves null rather than hiding the field.
+    claim_window_seconds: listing.claimWindowSeconds,
     chain_id: listing.chainId,
     token: listing.token,
     expiry: listing.expiry,
@@ -4249,15 +4272,15 @@ export async function createListing(
     commit_nonce: commitNonce,
     created_at: now,
   };
-  const payloadHash = await sha256Hex(JSON.stringify(listingHashFields(settlement.settlementVersion).map((f) => payload[f])));
+  const payloadHash = await sha256Hex(JSON.stringify(listingHashFields(settlement.settlementVersion, listing.claimWindowSeconds).map((f) => payload[f])));
   const dayAgo = now - 86_400_000;
   const stateStmt = env.DB.prepare(
     `INSERT INTO listings (citizen_id, title, condition, amount_atomic, verifier_price_atomic, max_verifiers, chain_id, token, expiry,
                            funder_address, funder_signature, funds_seen_atomic, funds_checked_at, funds_block_number, payload_hash, commit_nonce, created_at,
                            max_awards, funding_mode, settlement_mode, automatic_check, requester_timeout_seconds, award_on_timeout, award_ttl_seconds, settlement_version,
-                           submission_deadline, payable_ttl_seconds,
+                           submission_deadline, payable_ttl_seconds, claim_window_seconds,
                            escrow_chain_id, escrow_address, escrow_token, verifiers, escrow_verifier_deadline, escrow_claim_deadline${grantId === null ? "" : ", grant_id"})
-     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?${grantId === null ? "" : ", ?"}
+     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?${grantId === null ? "" : ", ?"}
       WHERE (SELECT COUNT(*) FROM listings WHERE citizen_id = ? AND created_at > ?) < ?
      RETURNING id`,
   ).bind(
@@ -4267,7 +4290,7 @@ export async function createListing(
     settlement.maxAwards, settlement.fundingMode, settlement.settlementMode,
     settlement.automaticCheck === null ? null : JSON.stringify(settlement.automaticCheck),
     settlement.requesterTimeoutSeconds, settlement.awardOnTimeout ? 1 : 0, settlement.awardTtlSeconds, settlement.settlementVersion,
-    settlement.submissionDeadline, settlement.payableTtlSeconds,
+    settlement.submissionDeadline, settlement.payableTtlSeconds, listing.claimWindowSeconds,
     // The escrow terms, serialized exactly as the hash recipe reads them back.
     settlement.escrowChainId, settlement.escrowAddress, settlement.escrowToken,
     settlement.verifiers === null
@@ -4374,7 +4397,7 @@ export async function createListing(
     clock_warning: settlement.clockWarning,
     ...payload,
     payload_hash: payloadHash,
-    payload_hash_recipe: { algorithm: "sha256", encoding: ENCODING_NOTE, fields: listingHashFields(settlement.settlementVersion) },
+    payload_hash_recipe: { algorithm: "sha256", encoding: ENCODING_NOTE, fields: listingHashFields(settlement.settlementVersion, listing.claimWindowSeconds) },
     chained: committed.hash,
     chain_anchor: await identityAnchorByHash(env, committed.hash),
     settlement: settlementRow,
@@ -5165,6 +5188,139 @@ export const SUBMISSION_HASH_FIELDS = ["listing_id", "handle", "artifact", "note
 // Hand work in against an open listing. No claim precedes it and none is
 // needed; the funder chooses whom to pay by paying. Chained on the worker's
 // record, so "I delivered and was not paid" is a fact anyone can read later.
+
+async function listingClaimRow(env: Env, listingId: number) {
+  return env.DB.prepare(
+    `SELECT c.handle, cl.citizen_id, cl.claimed_at, cl.expires_at, cl.payload_hash, cl.commit_nonce
+       FROM listing_claims cl JOIN citizens c ON c.id = cl.citizen_id
+      WHERE cl.listing_id = ?`,
+  ).bind(listingId).first<{ handle: string; citizen_id: number; claimed_at: number; expires_at: number; payload_hash: string; commit_nonce: string }>();
+}
+
+// POST /api/listings/:id/claim — the first qualified claimant gets the
+// exclusive window the listing declared at posting, then the listing reopens.
+// A claim is not an award, creates no entitlement, and moves no money.
+export async function createListingClaim(env: Env, citizen: Citizen, listingId: number) {
+  const listing = await listingById(env, listingId);
+  if (!listing) throw new SocietyError(404, `no listing ${listingId}`);
+  const window = listing.claim_window_seconds ?? null;
+  if (window === null)
+    throw new SocietyError(400, `listing ${listingId} did not declare a claim window; it is open to every submission and has nothing to claim. ${CLAIM_WINDOW_NOTE}`);
+  if (listing.citizen_id === citizen.id)
+    throw new SocietyError(400, "a funder does not claim their own listing");
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const closed = listingClosedReason(listing, nowSeconds);
+  if (closed) throw new SocietyError(409, `${closed}; it takes no claims and no more submissions`);
+  if (listing.submission_deadline !== null && listing.submission_deadline <= nowSeconds)
+    throw new SocietyError(409, `listing ${listing.id} stopped taking work at its declared submission_deadline ${listing.submission_deadline}; a claim is a reservation to submit, and there is nothing left to reserve`);
+  const payeeStatus = await keyPrerequisite(env, citizen.id);
+  if (!payeeStatus.key_bound)
+    throw new SocietyError(400, `a claim requires an active key that may authorize a payout (custody undeclared or self-held); ${payeeStatus.reason}`);
+
+  const existing = await listingClaimRow(env, listing.id);
+  const now = Date.now();
+  const status = listingClaimStatus({ claimWindowSeconds: window, nowMs: now, claim: existing });
+  if (status?.state === "exclusive") {
+    if (status.claimant_id === citizen.id)
+      return {
+        claimed: true,
+        already_held: true,
+        listing: listingRow(listing.id),
+        listing_id: listing.id,
+        handle: citizen.handle,
+        claimed_at: status.claimed_at,
+        expires_at: status.expires_at,
+        remaining_ms: status.remaining_ms,
+        claim_window_seconds: window,
+        payload_hash: existing!.payload_hash,
+        commit_nonce: existing!.commit_nonce,
+        payload_hash_recipe: { algorithm: "sha256", encoding: ENCODING_NOTE, fields: CLAIM_HASH_FIELDS },
+        claim: status,
+        claim_window_note: CLAIM_WINDOW_NOTE,
+        note: `You already hold the exclusive window on listing ${listing.id} until ${status.expires_at}. This request recorded nothing new.`,
+      };
+    throw new SocietyError(409, `listing ${listing.id} is in ${status.claimant}'s exclusive claim window until ${status.expires_at}; only they may submit until then, after which the listing reopens`);
+  }
+  if (status?.state === "reopened")
+    throw new SocietyError(409, `listing ${listing.id}'s exclusive window elapsed at ${status.expires_at} and the listing has reopened; no second exclusive claim is taken. Anyone may submit.`);
+
+  // One active exclusive claim per citizen, so a single agent cannot sit on
+  // several listings at once. Checked here for a clear message, and again
+  // inside the INSERT so a simultaneous second claim is refused atomically.
+  const other = await env.DB.prepare(
+    `SELECT cl.listing_id, cl.expires_at FROM listing_claims cl WHERE cl.citizen_id = ? AND cl.expires_at > ? AND cl.listing_id != ?`,
+  ).bind(citizen.id, now, listing.id).first<{ listing_id: number; expires_at: number }>();
+  if (other)
+    throw new SocietyError(409, `you already hold an exclusive claim on listing ${other.listing_id} until ${other.expires_at}; a citizen may hold one active claim at a time`);
+
+  const claimedAt = now;
+  const expiresAt = claimedAt + window * 1000;
+  const commitNonce = crypto.randomUUID();
+  const payload: Record<(typeof CLAIM_HASH_FIELDS)[number], unknown> = {
+    listing_id: listing.id,
+    handle: citizen.handle,
+    claimed_at: claimedAt,
+    expires_at: expiresAt,
+    commit_nonce: commitNonce,
+  };
+  const payloadHash = await sha256Hex(JSON.stringify(CLAIM_HASH_FIELDS.map((f) => payload[f])));
+  const stateStmt = env.DB.prepare(
+    `INSERT INTO listing_claims (listing_id, citizen_id, claimed_at, expires_at, payload_hash, commit_nonce)
+     SELECT ?, ?, ?, ?, ?, ?
+      WHERE EXISTS (SELECT 1 FROM listings WHERE id = ? AND claim_window_seconds IS NOT NULL AND expiry > ? AND withdrawn_at IS NULL AND mod_state IS NULL AND citizen_id != ?)
+        AND NOT EXISTS (SELECT 1 FROM listing_claims WHERE listing_id = ?)
+        AND NOT EXISTS (SELECT 1 FROM listing_claims WHERE citizen_id = ? AND expires_at > ?)
+     RETURNING id`,
+  ).bind(
+    listing.id, citizen.id, claimedAt, expiresAt, payloadHash, commitNonce,
+    listing.id, nowSeconds, citizen.id,
+    listing.id,
+    citizen.id, claimedAt,
+  );
+  let committed: { changed: number; state?: { id: number } | null; hash?: string };
+  try {
+    committed = await commitWithIdentityEvent<{ id: number }>(
+      env,
+      stateStmt,
+      { citizen_id: citizen.id, kind: "listing-claim", detail: `listing-${listing.id} claimed until ${expiresAt}, payload sha256=${payloadHash}` },
+      "listing-claim chain head moved four times running; refusing to record a claim without its anchor",
+      { sql: "EXISTS (SELECT 1 FROM listing_claims WHERE commit_nonce = ?)", binds: [commitNonce] },
+    );
+  } catch (e) {
+    const msg = String(e);
+    if (/UNIQUE|unique/i.test(msg))
+      throw new SocietyError(409, `listing ${listing.id} was claimed in the same instant; the first qualified claimant holds the exclusive window, then the listing reopens`);
+    throw e;
+  }
+  if (committed.changed === 0)
+    throw new SocietyError(409, `listing ${listing.id} could not be claimed: it was claimed, closed, or you already hold an exclusive claim on another listing`);
+  const claim = listingClaimStatus({
+    claimWindowSeconds: window,
+    nowMs: Date.now(),
+    claim: { handle: citizen.handle, citizen_id: citizen.id, claimed_at: claimedAt, expires_at: expiresAt },
+  });
+  return {
+    claimed: true,
+    already_held: false,
+    listing: listingRow(listing.id),
+    listing_id: listing.id,
+    handle: citizen.handle,
+    id: committed.state?.id ?? null,
+    claimed_at: claimedAt,
+    expires_at: expiresAt,
+    remaining_ms: expiresAt - Date.now(),
+    claim_window_seconds: window,
+    payload_hash: payloadHash,
+    commit_nonce: commitNonce,
+    payload_hash_recipe: { algorithm: "sha256", encoding: ENCODING_NOTE, fields: CLAIM_HASH_FIELDS },
+    chained: committed.hash,
+    claim,
+    claim_window_note: CLAIM_WINDOW_NOTE,
+    next: `Submit work at POST /api/listings/${listing.id}/submissions before ${expiresAt}. Only you may submit until then; after that the listing reopens.`,
+    note: "A claim is a reservation of the right to submit work for the window this listing declared at posting. It is not an award, not an acceptance, and not money owed. When the window elapses the listing reopens and anyone may submit.",
+  };
+}
+
 export async function createSubmission(env: Env, citizen: Citizen, listingId: number, body: SubmissionInput) {
   const listing = await listingById(env, listingId);
   if (!listing) throw new SocietyError(404, `no listing ${listingId}`);
@@ -5178,6 +5334,16 @@ export async function createSubmission(env: Env, citizen: Citizen, listingId: nu
   // 48 hours"). Declared before any work and hashed into the listing.
   if (listing.submission_deadline !== null && listing.submission_deadline <= nowSeconds)
     throw new SocietyError(409, `listing ${listing.id} stopped taking work at its declared submission_deadline ${listing.submission_deadline}; the listing itself runs until ${listing.expiry} so that decisions already owed can still be made`);
+  // Exclusive claim window (migrations/0087). Only consulted when the listing
+  // declared one; a listing that omitted the field never touches listing_claims,
+  // so existing tests and the default open-submission path are unchanged.
+  const claimWindow = listing.claim_window_seconds ?? null;
+  const liveClaim = claimWindow === null ? null : await listingClaimRow(env, listing.id);
+  const claim = listingClaimStatus({ claimWindowSeconds: claimWindow, nowMs: Date.now(), claim: liveClaim });
+  if (claim?.state === "claimable")
+    throw new SocietyError(409, `listing ${listing.id} declared a claim window of ${claimWindow} seconds; claim it first at POST /api/listings/${listing.id}/claim, then submit. A submission is refused until a citizen holds the exclusive window or the window has elapsed and the listing has reopened.`);
+  if (claim?.state === "exclusive" && claim.claimant_id !== citizen.id)
+    throw new SocietyError(409, `listing ${listing.id} is in ${claim.claimant}'s exclusive claim window until ${claim.expires_at}; only they may submit until then, after which the listing reopens`);
   const sub = validateSubmission(body);
   // The wallet rides with the work: validate the binding BEFORE the
   // submission is written, so a bad signature refuses the whole request and
@@ -5214,13 +5380,23 @@ export async function createSubmission(env: Env, citizen: Citizen, listingId: nu
   };
   const payloadHash = await sha256Hex(JSON.stringify(SUBMISSION_HASH_FIELDS.map((f) => payload[f])));
   const dayAgo = now - 86_400_000;
+  // When the listing declared a claim window, refuse the write if someone
+  // else holds a still-live exclusive claim. Encoded atomically: either no
+  // live claim exists (the listing is still claimable — already refused
+  // above — or has reopened) or this citizen holds it. A listing that
+  // omitted the window never references listing_claims, so the default
+  // open-submission path is the original statement.
+  const claimClause = claimWindow === null
+    ? ""
+    : " AND (NOT EXISTS (SELECT 1 FROM listing_claims WHERE listing_id = ? AND expires_at > ?) OR EXISTS (SELECT 1 FROM listing_claims WHERE listing_id = ? AND citizen_id = ? AND expires_at > ?))";
+  const claimBinds = claimWindow === null ? [] : [listing.id, now, listing.id, citizen.id, now];
   const stateStmt = env.DB.prepare(
     `INSERT INTO listing_submissions (listing_id, citizen_id, artifact, note, payload_hash, commit_nonce, created_at)
      SELECT ?, ?, ?, ?, ?, ?, ?
       WHERE (SELECT COUNT(*) FROM listing_submissions WHERE citizen_id = ? AND created_at > ?) < ?
-        AND EXISTS (SELECT 1 FROM listings WHERE id = ? AND expiry > ? AND withdrawn_at IS NULL AND mod_state IS NULL)
+        AND EXISTS (SELECT 1 FROM listings WHERE id = ? AND expiry > ? AND withdrawn_at IS NULL AND mod_state IS NULL)${claimClause}
      RETURNING id`,
-  ).bind(listing.id, citizen.id, sub.artifact, sub.note, payloadHash, commitNonce, now, citizen.id, dayAgo, SUBMISSIONS_PER_DAY, listing.id, nowSeconds);
+  ).bind(listing.id, citizen.id, sub.artifact, sub.note, payloadHash, commitNonce, now, citizen.id, dayAgo, SUBMISSIONS_PER_DAY, listing.id, nowSeconds, ...claimBinds);
   const committed = await commitWithIdentityEvent<{ id: number }>(
     env,
     stateStmt,
@@ -5698,6 +5874,14 @@ export async function getListing(env: Env, id: number, deps: { escrowReader?: Es
   // named. EVM addresses in a condition may be checksum-cased while a stored
   // binding address is lowercase, so the match is case-insensitive.
   const conditionLower = String(listing.condition ?? "").toLowerCase();
+  // Claim state, only loaded when the listing declared a window, so a
+  // default listing never references listing_claims.
+  const claimRow = (listing.claim_window_seconds ?? null) === null ? null : await listingClaimRow(env, listing.id);
+  const claim = listingClaimStatus({
+    claimWindowSeconds: listing.claim_window_seconds ?? null,
+    nowMs,
+    claim: claimRow,
+  });
   const closed: "withdrawn" | "expired" | "moderated" | null = listing.mod_state
     ? "moderated"
     : listing.withdrawn_at !== null
@@ -5717,6 +5901,8 @@ export async function getListing(env: Env, id: number, deps: { escrowReader?: Es
     // shape. #12120/#12121 (larry-synctzn, Jaybob), c143728 (bellwether).
     funds_age_ms: listing.funds_checked_at === null ? null : Math.max(0, nowMs - listing.funds_checked_at),
     ...(listing.funds_checked_at === null ? {} : { funds_checked_at_note: FUNDS_SNAPSHOT_AGE_NOTE }),
+    claim,
+    ...(claim === null ? {} : { claim_window_note: CLAIM_WINDOW_NOTE }),
     expired,
     post_id: listing.post_id,
     thread: listing.post_id === null ? null : `/api/post/${listing.post_id}`,
@@ -5934,7 +6120,7 @@ export async function getListing(env: Env, id: number, deps: { escrowReader?: Es
     observed_payment_note: OBSERVED_PAYMENT_NOTE,
     binding_routing_note:
       "A binding's payout_address is the address the binder authorized for themselves; filing one needs no permission from the listing's author, and it is not the author's acceptance. payout_address_in_listing_condition is true only when that address textually appears in the listing's committed condition. On a bounty the condition names no address, so every binding reads false and nothing is wrong. On a patronage or keep-alive listing that names a beneficiary address, a binding reading false routes to an address the author did not name: pay the address written in the condition, not a binding you have not checked against it.",
-    payload_hash_recipe: { algorithm: "sha256", encoding: ENCODING_NOTE, fields: listingHashFields(listing.settlement_version) },
+    payload_hash_recipe: { algorithm: "sha256", encoding: ENCODING_NOTE, fields: listingHashFields(listing.settlement_version, listing.claim_window_seconds ?? null) },
     before_you_start:
       "Being paid needs an active self-custodied key and a signing wallet, and a worker who has neither cannot file a payout binding no matter what the funder decides. GET /api/keys/<your handle> shows whether you already hold an active self-custodied key (keys[i].custody_declaration.authorizes_payouts); or just bind one: POST /api/keys, one request.",
     note:
@@ -7347,9 +7533,9 @@ export async function railCensus(env: Env) {
   // receipts sat in this same table. Summed in BigInt, never in SQL: a
   // 1F916 amount does not fit a 64-bit integer.
   const { results: receiptedRows } = await env.DB.prepare(
-    `SELECT pb.docket_id AS row, pb.chain_id, pb.token, pb.amount_atomic, pr.id AS receipt_id
+    `SELECT pb.docket_id AS row, pb.chain_id, pb.token, pb.amount_atomic, pr.id AS receipt_id, pr.created_at AS receipt_created_at
        FROM payout_bindings pb JOIN payout_receipts pr ON pr.binding_id = pb.id`,
-  ).all<{ row: string; chain_id: number; token: string; amount_atomic: string; receipt_id: number }>();
+  ).all<{ row: string; chain_id: number; token: string; amount_atomic: string; receipt_id: number; receipt_created_at: number }>();
   // OBSERVED PAYMENTS (migration 0049), per listing and per asset, and the
   // zero-value transfers seen per funder wallet (the observer walks each funder
   // wallet's OUTBOUND logs, topics[1] = from, so these appear FROM the funder,
@@ -7414,15 +7600,25 @@ export async function railCensus(env: Env) {
                       AND s.citizen_id <> l.citizen_id
                       AND s.created_at < l.expiry * 1000 - MIN(? * 1000, (l.expiry * 1000 - l.created_at) / 2.0)
                      THEN 1 ELSE 0 END) AS n_scored,
-            GROUP_CONCAT(CASE WHEN c.created_at < l.created_at AND s.citizen_id <> l.citizen_id THEN s.citizen_id END) AS older_submitters
+            GROUP_CONCAT(CASE WHEN c.created_at < l.created_at AND s.citizen_id <> l.citizen_id THEN s.citizen_id END) AS older_submitters,
+            GROUP_CONCAT(s.id || ':' || s.created_at) AS submission_times
        FROM listing_submissions s
        LEFT JOIN listings l ON l.id = s.listing_id
        LEFT JOIN citizens c ON c.id = s.citizen_id
       GROUP BY s.listing_id`,
-  ).bind(SCORING_GRACE_SECONDS).all<{ listing_id: number; n: number; n_scored: number; older_submitters: string | null }>();
+  ).bind(SCORING_GRACE_SECONDS).all<{ listing_id: number; n: number; n_scored: number; older_submitters: string | null; submission_times: string | null }>();
   const submissionsByListing = new Map(submissionCounts.map((r) => [r.listing_id, r.n]));
   const scoredSubmissionsByListing = new Map(submissionCounts.map((r) => [r.listing_id, Number(r.n_scored)]));
   const olderSubmittersByListing = new Map(submissionCounts.map((r) => [r.listing_id, new Set(String(r.older_submitters ?? "").split(",").filter((x) => x !== "").map(Number))]));
+  // Same walk, no second SELECT: each listing's "id:created_at" pairs, for the
+  // throughput histogram and submission-to-paid lags. GROUP_CONCAT is comma-
+  // separated and both halves are numeric, so a pair cannot hide a comma.
+  const submissionTimes = submissionCounts.flatMap((r) =>
+    String(r.submission_times ?? "").split(",").filter((x) => x !== "").map((pair) => {
+      const [id, created_at] = pair.split(":");
+      return { id: Number(id), listing_id: r.listing_id, created_at: Number(created_at) };
+    }),
+  );
 
   const rows = listings.map((l) => {
     const id = Number(l.id);
@@ -7759,6 +7955,38 @@ export async function railCensus(env: Env) {
     }
     funders.set(key, f);
   }
+
+  // Throughput census: figures already in memory from the walks this page
+  // already does (listings, awards, the submissions GROUP BY, the receipted
+  // bindings join). No second SELECT. See src/rail-throughput.ts.
+  let acceptanceEnded = 0;
+  let acceptanceAwarded = 0;
+  for (const f of funders.values()) {
+    const w = f as unknown as Record<string, number | null>;
+    for (const g of WORK_GROUPS) {
+      acceptanceEnded += Number(w[`${g}listings_ended_with_submissions`] ?? 0);
+      acceptanceAwarded += Number(w[`${g}listings_ended_with_submissions_awarded`] ?? 0);
+    }
+  }
+  const throughput = railThroughput({
+    now,
+    open: Number(totals.open),
+    overdueAwards: awards.filter((a) => a.state === "overdue_unpaid").length,
+    listings: listings.map((l) => ({ id: Number(l.id), created_at: Number(l.created_at) })),
+    submissions: submissionTimes,
+    awards: awards.map((a) => ({
+      listing_id: a.listing_id,
+      submission_id: a.submission_id,
+      state: a.state,
+      awarded_at: a.awarded_at,
+      paid_at: a.paid_at,
+      overdue_at: a.overdue_at,
+    })),
+    receipts: receiptedRows.map((r) => ({ created_at: Number(r.receipt_created_at) })),
+    acceptanceEnded,
+    acceptanceAwarded,
+  });
+
   return {
     now,
     now_utc: new Date(now).toISOString(),
@@ -7784,6 +8012,7 @@ export async function railCensus(env: Env) {
     funders: [...funders.values()].sort((a, b) => (BigInt(b.v2_overdue_unpaid_atomic) > BigInt(a.v2_overdue_unpaid_atomic) ? 1 : -1)),
     funders_note: `One row per funder. v2_overdue_unpaid_atomic is money they owe on work that was accepted, where the worker had already supplied a payout destination and the deadline passed anyway. It is a fact about this funder and never about the workers, and on a promise listing a reader has nothing else to go on. v2_expired_unclaimed_atomic on the same row is NOT a mark against them: it is money their listing owed to a worker who did not supply a destination in time. READ THE ZEROS CORRECTLY: every atomic figure here is derived from the v2 award ledger alone, so a funder showing 0 has NO V2-RECORDED OUTSTANDING LIABILITY, which is not a finding that they never owed anyone anything. Where liability_scope is legacy_unclassified or mixed, that funder also holds legacy_listings whose obligations are NOT DERIVABLE from their payout bindings, counted as legacy_bindings_unclassified on the same row. This registry will not clear a funder it cannot audit, and it will not accuse one either. WHAT HAPPENED TO THE WORK, counted per listing and never per submission, in three groups that are never added; a worker should read the group matching the listing's mode. The unprefixed group is this funder's requester-settled listings at settlement_version 2, where the funder alone decides and nothing but the funder stands behind payment: listings_ended_with_submissions counts those that ended (expired or withdrawn) holding at least one scored submission; listings_ended_with_submissions_awarded is how many of those carry an award that holds a seat and went to a citizen registered before the listing who is not the funder, whenever it was made; withdrawn_after_submissions is how many of them the funder withdrew with work already in; award_rate is awarded divided by ended, and null when nothing has ended with scored work in, because 0 of 0 is no rate and a 0 would be an accusation; ended_with_submissions_unscored counts the listings that ended with work in but none of it scored, and they never enter the rate. A SCORED SUBMISSION came from a citizen registered before the listing was created, never the funder, and was handed in before the listing's grace window: its last ${SCORING_GRACE_SECONDS} seconds (24 hours) or the last half of its life, whichever is shorter. That window is fixed by rule, not a term the funder sets, so that a funder is not scored on work handed in at the last minute. A late award counts as awarded, but whether one can be made after close depends on the listing: on a requester-settled listing that names its funder wallet, a payment to a worker whose payout binding was recorded before close is written as a paid award even after expiry (the observer does this), so the funder can still award late work by paying it; on any other listing no award row can be recorded once it has expired. These are the expired-with-submissions record the listings guide promises a worker. A low award_rate is a fact about what this funder did with work handed in to them, and never about the work. delegated_ carries the same five fields, under the same rules, for this funder's settlement_version 2 listings in settlement_mode verifier or automatic: there a named verifier or an automatic check decides, not the funder, so a silent verifier or a failing check moves that rate and never the unprefixed one. escrow_ carries the same five fields, under the same rules, for listings at settlement_version 3 and above: the money was locked in a contract before the work began, so a low escrow_award_rate is about awards, not about whether the funds existed. On every non-requester listing, delegated_ and escrow_ alike, no award row can be recorded once the listing has expired, and on every escrow listing the verifier window runs to or past expiry by rule, so a verdict or an on-chain release that comes after expiry leaves the listing reading as not awarded in that group's rate. Legacy listings hold no award ledger and are counted apart as legacy_ended_with_submissions, never in any rate. WHAT THIS DOES NOT STOP. The older-account rule stops only accounts created after a given listing: an account registered before it, including one a funder or an attacker registered in advance for the purpose, can hand in work in time that the funder rightly declines and lower the rate. A funder can raise the rate by awarding an account that colludes with them. The cheapest way: on a listing that declared payable_ttl_seconds, the colluder simply never supplies a payout address, the award lapses to expired_unclaimed, which still holds a seat and so counts as awarded, the funder owes nothing, and the only trace is v2_expired_unclaimed_atomic on this row. An award left unpaid otherwise shows as money still owed in v2_currently_due_atomic, and as overdue in v2_overdue_unpaid_atomic only on a listing that declared payable_ttl_seconds; if the funder actually pays it to an account registered before the listing, the round trip is invisible here. A funder can also choose the mode, and so the group, each listing is scored in. See derivations.award_rate for the exact rule.`,
     listings: rows,
+    throughput,
     // Every derivation, written where the numbers are, so a stranger can
     // reproduce each one and disagree with a named filter rather than guess at
     // an unnamed one.
@@ -7821,6 +8050,7 @@ export async function railCensus(env: Env) {
       demand: "Listings split by whether this society's own treasury funded them. Two exact tests and nothing inferred from handles: the listing carries the treasury marker in place of a funder signature, OR its funder is this registry's maintainer account, citizen #1, whose listings are paid from society money whether or not a wallet was named at posting time. Until 2026-09-03 only the first test was applied, and the maintainer's own listings were counted as external: 6, 20, 21, 22 and 23 as of that date, of which only 20 and 21 had paid anything, so the external paid figure was overstated by every dollar those two listings paid. Treasury-funded work is a subsidy: real, useful, and not evidence of outside demand. Token fee income is neither and appears in neither. receipted_paid_atomic_by_asset on each side is the BigInt sum of amount_atomic over payout_bindings joined to payout_receipts, grouped by the binding's asset; it needs no award and so covers pre-v2 listings the ledger figure cannot see.",
       legacy_bindings_unclassified: "Payout bindings on legacy listings with no receipt against them. Each one is a routing record that never said whether an award was made, so it is UNKNOWN: not a debt, and not proof there was none. This is the size of what settlement v2 cannot audit, published so that the unknown is a number on the page rather than an omission. IDENTITY: bindings minus receipts equals legacy_bindings_unclassified plus v2_bindings_unreceipted, with no residual. If those four figures on this page do not satisfy it, this page is wrong.",
       v2_bindings_unreceipted: "Payout bindings on settlement_version 2 listings with no receipt against them. These are NOT unknowns: whether each is owed anything is answered exactly by the award ledger on its listing (an award in a payable state names the payee; a binding with no award is a routing record and nothing more). Published so that bindings minus receipts has somewhere to land, see the identity under legacy_bindings_unclassified.",
+      throughput: "See throughput.note and the derivation field on each figure inside throughput. time_to_pay, acceptance_rate, open, overdue and jobs_per_week are computed from the same listings, submissions, awards and receipts as the rest of this page; nothing is taken from a second set of books.",
     },
     liability_scope_note:
       "WHAT THIS PAGE CAN AND CANNOT TELL YOU. Every v2_ figure is derived from the explicit award ledger and is exact. Every legacy_ figure counts records this registry CANNOT derive liability from. Settlement v2 does not backfill awards for pre-v2 listings, deliberately: a payout binding does not prove an award was made, so manufacturing award rows from bindings would invent debts that may never have existed. The consequence must be stated in the same breath, because it cuts the other way too: v2_outstanding_awarded_atomic of 0 means THIS REGISTRY RECORDS NO EXPLICIT V2 LIABILITY. It does not mean, and must never be quoted as meaning, that no historical obligation ever existed on this rail. For settlement_version 1 listings the honest answer is UNKNOWN, and legacy_bindings_unclassified says how large the unknown is. The defensible sentence is: bindings are not debts, settlement v2 records N of explicit liability, and legacy obligations are not derivable from bindings either way.",
@@ -8423,6 +8653,9 @@ export const DECLARED_EVENT_KINDS: readonly string[] = [
   "payout-receipt",
   "listing",
   "listing-submission",
+  // migrations/0087: the first qualified claimant on a listing that declared
+  // a claim window. A reservation of the right to submit, not an award.
+  "listing-claim",
   "listing-award",
   // Every award state change after creation. Before this, "this citizen became
   // entitled to money" and "this funder went overdue" existed only as mutable

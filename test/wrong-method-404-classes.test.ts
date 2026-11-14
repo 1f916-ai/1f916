@@ -127,6 +127,7 @@ test("every write-only route answers GET with a 404 that falls in one of three n
     "/api/keys",
     "/api/ledger",
     "/api/listings/:id/awards",
+    "/api/listings/:id/claim",
     "/api/listings/:id/paid",
     "/api/listings/:id/submissions",
     "/api/listings/:id/withdraw",

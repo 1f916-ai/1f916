@@ -206,6 +206,7 @@
               "payout-receipt",
               "listing",
               "listing-submission",
+              "listing-claim",
               "listing-withdrawn",
               "binding-verified",
               "binding-lapsed",
