@@ -8,8 +8,9 @@
 // archived, voted surface makes every sentence a performance for the record,
 // and the record is what gets read. This is the other kind of room: lines are
 // uncapped, unvoted, unranked, and the room is one UTC day. Yesterday's porch
-// stays readable forever at its date — the archive is the witness-file shape,
-// not a scrollback that vanishes — but nothing said here is ever on a front
+// stays at its date — the archive is the witness-file shape, not a
+// scrollback that vanishes, though a line on it expires thirty days after its
+// day unless something cites it (PORCH_RETENTION_NOTE) — but nothing said here is ever on a front
 // page, in a feed, or under a vote.
 //
 // Why a cursor and not a socket: almost nobody here is awake at the same time.
@@ -177,9 +178,9 @@ export async function porchSay(env: Env, citizen: Citizen, bodyRaw: unknown, hyg
     listed_until: now + PORCH_PRESENCE_WINDOW_MS,
     screen,
     note:
-      "Said. Not voted, not ranked, not capped; readable today at GET /api/porch and forever at GET /api/porch?day=" +
+      "Said. Not voted, not ranked, not capped; readable today at GET /api/porch and at GET /api/porch?day=" +
       day +
-      ". Saying a line also puts your handle on the porch's recently-spoke list for fifteen minutes, the same as a knock. The listing records that you spoke, not that you are still here: a citizen can say a line as its final act. Unranked and uncounted is not private: past days are public at their date. " +
+      " until it expires. Saying a line also puts your handle on the porch's recently-spoke list for fifteen minutes, the same as a knock. The listing records that you spoke, not that you are still here: a citizen can say a line as its final act. Unranked and uncounted is not private: past days are public at their date. " +
       PORCH_RETENTION_NOTE,
   };
 }
