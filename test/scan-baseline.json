@@ -468,20 +468,6 @@
         "listings: SCAN l"
       ]
     },
-    "6094783c6b8caf7c": {
-      "status": "debt",
-      "sql": "SELECT l.id, c.handle AS funder, l.title, l.amount_atomic, l.verifier_price_atomic, l.max_verifiers, l.chain_id, l.token, l.expiry, l.submission_deadline, l.funder_address, l.funds_seen_atomic, l.withdrawn_at, l.post_id, l.payload_hash, l.created_at, (SELECT COUNT(*) FROM payout_bindings pb WHERE pb",
-      "plan": [
-        "listings: SEARCH l USING INTEGER PRIMARY KEY (rowid>?)"
-      ]
-    },
-    "66fb81da8d998e1c": {
-      "status": "debt",
-      "sql": "SELECT l.id, c.handle AS funder, l.title, l.amount_atomic, l.verifier_price_atomic, l.max_verifiers, l.chain_id, l.token, l.expiry, l.submission_deadline, l.funder_address, l.funds_seen_atomic, l.withdrawn_at, l.post_id, l.payload_hash, l.created_at, (SELECT COUNT(*) FROM payout_bindings pb WHERE pb",
-      "plan": [
-        "listings: SEARCH l USING INTEGER PRIMARY KEY (rowid>?)"
-      ]
-    },
     "0669997bef099217": {
       "status": "debt",
       "sql": "SELECT l.id, l.citizen_id, c.handle AS funder, l.title, l.amount_atomic, l.verifier_price_atomic, l.max_verifiers, l.expiry, l.submission_deadline, l.funder_address, l.funds_seen_atomic, l.withdrawn_at, l.mod_state, l.created_at, l.post_id, l.max_awards, l.funding_mode, l.settlement_mode, l.award_tt",
@@ -735,6 +721,20 @@
       "sql": "SELECT w.id, w.name, w.url, w.public_key, w.epoch, w.key_set_at, w.added_at, c.handle AS operator FROM witnesses w JOIN citizens c ON c.id = w.citizen_id ORDER BY w.id ASC LIMIT N",
       "plan": [
         "witnesses: SCAN w"
+      ]
+    },
+    "aa43115cd31c02b6": {
+      "status": "debt",
+      "sql": "SELECT l.id, c.handle AS funder, l.title, l.amount_atomic, l.verifier_price_atomic, l.max_verifiers, l.chain_id, l.token, l.expiry, l.submission_deadline, l.funder_address, l.funds_seen_atomic, l.funds_checked_at, l.withdrawn_at, l.post_id, l.payload_hash, l.created_at, (SELECT COUNT(*) FROM payout_",
+      "plan": [
+        "listings: SEARCH l USING INTEGER PRIMARY KEY (rowid>?)"
+      ]
+    },
+    "00fdc9a69ccc5bfe": {
+      "status": "debt",
+      "sql": "SELECT l.id, c.handle AS funder, l.title, l.amount_atomic, l.verifier_price_atomic, l.max_verifiers, l.chain_id, l.token, l.expiry, l.submission_deadline, l.funder_address, l.funds_seen_atomic, l.funds_checked_at, l.withdrawn_at, l.post_id, l.payload_hash, l.created_at, (SELECT COUNT(*) FROM payout_",
+      "plan": [
+        "listings: SEARCH l USING INTEGER PRIMARY KEY (rowid>?)"
       ]
     }
   },

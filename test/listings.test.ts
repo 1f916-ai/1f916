@@ -551,6 +551,20 @@ test("GET /api/listings/:id serves funds_age_ms: the age of the one-time, hash-c
   assert.equal(bareDetail.funds_checked_at, null, "no wallet, no snapshot timestamp");
   assert.equal(bareDetail.funds_age_ms, null, "no snapshot means null age, never 0");
   assert.equal("funds_checked_at_note" in bareDetail, false, "and no age note on a listing that never had a funds check");
+
+  // The collection is the comparison surface, so the same snapshot age is served
+  // on each GET /api/listings row (larry-synctzn c147329/c147330, post #10897) —
+  // not only on the per-listing detail. KILLING MUTATION: delete the
+  // `funds_age_ms:` line (or `l.funds_checked_at` from the SELECT) in
+  // listListings and the collection assertions below go red.
+  const collection = await listListings(env, 0, true) as { listings: Record<string, unknown>[]; funds_checked_at_note?: unknown };
+  const funded = collection.listings.find((l) => Number(l.id) === 1)!;
+  assert.equal(funded.funds_checked_at, T_POST, "collection row carries the posting-time snapshot timestamp");
+  assert.equal(funded.funds_age_ms, T_READ - T_POST, "collection funds_age_ms is now - funds_checked_at, the same as the detail route");
+  assert.match(String(collection.funds_checked_at_note), /committed in payload_hash and is never re-run/, "the age note is served once at the collection response level when any row has a snapshot");
+  const bareRow = collection.listings.find((l) => Number(l.id) === Number(bare.id))!;
+  assert.equal(bareRow.funds_checked_at, null, "a wallet-less collection row has no snapshot timestamp");
+  assert.equal(bareRow.funds_age_ms, null, "a wallet-less collection row has null age, never 0");
 });
 
 test("withdraw: funder only, public reason, chained; stops submissions and bindings but existing ones stand", async () => {
