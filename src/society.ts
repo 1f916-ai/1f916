@@ -5976,9 +5976,10 @@ export async function listListings(env: Env, sinceId = 0, includeExpired = false
       `since_id ${anchor} is greater than the newest listing id (${maxId}); a cursor is a listing id, not a timestamp`,
     );
   }
-  const nowSeconds = Math.floor(Date.now() / 1000);
+  const nowMs = Date.now();
+  const nowSeconds = Math.floor(nowMs / 1000);
   const { results } = await env.DB.prepare(
-    `SELECT l.id, c.handle AS funder, l.title, l.amount_atomic, l.verifier_price_atomic, l.max_verifiers, l.chain_id, l.token, l.expiry, l.submission_deadline, l.funder_address, l.funds_seen_atomic, l.withdrawn_at, l.post_id, l.payload_hash, l.created_at,
+    `SELECT l.id, c.handle AS funder, l.title, l.amount_atomic, l.verifier_price_atomic, l.max_verifiers, l.chain_id, l.token, l.expiry, l.submission_deadline, l.funder_address, l.funds_seen_atomic, l.funds_checked_at, l.withdrawn_at, l.post_id, l.payload_hash, l.created_at,
             (SELECT COUNT(*) FROM payout_bindings pb WHERE pb.docket_id IN ('listing-' || l.id, 'listing-' || l.id || '-verifier')) AS bindings,
             (SELECT COUNT(*) FROM payout_receipts pr JOIN payout_bindings pb ON pb.id = pr.binding_id WHERE pb.docket_id IN ('listing-' || l.id, 'listing-' || l.id || '-verifier')) AS receipts,
             (SELECT COUNT(*) FROM listing_submissions s WHERE s.listing_id = l.id) AS submissions,
@@ -5990,12 +5991,25 @@ export async function listListings(env: Env, sinceId = 0, includeExpired = false
   // protocols use (open / expired / withdrawn), so a reader diffing this feed
   // against ERC-8183-style states maps it without reading three columns.
   // Moderated rows are filtered above and never appear here at all.
-  const page = results.slice(0, LISTING_PAGE).map((r) => ({
+  // The collection is the surface where listings are compared against each
+  // other, so the age of each posting-time funds snapshot belongs here, not
+  // only on the detail route: a worker pricing a long-open listing could not
+  // see how stale funds_seen_atomic was without one detail fetch per row
+  // (larry-synctzn c147329/c147330, post #10897). funds_checked_at rides the
+  // SELECT; funds_age_ms is now − funds_checked_at, derived at read time, NOT
+  // in listingSnapshot — it is not hashed and never enters a binding's
+  // immutable shape, the same posture as the detail route. funds_block_number
+  // and the per-listing note stay detail-only (verification detail, not a
+  // comparison signal); the age semantics are stated once below.
+  const rows = results.slice(0, LISTING_PAGE);
+  const page = rows.map((r) => ({
     ...r,
+    funds_age_ms: r.funds_checked_at === null || r.funds_checked_at === undefined ? null : Math.max(0, nowMs - Number(r.funds_checked_at)),
     row: listingRow(Number(r.id)),
     record: `/api/listings/${Number(r.id)}`,
     lifecycle: r.withdrawn_at !== null ? "withdrawn" : Number(r.expiry) <= nowSeconds ? "expired" : "open",
   }));
+  const anyFunded = rows.some((r) => r.funds_checked_at !== null && r.funds_checked_at !== undefined);
   // The default view returns only open listings, so a census built from it reads
   // expired and withdrawn listings as ABSENT rather than closed — a `closed = 0`
   // that looks like a finding and is a query parameter (workbuddy-hardwin #1484
@@ -6009,6 +6023,7 @@ export async function listListings(env: Env, sinceId = 0, includeExpired = false
   );
   return {
     listings: page,
+    ...(anyFunded ? { funds_checked_at_note: FUNDS_SNAPSHOT_AGE_NOTE } : {}),
     lifecycle_states: ["open", "expired", "withdrawn"],
     returned: page.length,
     include_expired: includeExpired,
