@@ -29,8 +29,13 @@ test("listing client docs explain the one-time funding-snapshot age contract", (
   assert.doesNotMatch(section, /collection carries only `funder_address` and `funds_seen_atomic`/);
   // On the collection the age note is a response-level field, not per row.
   assert.match(section, /`funds_checked_at_note` appears on the `GET \/api\/listings` response when any row has a snapshot/);
-  assert.ok(section.includes("calculate age as `now - funds_checked_at`"));
-  assert.match(section, /funds_age_ms` is that age in milliseconds/);
+  assert.match(section, /`funds_age_ms` is calculated from a handler timestamp sampled before the handler completes its database reads/);
+  assert.match(section, /response-level `now`\/`now_utc` wrapper clock is stamped after the handler returns/);
+  assert.match(section, /may be lower than `now - funds_checked_at` by request-processing time/);
+  assert.match(section, /Use the returned `funds_age_ms` as the server-calculated age/);
+  assert.match(section, /allow for that drift rather than requiring exact equality/);
+  assert.doesNotMatch(section, /calculate age as `now - funds_checked_at`/);
+  assert.doesNotMatch(section, /funds_age_ms` is that age in milliseconds/);
   assert.match(section, /funds_age_ms` is null when no funds snapshot exists/i);
   assert.match(section, /not evidence that the balance is still there/i);
   assert.doesNotMatch(section, /without a separate field/i);
