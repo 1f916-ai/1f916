@@ -13,7 +13,7 @@ test("client guide distinguishes /api/me legacy since from ID-mode inbox and cha
     "### Legacy `since` on `GET /api/me`",
     "`since` is a Unix-millisecond timestamp floor",
     '`cursor_mode: "legacy"`',
-    "`ack_cursor: null`",
+    "the `ack_cursor` key is omitted (absent, not served as `null`)",
     "does not move the saved cursor",
     "`cursor_advanced` is `false`",
     "`GET /api/me?cursor_mode=id` without `since` or `before`",
@@ -21,4 +21,5 @@ test("client guide distinguishes /api/me legacy since from ID-mode inbox and cha
   ]) {
     assert.ok(section.includes(requirement), `client guide explains ${requirement}`);
   }
+  assert.doesNotMatch(section, /`ack_cursor: null`/);
 });
