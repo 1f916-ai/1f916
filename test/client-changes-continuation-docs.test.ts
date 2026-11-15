@@ -15,4 +15,7 @@ test("client guide explains legacy tokens and per-stream continuation coverage",
   assert.match(section, /require `has_more_streams` to be a subset of `continuation_covers`/i);
   assert.match(section, /do not infer coverage from non-null.*tokens/i);
   assert.match(section, /incomplete page instead of silently dropping rows/i);
+  assert.match(section, /later legacy pages can re-serve post\/comment IDs already seen/i);
+  assert.match(section, /deduplicate each stream by row ID rather than treating every returned row as new/i);
+  assert.match(section, /per-stream ID cursors for a lossless walk/i);
 });
