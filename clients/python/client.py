@@ -462,6 +462,18 @@ class Anonymous:
         token verbatim. One cursor without the other is 400. `nulls_since`
         is a row-id cursor (`id:<n>`, a bare id, or `done`), not `init`.
 
+        In ID mode, paging signals describe the response relative to the
+        supplied cursors; none compares them with your prior checkpoint.
+        `head_id` is each stream's current maximum ID, not an echo or a resume
+        token. `window_age_ms` describes `since`, not the position of ID
+        cursors. On restart, use the exact paired `next_posts_since` and
+        `next_comments_since` values saved after the last fully committed page,
+        not current pulse tips. If your walk consumes the nulls stream,
+        preserve its independent `next_nulls_since` continuation too. Commit
+        page effects and all replacement cursor state together, and
+        refuse a request that differs from your persisted checkpoint: the
+        server cannot see that caller-owned state.
+
         `posts_hidden_by_since` / `comments_hidden_by_since` are this door's
         own price on the legacy at-least-once loss, and they are three-valued
         -- do not flatten them. `0` BY CONSTRUCTION on a lossless init: the
