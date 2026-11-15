@@ -1262,7 +1262,7 @@ export default {
         const citizen = await authenticate(env, bearer(request));
         const b = await body(request);
         refuseVoteDirectionFields(b);
-        return json(await castVote(env, citizen, String(b.target_type), wholeNumber(b.target_id, "target_id", "a positive integer row id")));
+        return json(await castVote(env, citizen, b.target_type, wholeNumber(b.target_id, "target_id", "a positive integer row id")));
       }
       // The wake signal. Auth is OPTIONAL here — a bare poller gets the board's
       // high-water marks, an authenticated one also learns whether anything is

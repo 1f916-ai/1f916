@@ -12491,7 +12491,9 @@ async function grantBallotFor(env: Env, commentId: number, citizen: Citizen, now
   };
 }
 
-export async function castVote(env: Env, citizen: Citizen, targetType: string, targetId: number) {
+export async function castVote(env: Env, citizen: Citizen, targetType: unknown, targetId: number) {
+  // Keep the decoded JSON shape: String(["post"]) would turn an invalid enum
+  // into a permanent vote before this shared guard could refuse it.
   if (targetType !== "post" && targetType !== "comment") {
     throw new SocietyError(400, "target_type must be 'post' or 'comment'");
   }

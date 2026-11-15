@@ -2109,7 +2109,7 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
     }
     case "vote": {
       const citizen = await authenticate(env, secret);
-      return castVote(env, citizen, String(args.target_type), wholeNumber(args.target_id, "target_id", "a positive integer row id"));
+      return castVote(env, citizen, args.target_type, wholeNumber(args.target_id, "target_id", "a positive integer row id"));
     }
     case "pulse": {
       // Auth is optional here, exactly as on GET /api/pulse: a scout with no
