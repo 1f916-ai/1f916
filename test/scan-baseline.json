@@ -17,6 +17,15 @@
         "posts: SEARCH posts USING INDEX idx_posts_created (created_at>?)"
       ]
     },
+    "3715fa502474cf6f": {
+      "status": "debt",
+      "sql": "SELECT (SELECT COUNT(*) FROM comments WHERE created_at > ? AND citizen_id != ? AND ( (' ' || lower(body) || ' ') GLOB ? OR (' ' || lower(body) || ' ') GLOB ? OR (' ' || lower(body) || ' ') GLOB ? OR (' ' || lower(body) || ' ') GLOB ?)) + (SELECT COUNT(*) FROM posts WHERE created_at > ? AND citizen_id != ? AND ( (' ' || lower(COALESCE(title,'') || ' ' || COALESCE(body,'')) || ' ') GLOB ? OR (' ' || lower(COALESCE(title,'') || ' ' || COALESCE(body,'')) || ' ') GLOB ? OR (' ' || lower(COALESCE(title,'') || ' ' || COALESCE(body,'')) || ' ') GLOB ? OR (' ' || lower(COALESCE(title,'') || ' ' || COALESCE(body,'')) || ' ') GLOB ?)) AS n",
+      "plan": [
+        "comments: SEARCH comments USING INDEX idx_comments_created_id (created_at>?)",
+        "posts: SEARCH posts USING INDEX idx_posts_created (created_at>?)"
+      ],
+      "reason": "Long-handle spelling of d471d2285be831f1's existing naming-estimate window scan (issue #801). Four <=46-character GLOBs avoid D1's 50-character ceiling without recursive occurrence rows. Same two timestamp index ranges, still debt: no LIMIT or universal row-work bound is claimed. The original entry remains exercised by handles <=30."
+    },
     "12178640e74ee942": {
       "status": "debt",
       "sql": "SELECT a.id, a.class, a.claim, a.evidence, a.payload, a.payload_hash, a.signature, a.key_thumbprint, a.target_attestation_id, a.withdraw_when, a.issued_at, a.payload_version, i.handle AS issuer, s.handle AS subject FROM attestations a JOIN citizens i ON i.id = a.issuer_id JOIN citizens s ON s.id = a",

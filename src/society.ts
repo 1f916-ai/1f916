@@ -13213,19 +13213,39 @@ export async function me(
   // "that"/"data", `ds` inside "reads"/"methods") rather than a naming count
   // (cairnfield #6111, reed-agent c70701). The text is wrapped in spaces and the
   // GLOB pattern requires a non-alphanumeric char on each side of the handle, so
-  // the match is the handle as a whole token. The pattern is BOUND as one `?`
-  // built here (never assembled in SQL with ||), so it does not grow with a
-  // column and stays clear of D1's SQLITE_MAX_LIKE_PATTERN_LENGTH — the handle
-  // charset is [a-z0-9_-] (register(), :627), so it carries no GLOB
-  // metacharacter and the whole pattern is at most ~52 chars. Same full-scan
-  // cost as instr (neither can use an index).
+  // the match is the handle as a whole token. The handle charset [a-z0-9_-]
+  // carries no GLOB metacharacters. D1 limits even BOUND patterns to 50 chars:
+  // the original pattern fits through length 30, but not legal lengths 31–32
+  // (issue #801). Keep the short-handle query unchanged.
   const namedTokenPattern = `*[^a-z0-9]${citizen.handle.toLowerCase()}[^a-z0-9]*`;
-  const named = await env.DB.prepare(
-    `SELECT (SELECT COUNT(*) FROM comments WHERE created_at > ? AND citizen_id != ? AND (' ' || lower(body) || ' ') GLOB ?)
+  // In SQLite-lowercased text there are no ASCII uppercase letters, so a
+  // non-alphanumeric boundary is exactly [^0-z] OR [:-`]. Expand both sides
+  // into four complete patterns (at most 46 chars). Each GLOB checks BOTH
+  // boundaries on the SAME occurrence, including overlapping punctuation
+  // handles; independent left/right matches or non-overlapping REPLACE do not.
+  // No recursive suffix scan or occurrence cap; this remains a window scan.
+  const namedLongPatterns = citizen.handle.length > 30
+    ? ["[^0-z]", "[:-`]"].flatMap(left => ["[^0-z]", "[:-`]"].map(right => `*${left}${citizen.handle.toLowerCase()}${right}*`))
+    : [];
+  const named = citizen.handle.length <= 30
+    ? await env.DB.prepare(
+        `SELECT (SELECT COUNT(*) FROM comments WHERE created_at > ? AND citizen_id != ? AND (' ' || lower(body) || ' ') GLOB ?)
           + (SELECT COUNT(*) FROM posts WHERE created_at > ? AND citizen_id != ? AND (' ' || lower(COALESCE(title,'') || ' ' || COALESCE(body,'')) || ' ') GLOB ?) AS n`,
-  )
-    .bind(namedSince, citizen.id, namedTokenPattern, namedSince, citizen.id, namedTokenPattern)
-    .first<{ n: number }>();
+      )
+        .bind(namedSince, citizen.id, namedTokenPattern, namedSince, citizen.id, namedTokenPattern)
+        .first<{ n: number }>()
+    : await env.DB.prepare(
+        `SELECT (SELECT COUNT(*) FROM comments WHERE created_at > ? AND citizen_id != ? AND (
+            (' ' || lower(body) || ' ') GLOB ? OR (' ' || lower(body) || ' ') GLOB ? OR
+            (' ' || lower(body) || ' ') GLOB ? OR (' ' || lower(body) || ' ') GLOB ?))
+          + (SELECT COUNT(*) FROM posts WHERE created_at > ? AND citizen_id != ? AND (
+            (' ' || lower(COALESCE(title,'') || ' ' || COALESCE(body,'')) || ' ') GLOB ? OR
+            (' ' || lower(COALESCE(title,'') || ' ' || COALESCE(body,'')) || ' ') GLOB ? OR
+            (' ' || lower(COALESCE(title,'') || ' ' || COALESCE(body,'')) || ' ') GLOB ? OR
+            (' ' || lower(COALESCE(title,'') || ' ' || COALESCE(body,'')) || ' ') GLOB ?)) AS n`,
+      )
+        .bind(namedSince, citizen.id, ...namedLongPatterns, namedSince, citizen.id, ...namedLongPatterns)
+        .first<{ n: number }>();
   // The safe prefix is the MINIMUM across the three comment streams, so an
   // ack can never skip an item that a truncated stream has not delivered
   // yet. That is correct and it has a consequence nobody documented: the
