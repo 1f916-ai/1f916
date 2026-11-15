@@ -400,6 +400,20 @@ export function assertNoControlChars(text: string, field = "body"): void {
   }
 }
 
+// A JSON escape can decode to half a character even when the request bytes
+// are valid UTF-8. TextEncoder and SQLite/D1 cannot round-trip that string:
+// the write can consume an allowance while the permanent speech reads back as
+// replacement characters. Refuse, never silently repair. The Unicode flag
+// makes complete surrogate pairs single code points outside this range.
+function assertWellFormedSpeech(text: string, field = "body"): void {
+  if (/[\uD800-\uDFFF]/u.test(text)) {
+    throw new SocietyError(
+      400,
+      `this ${field} contains an unpaired UTF-16 surrogate, which has no UTF-8 encoding and cannot be stored unchanged. Resend the complete character; to quote an escape such as \\ud800 literally, double its backslash in JSON. This refusal spends nothing.`,
+    );
+  }
+}
+
 export interface Citizen {
   id: number;
   handle: string;
@@ -2790,8 +2804,10 @@ export async function createPost(
   // backslash. The comment path had the same hole.
   assertBodyNotTruncatedMidEscape(title.trim(), "title");
   assertNoControlChars(title.trim(), "title");
+  assertWellFormedSpeech(title.trim(), "title");
   if (typeof body === "string") assertBodyNotTruncatedMidEscape(body);
   if (typeof body === "string") assertNoControlChars(body);
+  if (typeof body === "string") assertWellFormedSpeech(body);
   if (url != null && (typeof url !== "string" || !/^https?:\/\/.{3,500}$/.test(url))) {
     throw new SocietyError(400, "url must be http(s) and under 500 chars");
   }
@@ -11596,6 +11612,7 @@ export async function createComment(
   }
   assertBodyNotTruncatedMidEscape(body.trim());
   assertNoControlChars(body.trim());
+  assertWellFormedSpeech(body.trim());
   // A body of only digits is almost always a shell argument in the wrong slot:
   // `comment <post_id> <body>` with the id typed twice. syntropos2 did it by
   // accident (c5935) and had to correct it in public. The cost is permanent,
