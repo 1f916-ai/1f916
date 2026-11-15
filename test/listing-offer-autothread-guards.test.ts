@@ -93,22 +93,62 @@ test("createOffer refuses terms truncated mid-escape (lone trailing backslash)",
   );
 });
 
+// An escaped lone UTF-16 surrogate is valid JSON/UTF-8 on the wire but has no
+// UTF-8 encoding to store, so D1 round-trips it to U+FFFD and the permanent
+// public auto-thread body reads back corrupted while the write spent its
+// allowance. createPost/createComment already refuse it (assertWellFormedSpeech,
+// #811); these two paths embedded the same free-text without that guard.
+// Killing mutation: delete the assertWellFormedSpeech calls added to
+// createListing/createOffer — these four go red (fall through to the DB stub)
+// while the direct post/comment surrogate tests stay green.
+test("createListing refuses a lone surrogate in the title, before it writes anything", async () => {
+  await assert.rejects(
+    () => createListing(stubEnv, citizen, { title: "tail\ud83e", condition: okCondition, amount_atomic: "1000000", expiry: futureExpiry } as never),
+    is400(/surrogate/),
+    "the listing title is embedded in the thread title and the listing row, so an unpaired surrogate must be refused like a post title",
+  );
+});
+
+test("createListing refuses a lone surrogate in the condition", async () => {
+  await assert.rejects(
+    () => createListing(stubEnv, citizen, { title: "a clean title", condition: okCondition + "\udc00", amount_atomic: "1000000", expiry: futureExpiry } as never),
+    is400(/surrogate/),
+    "a listing condition stands verbatim in the public auto-thread body",
+  );
+});
+
+test("createOffer refuses a lone surrogate in the title", async () => {
+  await assert.rejects(
+    () => createOffer(stubEnv, citizen, { title: "tail\ud83e", terms: okTerms, amount_atomic: "1000000", delivery_window_seconds: 3600, expiry: futureExpiry } as never),
+    is400(/surrogate/),
+    "the offer title is embedded in the thread title and the offer row",
+  );
+});
+
+test("createOffer refuses a lone surrogate in the terms", async () => {
+  await assert.rejects(
+    () => createOffer(stubEnv, citizen, { title: "a clean title", terms: okTerms + "\udc00", amount_atomic: "1000000", delivery_window_seconds: 3600, expiry: futureExpiry } as never),
+    is400(/surrogate/),
+    "offer terms stand verbatim in the public auto-thread body",
+  );
+});
+
 // Non-over-refusal: a clean listing/offer passes BOTH guards and falls through
 // to the first DB access (the stub's thrown plain Error), which is NOT a
 // SocietyError 400 — proving the guards do not refuse ordinary text, including
 // a legitimately doubled backslash path and the three whitespace controls.
 test("a clean listing passes both guards and reaches the DB (guards do not over-refuse)", async () => {
   await assert.rejects(
-    () => createListing(stubEnv, citizen, { title: "C:\\Users\\me build", condition: okCondition + "\nline two\twith a tab", amount_atomic: "1000000", expiry: futureExpiry } as never),
-    (e: unknown) => e instanceof Error && !(e instanceof SocietyError && e.status === 400 && /U\+|lone backslash/.test(e.message)),
-    "a doubled-backslash path and the three whitespace controls must pass the guards",
+    () => createListing(stubEnv, citizen, { title: "C:\\Users\\me build 🤖", condition: okCondition + "\nline two\twith a tab 𠀀", amount_atomic: "1000000", expiry: futureExpiry } as never),
+    (e: unknown) => e instanceof Error && !(e instanceof SocietyError && e.status === 400 && /U\+|lone backslash|surrogate/.test(e.message)),
+    "a doubled-backslash path, the three whitespace controls, and complete surrogate-pair emoji must pass the guards",
   );
 });
 
 test("a clean offer passes both guards and reaches the DB (guards do not over-refuse)", async () => {
   await assert.rejects(
-    () => createOffer(stubEnv, citizen, { title: "C:\\Users\\me build", terms: okTerms + "\nline two\twith a tab", amount_atomic: "1000000", delivery_window_seconds: 3600, expiry: futureExpiry } as never),
-    (e: unknown) => e instanceof Error && !(e instanceof SocietyError && e.status === 400 && /U\+|lone backslash/.test(e.message)),
-    "a doubled-backslash path and the three whitespace controls must pass the guards",
+    () => createOffer(stubEnv, citizen, { title: "C:\\Users\\me build 🤖", terms: okTerms + "\nline two\twith a tab 𠀀", amount_atomic: "1000000", delivery_window_seconds: 3600, expiry: futureExpiry } as never),
+    (e: unknown) => e instanceof Error && !(e instanceof SocietyError && e.status === 400 && /U\+|lone backslash|surrogate/.test(e.message)),
+    "a doubled-backslash path, the three whitespace controls, and complete surrogate-pair emoji must pass the guards",
   );
 });

@@ -4067,16 +4067,19 @@ export async function createListing(
   const listing = validateListing(body, Math.floor(Date.now() / 1000), citizen.id === MAINTAINER_ID ? (env.TREASURY_ADDRESS ?? null) : null);
   // The title and condition stand verbatim in the listing's permanent public
   // auto-thread body (and the listing row), the same way a post's title and
-  // body do, so they run the same two structural guards createPost applies
+  // body do, so they run the same three structural guards createPost applies
   // before it writes: a C0/DEL control character (an unescaped backslash's
-  // `\b` decodes to an invisible backspace) or a lone-trailing-backslash
-  // mid-escape truncation is refused at the door, not stored invisibly or
-  // cut mid-escape in a body a stranger reads. validateListing is pure, so
+  // `\b` decodes to an invisible backspace), a lone-trailing-backslash
+  // mid-escape truncation, or an unpaired UTF-16 surrogate (no UTF-8 encoding,
+  // stored as U+FFFD) is refused at the door, not stored invisibly or cut
+  // mid-escape in a body a stranger reads. validateListing is pure, so
   // this still refuses before any database read.
   assertBodyNotTruncatedMidEscape(listing.title, "title");
   assertNoControlChars(listing.title, "title");
+  assertWellFormedSpeech(listing.title, "title");
   assertBodyNotTruncatedMidEscape(listing.condition, "condition");
   assertNoControlChars(listing.condition, "condition");
+  assertWellFormedSpeech(listing.condition, "condition");
   // A listing may belong to a grant (src/grants.ts). The link is checked
   // before anything commits and stored unhashed: it is not a term of the
   // listing and changes nothing about how the listing pays.
@@ -16922,14 +16925,17 @@ export function offerSnapshot(offer: StoredOffer) {
 export async function createOffer(env: Env, citizen: Citizen, body: OfferInput) {
   const offer = validateOffer(body, Math.floor(Date.now() / 1000));
   // The title and terms stand verbatim in the offer's permanent public
-  // auto-thread body (and the offer row), so they run the same two structural
+  // auto-thread body (and the offer row), so they run the same three structural
   // guards createPost and createListing apply before writing: a C0/DEL control
-  // character or a lone-trailing-backslash mid-escape truncation is refused at
-  // the door. validateOffer is pure, so this refuses before any database read.
+  // character, a lone-trailing-backslash mid-escape truncation, or an unpaired
+  // UTF-16 surrogate (no UTF-8 encoding, stored as U+FFFD) is refused at the
+  // door. validateOffer is pure, so this refuses before any database read.
   assertBodyNotTruncatedMidEscape(offer.title, "title");
   assertNoControlChars(offer.title, "title");
+  assertWellFormedSpeech(offer.title, "title");
   assertBodyNotTruncatedMidEscape(offer.terms, "terms");
   assertNoControlChars(offer.terms, "terms");
+  assertWellFormedSpeech(offer.terms, "terms");
   const screenState = await screenGate(env, citizen, offer.title + "\n" + offer.terms, (body as { hygiene_override?: unknown }).hygiene_override, Date.now(), [offer.title, offer.terms]);
   const now = Date.now();
   const commitNonce = crypto.randomUUID();
