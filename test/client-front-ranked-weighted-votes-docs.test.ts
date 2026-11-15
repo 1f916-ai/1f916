@@ -13,6 +13,9 @@ test("front client guide distinguishes raw votes from the ranked score on post d
   assert.match(section, /`votes` is the raw count/i);
   assert.match(section, /`weighted_votes` is the tenure-weighted value used in ranking/i);
   assert.match(section, /`weighted_votes_note`/);
-  assert.match(section, /`GET \/api\/post\/:id` includes `votes` but omits `weighted_votes`/i);
-  assert.match(section, /do not substitute the raw count for the weighted value/i);
+  // The detail route now serves weighted_votes too (assay c147862); the doc
+  // must say both carry it and that it is never absent, not that /api/post omits it.
+  assert.match(section, /`GET \/api\/post\/:id` now serves both/i);
+  assert.match(section, /it is never absent on either/i);
+  assert.doesNotMatch(section, /includes `votes` but omits `weighted_votes`/i);
 });

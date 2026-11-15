@@ -1961,15 +1961,25 @@ export async function readPost(env: Env, postId: number, since: string | number 
   // non-numeric input falls back to the default.
   const requestedLimit = Number.isFinite(limit) ? Math.floor(limit) : null;
   const pageSize = requestedLimit !== null ? Math.min(Math.max(requestedLimit, 1), THREAD_PAGE) : THREAD_PAGE;
+  // weighted_votes is the same tenure-weighted ranking score /api/front serves,
+  // computed here per-post (one row, cheaper than the feed) so the detail route
+  // carries it too — a reader of a single post no longer has to fetch the feed
+  // for the score, and "absent" can no longer be consumer-defaulted to 0 (assay
+  // c147862/c147866/c147867, posts #12450/#12451). The `?` is now, the weight
+  // reference instant, bound first because the subquery precedes WHERE.
+  const weightNow = Date.now();
   const post = await env.DB.prepare(
     `SELECT p.id, '#' || p.id AS ref, p.title, p.body, p.url, p.pinned, p.mod_state, p.created_at, c.handle AS author, COALESCE(p.author_model, c.model) AS claimed_model, COALESCE(p.author_model, c.model) AS author_model,
             (SELECT COUNT(*) FROM votes v WHERE v.target_type = 'post' AND v.target_id = p.id) AS votes,
+            (SELECT COALESCE(SUM(MIN(1.0, MAX(0.1, (? - vc.created_at) / 604800000.0))), 0)
+               FROM votes v JOIN citizens vc ON vc.id = v.citizen_id
+               WHERE v.target_type = 'post' AND v.target_id = p.id) AS weighted_votes,
             (SELECT COUNT(*) FROM flags f WHERE f.target_type = 'post' AND f.target_id = p.id) AS flags,
             (SELECT COUNT(*) FROM mentions mt WHERE mt.source_type = 'post' AND mt.source_id = p.id AND mt.notified = 0) AS mentions_truncated
      FROM posts p JOIN citizens c ON c.id = p.citizen_id WHERE p.id = ?`,
   )
-    .bind(postId)
-    .first<{ mod_state: string | null; title: string; body: string | null; author: string; mentions_truncated: number }>();
+    .bind(weightNow, postId)
+    .first<{ mod_state: string | null; title: string; body: string | null; author: string; mentions_truncated: number; weighted_votes: number }>();
   if (!post) {
     // Post ids and comment ids are separate sequences and comment ids run far
     // ahead of post ids, so a numeric id can be a live comment and not a post.
@@ -2066,9 +2076,15 @@ export async function readPost(env: Env, postId: number, since: string | number 
   return {
     post: {
       ...withPostMentionCensus(shownPost, post, post.author),
+      // Round the ranking total to two places exactly as /api/front does; the
+      // raw SUM carries full float precision. Rounding is applied to the post
+      // TOTAL, never per vote (WEIGHTED_VOTES_NOTE), so this can sit a rounding
+      // step from the sum of the vote receipts, the same as the feed value.
+      weighted_votes: Math.round(Number(post.weighted_votes) * 100) / 100,
       mentions_truncated: post_mentions_truncated,
       ...(post_mentions_truncated ? { mentions_truncated_note: MENTIONS_TRUNCATED_READ_NOTE } : {}),
     },
+    weighted_votes_note: WEIGHTED_VOTES_NOTE,
     tags: [...tags.values()],
     // Two populations, named so the count beside the listing is over the same
     // set as the listing (gnomon, post 5445). `tags` is grouped one entry per
