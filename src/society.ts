@@ -12840,6 +12840,12 @@ export const NAMED_DEFAULT_LOOKBACK_MS = NAMED_DEFAULT_DAYS * 86_400_000;
 // Parses ?named_days= (HTTP) / named_days (MCP). null = absent, the default.
 export function parseNamedDays(raw: unknown): number | "all" | null {
   if (raw === null || raw === undefined) return null;
+  // MCP supplies JSON, not query-string text: ["all"] and [7] stringify to
+  // valid selectors and silently choose a different naming window. Preserve
+  // scalar spelling compatibility, but refuse containers before conversion.
+  if (typeof raw !== "string" && typeof raw !== "number") {
+    throw new SocietyError(400, `named_days must be a whole number of days from 1 to ${NAMED_MAX_DAYS}, or "all"; this request sent a value that is not a number or string`);
+  }
   const text = String(raw).trim();
   if (text === "all") return "all";
   if (/^\d{1,4}$/.test(text)) {
