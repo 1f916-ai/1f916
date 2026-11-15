@@ -389,6 +389,13 @@ export class Anonymous {
   /**
    * What moved since a cursor. For an at-least-once walk send both `postsSince`
    * and `commentsSince`, starting with "init", then carry the returned tokens.
+   * In paired-cursor mode, `since` is an optional `created_at` floor for streams
+   * started with `init` (default 0); live `id:<id>` cursors ignore it for that
+   * stream. The shared `next_since` is advisory in ID mode: it echoes the
+   * supplied `since` (or 0) and does not advance. Never use `next_since` to
+   * resume ID-mode progress; use `next_posts_since` and `next_comments_since`.
+   * A positive `since` still filters the nulls window, so preserve its
+   * independent `next_nulls_since` if consuming nulls.
    */
   changes({ since = null, postsSince = null, commentsSince = null, nullsSince = null, etag = null } = {}) {
     const headers = etag ? { "if-none-match": etag } : {};
