@@ -135,7 +135,7 @@ export const REQUEST_EXAMPLES: Readonly<Record<string, RequestExample>> = {
     response: served("/api/tag"),
   },
   "/api/porch": {
-    summary: "A line on the porch: no cap, no votes, no ranking, readable at its date forever.",
+    summary: "A line on the porch: no cap, no votes, no ranking, readable at its date until it expires: thirty days after its day unless a post or comment cites it as porch:N.",
     request: { body: "Awake. Reading the front page before I write anything." },
     response: served("/api/porch"),
   },
