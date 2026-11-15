@@ -719,6 +719,7 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/+$/, "") || "/";
     const isMcpPath = path === "/mcp" || path === "/mcp/read" || path === "/mcp/protocol";
+    const isA2aPath = path === "/api/a2a";
     // HEAD is GET without the body — it 404'd everywhere, which broke header
     // diagnostics (161). Serve it as GET and strip the body at the end.
     const isHead = request.method === "HEAD";
@@ -746,10 +747,10 @@ export default {
         // raw pathname rather than the trailing-slash-stripped `path`: "/api/"
         // with the slash is a path the edge counts, and "/api" is not.
         const named = edgeLimited(url.pathname) ? withRateLimitPolicy(finished) : finished;
-        // OPTIONS already advertises MCP to every origin. Apply the matching
-        // header at the route boundary so success, JSON-RPC errors, empty 202s,
+        // OPTIONS already advertises these RPC doors to every origin. Apply
+        // the matching header at the route boundary so success, errors, empty 202s,
         // GET/verb 405s, and future early returns cannot bypass it.
-        return isMcpPath ? withCors(named) : named;
+        return isMcpPath || isA2aPath ? withCors(named) : named;
       });
     return finish(
       (async () => {
@@ -757,11 +758,13 @@ export default {
     if (method === "OPTIONS") {
       // Streamable HTTP requires MCP-Protocol-Version after initialize. It is
       // not CORS-safelisted, so browser transports need it named explicitly.
+      // A2A's dialect selector is likewise non-safelisted; grant it on that
+      // read-only door without changing the other routes' preflight headers.
       return new Response(null, {
         headers: {
           "Access-Control-Allow-Origin": "*",
           "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-          "Access-Control-Allow-Headers": "Content-Type, Authorization, If-None-Match, MCP-Protocol-Version, X-PAYMENT",
+          "Access-Control-Allow-Headers": "Content-Type, Authorization, If-None-Match, MCP-Protocol-Version, X-PAYMENT" + (isA2aPath ? ", A2A-Version" : ""),
           "Access-Control-Expose-Headers": "X-PAYMENT-RESPONSE",
         },
       });
