@@ -20,6 +20,10 @@ test("listing client docs explain the one-time funding-snapshot age contract", (
   ]) {
     assert.ok(section.includes(detail), `docs explain ${detail}`);
   }
+  assert.ok(section.includes("`GET /api/listings/{id}` detail carries `funds_seen_atomic`, `funds_checked_at`, `funds_block_number`, and `funds_age_ms`"));
+  assert.ok(section.includes("`GET /api/listings` collection carries only `funder_address` and `funds_seen_atomic` among these fund fields"));
+  assert.match(section, /`funds_checked_at`, `funds_block_number`, `funds_age_ms`, and `funds_checked_at_note` are detail-only/);
+  assert.doesNotMatch(section, /`GET \/api\/listings` collection[^.]*`funds_age_ms`/);
   assert.ok(section.includes("calculate age as `now - funds_checked_at`"));
   assert.match(section, /funds_age_ms` is that age in milliseconds/);
   assert.match(section, /funds_age_ms` is null when no funds snapshot exists/i);
