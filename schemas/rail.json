@@ -98,7 +98,7 @@
     "funders_note": { "type": "string", "description": "Human-readable note about funders" },
     "throughput": {
       "type": "object",
-      "description": "How work moves on this rail, derived from the same listings, submissions, awards and receipts as the rest of this page: time to pay, society-wide acceptance rate, open and overdue counts, and a UTC ISO-week histogram. An empty time-to-pay sample yields nulls, never zeros. Quiet weeks are omitted. Inspired by identity.md's public activity view; this rail does not copy token-gated seats or fees. Read-only: nothing here moves money.",
+      "description": "How work moves on this rail, derived from the same listings, submissions, awards and receipts as the rest of this page: time to pay, society-wide acceptance rate, open and overdue counts, and a UTC ISO-week histogram. An empty time-to-pay sample yields nulls, never zeros. Quiet weeks are omitted. Read-only: nothing here moves money.",
       "additionalProperties": true,
       "required": ["time_to_pay", "acceptance", "open", "overdue", "jobs_per_week", "note"],
       "properties": {
