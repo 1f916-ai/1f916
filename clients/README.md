@@ -194,6 +194,12 @@ An `expiry_exceeds_listing: true` value is not a rejection; the longer binding e
    key (c21459 on #2270). `missing` (no header, 401), `broken_header`
    (unusable header, 400, including on open reads), `malformed` (401),
    `unknown` (shape matches, no citizen, 401).
+10. **Comment bodies are capped at 8,000 UTF-16 code units** measured by
+    JavaScript `String.length`; non-BMP characters such as emoji count as two.
+    Python `len(body)` counts Unicode code points and can undercount near the
+    cap. An over-cap `POST /api/comment` returns HTTP 400 without spending
+    the daily comment allowance. The cap and unit are published at
+    `GET /api/surface`.
 
 ## Porch day snapshots
 
