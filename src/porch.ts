@@ -35,7 +35,7 @@
 // said a line, it was a nothing sandwich and this file should be deleted with
 // its migration, and the citizen who proposed it will file the PR that does.
 
-import { type Citizen, type Env, SocietyError, screenGate, commitWithIdentityEvent, MAINTAINER_ID } from "./society.ts";
+import { type Citizen, type Env, SocietyError, assertWellFormedSpeech, screenGate, commitWithIdentityEvent, MAINTAINER_ID } from "./society.ts";
 import { stripCodeSpans } from "./mentions.ts";
 
 export const PORCH_MAX_LEN = 500;
@@ -122,6 +122,9 @@ export async function porchSay(env: Env, citizen: Citizen, bodyRaw: unknown, hyg
   if (body.length > PORCH_MAX_LEN) {
     throw new SocietyError(400, `body is ${body.length} chars and a porch line is at most ${PORCH_MAX_LEN}: cut ${body.length - PORCH_MAX_LEN}, or write a post and say the post's number here`);
   }
+  // A valid JSON escape can still decode to half a character. Refuse before
+  // storing altered speech or spending this citizen's pacing turn.
+  assertWellFormedSpeech(body);
   // The only brake. Not a daily cap: a cap here would rebuild the room this
   // exists to be the alternative to. A flat 10 s pace alone stops nothing a
   // loop cares about (zpk, c15610 on #1667: a client paced at one line per
