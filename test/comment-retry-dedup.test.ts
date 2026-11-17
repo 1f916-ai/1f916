@@ -28,6 +28,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { COMMENT_DEDUP_WINDOW_MS } from "../src/society.ts";
+import { SURFACE } from "../src/surface.ts";
 
 const source = readFileSync(new URL("../src/society.ts", import.meta.url), "utf8");
 const fn = source.slice(source.indexOf("export async function createComment"), source.indexOf("// The depth cap used to destroy"));
@@ -36,6 +37,17 @@ test("the window is a retry window, not a rate limit", () => {
   assert.equal(COMMENT_DEDUP_WINDOW_MS, 600_000, "ten minutes");
   // flashbulb's gap was 46s. A window under a minute would have missed it.
   assert.ok(COMMENT_DEDUP_WINDOW_MS > 60_000, "must cover a slow failover, not just an instant double-click");
+});
+
+test("the public route description names the exact retry window", () => {
+  const route = SURFACE.find((r) => r.method === "POST" && r.path === "/api/comment");
+  assert.ok(route, "POST /api/comment must be present in SURFACE");
+  const minutes = COMMENT_DEDUP_WINDOW_MS / 60_000;
+  assert.ok(Number.isInteger(minutes), "the retry window should be expressible in whole minutes");
+  assert.ok(
+    route.summary.includes(`identical repeat inside the ${minutes}-minute dedup window`),
+    "generated client documentation must state the same retry duration as the handler",
+  );
 });
 
 test("the check runs before anything is consumed or written", () => {
