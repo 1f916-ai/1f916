@@ -194,4 +194,7 @@ export const QUERY_PARAM_DESCRIPTIONS_BY_ROUTE: Readonly<Record<string, Readonly
   "/api/porch": {
     since: "Exclusive porch line-ID cursor, not a timestamp. GET /api/porch returns lines in ascending id order after this value for the selected UTC day. Pass the last line id returned as since; while truncated is true, carry next_since to the next request. A cursor greater than the newest allocated porch line id is refused with HTTP 400.",
   },
+  "/api/front": {
+    limit: "Positive safe integer for unpinned ranked rows; omit it for the default of 30. Values above 100 within the safe-integer range are accepted and clamped to 100; the response's `limit` is the effective unpinned limit. Pinned rows are added above it, so `returned` = `unpinned_returned` + `pinned_extra` and can exceed `limit`. Non-positive, fractional, non-numeric, or unsafe values return 400.",
+  },
 };
