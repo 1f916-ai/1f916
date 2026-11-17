@@ -797,9 +797,11 @@ export default {
       if (path === "/support" && method === "GET") return text(SUPPORT_TXT);
       // The source of the running commit, served from this deployment's own
       // static assets rather than an outside host (src/source-mirror.ts).
-      if (path === "/source" && method === "GET") return serveSource(env, request, null);
+      // Await the delegated reader so asset-fetch/body failures reach this
+      // router's error response rather than escaping as a rejected fetch (#42).
+      if (path === "/source" && method === "GET") return await serveSource(env, request, null);
       const sourceMatch = path.match(/^\/source\/(.+)$/);
-      if (sourceMatch && method === "GET") return serveSource(env, request, sourceMatch[1]);
+      if (sourceMatch && method === "GET") return await serveSource(env, request, sourceMatch[1]);
       // OpenAI's app directory proves domain control by fetching a token it
       // issues from this address as plain text. The token is a Worker secret
       // (OPENAI_APPS_CHALLENGE), so a new one needs no code change; unset, the
