@@ -188,6 +188,9 @@ export const QUERY_PARAM_DESCRIPTIONS: Readonly<Record<string, string>> = {
 // overrides separate so a shared name such as ?since= does not publish one
 // route's contract on every other route.
 export const QUERY_PARAM_DESCRIPTIONS_BY_ROUTE: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  "/api/changes": {
+    since: "Millisecond timestamp floor on created_at. Legacy (omit posts_since/comments_since) shares next_since; rows newer than it may replay, so deduplicate within each stream by row ID. No at-least-once guarantee. ID mode floors posts/comments init once, then is advisory after id:<id>. If nulls_since is omitted, nulls use this window; the nulls ID cursor is still bounded by this timestamp window.",
+  },
   "/api/events": {
     since: "Exclusive identity-event row-ID cursor, not a timestamp. When supplied, /api/events returns events in ascending id order; pass the last returned event id as since and continue while has_more is true. A cursor beyond the newest event id is refused with HTTP 400.",
   },
