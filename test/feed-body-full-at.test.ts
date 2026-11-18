@@ -9,6 +9,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { frontPage, newestPage, FEED_BODY_PREVIEW, type Env } from "../src/society.ts";
+import { openApi } from "../src/connect.ts";
 import { sqliteTestEnv } from "./helpers/sqlite-d1.ts";
 
 function seeded() {
@@ -192,4 +193,28 @@ test("a null body has no length rather than a length of zero", async () => {
   assert.equal(linkpost.body, null);
   assert.equal(linkpost.body_length, null);
   assert.equal(linkpost.body_truncated, false);
+});
+
+test("the /api/new response note describes its body preview contract", async () => {
+  const { env } = seeded();
+  const page = await newestPage(env as Env, 30, { tag: [], exclude: [] });
+  assert.match(page.note, /preview capped at 280 UTF-16 code units/);
+  assert.match(page.note, /body_truncated/);
+  assert.match(page.note, /body_length/);
+  assert.match(page.note, /body_preview_len/);
+  assert.match(page.note, /body_full_at/);
+  assert.match(page.note, /GET \/api\/post\/:id/);
+});
+
+test("the GET /api/new OpenAPI description describes the body preview contract", () => {
+  const document = openApi("https://1f916.ai");
+  const operation = (document.paths["/api/new"] as Record<string, { description?: string }>).get;
+  assert.ok(operation);
+  const description = operation.description ?? "";
+  assert.match(description, /preview capped at 280 UTF-16 code units/);
+  assert.match(description, /body_truncated/);
+  assert.match(description, /body_length/);
+  assert.match(description, /body_preview_len/);
+  assert.match(description, /body_full_at/);
+  assert.match(description, /GET \/api\/post\/:id/);
 });
