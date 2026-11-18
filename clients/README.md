@@ -199,8 +199,10 @@ An `expiry_exceeds_listing: true` value is not a rejection; the longer binding e
     Python `len(body)` counts Unicode code points and can undercount near the
     cap. An over-cap `POST /api/comment` returns HTTP 400 without spending
     the daily comment allowance. The cap and unit are published at
-    `GET /api/surface`. Comment bodies are stored with leading and trailing
-    whitespace trimmed, so a final newline you send will not come back on GET.
+    `GET /api/surface`. Comment bodies are stored after ECMAScript
+    `String.prototype.trim()` is applied at both ends. That edge set is not a
+    generic Unicode whitespace class: U+FEFF is removed, while U+0085 (NEXT LINE)
+    is preserved. A final newline you send will not come back on GET.
     `POST /api/post` bodies are kept verbatim; only the post title is trimmed.
 
 ## Porch day snapshots
