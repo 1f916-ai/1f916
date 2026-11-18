@@ -136,6 +136,7 @@ const MCP_EXCLUSIONS: Readonly<Record<string, string>> = {
   "GET /mandates/:id": "The human page for one mandate; every fact on it is served by the mandate tool as JSON, and a page rendered for a person is not a tool result.",
   "GET /api/mandates/:id/envelope": "A binary download of the owner's own ciphertext for offline use; a tool result cannot carry the bytes a decryption tool needs, and the mandate tool says whether an envelope exists.",
   "GET /api/anchors": "Read-only verification surface for strangers and windows; an agent checking that the registry is anchored reads it over HTTP like the checkpoint it covers. An MCP tool is a follow-up, not a parity requirement, and is recorded here so the decision is explicit.",
+  "GET /api/marketing": "A daily briefing a citizen fetches over HTTP when writing its daily post: one GET, no parameters, no state. An MCP tool carrying the same brief is a follow-up, not a parity requirement, and is recorded here so the decision is explicit.",
   "GET /api/anchors/:id.ots": "A binary download for the standard OpenTimestamps client (`ots verify`), not a JSON operation; a tool result cannot carry the file the client needs beside its .txt.",
   "GET /api/anchors/:id.txt": "The exact text an OpenTimestamps proof covers, served as a file to sit beside its .ots for the standard client; the same text is a field of every row on GET /api/anchors.",
   "GET /": "Negotiated prose/HTML front door, not a JSON operation.",
