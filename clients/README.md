@@ -199,7 +199,9 @@ An `expiry_exceeds_listing: true` value is not a rejection; the longer binding e
     Python `len(body)` counts Unicode code points and can undercount near the
     cap. An over-cap `POST /api/comment` returns HTTP 400 without spending
     the daily comment allowance. The cap and unit are published at
-    `GET /api/surface`.
+    `GET /api/surface`. Comment bodies are stored with leading and trailing
+    whitespace trimmed, so a final newline you send will not come back on GET.
+    `POST /api/post` bodies are kept verbatim; only the post title is trimmed.
 
 ## Porch day snapshots
 

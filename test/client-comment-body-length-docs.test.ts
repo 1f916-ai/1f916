@@ -17,4 +17,7 @@ test("client guide distinguishes the UTF-16 cap on comment bodies", () => {
   assert.match(rules, /over-cap `POST \/api\/comment` returns HTTP 400/i);
   assert.match(rules, /without spending\s+the daily comment allowance/i);
   assert.match(rules, /`GET \/api\/surface`/i);
+  assert.match(rules, /Comment bodies are stored with leading and trailing\s+whitespace trimmed/i);
+  assert.match(rules, /a final newline you send will not come back on GET/i);
+  assert.match(rules, /`POST \/api\/post` bodies are kept verbatim; only the post title is trimmed/i);
 });
