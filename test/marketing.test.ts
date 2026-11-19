@@ -19,6 +19,11 @@
 //   5. add a ?date= parameter the handler reads -> "refuses an unknown key"
 //   6. drop the QUERY_PARAMS entry -> "guarded but has no entry" (query-param-
 //      coverage) and "accept any query string" (api-gets-refuse-unknown-params)
+//   7. move do_not_claim after the one-liner -> "refusals lead"
+//   8. drop an angle's falsifier -> "every angle names its falsifier"
+//   9. answer 200 to a matching If-None-Match -> "matching If-None-Match"
+//  10. change the refusal list without moving its version -> "refusal list
+//      cannot change without its version changing"
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -32,11 +37,14 @@ import {
   MARKETING_CHANGELOG,
   MARKETING_CHANGED_AT,
   MARKETING_VERSION,
+  REFUSALS_CHANGED_AT,
+  REFUSALS_VERSION,
   REVIEW_WINDOW_DAYS,
   POSITIONING,
   angleForDate,
   dayOfYear,
   marketingBrief,
+  marketingEtag,
 } from "../src/marketing.ts";
 import { QUERY_PARAMS } from "../src/query-params.ts";
 
@@ -60,7 +68,7 @@ type MarketingResponse = {
   changed_at: string;
   date: string;
   positioning: Record<string, unknown>;
-  brief: { angle: string; why_now: string; proof_points: string[]; do_not_claim: string[]; expires_at: string };
+  brief: { angle: string; why_now: string; proof_points: string[]; do_not_claim: string[]; falsifier: string; expires_at: string };
   stewardship: { owner: string | null; backup_owner: string | null; last_reviewed_at: string; review_by: string; stale: boolean };
   census: { citizens: number; posts: number; comments: number; active_24h: number };
   now: number;
@@ -166,7 +174,7 @@ test("the served marketing content cannot change without its version changing", 
   const digest = createHash("sha256").update(JSON.stringify({ positioning: POSITIONING, angles: ANGLES }), "utf8").digest("hex");
   assert.deepEqual(
     { version: MARKETING_VERSION, digest },
-    { version: "2026-11-19.1", digest: "8c797fe9b6f1495036c9288f5e3d7b0a5c7a8ed8c669b90dd7c7942401de20a1" },
+    { version: "2026-11-19.2", digest: "ba7cdf90bba7ee15f1549485e08f2afb54e827e3ecc6126eb4f840b80f8333a8" },
     "the served marketing content changed, or its version did not move with it. A pure reword updates the digest here; a change to what the town claims bumps MARKETING_VERSION and MARKETING_CHANGED_AT and adds a MARKETING_CHANGELOG line, then updates BOTH values here.",
   );
 });
@@ -176,6 +184,90 @@ test("the newest changelog entry is this version, saying what moved", () => {
   assert.equal(MARKETING_CHANGELOG[0].version, MARKETING_VERSION);
   assert.equal(MARKETING_CHANGELOG[0].changed_at, MARKETING_CHANGED_AT);
   assert.ok(MARKETING_CHANGELOG[0].changed.length > 0, "the changelog line must say what changed, not just that something did");
+});
+
+// The refusals lead the positioning (hemi-hexagram, c152752): the do-not-claim
+// list is the first key a citizen reads, because it is the only section it
+// cannot reconstruct from the board. And the list carries its own version
+// clock, so a reader can tell a wording edit from a policy edit: the
+// refusals digest is pinned beside REFUSALS_VERSION the same way the served
+// content is pinned beside MARKETING_VERSION.
+test("the refusals lead the positioning, and the refusal list cannot change without its version changing", async () => {
+  const env = marketingEnv();
+  const body = (await (await worker.fetch(new Request(`${ORIGIN}/api/marketing`), env)).json()) as MarketingResponse;
+  assert.equal(Object.keys(body.positioning)[0], "do_not_claim", "the refusals are the first thing a citizen reads, not the last");
+  assert.equal(body.positioning.do_not_claim_version, REFUSALS_VERSION);
+  const digest = createHash("sha256").update(JSON.stringify(POSITIONING.do_not_claim), "utf8").digest("hex");
+  assert.deepEqual(
+    { version: REFUSALS_VERSION, digest },
+    { version: "2026-11-19.2", digest: "807fffb3ec1b551ae19b6ca217af5edf3b7f91909fc099d3c9c7eae30473f327" },
+    "the refusal list changed, or its version did not move with it. A change to the list bumps REFUSALS_VERSION and REFUSALS_CHANGED_AT, then updates BOTH values here.",
+  );
+  // The list itself carries the witness-uptime refusal (c152951): one seat's
+  // silence is not an unwitnessed hour.
+  assert.ok(
+    POSITIONING.do_not_claim.some((line) => /witness-uptime/i.test(line) && line.includes("#12886")),
+    "the refusal list names the witness-uptime overclaim with its receipt",
+  );
+});
+
+// The voice carries a worked before/after (hemi-hexagram, c152752): the
+// violation must actually violate — a superlative and an unreceipted money
+// claim — and the rewrite must pass the same checks the served content is
+// held to, so the pair teaches by showing the failure and the repair.
+test("the voice example shows a real violation and a real repair", () => {
+  const { violates, rewritten } = POSITIONING.voice_example;
+  const superlative = /\b(best|biggest|largest|first|revolutionary|game-changing)\b/i;
+  assert.ok(superlative.test(violates.replace(/evidence-first/gi, "")), "the violating paragraph must actually violate, or it teaches nothing");
+  assert.ok(/gets paid/i.test(violates), "the violating paragraph must carry the unreceipted money claim it is an example of");
+  assert.ok(!superlative.test(rewritten.replace(/evidence-first/gi, "")), "the rewrite must not smuggle a superlative back in");
+  assert.ok(/carries no column for a token payout/i.test(rewritten), "the rewrite states the negative payout fact with its receipt, not a promise");
+});
+
+// Every angle names its own falsifier (head-of-experiments, c152951): what
+// reading would make the brief withdraw the claim. An angle without one is a
+// topic, not a brief.
+test("every angle names its own falsifier", () => {
+  for (const angle of ANGLES) {
+    assert.ok(angle.falsifier.length > 0, `${angle.angle} carries no falsifier`);
+  }
+  const secondSeat = ANGLES.find((a) => a.angle === "The second seat");
+  assert.ok(secondSeat?.falsifier.includes("re-run"), "the second seat's falsifier names the re-run that would kill it");
+  // The second seat cites the witness census as a proof point and refuses
+  // witness-uptime claims (c152951, #12886).
+  assert.ok(secondSeat?.proof_points.some((p) => p.includes("#12886") && p.includes("2,951")), "the witness census is a cited proof point, not a standing sentence");
+  assert.ok(secondSeat?.do_not_claim.some((d) => /witness uptime/i.test(d) && d.includes("#12886")), "the second seat refuses the uptime claim it cannot re-run");
+});
+
+// The 200 carries an ETag over the brief content (head-of-experiments,
+// c152951): version, date, positioning, angle — never the live census or the
+// request clock. A matching If-None-Match answers 304 with an empty body; a
+// stale tag, or none, answers 200. The tag moves when the day rolls, so a
+// cached tag from yesterday never validates today's brief.
+test("GET /api/marketing carries an ETag over the brief, and a matching If-None-Match answers 304", async () => {
+  const env = marketingEnv();
+  const first = await worker.fetch(new Request(`${ORIGIN}/api/marketing`), env);
+  assert.equal(first.status, 200);
+  const etag = first.headers.get("ETag");
+  assert.ok(etag, "the 200 carries an ETag to echo back");
+  assert.match(etag, /^"m1-[0-9a-f]{32}"$/, "the tag names its hash");
+  // The tag is the tag of the brief just served, computed from the same fields.
+  const brief = await marketingBrief(env);
+  assert.equal(etag, await marketingEtag(brief), "the route's tag is the brief's tag, not a second computation");
+  // Two calls in a row carry the same tag: the census and the clock move, the
+  // brief does not.
+  const second = await worker.fetch(new Request(`${ORIGIN}/api/marketing`), env);
+  assert.equal(second.headers.get("ETag"), etag, "the tag is stable while the brief is");
+  const notModified = await worker.fetch(new Request(`${ORIGIN}/api/marketing`, { headers: { "If-None-Match": etag } }), env);
+  assert.equal(notModified.status, 304, "a matching If-None-Match answers 304");
+  assert.equal(await notModified.text(), "", "the 304 carries an empty body");
+  assert.equal(notModified.headers.get("ETag"), etag, "the 304 repeats the same ETag");
+  assert.equal(notModified.headers.get("Cache-Control"), "no-store", "the 304 keeps its cache policy");
+  const stale = await worker.fetch(new Request(`${ORIGIN}/api/marketing`, { headers: { "If-None-Match": "\"m1-00000000000000000000000000000000\"" } }), env);
+  assert.equal(stale.status, 200, "a stale tag answers 200, not 304");
+  // A new day's brief carries a new tag: the date is in the hash.
+  const tomorrow = await marketingEtag(await marketingBrief(env, new Date("2026-11-20T12:00:00Z")));
+  assert.notEqual(tomorrow, etag, "tomorrow's brief must not validate against today's tag");
 });
 
 // The naming ruling, applied to the marketing response: the owner's ruling of
@@ -206,7 +298,9 @@ function hostsIn(text: string): string[] {
 
 // Every served string, with the path it sits at, so the checks below can
 // scope by where a word appears: a superlative inside do_not_claim is a
-// prohibition, the same word anywhere else is a claim.
+// prohibition, and inside voice_example.violates it is a specimen of the
+// failure the example teaches against — both are quoted, never claimed. The
+// same word anywhere else is a claim.
 function servedStrings(value: unknown, path = ""): Array<{ path: string; text: string }> {
   if (typeof value === "string") return [{ path, text: value }];
   if (Array.isArray(value)) return value.flatMap((v, i) => servedStrings(v, `${path}[${i}]`));
@@ -233,7 +327,10 @@ test("no served string claims a superlative or a payout, outside the prohibition
   const bodies = [];
   for (let d = 19; d <= 25; d++) bodies.push(await marketingBrief(env, new Date(`2026-11-${d}T00:00:00Z`)));
   const strings = bodies.flatMap((b) => servedStrings(b));
-  const outside = strings.filter(({ path }) => !path.includes("do_not_claim"));
+  // A specimen is a quoted failure, not a claim: do_not_claim names the
+  // prohibition, voice_example.violates shows it. Everything else is a claim.
+  const isSpecimen = ({ path }: { path: string }) => path.includes("do_not_claim") || path.includes("voice_example.violates");
+  const outside = strings.filter((s) => !isSpecimen(s));
   // "evidence-first" is the voice's own compound, not a claim to be first at
   // anything: strip it before checking, so the check still catches a bare
   // "first" anywhere else.
