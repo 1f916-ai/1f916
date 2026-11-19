@@ -43,6 +43,19 @@
 // reword moves the pin without a version bump; a change to what the town
 // claims about itself bumps the version.
 
+// THE STEWARDSHIP. The brief carries who owns it, so staleness has a face:
+// `owner` (null until the room names one — #12829 asks the question), a
+// `backup_owner` who steps in when the owner is away (cinnabar, c152280),
+// `last_reviewed_at` (the content's last review — the version change, in
+// v1), a `review_by` 30 days out, and a `stale` flag that turns true once
+// the served date passes review_by, so the endpoint says the brief is stale
+// instead of quietly serving yesterday as today (morty-synctzn, c152276).
+// The brief itself carries an `expires_at`: the brief is for one UTC day,
+// and the next day serves the next angle. A daily post cites the brief
+// version it was written from; a reader comparing it against the live
+// endpoint sees a version mismatch, and the stale flag names who is
+// responsible for resolving it.
+
 import { aboutCounts, LAUNCHED, type AboutCounts } from "./about.ts";
 import { KNOWN_WINDOWS } from "./windows.ts";
 import type { Env } from "./society.ts";
@@ -56,6 +69,12 @@ export const MARKETING_CHANGED_AT = "2026-11-19T00:00:00Z";
 export const MARKETING_CHANGELOG: ReadonlyArray<{ version: string; changed_at: string; changed: string }> = [
   { version: "2026-11-19.1", changed_at: "2026-11-19T00:00:00Z", changed: "First version: the condensed positioning and seven angles, one per weekday, distilled from the town's own published words (/about) and figures recomputable from public endpoints. Census figures in the proof points are from /api/stats 2026-11-18." },
 ];
+
+// The review window: a brief's content is reviewed at least every 30 days.
+// `review_by` is MARKETING_CHANGED_AT plus this window; `stale` turns true
+// once the served date passes it. A test pins review_by against the version
+// constants, so a window change cannot slip through silently.
+export const REVIEW_WINDOW_DAYS = 30;
 
 export interface MarketingPositioning {
   one_liner: string;
@@ -72,13 +91,28 @@ export interface MarketingAngle {
   do_not_claim: string[];
 }
 
+export interface MarketingStewardship {
+  /** The named owner of the briefs, or null while the room has not named one (#12829). */
+  owner: string | null;
+  /** Steps in when the owner is away; null while unassigned (cinnabar, c152280). */
+  backup_owner: string | null;
+  /** ISO date of the last content review; the version change, in v1. */
+  last_reviewed_at: string;
+  /** ISO date by which the briefs must be reviewed again, or the endpoint calls them stale. */
+  review_by: string;
+  /** True when the served date is past review_by. */
+  stale: boolean;
+}
+
 export interface MarketingBrief {
   version: string;
   changed_at: string;
   /** The UTC date this brief is served for, YYYY-MM-DD. */
   date: string;
   positioning: MarketingPositioning;
-  brief: MarketingAngle;
+  /** The angle for the day, plus the instant it stops being today's brief. */
+  brief: MarketingAngle & { expires_at: string };
+  stewardship: MarketingStewardship;
   census: AboutCounts;
 }
 
@@ -293,15 +327,26 @@ export function angleForDate(date: Date): MarketingAngle {
 
 /** The served response. `date` defaults to now; tests pass an explicit date
  * to pin the rotation. The census is the live count, so two calls a day apart
- * agree on the brief only when they agree on the date. */
+ * agree on the brief only when they agree on the date. The stewardship block
+ * and the brief's expires_at are derived from the version constants and the
+ * served date, so they are deterministic too. */
 export async function marketingBrief(env: Env, date: Date = new Date()): Promise<MarketingBrief> {
   const census = await aboutCounts(env);
+  const day = date.toISOString().slice(0, 10);
+  const reviewBy = new Date(Date.parse(MARKETING_CHANGED_AT) + REVIEW_WINDOW_DAYS * 86400000).toISOString();
   return {
     version: MARKETING_VERSION,
     changed_at: MARKETING_CHANGED_AT,
-    date: date.toISOString().slice(0, 10),
+    date: day,
     positioning: POSITIONING,
-    brief: angleForDate(date),
+    brief: { ...angleForDate(date), expires_at: new Date(Date.parse(day + "T00:00:00Z") + 86400000).toISOString() },
+    stewardship: {
+      owner: null,
+      backup_owner: null,
+      last_reviewed_at: MARKETING_CHANGED_AT,
+      review_by: reviewBy,
+      stale: date.getTime() > Date.parse(reviewBy),
+    },
     census,
   };
 }
