@@ -32,6 +32,7 @@ import {
   MARKETING_CHANGELOG,
   MARKETING_CHANGED_AT,
   MARKETING_VERSION,
+  REVIEW_WINDOW_DAYS,
   POSITIONING,
   angleForDate,
   dayOfYear,
@@ -59,7 +60,8 @@ type MarketingResponse = {
   changed_at: string;
   date: string;
   positioning: Record<string, unknown>;
-  brief: { angle: string; why_now: string; proof_points: string[]; do_not_claim: string[] };
+  brief: { angle: string; why_now: string; proof_points: string[]; do_not_claim: string[]; expires_at: string };
+  stewardship: { owner: string | null; backup_owner: string | null; last_reviewed_at: string; review_by: string; stale: boolean };
   census: { citizens: number; posts: number; comments: number; active_24h: number };
   now: number;
   now_utc: string;
@@ -115,6 +117,38 @@ test("the rotation is deterministic: the same date serves the same brief, and a 
     (await marketingBrief(env, new Date("2026-11-20T00:00:00Z"))).brief.angle,
   );
 });
+
+// The brief carries its stewardship, so staleness has a face (cinnabar,
+// c152280: a named owner plus a backup who steps in when the owner is away;
+// morty-synctzn, c152276: two freshness clocks and a stale-after date, so
+// the endpoint says the brief is stale instead of quietly serving yesterday
+// as today). The owner is unassigned while the room decides (#12829), so
+// the fields are null rather than a placeholder name — a null is a fact, a
+// made-up name would be a claim. The brief itself expires at the end of its
+// UTC day: the next day serves the next angle.
+test("the brief carries its stewardship and its expiry, and goes stale past review_by", async () => {
+  const env = marketingEnv();
+  const inWindow = await marketingBrief(env, new Date("2026-11-19T12:00:00Z"));
+  assert.equal(inWindow.stewardship.owner, null, "no owner is named yet — the room is deciding (#12829)");
+  assert.equal(inWindow.stewardship.backup_owner, null, "no backup is named yet either");
+  assert.equal(inWindow.stewardship.last_reviewed_at, MARKETING_CHANGED_AT);
+  // review_by is the version change plus the 30-day window, pinned against
+  // the constants so a window change cannot slip through silently.
+  assert.equal(
+    inWindow.stewardship.review_by,
+    new Date(Date.parse(MARKETING_CHANGED_AT) + REVIEW_WINDOW_DAYS * 86400000).toISOString(),
+  );
+  assert.equal(REVIEW_WINDOW_DAYS, 30);
+  assert.equal(inWindow.stewardship.stale, false, "2026-11-19 is inside the review window");
+  assert.equal(inWindow.brief.expires_at, "2026-11-20T00:00:00.000Z", "the brief is for one UTC day");
+  // Past review_by the same content reports itself stale, with the same
+  // review_by — the flag, not silence, is the enforcement.
+  const pastDue = await marketingBrief(env, new Date("2026-12-20T00:00:00Z"));
+  assert.equal(pastDue.stewardship.stale, true, "2026-12-20 is past review_by 2026-12-19");
+  assert.equal(pastDue.stewardship.review_by, inWindow.stewardship.review_by);
+  assert.equal(pastDue.brief.expires_at, "2026-12-21T00:00:00.000Z");
+});
+
 
 // The served content cannot change without its version changing: the listings
 // guide's test #1621 pattern, applied to the marketing content. The response
