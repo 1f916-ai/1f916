@@ -1143,6 +1143,7 @@ export const CONDITIONAL_304_ROUTES: ReadonlySet<string> = new Set([
   "/api/changes",
   "/api/citizen/:handle",
   "/api/comment/:id",
+  "/api/marketing",
   "/api/pulse",
   "/badge/:handle.svg",
   "/openapi.json",
