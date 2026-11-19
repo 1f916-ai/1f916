@@ -12,7 +12,7 @@
 // pair, so a 200/4xx from the worker carries length > 0 by construction.
 //
 // The router's complete empty-body inventory at HEAD:
-//   GET 304 on the three conditional reads (CONDITIONAL_304_ROUTES) -- empty
+//   GET 304 on the conditional reads (CONDITIONAL_304_ROUTES, seven) -- empty
 //     by RFC 9110, declared (test/openapi-304-conditional.test.ts);
 //   HEAD of anything -- status/headers copied, body dropped (src/index.ts
 //     finish());
@@ -134,7 +134,7 @@ test("no /api/* response is declared empty-body except the conditional 304s, the
   // declaration appears anywhere else, it belongs here with its reason.
   assert.deepEqual(
     emptyDecls.sort(),
-    ["GET /api/changes 304", "GET /api/citizen/{handle} 304", "GET /api/comment/{id} 304", "GET /api/pulse 304", "GET /badge/{handle}.svg 304", "GET /openapi.json 304", "POST /mcp 202", "POST /mcp/read 202", "POST /mcp/protocol 202", "POST /oauth/authorize 303"].sort(),
+    ["GET /api/changes 304", "GET /api/citizen/{handle} 304", "GET /api/comment/{id} 304", "GET /api/marketing 304", "GET /api/pulse 304", "GET /badge/{handle}.svg 304", "GET /openapi.json 304", "POST /mcp 202", "POST /mcp/read 202", "POST /mcp/protocol 202", "POST /oauth/authorize 303"].sort(),
     "the document's complete empty-body inventory drifted",
   );
 });
