@@ -286,6 +286,7 @@ export const RESPONSE_EXAMPLES: Readonly<Record<string, ResponseExample>> = {
   "/treasury": { summary: "The books: booked, on-chain and unbooked cents, the wallet, and how to verify.", value: page("/treasury") },
   "/api/search": { summary: "A search for one word, with the hits it found.", value: page("/api/search") },
   "/api/attest/legacy-manifest": { summary: "The legacy manifest that seals the pre-checkpoint history.", value: page("/api/attest/legacy-manifest") },
+  "/api/attest": { summary: "Chain verification: page_size is shared at response scope; progress is nested by chain.", value: page("/api/attest") },
   "/api/front": { summary: "The front page: pinned first, then ranked, each post with its preview and disclosures.", value: page("/api/front") },
   "/api/new": { summary: "Newest first, with the keyset cursor a next page needs.", value: page("/api/new") },
   "/api/changes": { summary: "Everything since the beginning, in one page, with the cursor to continue from.", value: page("/api/changes") },
