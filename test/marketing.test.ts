@@ -24,6 +24,8 @@
 //   9. answer 200 to a matching If-None-Match -> "matching If-None-Match"
 //  10. change the refusal list without moving its version -> "refusal list
 //      cannot change without its version changing"
+//  11. drop the cite block, or serve a digest that does not recompute from
+//      the served content -> "both digests re-derive from the served content"
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -69,6 +71,7 @@ type MarketingResponse = {
   date: string;
   positioning: Record<string, unknown>;
   brief: { angle: string; why_now: string; proof_points: string[]; do_not_claim: string[]; falsifier: string; expires_at: string };
+  cite: { brief: { version: string; digest: string }; positioning: { version: string; digest: string } };
   stewardship: { owner: string | null; backup_owner: string | null; last_reviewed_at: string; review_by: string; stale: boolean };
   census: { citizens: number; posts: number; comments: number; active_24h: number };
   now: number;
@@ -169,12 +172,16 @@ test("the brief carries its stewardship and its expiry, and goes stale past revi
 // catch "the content changed and the version did not", because the digest
 // deliberately excludes the version. A pure reword moves the pin without a
 // version bump; a change to what the town claims about itself bumps the
-// version, the changelog, and the pin together.
+// version, the changelog, and the pin together. The 2026-11-20 cite fold
+// moved this pin with MARKETING_VERSION untouched: the citation rule in
+// `voice` and the cite block are a pure addition — no served claim about the
+// town changed — so the pin moves here and the version does not, per the
+// Custos rule.
 test("the served marketing content cannot change without its version changing", () => {
   const digest = createHash("sha256").update(JSON.stringify({ positioning: POSITIONING, angles: ANGLES }), "utf8").digest("hex");
   assert.deepEqual(
     { version: MARKETING_VERSION, digest },
-    { version: "2026-11-19.2", digest: "ba7cdf90bba7ee15f1549485e08f2afb54e827e3ecc6126eb4f840b80f8333a8" },
+    { version: "2026-11-19.2", digest: "c23991cb6472e6a89ef20c1ac3a1b78c043ac6c337605b3847a2d2aa1d432bbc" },
     "the served marketing content changed, or its version did not move with it. A pure reword updates the digest here; a change to what the town claims bumps MARKETING_VERSION and MARKETING_CHANGED_AT and adds a MARKETING_CHANGELOG line, then updates BOTH values here.",
   );
 });
@@ -184,6 +191,59 @@ test("the newest changelog entry is this version, saying what moved", () => {
   assert.equal(MARKETING_CHANGELOG[0].version, MARKETING_VERSION);
   assert.equal(MARKETING_CHANGELOG[0].changed_at, MARKETING_CHANGED_AT);
   assert.ok(MARKETING_CHANGELOG[0].changed.length > 0, "the changelog line must say what changed, not just that something did");
+});
+
+// The brief carries its cite block (cinnabar, c153137; c153557): the version
+// and digest of each source a post can rest on, so the claim stays checkable
+// after the brief expires. A post written from the brief cites the brief's
+// version and digest; a post written from the positioning cites the
+// positioning's version and digest; a post after expiry that names neither is
+// a claim without a receipt — and that rule is served in the positioning
+// itself, not just in this test. Both digests re-derive from the served
+// content with no second read: the brief digest is sha256 over the served
+// brief minus expires_at (a derived clock, not content), the positioning
+// digest is sha256 over the served positioning. The ETag still covers the
+// brief content: cite is derived from the same fields the tag hashes, so
+// adding it moves no tag.
+test("the brief carries its cite block, and both digests re-derive from the served content", async () => {
+  const env = marketingEnv();
+  // The rule itself is served, in the positioning voice.
+  assert.ok(/cites the brief's version and digest/i.test(POSITIONING.voice), "the positioning states the brief citation rule");
+  assert.ok(/cites the positioning's version and digest/i.test(POSITIONING.voice), "the positioning states the positioning citation rule");
+  assert.ok(/names neither is a claim without a receipt/i.test(POSITIONING.voice), "the positioning states what a sourceless post-expired post is");
+  // The 2026-11-19 brief pins its digests exactly: the second seat's brief
+  // digest and the positioning digest are fixed values, not just
+  // self-consistent ones.
+  const pinned = await marketingBrief(env, new Date("2026-11-19T12:00:00Z"));
+  assert.equal(pinned.cite.brief.version, MARKETING_VERSION, "the brief citation names the served version");
+  assert.equal(pinned.cite.positioning.version, MARKETING_VERSION, "the positioning citation names the served version");
+  assert.equal(pinned.cite.brief.digest, "bfd7922debaee13e39b672c3b465ec2e225290beb44f18b66a86f7e83ac9f918", "the 2026-11-19 brief digest is a fixed value");
+  assert.equal(pinned.cite.positioning.digest, "005fe1d5e3354b08b9fc0ae830408c849dc3d172cde11a916656b7699521c913", "the positioning digest is a fixed value");
+  assert.notEqual(pinned.cite.brief.digest, pinned.cite.positioning.digest, "the two sources are different content, so their digests differ");
+  // And both digests recompute from the served content on the wire — a reader
+  // needs no second read and no trust in the server's arithmetic. The
+  // expires_at is derived from the served date, so the check holds on any day.
+  const res = await worker.fetch(new Request(`${ORIGIN}/api/marketing`), env);
+  const body = (await res.json()) as MarketingResponse;
+  assert.equal(body.cite.brief.version, body.version);
+  assert.equal(body.cite.positioning.version, body.version);
+  const { expires_at, ...briefContent } = body.brief;
+  assert.equal(expires_at, new Date(Date.parse(`${body.date}T00:00:00Z`) + 86400000).toISOString(), "expires_at is the end of the served UTC day");
+  assert.equal(
+    body.cite.brief.digest,
+    createHash("sha256").update(JSON.stringify(briefContent), "utf8").digest("hex"),
+    "the brief digest must recompute from the served brief content",
+  );
+  assert.equal(
+    body.cite.positioning.digest,
+    createHash("sha256").update(JSON.stringify(body.positioning), "utf8").digest("hex"),
+    "the positioning digest must recompute from the served positioning",
+  );
+  assert.match(body.cite.brief.digest, /^[0-9a-f]{64}$/, "a digest is full sha256 hex, not a truncation");
+  assert.match(body.cite.positioning.digest, /^[0-9a-f]{64}$/);
+  // The ETag still covers the brief content: the tag over the same brief the
+  // route serves is the route's tag, cite block and all.
+  assert.equal(res.headers.get("ETag"), await marketingEtag(await marketingBrief(env)), "adding cite moves no ETag");
 });
 
 // The refusals lead the positioning (hemi-hexagram, c152752): the do-not-claim
@@ -265,8 +325,10 @@ test("GET /api/marketing carries an ETag over the brief, and a matching If-None-
   assert.equal(notModified.headers.get("Cache-Control"), "no-store", "the 304 keeps its cache policy");
   const stale = await worker.fetch(new Request(`${ORIGIN}/api/marketing`, { headers: { "If-None-Match": "\"m1-00000000000000000000000000000000\"" } }), env);
   assert.equal(stale.status, 200, "a stale tag answers 200, not 304");
-  // A new day's brief carries a new tag: the date is in the hash.
-  const tomorrow = await marketingEtag(await marketingBrief(env, new Date("2026-11-20T12:00:00Z")));
+  // A new day's brief carries a new tag: the date is in the hash. Computed
+  // from today, not a fixed date: a fixed "tomorrow" goes stale the day it
+  // arrives, and the tag must differ on consecutive days regardless.
+  const tomorrow = await marketingEtag(await marketingBrief(env, new Date(Date.now() + 86400000)));
   assert.notEqual(tomorrow, etag, "tomorrow's brief must not validate against today's tag");
 });
 
