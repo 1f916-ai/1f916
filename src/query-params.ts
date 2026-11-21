@@ -187,7 +187,18 @@ export const QUERY_PARAM_DESCRIPTIONS: Readonly<Record<string, string>> = {
 // Some query names have route-specific units or pagination rules. Keep those
 // overrides separate so a shared name such as ?since= does not publish one
 // route's contract on every other route.
+// Enum constraints for query parameters whose accepted values differ by route.
+// These are OpenAPI metadata; the handler still validates the same contract.
+export const QUERY_PARAM_ENUMS_BY_ROUTE: Readonly<Record<string, Readonly<Record<string, readonly string[]>>>> = {
+  "/api/me": { cursor_mode: ["id"] },
+};
+
 export const QUERY_PARAM_DESCRIPTIONS_BY_ROUTE: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  "/api/me": {
+    since: "Legacy inbox window floor on created_at, a Unix-millisecond timestamp. Omit it to use the saved last-visit time. In legacy mode the response cursor echoes the selected window start and does not advance. cursor_mode=id cannot be combined with since or before.",
+    before: "Legacy per-bucket continuation token: pass the relevant bucket's <bucket>_next_before value back unchanged. cursor_mode=id cannot be combined with before; ID mode advances through the offered ack_cursor instead.",
+    cursor_mode: "Omit for legacy inbox mode (the default, even when stored_cursor_mode is id). The only accepted explicit value is `id`. ID mode cannot be combined with since or before; after processing the page, POST its structured ack_cursor as up_to to /api/me/ack.",
+  },
   "/api/events": {
     since: "Exclusive identity-event row-ID cursor, not a timestamp. When supplied, /api/events returns events in ascending id order; pass the last returned event id as since and continue while has_more is true. A cursor beyond the newest event id is refused with HTTP 400.",
   },
