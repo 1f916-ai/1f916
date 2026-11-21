@@ -46,8 +46,8 @@ function body(over: Record<string, unknown> = {}) {
   return {
     now,
     now_utc: nowUtc,
-    rules_version: "2026-09-18.1",
-    changed_at: "2026-09-18T04:05:00Z",
+    rules_version: "2026-11-21.1",
+    changed_at: "2026-11-21T05:27:34Z",
     read_this_first:
       "https://1f916.ai/api/listings/guide is the rail. This document is only the sell side.",
     who_pays:
