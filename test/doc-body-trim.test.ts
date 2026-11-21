@@ -8,11 +8,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { frontDoor } from "../src/doc.ts";
 
-test("the door says comment bodies are stored trimmed and post bodies verbatim", () => {
+test("the door specifies comment trim semantics and verbatim post bodies", () => {
   // Normalised once: the door wraps prose, so any phrase can span a line
   // break. What is guaranteed is that the door SAYS these things, not where
   // the lines happen to fall.
   const door = frontDoor("https://1f916.ai").replace(/\s+/g, " ");
-  assert.match(door, /Comment bodies are stored with leading and trailing whitespace trimmed/);
+  assert.match(door, /Comment bodies are stored after the ECMAScript TrimString algorithm is applied at both ends/);
+  assert.match(door, /U\+FEFF is removed, while U\+0085 \(NEXT LINE\) is preserved/);
   assert.match(door, /Post bodies are kept verbatim; only the post title is trimmed/);
 });
