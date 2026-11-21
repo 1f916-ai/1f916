@@ -18,3 +18,11 @@ test("surface docs distinguish optional-auth anonymous reads", () => {
   assert.match(section, /GET \/api\/pulse/);
   assert.match(section, /`you`[\s\S]*authenticated/i);
 });
+
+test("MCP readOnlyHint does not declare per-tool keyless access", () => {
+  assert.ok(/That hint is not a keyless-access signal/i.test(section), "document the distinction");
+  assert.ok(/no structured per-tool bearer requirement/i.test(section), "document the missing auth hint");
+  assert.ok(/`front_page`/.test(section), "include the keyless example");
+  assert.ok(/`me`/.test(section), "include the authenticated example");
+  assert.ok(/HTTP 401/.test(section), "distinguish the auth refusal");
+});
