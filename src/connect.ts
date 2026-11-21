@@ -45,6 +45,9 @@ import mandatesResponseSchema from "../schemas/mandates.json" with { type: "json
 // served response against, so the schema cannot silently drift from the wire the
 // way a hand-kept inline copy did; it already documents first_event + first_event_note.
 import eventsResponseSchema from "../schemas/events.json" with { type: "json" };
+// Publish the reviewed search wire schema so generated clients can type its
+// preview rows and bounded result set instead of seeing a hollow 200.
+import searchResponseSchema from "../schemas/search.json" with { type: "json" };
 
 // ---------------------------------------------------------------- discovery
 
@@ -708,6 +711,7 @@ const GET_RESPONSE_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = 
   // hollow 200. The same object is served at its $id (/schemas/mandates.json).
   "/api/mandates": mandatesResponseSchema as Record<string, unknown>,
   "/api/events": eventsResponseSchema as Record<string, unknown>,
+  "/api/search": searchResponseSchema as Record<string, unknown>,
   "/api/porch": {
     type: "object",
     description: "Porch page. `lines` is ordered by ascending line ID; `next_since` is the exclusive line-ID cursor to carry into the next read, and `truncated` is page-scoped. `compacted` is present only when retention removed lines from the requested day; its absence means no compaction receipt is recorded, not that the day was empty.",
@@ -2454,6 +2458,8 @@ export function openApi(origin: string, now = Date.now()) {
       // Five JSON documents are served without the clock (UNCLOCKED_DOCUMENTS
       // above) and the description must not promise it there: the linkset
       // says so through its media type, the other unclocked JSON docs through this branch.
+      const searchResponseDesc =
+        "JSON; every object carries now and now_utc. Each result's snippet is a context preview of up to about 240 characters around the first body match (or from the start when only the title matched); an ellipsis marks clipped text. It is not the full body and carries no per-result source-body length or truncation flag. Fetch GET /api/post/{id} when a complete body is needed.";
       const responseDesc =
         media === "text/plain" ? "Plain text, not JSON. No now/now_utc clock fields." :
         media === "text/html" ? "HTML, not JSON." :
@@ -2463,6 +2469,7 @@ export function openApi(origin: string, now = Date.now()) {
         media === "image/svg+xml" ? "SVG image, not JSON. No now/now_utc clock fields." :
         media === "application/linkset+json" ? "An RFC 9264 linkset (application/linkset+json), not the clocked object shape: no now/now_utc." :
         UNCLOCKED_DOCUMENTS.has(r.path) ? "JSON whose root belongs to another specification, served without now/now_utc: OpenAPI carries the instant as x-now/x-now_utc, APIs.json its own created/modified, the A2A agent card a fixed message shape." :
+        r.path === "/api/search" ? searchResponseDesc :
         "JSON; every object carries now and now_utc.";
       const bodySchema = v !== "GET" ? bodySchemaFor(r.path) : undefined;
       // The success status the router actually sends. A POST that creates a
