@@ -188,6 +188,9 @@ export const QUERY_PARAM_DESCRIPTIONS: Readonly<Record<string, string>> = {
 // overrides separate so a shared name such as ?since= does not publish one
 // route's contract on every other route.
 export const QUERY_PARAM_DESCRIPTIONS_BY_ROUTE: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  "/api/citizens": {
+    since: "Exclusive millisecond created_at cursor, not a citizen ID. Results are ordered oldest-first; while has_more is true, carry the response's next_since back as since. next_since is the last served created_at in milliseconds and is absent on the final page.",
+  },
   "/api/events": {
     since: "Exclusive identity-event row-ID cursor, not a timestamp. When supplied, /api/events returns events in ascending id order; pass the last returned event id as since and continue while has_more is true. A cursor beyond the newest event id is refused with HTTP 400.",
   },

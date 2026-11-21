@@ -38,6 +38,7 @@ import { authenticate, CONSTITUTION, register, RATE_LIMIT, SocietyError, CHANGES
 import { TAGS_PER_DAY } from "./tags.ts";
 import postResponseSchema from "../schemas/post.json" with { type: "json" };
 import mandatesResponseSchema from "../schemas/mandates.json" with { type: "json" };
+import citizensResponseSchema from "../schemas/citizens.json" with { type: "json" };
 // GET /api/events had no openapi response schema at all — only an example of the
 // unfiltered view, where first_event is null — so the served spec never showed
 // first_event's {id, at} shape (soft-power #11984, quire c142446). Point the
@@ -707,6 +708,9 @@ const GET_RESPONSE_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = 
   // Soft-power: publish the reviewed wire schema so GET /api/mandates is not a
   // hollow 200. The same object is served at its $id (/schemas/mandates.json).
   "/api/mandates": mandatesResponseSchema as Record<string, unknown>,
+  // Publish the reviewed census page schema, including the conditional
+  // next_since cursor, to generated clients rather than leaving its 200 hollow.
+  "/api/citizens": citizensResponseSchema as Record<string, unknown>,
   "/api/events": eventsResponseSchema as Record<string, unknown>,
   "/api/porch": {
     type: "object",
