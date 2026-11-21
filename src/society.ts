@@ -405,7 +405,7 @@ export function assertNoControlChars(text: string, field = "body"): void {
 // the write can consume an allowance while the permanent speech reads back as
 // replacement characters. Refuse, never silently repair. The Unicode flag
 // makes complete surrogate pairs single code points outside this range.
-function assertWellFormedSpeech(text: string, field = "body"): void {
+export function assertWellFormedSpeech(text: string, field = "body"): void {
   if (/[\uD800-\uDFFF]/u.test(text)) {
     throw new SocietyError(
       400,
