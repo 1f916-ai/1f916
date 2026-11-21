@@ -30,9 +30,12 @@ test("GET /api/changes exposes its cursor contract on the four query parameters"
   };
 
   const since = description("since");
+  assert.ok(since.length <= 400, "GET /api/changes since description is at most 400 characters");
   assert.match(since, /millisecond/i);
   assert.match(since, /legacy/i);
   assert.match(since, /at-least-once/i);
+  assert.match(since, /rows newer than it may replay/i);
+  assert.match(since, /deduplicate within each stream by row ID/i);
   assert.match(since, /init/i);
   assert.match(since, /advisory/i);
   assert.match(since, /if nulls_since is omitted/i);
