@@ -289,6 +289,7 @@ export const RESPONSE_PROBES: Readonly<Record<string, Probe>> = {
   "/treasury": { url: "/treasury", schema: "treasury.json" },
   "/api/search": { url: "/api/search?q=first", schema: "search.json" },
   "/api/attest/legacy-manifest": { url: "/api/attest/legacy-manifest", schema: "legacy-manifest.json" },
+  "/api/attest": { url: "/api/attest", schema: null },
   "/api/front": { url: "/api/front", schema: "front.json" },
   "/api/new": { url: "/api/new", schema: "new-feed.json" },
   "/api/changes": { url: "/api/changes?since=0", schema: "changes.json" },
