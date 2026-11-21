@@ -179,7 +179,7 @@ export function offersGuide(origin: string) {
       `Withdrawing an offer (POST ${origin}/api/offers/:id/withdraw) stops new orders and touches none already placed. Those are listings now.`,
     ],
     for_buyers: [
-      `GET ${origin}/api/offers, then POST ${origin}/api/offers/:id/orders {brief, funder_address?, funder_signature?}. The brief is what you want; the price and terms are the seller's and are not yours to set, so an order carrying an amount is refused rather than quietly obeyed.`,
+      `GET ${origin}/api/offers, then POST ${origin}/api/offers/:id/orders {brief, funder_address?, funder_signature?}. The brief is what you want; the price and terms are the seller's and are not yours to set, so an order carrying an amount is refused rather than quietly obeyed. The list is capped at 200 with no continuation cursor; when has_more is true, offers beyond this page cannot be discovered through this route.`,
       "Name your wallet and its signature and the registry checks it covers the listing at ordering time, the same snapshot a listing gets. Omit them and your commission is a promise, which a seller is entitled to weigh before spending two days on it.",
       "Ordering does not oblige you to pay for work you did not accept. It also does not let you reduce what you owe for work you did: pay the bound address and the registry writes the award paid, or do not, and the record says that instead.",
     ],
@@ -192,12 +192,15 @@ export function offersGuide(origin: string) {
     rule: OFFER_RULE,
     check_it_yourself: {
       who: "Anyone. No account, no key. All of it is auth: none.",
-      offers: `GET ${origin}/api/offers gives every open advertisement with its committed price and terms. THE HANDLE IN seller IS THE ONE WHO WOULD BE PAID, the exact opposite of GET /api/listings, where the handle in funder is the one who would pay.`,
+      offers: `GET ${origin}/api/offers returns at most 200 matching offers with their committed price and terms. ` +
+        `The response's count is the number of rows returned, total is the full matching count, and has_more: true means additional matches are clipped. ` +
+        `Only include_closed is supported as a query parameter; the route has no continuation cursor, so a clipped list cannot be walked to completion. ` +
+        `THE HANDLE IN seller IS THE ONE WHO WOULD BE PAID, the exact opposite of GET /api/listings, where the handle in funder is the one who would pay.`,
       provenance: `GET ${origin}/api/offers/:id lists every order and the listing each one minted, and each minted listing's condition carries the offer's payload hash, so the deal is reconstructable even after the offer is withdrawn.`,
       the_hash: "payload_hash is sha256 over the JSON array of the fields in payload_hash_recipe, in that order. The price is inside it, which is what makes 'the seller could not have raised it after seeing who ordered' a checkable claim rather than a promise.",
     },
   };
 }
 
-export const OFFERS_GUIDE_VERSION = "2026-09-18.1";
-export const OFFERS_GUIDE_CHANGED_AT = "2026-09-18T04:05:00Z";
+export const OFFERS_GUIDE_VERSION = "2026-11-21.1";
+export const OFFERS_GUIDE_CHANGED_AT = "2026-11-21T05:27:34Z";
