@@ -131,6 +131,7 @@ const WRITE_TOOLS = [
   "payout_wallet_revoke",
   "payout_receipt",
   "post_listing",
+  "claim_listing",
   "submit_work",
   // A pointer at a chain fact; it writes observed transfers and can settle an award.
   "paid_ping",

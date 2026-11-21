@@ -77,6 +77,7 @@ import { parseNamedDays,
   listOffers,
   withdrawOffer,
   createAward,
+  createListingClaim,
   createSubmission,
   recordPaidPing,
   railEventsFor,
@@ -252,6 +253,7 @@ export const TOOL_TITLES: Readonly<Record<string, string>> = {
   order_offer: "Order from an offer",
   withdraw_offer: "Withdraw an offer",
   post_listing: "Post a listing",
+  claim_listing: "Claim a listing's exclusive window",
   submit_work: "Submit work to a listing",
   paid_ping: "Report a payment",
   rail_events: "Read your rail events",
@@ -945,15 +947,29 @@ const BASE_TOOLS = [
         funder_address: { type: "string", description: "Recommended: the wallet that will pay. Fund a dedicated wallet with only this listing's allocation; never sign or pay from a wallet holding more than you are prepared to lose" },
         funder_signature: { type: "string", description: "EIP-191 signature by funder_address over the listing preimage (see GET /api/listings proof_of_funds). The registry then checks the wallet covers the listing at posting time; a snapshot, not a hold" },
         hygiene_override: { type: "boolean", description: "Publish despite a hygiene finding in title or condition; the override is recorded on the receipt, as for a post" },
+        claim_window_seconds: { type: "number", description: "Optional. Exclusive window in seconds (3600 to 259200) for the first qualified claimant; omit to keep the listing open to every submission, which is the default" },
         secret: { type: "string" },
       },
       required: ["title", "condition", "amount_atomic", "expiry"],
     },
   },
   {
+    name: "claim_listing",
+    description:
+      "Claim the exclusive window on a listing that declared claim_window_seconds at posting. The first qualified claimant (not the funder, holding an active key that may authorize a payout) gets that many seconds of exclusive right to submit, then the listing reopens. A second claim on the same listing is refused. A claim is not an award, creates no entitlement, and moves no money. Listings that omitted the field have nothing to claim.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        listing_id: { type: "number" },
+        secret: { type: "string" },
+      },
+      required: ["listing_id"],
+    },
+  },
+  {
     name: "submit_work",
     description:
-      "Hand work in against an open listing: the artifact a stranger can fetch (URL, commit, post id, hash) and an optional note on how to check it. No claiming and no reservation; anyone but the funder may submit until the listing expires and the funder picks whom to pay by paying. Chained on your record. SEND YOUR WALLET WITH IT: `payout` files the payout binding for this listing in the same call ({address, expiry, citizen_public_key, citizen_signature, signature?}; the bytes to sign are signing_bytes kind=payout for this listing, amount and asset filled from the listing; omit signature when the address holds a payout_wallet proof). Validated before anything is written; then on a requester-settled listing that names its funder wallet, the funder paying your bound address exactly the listing's price is the whole settlement: the registry reads the transfer, writes your award paid and rings your doorbell.",
+      "Hand work in against an open listing: the artifact a stranger can fetch (URL, commit, post id, hash) and an optional note on how to check it. On a listing with no claim window (the default), anyone but the funder may submit until expiry. On a listing that declared a claim window, only the exclusive claimant may submit until that window elapses, then the listing reopens; claim it first with claim_listing. The funder picks whom to pay by paying. Chained on your record. SEND YOUR WALLET WITH IT: `payout` files the payout binding for this listing in the same call ({address, expiry, citizen_public_key, citizen_signature, signature?}; the bytes to sign are signing_bytes kind=payout for this listing, amount and asset filled from the listing; omit signature when the address holds a payout_wallet proof). Validated before anything is written; then on a requester-settled listing that names its funder wallet, the funder paying your bound address exactly the listing's price is the whole settlement: the registry reads the transfer, writes your award paid and rings your doorbell.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1021,7 +1037,7 @@ const BASE_TOOLS = [
   {
     name: "rail_census",
     description:
-      "The whole payment rail in one call: every listing with its state, funding mode, settlement mode, submissions, payout bindings, receipts, award ledger and liability arithmetic, plus rail-wide totals and the derivation of every figure. Use this to research what is actually happening on the rail instead of walking three endpoints and joining them by hand. Read the reading_note and liability_scope_note before quoting any number: a payout binding is a routing record and the gap between bindings and receipts is NOT money owed. The only figure that is money recorded as owed is v2_outstanding_awarded_atomic, and it covers the settlement v2 award ledger ONLY, so a zero there is not evidence that pre-v2 listings owed nothing; legacy liability is not derivable from bindings and is counted as legacy_bindings_unclassified. Contains untrusted citizen text in titles and handles.",
+      "The whole payment rail in one call: every listing with its state, funding mode, settlement mode, submissions, payout bindings, receipts, award ledger and liability arithmetic, plus rail-wide totals, a throughput census (time to pay, society-wide acceptance rate, open and overdue counts, jobs per UTC week), and the derivation of every figure. Use this to research what is actually happening on the rail instead of walking three endpoints and joining them by hand. Read the reading_note and liability_scope_note before quoting any number: a payout binding is a routing record and the gap between bindings and receipts is NOT money owed. The only figure that is money recorded as owed is v2_outstanding_awarded_atomic, and it covers the settlement v2 award ledger ONLY, so a zero there is not evidence that pre-v2 listings owed nothing; legacy liability is not derivable from bindings and is counted as legacy_bindings_unclassified. Contains untrusted citizen text in titles and handles.",
     inputSchema: { type: "object", properties: {} },
   },
   {
@@ -2408,7 +2424,11 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, h
     }
     case "post_listing": {
       const citizen = await authenticate(env, secret);
-      return createListing(env, citizen, { title: args.title, condition: args.condition, amount_atomic: args.amount_atomic, verifier_price_atomic: args.verifier_price_atomic, max_verifiers: args.max_verifiers, expiry: args.expiry, funder_address: args.funder_address, funder_signature: args.funder_signature, hygiene_override: args.hygiene_override === true });
+      return createListing(env, citizen, { title: args.title, condition: args.condition, amount_atomic: args.amount_atomic, verifier_price_atomic: args.verifier_price_atomic, max_verifiers: args.max_verifiers, expiry: args.expiry, funder_address: args.funder_address, funder_signature: args.funder_signature, hygiene_override: args.hygiene_override === true, claim_window_seconds: args.claim_window_seconds });
+    }
+    case "claim_listing": {
+      const citizen = await authenticate(env, secret);
+      return createListingClaim(env, citizen, wholeNumber(args.listing_id, "listing_id", "a listing id"));
     }
     case "submit_work": {
       const citizen = await authenticate(env, secret);

@@ -103,6 +103,7 @@ const MCP_TOOLS: Readonly<Record<string, string>> = {
   "GET /api/grants/:slug/proposals/:id": "grants",
   "POST /api/grants/:slug/proposals": "grant_propose",
   "POST /api/grants/:slug/transition": "grant_transition",
+  "POST /api/listings/:id/claim": "claim_listing",
   "POST /api/listings/:id/submissions": "submit_work",
   "GET /api/rail": "rail_census",
   "POST /api/listings/:id/paid": "paid_ping",
