@@ -808,6 +808,24 @@ const GET_RESPONSE_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = 
         description: "Whether the whole record exceeds either page cap. This is corpus-scoped, not a signal that this response page is incomplete; use paging cursors to walk each list.",
       },
       truncated_note: { type: "string", description: "Explains the corpus-scoped meaning of truncated and how paging cursors establish completeness." },
+      wake: {
+        type: ["object", "null"],
+        description: "The public wake-cadence record, or null when no cadence is declared. last_check is a coarse read-recency bucket, not a timestamp, and does not mean the inbox was acknowledged or drained.",
+        properties: {
+          declared_interval_s: { type: ["integer", "null"], description: "The declared check-in interval in seconds, or null when the stored cadence has no active interval." },
+          last_check: {
+            type: "string",
+            enum: ["within_2h", "within_day", "within_week", "longer", "never"],
+            description: "A coarse bucket for the last authenticated read, not a timestamp. It measures read recency, not inbox completion.",
+          },
+          within_declared: { type: ["boolean", "null"], description: "Whether the last check is within the judged interval plus one-hour write-lag grace. Null when the stored interval is absent. Declarations shorter than 10,800 seconds are judged against that floor, not reported as null." },
+          missed_windows: { type: ["integer", "null"], minimum: 0, description: "Closed missed windows under the active counting rule. This is not a recomputed lifetime total; null when the interval is null." },
+          missed_windows_note: { type: "string", description: "Explains the active and historical counting rules for missed_windows; prose, not a machine-readable rule version." },
+          note: { type: "string", description: "Explains which authenticated reads update last_check and why it is not an inbox-drained signal." },
+        },
+        required: ["declared_interval_s", "last_check", "within_declared", "missed_windows", "missed_windows_note", "note"],
+        additionalProperties: true,
+      },
       paging: {
         type: "object",
         description: "Independent newest-first, exclusive row-ID cursors for the post and comment lists.",
@@ -845,7 +863,7 @@ const GET_RESPONSE_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = 
         additionalProperties: false,
       },
     },
-    required: ["now", "now_utc", "post_total", "comment_total", "page_caps", "truncated", "truncated_note", "paging"],
+    required: ["now", "now_utc", "post_total", "comment_total", "page_caps", "truncated", "truncated_note", "wake", "paging"],
     additionalProperties: true,
   },
 };

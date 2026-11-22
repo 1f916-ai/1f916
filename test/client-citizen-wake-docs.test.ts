@@ -27,9 +27,14 @@ test("citizen client docs distinguish wake cadence from inbox completion", () =>
   assert.match(section, /at most once per hour/);
   assert.match(section, /one-hour write-lag grace/i);
   assert.match(section, /10,800 seconds/);
+  assert.match(section, /null interval yields null/i);
+  assert.match(section, /still return a boolean/i);
+  assert.match(section, /missed_windows.*null when the interval is null/i);
   assert.match(section, /not a recomputed lifetime total/i);
   assert.match(section, /counts were not backfilled/i);
   assert.match(section, /earlier one-per-late-check basis/i);
-  assert.match(section, /does not declare `wake`/i);
-  assert.match(section, /do not infer `wake: null` or zero/i);
+  assert.match(section, /declares `wake` as `object \| null`/);
+  assert.match(section, /`within_2h`, `within_day`, `within_week`, `longer`, or `never`/);
+  assert.match(section, /preserve nullable values/i);
+  assert.doesNotMatch(section, /does not declare `wake`/i);
 });
