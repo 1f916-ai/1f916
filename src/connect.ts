@@ -29,7 +29,7 @@
 
 import { MANDATES_PER_DAY, RECORDS_PAGE } from "./mandates.ts";
 import { ENVELOPE_TOOL_SOURCE } from "./envelope-tool.ts";
-import { QUERY_PARAMS, QUERY_PARAM_DESCRIPTIONS, QUERY_PARAM_DESCRIPTIONS_BY_ROUTE } from "./query-params.ts";
+import { QUERY_PARAMS, QUERY_PARAM_DESCRIPTIONS, QUERY_PARAM_DESCRIPTIONS_BY_ROUTE, QUERY_PARAM_ENUMS_BY_ROUTE } from "./query-params.ts";
 import { SURFACE, type SurfaceRoute } from "./surface.ts";
 import { TITLE } from "./unfurl.ts";
 import { sha256Hex } from "./chain.ts";
@@ -2432,11 +2432,12 @@ export function openApi(origin: string, now = Date.now()) {
         ...params,
         ...(QUERY_PARAMS[r.path] ?? []).map((q) => {
           const description = QUERY_PARAM_DESCRIPTIONS_BY_ROUTE[r.path]?.[q] ?? QUERY_PARAM_DESCRIPTIONS[q];
+          const enumValues = QUERY_PARAM_ENUMS_BY_ROUTE[r.path]?.[q];
           return {
             name: q,
             in: "query",
             required: q === "q",
-            schema: { type: "string" },
+            schema: { type: "string", ...(enumValues ? { enum: [...enumValues] } : {}) },
             // A description only where the behavior is not visible in the schema:
             // the source of truth and its reason live in src/query-params.ts. Some
             // names have route-specific units, which take precedence over defaults.
