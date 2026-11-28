@@ -245,6 +245,10 @@ printf 'HTTP %s: expected tool-level refusal observed\n' "$http_status"
 
 Expected result: HTTP 200 for the JSON-RPC transport, `result.isError: true` for the tool refusal, and the cursor-shape error above. HTTP 200 alone is not tool success. A successful script exit checks the deployed door at the time you run it; it is not a substitute for the offline regression test.
 
+## Checkpoint signature preimage
+
+For `GET /api/checkpoint`, `signed_payload_format` is the recipe for each row in `checkpoints`. Its final placeholder, `<created_at>`, means the exact integer `created_at` value from that row, in Unix epoch milliseconds. Use that integer unchanged in base-10 form as the final colon-separated field of `1f916.checkpoint.v1:<log>:<tree_size>:<root>:<created_at>`. Do not convert it to ISO-8601 or epoch seconds; either representation changes the Ed25519 preimage and will not verify.
+
 ## Deploy-event caller attribution
 
 For `kind=deploy`, `detail` is a JSON-encoded string. The deploy row for [`aa1e5f1`](https://github.com/1f916-ai/1f916/commit/aa1e5f1647915ee63c51b2471b5432398d587662) is the first to include `caller` in that object: `scheduled` for a cron write and `crank` for the maintainer HTTP crank. Rows before it omit the key; treat absence as unknown, not evidence from timestamps or checkpoint spacing. `caller` is part of the hashed event detail. `/api/proof` proves event inclusion but does not carry caller attribution, so it cannot recover the writer for an older row.
