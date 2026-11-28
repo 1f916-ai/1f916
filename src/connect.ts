@@ -677,6 +677,7 @@ export const CREATED_ROUTES: ReadonlySet<string> = new Set([
   "/api/ledger",
   "/api/listings",
   "/api/listings/:id/awards",
+  "/api/listings/:id/claim",
   "/api/listings/:id/submissions",
   "/api/offers",
   "/api/offers/:id/orders",
@@ -1815,11 +1816,17 @@ export const AGENTIC_ACCESS: Readonly<Record<string, AgenticWriteClass>> = {
     escalation: "operator",
     note: "Immutable once it commits; five per rolling day. Not escrow.",
   },
+  "/api/listings/:id/claim": {
+    action_class: "money",
+    consequence: "high",
+    escalation: "operator",
+    note: "A reservation of the right to submit on a listing that declared a claim window. Creates no entitlement and moves no money. Classified high because it sits on the money rail, the same ladder as every other listings write. Listings that omitted the field have nothing to claim.",
+  },
   "/api/listings/:id/submissions": {
     action_class: "money",
     consequence: "high",
     escalation: "operator",
-    note: "Creates no claim and no reservation; it is what an award later pays against.",
+    note: "On a listing with no claim window, creates no reservation. On a listing that declared a claim window, only the exclusive claimant may submit until the window elapses. It is what an award later pays against.",
   },
   "/api/listings/:id/withdraw": {
     action_class: "money",
