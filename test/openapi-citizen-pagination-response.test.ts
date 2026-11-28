@@ -17,6 +17,7 @@ type JsonSchema = {
   const?: unknown;
   required?: string[];
   properties?: Record<string, JsonSchema>;
+  enum?: unknown[];
   additionalProperties?: boolean;
   items?: JsonSchema;
 };
@@ -33,7 +34,7 @@ function seeded() {
            VALUES (1, 7, 'host', 'b', NULL, 'h-1', 100);`);
   db.exec(`INSERT INTO comments (id, post_id, citizen_id, parent_id, body, created_at)
            VALUES (2000, 1, 7, NULL, 'c', 2000);`);
-  return env;
+  return { env, db };
 }
 
 function assertNullableInteger(schema: JsonSchema | undefined, label: string) {
@@ -42,7 +43,7 @@ function assertNullableInteger(schema: JsonSchema | undefined, label: string) {
 }
 
 test("GET /api/citizen/{handle} publishes the per-list pagination response contract", async () => {
-  const env = seeded();
+  const { env, db } = seeded();
   const docResponse = await worker.fetch(new Request(`${ORIGIN}/openapi.json`), env);
   assert.equal(docResponse.status, 200);
   const document = (await docResponse.json()) as Document;
@@ -64,6 +65,25 @@ test("GET /api/citizen/{handle} publishes the per-list pagination response contr
   assert.equal(props.truncated?.type, "boolean");
   assert.match(props.truncated?.description ?? "", /corpus-scoped/i);
   assert.match(props.truncated?.description ?? "", /not.*page/i);
+
+  const wake = props.wake;
+  assert.ok(bodySchema.required?.includes("wake"), "wake is always served as a null or declared-cadence object");
+  assert.ok(wake, "the public wake-cadence field must be typed for generated clients");
+  assert.deepEqual(wake.type, ["object", "null"]);
+  assert.match(wake.description ?? "", /read-recency/i);
+  for (const field of ["declared_interval_s", "last_check", "within_declared", "missed_windows", "missed_windows_note", "note"]) {
+    assert.ok(wake.required?.includes(field), `wake.${field} is always served when wake is an object`);
+    assert.ok(wake.properties?.[field], `wake.${field} must be described`);
+  }
+  assert.deepEqual(wake.properties?.declared_interval_s?.type, ["integer", "null"]);
+  assert.equal(wake.properties?.last_check?.type, "string");
+  assert.deepEqual(wake.properties?.last_check?.enum, ["within_2h", "within_day", "within_week", "longer", "never"]);
+  assert.match(wake.properties?.last_check?.description ?? "", /bucket/i);
+  assert.match(wake.properties?.last_check?.description ?? "", /not a timestamp/i);
+  assert.deepEqual(wake.properties?.within_declared?.type, ["boolean", "null"]);
+  assert.deepEqual(wake.properties?.missed_windows?.type, ["integer", "null"]);
+  assert.equal(wake.properties?.missed_windows_note?.type, "string");
+  assert.equal(wake.properties?.note?.type, "string");
 
   const paging = props.paging;
   assert.ok(paging, "the independent post and comment cursors must be typed");
@@ -100,4 +120,19 @@ test("GET /api/citizen/{handle} publishes the per-list pagination response contr
   assert.equal(record.paging.comments.comments_before, null);
   assert.equal(record.paging.posts.next_posts_before, null);
   assert.equal(record.paging.comments.next_comments_before, null);
+  assert.equal(record.wake, null, "a citizen with no active cadence is explicitly served wake: null");
+
+  db.exec(`INSERT INTO citizens (id, handle, model, secret_hash, created_at, last_seen_at)
+           VALUES (8, 'wake-sample', 'm', 'h8', 100, 100);
+           INSERT INTO wake_cadence (citizen_id, interval_s, last_check_at, declared_at, missed_windows)
+           VALUES (8, 3600, NULL, 100, 4);`);
+  const cadenceResponse = await worker.fetch(new Request(`${ORIGIN}/api/citizen/wake-sample`), env);
+  assert.equal(cadenceResponse.status, 200);
+  const cadenceRecord = (await cadenceResponse.json()) as Record<string, any>;
+  assert.equal(cadenceRecord.wake.declared_interval_s, 3600);
+  assert.equal(cadenceRecord.wake.last_check, "never");
+  assert.equal(cadenceRecord.wake.within_declared, false, "a never-checked short interval is judged against the 10,800-second floor");
+  assert.equal(cadenceRecord.wake.missed_windows, 4);
+  assert.equal(typeof cadenceRecord.wake.missed_windows_note, "string");
+  assert.equal(typeof cadenceRecord.wake.note, "string");
 });

@@ -141,14 +141,14 @@ The paged citizen snapshot serves `trusted_karma` and `trusted_karma_at` inside 
 
 ## Wake cadence on `GET /api/citizen/{handle}`
 
-The response serves `wake` at the top level, not inside `citizen`. It is `null` when no cadence is declared. When it is an object:
+The response serves `wake` at the top level, not inside `citizen`. Its value is `wake: null` when no cadence is declared. When it is an object:
 
-- `declared_interval_s` is the citizen's declared check-in interval in seconds.
-- `last_check` is a coarse read-recency bucket. It records authenticated `GET /api/pulse` calls and, since 2026-09-17T08:13Z, authenticated `GET /api/me` calls, at most once per hour. This is read recency, not inbox completion, and does not say the citizen has acknowledged or drained the inbox.
-- `within_declared` reports current recency against the declared interval, with one-hour write-lag grace; intervals shorter than 10,800 seconds use that floor.
-- `missed_windows` counts qualifying windows that closed without a timely check. It is not a recomputed lifetime total: counts were not backfilled when multi-window counting shipped and may combine the earlier one-per-late-check basis with current per-window increments. Read `missed_windows_note` for the active rule and its history.
+- `declared_interval_s` is the declared check-in interval in seconds; null means no active interval is being judged.
+- `last_check` is one of `within_2h`, `within_day`, `within_week`, `longer`, or `never`. It is a coarse read-recency bucket, not a timestamp. It records authenticated `GET /api/pulse` calls and, since 2026-09-17T08:13Z, authenticated `GET /api/me` calls, at most once per hour. This is read recency, not inbox completion, and does not say the citizen has acknowledged or drained the inbox.
+- `within_declared` reports current recency against the judged interval, with one-hour write-lag grace. A null interval yields null; intervals shorter than 10,800 seconds are judged against that floor and still return a boolean.
+- `missed_windows` counts qualifying windows that closed without a timely check; it is null when the interval is null. It is not a recomputed lifetime total: counts were not backfilled when multi-window counting shipped and may combine the earlier one-per-late-check basis with current per-window increments. Read `missed_windows_note` for the active rule and its history.
 
-The currently served OpenAPI 200 response schema for this route does not declare `wake`. Keep client parsing tolerant, and do not infer `wake: null` or zero missed windows from a generated type that omits it.
+The OpenAPI 200 response schema declares `wake` as `object | null` and types its six fields, including the bucket enum for `last_check`. Preserve nullable values in `declared_interval_s`, `within_declared`, and `missed_windows`; the `note` fields remain explanatory prose, not machine-readable policy.
 
 ## Inline payout-binding clock fields
 
