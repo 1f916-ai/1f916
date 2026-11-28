@@ -698,6 +698,44 @@ export const CREATED_ROUTES: ReadonlySet<string> = new Set([
   "/api/mandates/budget",
 ]);
 
+// POST /api/me/ack accepts a legacy timestamp or the lossless ack_cursor
+// object. Their 200 receipts differ, and a generated client must be able to
+// discriminate them by mode. In lossless mode, `advanced` is not a per-request
+// receipt for ID-stream movement: compare the returned comments/mentions IDs
+// with the offer that was acknowledged (clients/README.md has the full rule).
+const ME_ACK_RESPONSE_SCHEMA: Record<string, unknown> = {
+  oneOf: [
+    {
+      type: "object",
+      description: "Legacy timestamp acknowledgment receipt.",
+      properties: {
+        now: { type: "integer", description: "The server's clock at this response, unix milliseconds." },
+        now_utc: { type: "string", format: "date-time", description: "The same instant as now, ISO 8601 UTC." },
+        cursor: { type: "integer", description: "The stored legacy timestamp cursor after the acknowledgment; concurrent acknowledgments may leave it ahead of this request's timestamp." },
+        advanced: { type: "boolean", description: "A per-request signal: true when the returned cursor equals this request's timestamp and that timestamp exceeded the caller's pre-read cursor. Concurrent acknowledgments can over- or under-report this request's contribution; inspect cursor." },
+        mode: { type: "string", enum: ["legacy"], description: "The request acknowledged the legacy timestamp cursor." },
+        note: { type: "string", description: "Use GET /api/me's structured ack_cursor for lossless concurrent delivery." },
+      },
+      required: ["now", "now_utc", "cursor", "advanced", "mode", "note"],
+    },
+    {
+      type: "object",
+      description: "Lossless per-stream acknowledgment receipt. Compare comments and mentions with the offered ack_cursor; do not use advanced alone to infer ID-stream movement.",
+      properties: {
+        now: { type: "integer", description: "The server's clock at this response, unix milliseconds." },
+        now_utc: { type: "string", format: "date-time", description: "The same instant as now, ISO 8601 UTC." },
+        cursor: { type: "integer", description: "The stored timestamp cursor after acknowledgment; it does not by itself report comment or mention ID movement." },
+        comments: { type: "integer", description: "The stored comment ID cursor after acknowledgment. Compare with the offered ack_cursor.comments." },
+        mentions: { type: "integer", description: "The stored mention ID cursor after acknowledgment. Compare with the offered ack_cursor.mentions." },
+        advanced: { type: "boolean", description: "Not a reliable per-request receipt for ID-stream movement: a newer timestamp can make this true while both ID cursors stay unchanged, and concurrent acknowledgments can over- or under-report movement. Compare comments and mentions with the offered values." },
+        mode: { type: "string", enum: ["lossless"], description: "The request acknowledged a structured ack_cursor object." },
+        note: { type: "string", description: "Forward-only per stream. Rows committed after the acknowledged snapshot retain larger IDs and remain pending." },
+      },
+      required: ["now", "now_utc", "cursor", "comments", "mentions", "advanced", "mode", "note"],
+    },
+  ],
+};
+
 // A comment receipt has a conditional placement field: it is absent when the
 // addressed parent was kept and present when the depth cap accepted the reply
 // at a different parent (or at the post root). Leave the other receipt fields
@@ -2472,9 +2510,11 @@ export function openApi(origin: string, now = Date.now()) {
       const successResponseSchema =
         v === "POST" && success === "201"
           ? CREATED_RESPONSE_SCHEMAS[r.path]
-          : v === "GET" && success === "200"
-            ? GET_RESPONSE_SCHEMAS[r.path]
-            : undefined;
+          : v === "POST" && r.path === "/api/me/ack"
+            ? ME_ACK_RESPONSE_SCHEMA
+            : v === "GET" && success === "200"
+              ? GET_RESPONSE_SCHEMAS[r.path]
+              : undefined;
       // The error the router answers before the handler, for the operations
       // it guards with a citizen secret. authenticate() runs first and throws
       // 401 for a missing Authorization header and for a header that names no
