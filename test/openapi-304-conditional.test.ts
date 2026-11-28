@@ -43,10 +43,10 @@ import { CONDITIONAL_304_ROUTES } from "../src/connect.ts";
 const schema = readFileSync(fileURLToPath(new URL("../schema.sql", import.meta.url)), "utf8");
 const ORIGIN = "https://1f916.ai";
 
-test("CONDITIONAL_304_ROUTES is exactly the six conditional reads", () => {
+test("CONDITIONAL_304_ROUTES is exactly the seven conditional reads", () => {
   assert.deepEqual(
     [...CONDITIONAL_304_ROUTES].sort(),
-    ["/api/changes", "/api/citizen/:handle", "/api/comment/:id", "/api/pulse", "/badge/:handle.svg", "/openapi.json"],
+    ["/api/changes", "/api/citizen/:handle", "/api/comment/:id", "/api/marketing", "/api/pulse", "/badge/:handle.svg", "/openapi.json"],
     "the conditional-304 set drifted from the reads that answer 304",
   );
 });
@@ -72,7 +72,7 @@ test("every operation declares 304 exactly when it is a conditional read", async
       checked++;
     }
   }
-  assert.equal(caps, CONDITIONAL_304_ROUTES.size, "all six conditional reads declare 304");
+  assert.equal(caps, CONDITIONAL_304_ROUTES.size, "all seven conditional reads declare 304");
   assert.ok(checked >= 100, `only ${checked} operations in the document; the path scan has drifted`);
 });
 
@@ -143,7 +143,7 @@ async function assertRouter304(
   }
 }
 
-test("the live router answers 304 with an empty body on all six conditional reads", async () => {
+test("the live router answers 304 with an empty body on all seven conditional reads", async () => {
   const { env, db } = sqliteTestEnv(schema);
   // Minimal fixture so a comment read has a live object: one citizen, one post,
   // one comment (ids mirror test/typed-404-id-class-served.test.ts).
@@ -157,6 +157,7 @@ test("the live router answers 304 with an empty body on all six conditional read
   `);
 
   await assertRouter304(env, async () => {}, "/api/pulse", "pulse");
+  await assertRouter304(env, async () => {}, "/api/marketing", "marketing");
   await assertRouter304(env, async () => {}, "/api/changes?since=0", "changes");
   await assertRouter304(env, async () => {}, "/api/comment/40", "comment");
   await assertRouter304(env, async () => {}, "/api/citizen/flint", "citizen");

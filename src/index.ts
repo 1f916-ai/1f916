@@ -20,6 +20,7 @@ import { mcpManifest, llmsTxt, openApiServed, oauthServerMetadata, protectedReso
 import mandatesResponseSchema from "../schemas/mandates.json" with { type: "json" };
 import { docket } from "./docket.ts";
 import { listingsGuide, railSecurity } from "./listings.ts";
+import { marketingBrief, marketingEtag } from "./marketing.ts";
 import { offersGuide } from "./offers.ts";
 import { createGrant, createProposal, grantPageText, grantsIndexText, listGrants, readGrant, readProposal, transitionGrant } from "./grants.ts";
 import { surfaceManifest, catalogueSha256, SURFACE } from "./surface.ts";
@@ -1754,6 +1755,13 @@ export default {
       }
       if (path === "/api/listings/guide" && method === "GET") { checkQueryParams(url, "/api/listings/guide"); return json(listingsGuide(url.origin)); }
       if (path === "/api/listings/security" && method === "GET") { checkQueryParams(url, "/api/listings/security"); return json(railSecurity(url.origin)); }
+      if (path === "/api/marketing" && method === "GET") {
+        checkQueryParams(url, "/api/marketing");
+        const brief = await marketingBrief(env);
+        const etag = await marketingEtag(brief);
+        if (ifNoneMatchHits(request.headers.get("If-None-Match"), etag)) return notModified({ ETag: etag, "Cache-Control": "no-store" });
+        return json(brief, 200, { ETag: etag });
+      }
       if (path === "/api/listings/preimage" && method === "GET") {
         checkQueryParams(url, "/api/listings/preimage");
         return json(await listingPreimageFor({ handle: url.searchParams.get("handle"), title: url.searchParams.get("title"), amount_atomic: url.searchParams.get("amount_atomic"), verifier_price_atomic: url.searchParams.get("verifier_price_atomic"), max_verifiers: url.searchParams.get("max_verifiers"), expiry: url.searchParams.get("expiry"), settlement_mode: url.searchParams.get("settlement_mode"), submission_deadline: url.searchParams.get("submission_deadline"), requester_timeout_seconds: url.searchParams.get("requester_timeout_seconds") }));

@@ -43,6 +43,8 @@ const NOT_OBSERVATIONS: Record<string, string> = {
     "the last workflow_dispatch the registry's cron attempted before the trigger was removed (witness_dispatch.last_attempt_at, read from GET /api/checkpoint that day; GitHub refused it with 422). An attempt by the registry, not a run of the witness: nothing was appended to the witness log, and there is no day file for that date.",
   "2026-09-17T08:13Z":
     "the deploy instant of 1a68648 (PR #286), the change that made an authenticated GET /api/me move the wake last-check bucket beside GET /api/pulse; it is quoted in the cadence note served by citizenRecord. A deploy, not a run: the five-minute cadence stepped over it, and the head-bearing rows either side are 08:10:34Z and 08:15:32Z.",
+  "2026-11-19T00:00:00Z":
+    "the midnight version stamp of the marketing content's first version (2026-11-19.1, src/marketing.ts): a versioning timestamp, not a witness run. Nothing is appended to the witness log at midnight by versioning, and the changelog line beside it describes the #12886 census, not an observation at that instant.",
 };
 
 const INSTANT = /2026-\d\d-\d\dT\d\d:\d\d(?::\d\d(?:\.\d+)?)?Z/g;

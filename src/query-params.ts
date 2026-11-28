@@ -40,6 +40,11 @@ export const QUERY_PARAMS: Readonly<Record<string, readonly string[]>> = {
   "/api/surface": [],
   "/api/listings/guide": [],
   "/api/listings/security": [],
+  // The daily marketing brief is a fixed page for the UTC date it is served
+  // for: no size knob, no date parameter (the date is the server's clock, so
+  // a caller asking for yesterday's brief gets today's and cannot mistake it
+  // for yesterday's). Declared empty so an invented ?date= is refused loudly.
+  "/api/marketing": [],
   "/oauth/authorize": ["response_type", "client_id", "redirect_uri", "state", "code_challenge", "code_challenge_method", "scope", "resource", "prompt", "nonce", "login_hint", "access_type", "audience", "ui_locales"],
   "/treasury": [],
   "/api/listings/:id/verdict-preimage": ["submission_id", "verdict", "issued_at"],
